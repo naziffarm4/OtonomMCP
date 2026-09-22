@@ -13,6 +13,12 @@ import {
   ContextIntent,
   isContextLayer,
 } from './context-types.js';
+import type {
+  ContextValidationResult,
+  ContextRefreshResult,
+  ContextGuardResult,
+} from './invalidation-types.js';
+import { ContextInvalidator } from './context-invalidator.js';
 import { estimateContextTokens } from './token-estimator.js';
 import { extractL1Structure } from './structural-extractor.js';
 import { L0Indexer } from '../l0/indexer.js';
@@ -24,6 +30,7 @@ export class ContextEngine {
   readonly dbPath: string;
   private readonly l0Indexer: L0Indexer;
   private readonly defaultIntent: string;
+  private readonly invalidator: ContextInvalidator;
 
   constructor(options: ContextEngineOptions) {
     if (!options.workspaceRoot) {
@@ -43,6 +50,11 @@ export class ContextEngine {
     this.l0Indexer = new L0Indexer({
       workspaceRoot: this.workspaceRoot,
       dbPath: this.dbPath,
+    });
+
+    this.invalidator = new ContextInvalidator({
+      workspaceRoot: this.workspaceRoot,
+      contextEngine: this,
     });
   }
 
@@ -377,6 +389,55 @@ export class ContextEngine {
 
   private normalizePath(filePath: string): string {
     return filePath.replace(/\\/g, '/').replace(/^\.\//, '');
+  }
+
+  /**
+   * Validates previously resolved context against current filesystem state.
+   */
+  async validateContext(context: ResolvedContext): Promise<ContextValidationResult> {
+    return this.invalidator.validateContext(context);
+  }
+
+  /**
+   * Refreshes a stale context using current filesystem content.
+   */
+  async refreshContext(
+    context: ResolvedContext,
+    options?: Partial<ContextRequest>
+  ): Promise<ContextRefreshResult> {
+    return this.invalidator.refreshContext(context, options);
+  }
+
+  /**
+   * Asserts context validity before write/modification, throwing if stale.
+   */
+  async assertValidForWrite(context: ResolvedContext, targetPath?: string): Promise<void> {
+    return this.invalidator.assertValidForWrite(context, targetPath);
+  }
+
+  /**
+   * Non-throwing write guard check.
+   */
+  async checkWriteGuard(
+    context: ResolvedContext,
+    targetPath?: string
+  ): Promise<ContextGuardResult> {
+    return this.invalidator.checkWriteGuard(context, targetPath);
+  }
+
+  /**
+   * Wraps an operation with the context validity guard.
+   */
+  async guardOperation<T>(
+    context: ResolvedContext,
+    operation: () => Promise<T> | T,
+    targetPath?: string
+  ): Promise<T> {
+    return this.invalidator.guardOperation(context, operation, targetPath);
+  }
+
+  getInvalidator(): ContextInvalidator {
+    return this.invalidator;
   }
 
   close(): void {
