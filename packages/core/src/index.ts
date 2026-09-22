@@ -11,3 +11,4 @@ export * from './context-engine/index.js';
 export * from './token-budget/index.js';
 export * from './executor-bridge/index.js';
 export * from './llm-bridge/index.js';
+export * from './evidence/index.js';

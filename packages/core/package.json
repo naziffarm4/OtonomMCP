@@ -61,6 +61,10 @@
     "./llm-bridge": {
       "types": "./dist/llm-bridge/index.d.ts",
       "import": "./dist/llm-bridge/index.js"
+    },
+    "./evidence": {
+      "types": "./dist/evidence/index.d.ts",
+      "import": "./dist/evidence/index.js"
     }
   },
   "files": [
