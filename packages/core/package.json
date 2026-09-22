@@ -1,0 +1,69 @@
+{
+  "name": "@aidm/core",
+  "version": "0.1.0",
+  "description": "AI Development Manager Core Scaffolding, Domain Types, Lifecycle States, FSM Engine, and Error Hierarchy",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./actors": {
+      "types": "./dist/actors.d.ts",
+      "import": "./dist/actors.js"
+    },
+    "./risk": {
+      "types": "./dist/risk.d.ts",
+      "import": "./dist/risk.js"
+    },
+    "./lifecycle": {
+      "types": "./dist/lifecycle.d.ts",
+      "import": "./dist/lifecycle.js"
+    },
+    "./errors": {
+      "types": "./dist/errors/index.d.ts",
+      "import": "./dist/errors/index.js"
+    },
+    "./fsm": {
+      "types": "./dist/fsm/index.d.ts",
+      "import": "./dist/fsm/index.js"
+    },
+    "./storage": {
+      "types": "./dist/storage/index.d.ts",
+      "import": "./dist/storage/index.js"
+    },
+    "./l0": {
+      "types": "./dist/l0/index.d.ts",
+      "import": "./dist/l0/index.js"
+    },
+    "./recovery": {
+      "types": "./dist/recovery/index.d.ts",
+      "import": "./dist/recovery/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -b",
+    "clean": "rm -rf dist *.tsbuildinfo",
+    "test": "node --test --experimental-strip-types tests/**/*.test.ts"
+  },
+  "keywords": [
+    "aidm",
+    "autonomous",
+    "development",
+    "manager",
+    "orchestrator",
+    "types",
+    "lifecycle",
+    "fsm"
+  ],
+  "author": "AI Development Manager Team",
+  "license": "MIT",
+  "dependencies": {
+    "zod": "^4.6.5"
+  }
+}
