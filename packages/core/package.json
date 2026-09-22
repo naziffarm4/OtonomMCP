@@ -53,6 +53,10 @@
     "./token-budget": {
       "types": "./dist/token-budget/index.d.ts",
       "import": "./dist/token-budget/index.js"
+    },
+    "./executor-bridge": {
+      "types": "./dist/executor-bridge/index.d.ts",
+      "import": "./dist/executor-bridge/index.js"
     }
   },
   "files": [
