@@ -49,6 +49,10 @@
     "./context-engine": {
       "types": "./dist/context-engine/index.d.ts",
       "import": "./dist/context-engine/index.js"
+    },
+    "./token-budget": {
+      "types": "./dist/token-budget/index.d.ts",
+      "import": "./dist/token-budget/index.js"
     }
   },
   "files": [
