@@ -7,3 +7,4 @@ export * from './storage/index.js';
 export * from './l0/index.js';
 export * from './recovery/index.js';
 export * from './task-engine/index.js';
+export * from './context-engine/index.js';

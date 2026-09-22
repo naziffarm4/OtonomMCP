@@ -9,3 +9,4 @@ export * from './history-corrupt-error.js';
 export * from './l0-index-error.js';
 export * from './recovery-error.js';
 export * from './task-graph-validation-error.js';
+export * from './context-engine-error.js';

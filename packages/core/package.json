@@ -45,6 +45,10 @@
     "./task-engine": {
       "types": "./dist/task-engine/index.d.ts",
       "import": "./dist/task-engine/index.js"
+    },
+    "./context-engine": {
+      "types": "./dist/context-engine/index.d.ts",
+      "import": "./dist/context-engine/index.js"
     }
   },
   "files": [
