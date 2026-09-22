@@ -41,6 +41,10 @@
     "./recovery": {
       "types": "./dist/recovery/index.d.ts",
       "import": "./dist/recovery/index.js"
+    },
+    "./task-engine": {
+      "types": "./dist/task-engine/index.d.ts",
+      "import": "./dist/task-engine/index.js"
     }
   },
   "files": [
