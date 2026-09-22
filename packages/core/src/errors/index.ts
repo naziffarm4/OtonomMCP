@@ -13,3 +13,4 @@ export * from './context-engine-error.js';
 export * from './context-invalidation-error.js';
 export * from './token-budget-error.js';
 export * from './executor-error.js';
+export * from './llm-error.js';

@@ -57,6 +57,10 @@
     "./executor-bridge": {
       "types": "./dist/executor-bridge/index.d.ts",
       "import": "./dist/executor-bridge/index.js"
+    },
+    "./llm-bridge": {
+      "types": "./dist/llm-bridge/index.d.ts",
+      "import": "./dist/llm-bridge/index.js"
     }
   },
   "files": [
