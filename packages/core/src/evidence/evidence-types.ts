@@ -16,6 +16,7 @@ export const EvidenceType = {
   GIT: 'GIT',
   DIFF: 'DIFF',
   FILE_HASH: 'FILE_HASH',
+  UI: 'UI',
 } as const;
 
 export type EvidenceType = (typeof EvidenceType)[keyof typeof EvidenceType];

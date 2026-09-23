@@ -566,6 +566,8 @@ export class QAReviewEngine {
             evi.evidence_type === EvidenceType.FILE_HASH ||
             (evi.file_hashes_after !== null && Object.keys(evi.file_hashes_after).length > 0)
           );
+        case CriterionType.UI:
+          return evi.evidence_type === EvidenceType.UI;
         case CriterionType.CUSTOM:
         default:
           return true;

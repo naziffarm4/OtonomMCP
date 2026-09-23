@@ -13,3 +13,4 @@ export * from './executor-bridge/index.js';
 export * from './llm-bridge/index.js';
 export * from './evidence/index.js';
 export * from './qa-review/index.js';
+export * from './ui-verification/index.js';

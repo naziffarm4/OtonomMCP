@@ -56,6 +56,7 @@ export const CriterionType = {
   DIFF: 'DIFF',
   FILE_HASH: 'FILE_HASH',
   CUSTOM: 'CUSTOM',
+  UI: 'UI',
 } as const;
 
 export type CriterionType = (typeof CriterionType)[keyof typeof CriterionType];
