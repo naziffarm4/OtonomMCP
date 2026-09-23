@@ -9,3 +9,4 @@ export * from './ui-verification-types.js';
 export * from './browser-port.js';
 export * from './ui-evidence-types.js';
 export * from './adapters/playwright-adapter.js';
+export * from './ui-observation-pipeline.js';
