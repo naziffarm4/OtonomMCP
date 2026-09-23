@@ -15,3 +15,4 @@ export * from './token-budget-error.js';
 export * from './executor-error.js';
 export * from './llm-error.js';
 export * from './evidence-error.js';
+export * from './collector-error.js';
