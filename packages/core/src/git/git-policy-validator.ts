@@ -21,10 +21,14 @@ export interface GitPolicyConfig {
   readonly configured_remote: string;
   readonly require_clean_worktree_for_checkpoint?: boolean;
   readonly require_clean_worktree_for_push?: boolean;
+  readonly require_clean_worktree_for_rollback?: boolean;
   readonly allow_detached_head?: boolean;
   readonly require_human_approval_for_dangerous?: boolean;
   readonly prohibit_force_push?: boolean;
   readonly allow_history_rewrite?: boolean;
+  readonly validateHumanApprovalToken?: (
+    token: string
+  ) => boolean | { valid: boolean; reason?: string };
 }
 
 export const DEFAULT_GIT_POLICY_CONFIG: GitPolicyConfig = Object.freeze({
@@ -32,6 +36,7 @@ export const DEFAULT_GIT_POLICY_CONFIG: GitPolicyConfig = Object.freeze({
   configured_remote: 'origin',
   require_clean_worktree_for_checkpoint: true,
   require_clean_worktree_for_push: true,
+  require_clean_worktree_for_rollback: true,
   allow_detached_head: false,
   require_human_approval_for_dangerous: true,
   prohibit_force_push: true,
@@ -189,7 +194,9 @@ export class GitPolicyValidator {
       operation === GitOpTypes.COMMIT ||
       operation === GitOpTypes.PRE_FLIGHT_CHECKPOINT ||
       operation === GitOpTypes.POST_FLIGHT_CHECKPOINT ||
-      operation === GitOpTypes.CHECKPOINT_CREATION
+      operation === GitOpTypes.CHECKPOINT_CREATION ||
+      operation === GitOpTypes.ROLLBACK_REQUEST ||
+      operation === GitOpTypes.ROLLBACK
     ) {
       if (targetBranch !== config.configured_branch) {
         violations.push({
@@ -209,6 +216,16 @@ export class GitPolicyValidator {
           details: { currentBranch: currentState.current_branch, configuredBranch: config.configured_branch },
         });
         reasons.push(`Branch mismatch: current branch is '${currentState.current_branch}', expected '${config.configured_branch}'`);
+      }
+
+      if (intent.target_branch && currentState.current_branch !== null && intent.target_branch !== currentState.current_branch) {
+        violations.push({
+          code: GitPolicyViolationCode.BRANCH_MISMATCH,
+          message: `Current repository branch '${currentState.current_branch}' does not match target branch '${intent.target_branch}'`,
+          field: 'current_branch',
+          details: { currentBranch: currentState.current_branch, targetBranch: intent.target_branch },
+        });
+        reasons.push(`Branch mismatch: current branch is '${currentState.current_branch}', target is '${intent.target_branch}'`);
       }
     }
 
@@ -261,6 +278,27 @@ export class GitPolicyValidator {
       }
     }
 
+    if (
+      (operation === GitOpTypes.ROLLBACK_REQUEST ||
+        operation === GitOpTypes.ROLLBACK ||
+        operation === GitOpTypes.RESET) &&
+      (config.require_clean_worktree_for_rollback ?? true)
+    ) {
+      if (!worktreeIsClean) {
+        violations.push({
+          code: GitPolicyViolationCode.DIRTY_WORKTREE_PROHIBITED,
+          message: 'Rollback operation requires a clean working tree; uncommitted changes detected',
+          field: 'working_tree_clean',
+          details: {
+            staged: currentState.staged_changes.length,
+            unstaged: currentState.unstaged_changes.length,
+            untracked: currentState.untracked_files.length,
+          },
+        });
+        reasons.push('Working tree is dirty; rollback operation requires clean working tree');
+      }
+    }
+
     // 8. HISTORY DIVERGENCE DETECTION
     if (operation === GitOpTypes.PUSH) {
       const isDiverged =
@@ -291,6 +329,25 @@ export class GitPolicyValidator {
         const hasApprovalToken =
           typeof intent.human_approval_token === 'string' && intent.human_approval_token.trim().length > 0;
 
+        let tokenValid = hasApprovalToken;
+        let tokenInvalidReason: string | undefined;
+
+        if (hasApprovalToken && config.validateHumanApprovalToken) {
+          try {
+            const res = config.validateHumanApprovalToken(intent.human_approval_token!.trim());
+            if (typeof res === 'boolean') {
+              tokenValid = res;
+              if (!res) tokenInvalidReason = 'Human approval token is invalid or expired';
+            } else if (res && typeof res === 'object') {
+              tokenValid = Boolean(res.valid);
+              if (!res.valid) tokenInvalidReason = res.reason ?? 'Human approval token is invalid or expired';
+            }
+          } catch (err) {
+            tokenValid = false;
+            tokenInvalidReason = err instanceof Error ? err.message : 'Token validation failed';
+          }
+        }
+
         if (!hasApprovalToken) {
           violations.push({
             code: GitPolicyViolationCode.HUMAN_APPROVAL_REQUIRED,
@@ -298,6 +355,13 @@ export class GitPolicyValidator {
             field: 'human_approval_token',
           });
           reasons.push(`Dangerous operation '${operation}' requires human approval`);
+        } else if (!tokenValid) {
+          violations.push({
+            code: GitPolicyViolationCode.HUMAN_APPROVAL_REQUIRED,
+            message: tokenInvalidReason ?? 'Human approval token is invalid or expired',
+            field: 'human_approval_token',
+          });
+          reasons.push('Human approval token validation failed');
         } else {
           reasons.push(`Human approval token verified for dangerous operation '${operation}'`);
         }

@@ -8,11 +8,14 @@ import {
   type GitCheckpoint,
   type GitCheckpointPurpose,
   type GitPolicyViolation,
+  type GitRollbackResult,
+  type RollbackOptions,
   GitOperationType,
   GitStatus,
   GitPolicyViolationCode,
 } from './git-types.js';
 import { type GitPort } from './git-port.js';
+import { GitRollbackManager } from './git-rollback-manager.js';
 import {
   GitPolicyValidator,
   type GitPolicyConfig,
@@ -1058,6 +1061,31 @@ export class GitCheckpointManager {
    */
   clearCheckpoints(): void {
     this.checkpoints.clear();
+  }
+
+  /**
+   * Obtains a GitRollbackManager instance bound to this checkpoint manager and its configured policy.
+   */
+  getRollbackManager(): GitRollbackManager {
+    return new GitRollbackManager(this.gitPort, {
+      policyValidator: this.policyValidator,
+      policyConfig: this.policyConfig,
+      defaultWorkingDirectory: this.defaultWorkingDirectory,
+      checkpointManager: this,
+    });
+  }
+
+  /**
+   * Performs an atomic recovery rollback to an exact known-good checkpoint.
+   * Enforces DANGEROUS policy classification and requires verified human authorization token.
+   * Guarantees safe local restoration with full post-rollback verification and remote safety.
+   */
+  async rollbackToCheckpoint(
+    checkpointOrIdOrOptions: GitCheckpoint | string | RollbackOptions,
+    options?: RollbackOptions
+  ): Promise<GitRollbackResult> {
+    const rollbackManager = this.getRollbackManager();
+    return rollbackManager.rollbackToCheckpoint(checkpointOrIdOrOptions, options);
   }
 
   /**

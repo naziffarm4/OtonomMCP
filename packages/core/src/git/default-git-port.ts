@@ -263,6 +263,54 @@ export class DefaultGitPort implements GitPort {
         };
       }
 
+      case GitOperationType.ROLLBACK_REQUEST:
+      case GitOperationType.ROLLBACK:
+      case GitOperationType.RESET: {
+        const targetCommit = intent.expected_commit_sha;
+        if (!targetCommit || !isValidCommitSha(targetCommit)) {
+          throw new GitPolicyError(
+            `Cannot execute rollback without valid target commit SHA: received '${String(targetCommit)}'`,
+            'ERR_GIT_CHECKPOINT_INTEGRITY',
+            {
+              operation: intent.operation,
+              riskLevel: authorization.risk_level,
+            }
+          );
+        }
+
+        const commitExists = await this.checkCommitExists(workingDirectory, targetCommit);
+        if (!commitExists) {
+          throw new GitPolicyError(
+            `Target commit '${targetCommit}' does not exist in repository object database`,
+            'ERR_GIT_CHECKPOINT_INTEGRITY',
+            {
+              operation: intent.operation,
+              riskLevel: authorization.risk_level,
+              commitSha: targetCommit,
+            }
+          );
+        }
+
+        const { branch: currentBranch } = await this.getCurrentBranch(workingDirectory);
+        const targetBranch = intent.target_branch ?? currentBranch;
+        if (targetBranch && currentBranch && targetBranch !== currentBranch) {
+          await this.execGit(['checkout', targetBranch], workingDirectory);
+        }
+
+        const stdout = await this.execGit(['reset', '--hard', targetCommit], workingDirectory);
+        const stateAfter = await this.inspectState(workingDirectory);
+
+        return {
+          success: true,
+          operation: intent.operation,
+          policy_level: authorization.risk_level,
+          commit_sha: targetCommit,
+          state_after: stateAfter,
+          stdout,
+          executed_at: executedAt,
+        };
+      }
+
       default: {
         // Safe placeholder for other operations in later Phase 6 tasks
         const stateAfter = await this.inspectState(workingDirectory);
@@ -274,6 +322,18 @@ export class DefaultGitPort implements GitPort {
           executed_at: executedAt,
         };
       }
+    }
+  }
+
+  async checkCommitExists(workingDirectory: string, commitSha: string): Promise<boolean> {
+    if (!isValidCommitSha(commitSha)) {
+      return false;
+    }
+    try {
+      await this.execGit(['cat-file', '-e', `${commitSha}^{commit}`], workingDirectory);
+      return true;
+    } catch {
+      return false;
     }
   }
 

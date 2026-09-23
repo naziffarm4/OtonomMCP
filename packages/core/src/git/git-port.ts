@@ -47,4 +47,9 @@ export interface GitPort {
     authorization: GitPolicyDecision,
     workingDirectory: string
   ): Promise<GitExecutionResult>;
+
+  /**
+   * Checks whether a commit SHA exists in the repository object database in a read-only manner.
+   */
+  checkCommitExists?(workingDirectory: string, commitSha: string): Promise<boolean>;
 }

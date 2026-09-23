@@ -12,7 +12,14 @@ export type GitPolicyErrorCode =
   | 'ERR_GIT_DIRTY_WORKTREE'
   | 'ERR_GIT_DETACHED_HEAD'
   | 'ERR_GIT_BRANCH_MISMATCH'
-  | 'ERR_GIT_REMOTE_MISMATCH';
+  | 'ERR_GIT_REMOTE_MISMATCH'
+  | 'ERR_GIT_ROLLBACK_FAILED'
+  | 'ERR_GIT_ROLLBACK_AUTHORIZATION'
+  | 'ERR_GIT_ROLLBACK_VERIFICATION'
+  | 'ERR_GIT_ROLLBACK_EXECUTION'
+  | 'ERR_GIT_CHECKPOINT_NOT_FOUND'
+  | 'ERR_GIT_CHECKPOINT_NOT_KNOWN_GOOD'
+  | 'ERR_GIT_TARGET_COMMIT_MISSING';
 
 export interface GitPolicyViolationItem {
   readonly code: string;
@@ -151,4 +158,82 @@ export class GitCheckpointVerificationError extends GitCheckpointIntegrityError 
     Object.setPrototypeOf(this, new.target.prototype);
   }
 }
+
+/**
+ * Base structured error thrown for rollback failures.
+ */
+export class GitRollbackError extends GitPolicyError {
+  constructor(
+    message: string,
+    code: GitPolicyErrorCode = 'ERR_GIT_ROLLBACK_FAILED',
+    details?: GitPolicyErrorDetails
+  ) {
+    super(message, code, details);
+    Object.setPrototypeOf(this, new.target.prototype);
+  }
+}
+
+/**
+ * Thrown when rollback authorization is missing, invalid, or rejected.
+ */
+export class GitRollbackAuthorizationError extends GitRollbackError {
+  constructor(
+    message = 'Rollback authorization token is missing or invalid',
+    details?: GitPolicyErrorDetails
+  ) {
+    super(message, 'ERR_GIT_ROLLBACK_AUTHORIZATION', details);
+    Object.setPrototypeOf(this, new.target.prototype);
+  }
+}
+
+/**
+ * Thrown when post-rollback state verification fails.
+ */
+export class GitRollbackVerificationError extends GitRollbackError {
+  constructor(message: string, details?: GitPolicyErrorDetails) {
+    super(message, 'ERR_GIT_ROLLBACK_VERIFICATION', details);
+    Object.setPrototypeOf(this, new.target.prototype);
+  }
+}
+
+/**
+ * Thrown when execution of rollback via GitPort fails.
+ */
+export class GitRollbackExecutionError extends GitRollbackError {
+  constructor(message: string, details?: GitPolicyErrorDetails) {
+    super(message, 'ERR_GIT_ROLLBACK_EXECUTION', details);
+    Object.setPrototypeOf(this, new.target.prototype);
+  }
+}
+
+/**
+ * Thrown when the requested target checkpoint cannot be found.
+ */
+export class GitCheckpointNotFoundError extends GitCheckpointIntegrityError {
+  constructor(message: string, details?: GitPolicyErrorDetails) {
+    super(message, details);
+    Object.setPrototypeOf(this, new.target.prototype);
+  }
+}
+
+/**
+ * Thrown when the target checkpoint is not verified known-good.
+ */
+export class GitCheckpointNotKnownGoodError extends GitCheckpointIntegrityError {
+  constructor(message: string, details?: GitPolicyErrorDetails) {
+    super(message, details);
+    Object.setPrototypeOf(this, new.target.prototype);
+  }
+}
+
+/**
+ * Thrown when the target commit SHA does not exist in the repository.
+ */
+export class GitTargetCommitMissingError extends GitCheckpointIntegrityError {
+  constructor(message: string, details?: GitPolicyErrorDetails) {
+    super(message, details);
+    Object.setPrototypeOf(this, new.target.prototype);
+  }
+}
+
 

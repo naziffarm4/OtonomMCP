@@ -26,6 +26,7 @@ export const GitOperationType = {
   CHECKOUT: 'CHECKOUT',
   REVERT: 'REVERT',
   ROLLBACK_REQUEST: 'ROLLBACK_REQUEST',
+  ROLLBACK: 'ROLLBACK',
   HISTORY_REWRITE: 'HISTORY_REWRITE',
 
   // CRITICAL (force push, destructive remote history rewrite, destroying unrecoverable history)
@@ -70,6 +71,7 @@ export function getGitOperationRiskLevel(operation: GitOperationType): RiskLevel
     case GitOperationType.CHECKOUT:
     case GitOperationType.REVERT:
     case GitOperationType.ROLLBACK_REQUEST:
+    case GitOperationType.ROLLBACK:
     case GitOperationType.HISTORY_REWRITE:
       return RiskLevel.DANGEROUS;
 
@@ -399,3 +401,144 @@ export interface GitExecutionResult {
   readonly error?: string | null;
   readonly executed_at: string;
 }
+
+// ============================================================================
+// 5. ROLLBACK LIFECYCLE & RECOVERY RESULT MODELS
+// ============================================================================
+
+export const GitRollbackStage = {
+  REQUESTED: 'REQUESTED',
+  AUTHORIZATION_VALIDATED: 'AUTHORIZATION_VALIDATED',
+  EXECUTION_STARTED: 'EXECUTION_STARTED',
+  EXECUTION_COMPLETED: 'EXECUTION_COMPLETED',
+  VERIFICATION_COMPLETED: 'VERIFICATION_COMPLETED',
+  FAILED: 'FAILED',
+  COMPLETED: 'COMPLETED',
+} as const;
+export type GitRollbackStage = (typeof GitRollbackStage)[keyof typeof GitRollbackStage];
+
+export const GitRollbackStatus = {
+  REQUESTED: 'REQUESTED',
+  AUTHORIZED: 'AUTHORIZED',
+  EXECUTED: 'EXECUTED',
+  VERIFIED: 'VERIFIED',
+  FAILED: 'FAILED',
+} as const;
+export type GitRollbackStatus = (typeof GitRollbackStatus)[keyof typeof GitRollbackStatus];
+
+/**
+ * Structured, immutable result returned by rollback recovery operations.
+ * Explicitly distinguishes requested, authorized, executed, verified, and failed states.
+ * Guarantees no secret or authorization token is ever exposed.
+ */
+export interface GitRollbackResult {
+  readonly success: boolean;
+  readonly stage: GitRollbackStage;
+  readonly status: GitRollbackStatus;
+  readonly checkpoint_id: string;
+  readonly task_id: string | null;
+  readonly target_commit_sha: string;
+  readonly previous_head_sha: string | null;
+  readonly resulting_head_sha: string | null;
+  readonly previous_branch: string | null;
+  readonly resulting_branch: string | null;
+  readonly authorization_status: GitPolicyDecisionState;
+  readonly execution_status: 'NOT_STARTED' | 'IN_PROGRESS' | 'COMPLETED' | 'FAILED';
+  readonly verification_status: 'NOT_VERIFIED' | 'VERIFIED' | 'FAILED';
+  readonly remote_verification_status:
+    | GitRemoteSyncStatus
+    | 'VERIFIED'
+    | 'UNVERIFIED'
+    | 'DIVERGED'
+    | 'UNKNOWN'
+    | 'NOT_APPLICABLE';
+  readonly error?: string | null;
+  readonly failure_code?: string | null;
+  readonly policy_decision?: GitPolicyDecision;
+  readonly execution_result?: GitExecutionResult;
+  readonly observed_state_before?: GitState;
+  readonly observed_state_after?: GitState;
+  readonly requires_reconciliation: boolean;
+  readonly completed_at?: string;
+
+  // CamelCase aliases
+  readonly checkpointId?: string;
+  readonly taskId?: string | null;
+  readonly targetCommitSha?: string;
+  readonly previousHeadSha?: string | null;
+  readonly resultingHeadSha?: string | null;
+  readonly previousBranch?: string | null;
+  readonly resultingBranch?: string | null;
+  readonly authorizationStatus?: GitPolicyDecisionState;
+  readonly executionStatus?: string;
+  readonly verificationStatus?: string;
+  readonly remoteVerificationStatus?: string;
+  readonly failureCode?: string | null;
+  readonly requiresReconciliation?: boolean;
+}
+
+/**
+ * Input options for rollback recovery operations.
+ */
+export interface RollbackOptions {
+  /**
+   * Checkpoint object or deterministic checkpoint ID.
+   */
+  readonly checkpoint?: GitCheckpoint | string;
+
+  /**
+   * Required verified human authorization token for the DANGEROUS rollback operation.
+   */
+  readonly human_approval_token?: string | null;
+
+  /**
+   * Expected target commit SHA. If specified, must match checkpoint.commit_sha.
+   */
+  readonly expected_commit_sha?: string;
+
+  /**
+   * Expected branch name. If specified, must match checkpoint.branch and current branch.
+   */
+  readonly expected_branch?: string;
+
+  /**
+   * Expected parent commit SHA. If specified, must match checkpoint.parent_sha.
+   */
+  readonly expected_parent_sha?: string | null;
+
+  /**
+   * Working directory override.
+   */
+  readonly working_directory?: string;
+
+  /**
+   * Whether to verify remote state post-rollback without destructive sync.
+   */
+  readonly verify_remote?: boolean;
+
+  /**
+   * Whether target checkpoint must have is_known_good === true (defaults to true).
+   */
+  readonly require_known_good?: boolean;
+
+  /**
+   * Optional custom metadata (must not contain secrets).
+   */
+  readonly metadata?: Readonly<Record<string, unknown>>;
+
+  /**
+   * When true, throws structured GitPolicyError / GitRollbackError upon failure.
+   */
+  readonly throw_on_error?: boolean;
+
+  // CamelCase aliases
+  readonly humanApprovalToken?: string | null;
+  readonly expectedCommitSha?: string;
+  readonly expectedBranch?: string;
+  readonly expectedParentSha?: string | null;
+  readonly workingDirectory?: string;
+  readonly verifyRemote?: boolean;
+  readonly requireKnownGood?: boolean;
+  readonly throwOnError?: boolean;
+}
+

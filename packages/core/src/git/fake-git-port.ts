@@ -19,6 +19,10 @@ import { createGitCheckpoint } from './git-checkpoint-factory.js';
 export interface FakeGitPortOptions {
   initialState?: Partial<GitState>;
   remoteVerificationResult?: Partial<RemoteVerificationResult>;
+  knownCommits?: readonly string[];
+  simulateExecutionFailure?: boolean;
+  executionFailureError?: string;
+  simulatePostRollbackState?: Partial<GitState>;
 }
 
 /**
@@ -31,6 +35,10 @@ export interface FakeGitPortOptions {
 export class FakeGitPort implements GitPort {
   currentState: GitState;
   remoteVerificationResult: RemoteVerificationResult;
+  readonly knownCommits: Set<string>;
+  simulateExecutionFailure: boolean;
+  executionFailureError?: string;
+  simulatePostRollbackState?: Partial<GitState>;
 
   readonly inspectedPaths: string[] = [];
   readonly remoteVerifications: {
@@ -63,6 +71,22 @@ export class FakeGitPort implements GitPort {
       remoteHeadSha: '0000000000000000000000000000000000000001',
       ...options?.remoteVerificationResult,
     });
+
+    this.knownCommits = new Set<string>([
+      '0000000000000000000000000000000000000001',
+      '0000000000000000000000000000000000000002',
+      ...(this.currentState.head_sha ? [this.currentState.head_sha] : []),
+      ...(this.remoteVerificationResult.remoteHeadSha ? [this.remoteVerificationResult.remoteHeadSha] : []),
+      ...(options?.knownCommits ?? []),
+    ]);
+
+    this.simulateExecutionFailure = options?.simulateExecutionFailure ?? false;
+    this.executionFailureError = options?.executionFailureError;
+    this.simulatePostRollbackState = options?.simulatePostRollbackState;
+  }
+
+  async checkCommitExists(workingDirectory: string, commitSha: string): Promise<boolean> {
+    return this.knownCommits.has(commitSha);
   }
 
   async inspectState(workingDirectory: string): Promise<GitState> {
@@ -125,6 +149,18 @@ export class FakeGitPort implements GitPort {
       workingDirectory,
     });
 
+    if (this.simulateExecutionFailure) {
+      const errorMsg = this.executionFailureError ?? 'Simulated FakeGitPort execution failure';
+      throw new GitPolicyError(
+        errorMsg,
+        'ERR_GIT_OPERATION_NOT_AUTHORIZED',
+        {
+          operation: intent.operation,
+          riskLevel: authorization.risk_level,
+        }
+      );
+    }
+
     let checkpoint = null;
     if (
       intent.operation === GitOperationType.PRE_FLIGHT_CHECKPOINT ||
@@ -144,6 +180,30 @@ export class FakeGitPort implements GitPort {
         remote_verified: this.remoteVerificationResult.verified,
         policy_level: authorization.risk_level,
         metadata: intent.metadata,
+      });
+    }
+
+    if (
+      intent.operation === GitOperationType.ROLLBACK_REQUEST ||
+      intent.operation === GitOperationType.ROLLBACK ||
+      intent.operation === GitOperationType.RESET
+    ) {
+      const targetCommit = intent.expected_commit_sha ?? this.currentState.head_sha ?? '0000000000000000000000000000000000000001';
+      const targetBranch = intent.target_branch ?? this.currentState.current_branch ?? 'main';
+
+      this.currentState = createGitState({
+        head_sha: targetCommit,
+        current_branch: targetBranch,
+        remote_head_sha: this.currentState.remote_head_sha,
+        parent_sha: intent.expected_parent_sha !== undefined ? intent.expected_parent_sha : (this.currentState.parent_sha ?? null),
+        working_tree_clean: true,
+        staged_changes: [],
+        unstaged_changes: [],
+        untracked_files: [],
+        is_detached_head: false,
+        divergence: this.currentState.divergence,
+        remote_sync_state: this.currentState.remote_sync_state,
+        ...this.simulatePostRollbackState,
       });
     }
 

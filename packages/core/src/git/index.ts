@@ -12,3 +12,4 @@ export * from './git-port.js';
 export * from './fake-git-port.js';
 export * from './default-git-port.js';
 export * from './git-checkpoint-manager.js';
+export * from './git-rollback-manager.js';
