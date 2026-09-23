@@ -18,3 +18,4 @@ export * from './evidence-error.js';
 export * from './collector-error.js';
 export * from './qa-review-error.js';
 export * from './ui-verification-error.js';
+export * from './git-policy-error.js';
