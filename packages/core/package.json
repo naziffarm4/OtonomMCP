@@ -81,6 +81,14 @@
     "./policy": {
       "types": "./dist/policy/index.d.ts",
       "import": "./dist/policy/index.js"
+    },
+    "./adapters": {
+      "types": "./dist/adapters/index.d.ts",
+      "import": "./dist/adapters/index.js"
+    },
+    "./harness": {
+      "types": "./dist/harness/index.d.ts",
+      "import": "./dist/harness/index.js"
     }
   },
   "files": [

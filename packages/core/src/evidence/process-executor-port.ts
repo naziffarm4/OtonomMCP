@@ -44,11 +44,14 @@ export class NodeProcessExecutor implements ProcessExecutorPort {
     const startedAt = new Date().toISOString();
 
     return new Promise<ProcessExecutionResult>((resolve, reject) => {
+      const childEnv = options.env ? { ...process.env, ...options.env } : { ...process.env };
+      delete childEnv.NODE_TEST_CONTEXT;
+
       child_process.exec(
         command,
         {
           cwd: options.cwd,
-          env: options.env ? { ...process.env, ...options.env } : process.env,
+          env: childEnv,
           timeout: options.timeoutMs ?? 60_000,
           maxBuffer: options.maxBufferBytes ?? 10 * 1024 * 1024,
           windowsHide: options.windowsHide ?? true,

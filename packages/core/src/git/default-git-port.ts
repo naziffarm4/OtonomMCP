@@ -201,7 +201,18 @@ export class DefaultGitPort implements GitPort {
 
       case GitOperationType.COMMIT: {
         const message = intent.commit_message ?? 'aidm: automated checkpoint commit';
-        const stdout = await this.execGit(['commit', '-m', message], workingDirectory);
+        let stdout = '';
+        try {
+          await this.execGit(['add', '-A'], workingDirectory);
+          stdout = await this.execGit(['commit', '-m', message], workingDirectory);
+        } catch (err) {
+          const errMsg = err instanceof Error ? err.message : String(err);
+          if (errMsg.includes('nothing to commit')) {
+            stdout = 'nothing to commit';
+          } else {
+            throw err;
+          }
+        }
         const headSha = await this.getHeadSha(workingDirectory);
         const stateAfter = await this.inspectState(workingDirectory);
         return {
@@ -465,7 +476,15 @@ export class DefaultGitPort implements GitPort {
         },
         (error, stdout, stderr) => {
           if (error) {
-            return reject(error);
+            const outStr = String(stdout ?? '');
+            const errStr = String(stderr ?? '');
+            const enriched = new Error(
+              `${error.message}${outStr ? `\n${outStr}` : ''}${errStr ? `\n${errStr}` : ''}`
+            );
+            (enriched as any).code = (error as any).code;
+            (enriched as any).stdout = outStr;
+            (enriched as any).stderr = errStr;
+            return reject(enriched);
           }
           resolve(String(stdout ?? ''));
         }
