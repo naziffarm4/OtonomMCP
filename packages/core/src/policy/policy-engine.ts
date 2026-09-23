@@ -81,6 +81,13 @@ function isGitRemoteDeletionCommand(cmd: string): boolean {
 }
 
 /**
+ * Detects Git local branch deletion patterns (e.g. git branch -d, git branch -D, git branch --delete).
+ */
+function isGitBranchDeletionCommand(cmd: string): boolean {
+  return /\bgit\s+branch\b.*(-[a-zA-Z0-9]*[dD]|--delete\b)/i.test(cmd);
+}
+
+/**
  * Detects credential/secret exfiltration patterns over network.
  */
 function isCredentialExfiltration(request: PolicyOperationRequest, cmd: string): boolean {
@@ -98,13 +105,17 @@ function isCredentialExfiltration(request: PolicyOperationRequest, cmd: string):
   }
   if (!cmd) return false;
   const lower = cmd.toLowerCase();
-  const hasNetTool = /\b(curl|wget|nc|netcat|ncat|scp|rsync|telnet)\b/i.test(lower);
+  const hasNetTool = /\b(curl|wget|nc|netcat|ncat|scp|rsync|telnet|socat|ftp|sftp)\b/i.test(lower);
   const hasSensitiveTarget =
-    /(?:^|[\s@/\\=])(\.env|\.env\.[a-z]+|id_rsa|id_ed25519|id_dsa|credentials|\.aws\/credentials|\.npmrc|\w+\.pem|\w+\.key)\b/i.test(
+    /(?:^|[\s@/\\="'`])(\.env|\.env\.[a-z0-9_-]+|id_rsa|id_ed25519|id_ecdsa|id_dsa|credentials|\.aws\/credentials|\.npmrc|[a-zA-Z0-9_-]*private[a-zA-Z0-9_-]*(\.key|\.pem)?|\w+\.pem|\w+\.key)\b/i.test(
       lower
     );
   if (hasNetTool && hasSensitiveTarget) return true;
-  if (/\bcat\s+.*(\.env|id_rsa|credentials).*\|\s*(curl|wget|nc|base64)/i.test(lower)) {
+  if (
+    /\b(cat|type|head|tail|more|less)\s+.*(\.env|id_rsa|id_ed25519|id_ecdsa|credentials|private.*key|private_key|\.pem|\.key).*\|\s*(curl|wget|nc|netcat|ncat|base64|socat)/i.test(
+      lower
+    )
+  ) {
     return true;
   }
   return false;
@@ -150,8 +161,13 @@ function isPackageOrConfigPath(targetPath: string): boolean {
 function sanitizeMessage(msg: string): string {
   if (!msg) return msg;
   return msg
-    .replace(/(?:bearer\s+|token\s+|key\s+|password\s*[:=]\s*)([a-zA-Z0-9_\-\.]{8,})/gi, '[REDACTED]')
-    .replace(/(ghp_[a-zA-Z0-9]{20,}|gho_[a-zA-Z0-9]{20,}|glpat-[a-zA-Z0-9\-_]{20,}|auth-token-[a-zA-Z0-9\-_]+)/gi, '[REDACTED_TOKEN]');
+    .replace(/-----BEGIN [A-Z0-9_ -]+ KEY-----[\s\S]*?-----END [A-Z0-9_ -]+ KEY-----/gi, '[REDACTED_PRIVATE_KEY]')
+    .replace(/(ghp_[a-zA-Z0-9]{20,}|gho_[a-zA-Z0-9]{20,}|glpat-[a-zA-Z0-9\-_]{20,}|sk-[a-zA-Z0-9]{20,}|auth-token-[a-zA-Z0-9\-_]+)/gi, '[REDACTED_TOKEN]')
+    .replace(/(?:password|secret|api[_-]?key|token|passwd|pwd|credentials|access[_-]?key)\s*[:=]\s*['"]?([^\s'",;]{4,})['"]?/gi, (match) => {
+      const parts = match.split(/[:=]/);
+      return `${parts[0]}=[REDACTED]`;
+    })
+    .replace(/(?:bearer\s+)([a-zA-Z0-9_\-\.]{8,})/gi, 'Bearer [REDACTED]');
 }
 
 // ============================================================================
@@ -251,8 +267,8 @@ export class PolicyEngine {
       return RiskLevel.CRITICAL;
     }
 
-    // Git remote branch deletion command
-    if (cmd && isGitRemoteDeletionCommand(cmd)) {
+    // Git remote branch deletion or local branch deletion command
+    if (cmd && (isGitRemoteDeletionCommand(cmd) || isGitBranchDeletionCommand(cmd))) {
       return RiskLevel.CRITICAL;
     }
 
@@ -343,7 +359,7 @@ export class PolicyEngine {
       return RiskLevel.SAFE;
     }
 
-    if (cmd && /\bgit\s+(status|log|diff|branch|rev-parse)\b/i.test(cmd)) {
+    if (cmd && !isGitBranchDeletionCommand(cmd) && /\bgit\s+(status|log|diff|branch|rev-parse)\b/i.test(cmd)) {
       return RiskLevel.SAFE;
     }
 
@@ -479,8 +495,14 @@ export class PolicyEngine {
       let gitOp: GitOperationType = GitOperationType.STATUS_INSPECTION;
       if (isGitForcePushCommand(cmd) || action === OperationActionType.GIT_FORCE_PUSH) {
         gitOp = GitOperationType.FORCE_PUSH;
-      } else if (isGitRemoteDeletionCommand(cmd) || action === OperationActionType.GIT_BRANCH_DELETION) {
+      } else if (
+        isGitRemoteDeletionCommand(cmd) ||
+        isGitBranchDeletionCommand(cmd) ||
+        action === OperationActionType.GIT_BRANCH_DELETION
+      ) {
         gitOp = GitOperationType.DESTRUCTIVE_REMOTE_REWRITE;
+      } else if (action === OperationActionType.GIT_ROLLBACK || /\bgit\s+rollback\b/i.test(cmd)) {
+        gitOp = GitOperationType.ROLLBACK;
       } else if (/\bgit\s+reset\b/i.test(cmd) || action === OperationActionType.GIT_RESET) {
         gitOp = GitOperationType.RESET;
       } else if (/\bgit\s+checkout\b/i.test(cmd)) {
@@ -658,6 +680,32 @@ export class PolicyEngine {
             gitPolicyDecision: evaluatedGitDecision,
           });
         }
+      }
+
+      // If the critical operation is intrinsically prohibited by policy boundary (e.g. project root escape)
+      // then human authorization cannot bypass the boundary.
+      if (
+        violations.some((v) => v.code === 'WORKSPACE_ESCAPE_ATTEMPT') ||
+        action === OperationActionType.WORKSPACE_ESCAPE
+      ) {
+        return Object.freeze({
+          allowed: false,
+          decision: PolicyDecisionState.BLOCKED,
+          risk_level: RiskLevel.CRITICAL,
+          code: 'WORKSPACE_ESCAPE_PROHIBITED',
+          reason: 'Project-root escape is strictly prohibited and cannot be authorized',
+          reasons: Object.freeze(['Project-root escape is strictly prohibited and cannot be authorized']),
+          requires_human_authorization: false,
+          action_type: action ? String(action) : undefined,
+          violations: Object.freeze(violations),
+          evaluated_at: evaluatedAt,
+          git_policy_decision: evaluatedGitDecision,
+          riskLevel: RiskLevel.CRITICAL,
+          requiresHumanAuthorization: false,
+          actionType: action ? String(action) : undefined,
+          evaluatedAt,
+          gitPolicyDecision: evaluatedGitDecision,
+        });
       }
 
       // Valid human authorization provided

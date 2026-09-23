@@ -69,6 +69,18 @@
     "./qa-review": {
       "types": "./dist/qa-review/index.d.ts",
       "import": "./dist/qa-review/index.js"
+    },
+    "./ui-verification": {
+      "types": "./dist/ui-verification/index.d.ts",
+      "import": "./dist/ui-verification/index.js"
+    },
+    "./git": {
+      "types": "./dist/git/index.d.ts",
+      "import": "./dist/git/index.js"
+    },
+    "./policy": {
+      "types": "./dist/policy/index.d.ts",
+      "import": "./dist/policy/index.js"
     }
   },
   "files": [
