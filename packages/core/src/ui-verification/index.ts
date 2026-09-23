@@ -11,3 +11,4 @@ export * from './ui-evidence-types.js';
 export * from './adapters/playwright-adapter.js';
 export * from './ui-observation-pipeline.js';
 export * from './ui-qa-bridge.js';
+export * from './ui-verification-service.js';
