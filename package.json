@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "build": "pnpm --filter @aidm/core build",
-    "test": "pnpm --filter @aidm/core test"
+    "test": "pnpm --filter @aidm/core test",
+    "aidm": "node packages/core/bin/aidm.js"
   },
   "devDependencies": {
     "@types/node": "^26.6.2",

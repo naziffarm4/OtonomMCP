@@ -18,4 +18,5 @@ export * from './git/index.js';
 export * from './policy/index.js';
 export * from './adapters/index.js';
 export * from './harness/index.js';
+export * from './cli/index.js';
 export type { GitState } from './git/index.js';

@@ -38,6 +38,21 @@ export interface GitAdapter {
     authorization: GitPolicyDecision,
     workingDirectory: string
   ): Promise<GitExecutionResult>;
+
+  /**
+   * Lists known-good checkpoints recorded by the checkpoint manager.
+   */
+  listCheckpoints(): readonly KnownGoodCheckpoint[];
+
+  /**
+   * Retrieves a checkpoint by its ID.
+   */
+  getCheckpoint(checkpointId: string): KnownGoodCheckpoint | undefined;
+
+  /**
+   * Returns the underlying GitCheckpointManager.
+   */
+  getCheckpointManager(): GitCheckpointManager;
 }
 
 /**
@@ -75,5 +90,17 @@ export class DefaultGitAdapter implements GitAdapter {
     workingDirectory: string
   ): Promise<GitExecutionResult> {
     return this.gitPort.executeAuthorizedOperation(intent, authorization, workingDirectory);
+  }
+
+  listCheckpoints(): readonly KnownGoodCheckpoint[] {
+    return this.checkpointManager.listCheckpoints();
+  }
+
+  getCheckpoint(checkpointId: string): KnownGoodCheckpoint | undefined {
+    return this.checkpointManager.getCheckpoint(checkpointId);
+  }
+
+  getCheckpointManager(): GitCheckpointManager {
+    return this.checkpointManager;
   }
 }

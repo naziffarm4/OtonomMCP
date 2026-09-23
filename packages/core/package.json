@@ -89,10 +89,18 @@
     "./harness": {
       "types": "./dist/harness/index.d.ts",
       "import": "./dist/harness/index.js"
+    },
+    "./cli": {
+      "types": "./dist/cli/index.d.ts",
+      "import": "./dist/cli/index.js"
     }
   },
+  "bin": {
+    "aidm": "./bin/aidm.js"
+  },
   "files": [
-    "dist"
+    "dist",
+    "bin"
   ],
   "scripts": {
     "build": "tsc -b",
