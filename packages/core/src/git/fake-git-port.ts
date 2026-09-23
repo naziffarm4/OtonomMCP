@@ -137,12 +137,13 @@ export class FakeGitPort implements GitPort {
         phase: intent.phase ?? 'PHASE_6',
         purpose: intent.purpose ?? intent.operation,
         commit_sha: intent.expected_commit_sha ?? this.currentState.head_sha ?? '0000000000000000000000000000000000000001',
-        parent_sha: intent.expected_parent_sha ?? null,
+        parent_sha: intent.expected_parent_sha ?? this.currentState.parent_sha ?? null,
         branch: intent.target_branch ?? this.currentState.current_branch ?? 'main',
         remote: intent.target_remote ?? 'origin',
         working_tree_clean: this.currentState.working_tree_clean,
         remote_verified: this.remoteVerificationResult.verified,
         policy_level: authorization.risk_level,
+        metadata: intent.metadata,
       });
     }
 

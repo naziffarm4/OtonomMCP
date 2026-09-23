@@ -80,3 +80,75 @@ export class GitCheckpointIntegrityError extends GitPolicyError {
     Object.setPrototypeOf(this, new.target.prototype);
   }
 }
+
+/**
+ * Thrown when attempting an operation that requires a clean working tree, but uncommitted
+ * changes or untracked files are detected.
+ */
+export class GitDirtyWorktreeError extends GitPolicyError {
+  constructor(message = 'Working tree is dirty; clean workspace required', details?: GitPolicyErrorDetails) {
+    super(message, 'ERR_GIT_DIRTY_WORKTREE', details);
+    Object.setPrototypeOf(this, new.target.prototype);
+  }
+}
+
+/**
+ * Thrown when a Git operation or checkpoint cannot be performed because HEAD is detached.
+ */
+export class GitDetachedHeadError extends GitPolicyError {
+  constructor(message = 'Repository is in detached HEAD state', details?: GitPolicyErrorDetails) {
+    super(message, 'ERR_GIT_DETACHED_HEAD', details);
+    Object.setPrototypeOf(this, new.target.prototype);
+  }
+}
+
+/**
+ * Thrown when repository branch does not match expected or configured policy branch.
+ */
+export class GitBranchMismatchError extends GitPolicyError {
+  constructor(message = 'Branch mismatch detected', details?: GitPolicyErrorDetails) {
+    super(message, 'ERR_GIT_BRANCH_MISMATCH', details);
+    Object.setPrototypeOf(this, new.target.prototype);
+  }
+}
+
+/**
+ * Thrown when repository remote does not match expected or configured policy remote.
+ */
+export class GitRemoteMismatchError extends GitPolicyError {
+  constructor(message = 'Remote mismatch detected', details?: GitPolicyErrorDetails) {
+    super(message, 'ERR_GIT_REMOTE_MISMATCH', details);
+    Object.setPrototypeOf(this, new.target.prototype);
+  }
+}
+
+/**
+ * Thrown when remote verification fails to prove commit existence on the remote repository.
+ */
+export class GitRemoteVerificationError extends GitPolicyError {
+  constructor(message = 'Remote verification failed', details?: GitPolicyErrorDetails) {
+    super(message, 'ERR_GIT_REMOTE_VERIFICATION_FAILED', details);
+    Object.setPrototypeOf(this, new.target.prototype);
+  }
+}
+
+/**
+ * Thrown when expected parent commit SHA does not match observed repository or checkpoint history.
+ */
+export class GitParentMismatchError extends GitCheckpointIntegrityError {
+  constructor(message = 'Parent commit SHA mismatch', details?: GitPolicyErrorDetails) {
+    super(message, details);
+    Object.setPrototypeOf(this, new.target.prototype);
+  }
+}
+
+/**
+ * Thrown when verification of a GitCheckpoint fails.
+ */
+export class GitCheckpointVerificationError extends GitCheckpointIntegrityError {
+  constructor(message = 'Checkpoint verification failed', details?: GitPolicyErrorDetails) {
+    super(message, details);
+    Object.setPrototypeOf(this, new.target.prototype);
+  }
+}
+

@@ -11,3 +11,4 @@ export * from './git-policy-validator.js';
 export * from './git-port.js';
 export * from './fake-git-port.js';
 export * from './default-git-port.js';
+export * from './git-checkpoint-manager.js';

@@ -136,6 +136,7 @@ export interface GitState {
   readonly is_detached_head: boolean;
   readonly remote_sync_state: GitRemoteSyncStatus;
   readonly status: GitStatus;
+  readonly parent_sha?: string | null;
 
   // Convenience aliases and backwards compatibility fields:
   readonly isRepository?: boolean;
@@ -148,6 +149,7 @@ export interface GitState {
   readonly headSha?: string | null;
   readonly remoteHeadSha?: string | null;
   readonly isDetached?: boolean;
+  readonly parentSha?: string | null;
 }
 
 /**
@@ -157,6 +159,7 @@ export interface GitStateInput {
   head_sha?: string | null;
   current_branch?: string | null;
   remote_head_sha?: string | null;
+  parent_sha?: string | null;
   working_tree_clean?: boolean;
   staged_changes?: readonly string[];
   unstaged_changes?: readonly string[];
@@ -177,6 +180,7 @@ export interface GitStateInput {
   headSha?: string | null;
   remoteHeadSha?: string | null;
   isDetached?: boolean;
+  parentSha?: string | null;
 }
 
 /**
@@ -186,6 +190,7 @@ export function createGitState(input: GitStateInput): GitState {
   const head_sha = input.head_sha ?? input.headSha ?? input.currentHead ?? null;
   const current_branch = input.current_branch ?? input.branch ?? null;
   const remote_head_sha = input.remote_head_sha ?? input.remoteHeadSha ?? null;
+  const parent_sha = input.parent_sha ?? input.parentSha ?? null;
 
   const staged_changes = Object.freeze([...(input.staged_changes ?? input.stagedFiles ?? [])]);
   const unstaged_changes = Object.freeze([...(input.unstaged_changes ?? input.unstagedFiles ?? [])]);
@@ -254,6 +259,7 @@ export function createGitState(input: GitStateInput): GitState {
     is_detached_head,
     remote_sync_state,
     status,
+    parent_sha,
 
     // Aliases
     isRepository: input.isRepository ?? true,
@@ -266,6 +272,7 @@ export function createGitState(input: GitStateInput): GitState {
     headSha: head_sha,
     remoteHeadSha: remote_head_sha,
     isDetached: is_detached_head,
+    parentSha: parent_sha,
   });
 }
 
