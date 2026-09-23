@@ -92,6 +92,7 @@
   "author": "AI Development Manager Team",
   "license": "MIT",
   "dependencies": {
+    "playwright-core": "^1.63.0",
     "zod": "^4.6.5"
   }
 }
