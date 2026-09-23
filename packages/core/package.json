@@ -65,6 +65,10 @@
     "./evidence": {
       "types": "./dist/evidence/index.d.ts",
       "import": "./dist/evidence/index.js"
+    },
+    "./qa-review": {
+      "types": "./dist/qa-review/index.d.ts",
+      "import": "./dist/qa-review/index.js"
     }
   },
   "files": [
