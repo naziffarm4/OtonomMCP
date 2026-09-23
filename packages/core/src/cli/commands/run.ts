@@ -28,6 +28,9 @@ import { LifecycleState } from '../../lifecycle.js';
 import { CriterionType, type AcceptanceCriterionInput } from '../../qa-review/qa-review-types.js';
 import { CheckpointStore } from '../checkpoint-store.js';
 import { type ExecutorPort } from '../../executor-bridge/executor-port.js';
+import { DurableStateManager } from '../../storage/durable-state.js';
+import { HistoryManager } from '../../storage/history-manager.js';
+import { Actor } from '../../actors.js';
 
 export async function executeRun(
   options: RunCommandOptions,
@@ -291,6 +294,48 @@ export async function executeRun(
       await checkpointStore.recordCheckpoint(summary.postFlightCheckpoint);
     }
   }
+
+  // Persist updated durable state
+  const durableManager = new DurableStateManager({ baseDir: projectRoot });
+  if (await durableManager.exists()) {
+    const current = await durableManager.load();
+    const lastCp = Array.from(result.taskSummaries.values())
+      .map((s) => s.postFlightCheckpoint?.checkpoint_id)
+      .filter(Boolean)
+      .pop() ?? current?.lastCheckpoint ?? null;
+
+    await durableManager.save({
+      currentLifecycleState: result.finalMacroState,
+      completedTaskIds: [...result.completedTasks],
+      activeTaskId: null,
+      blockedState: result.finalMacroState === LifecycleState.BLOCKED_ON_HUMAN
+        ? {
+            blockedTaskId: result.failedTasks[0] ?? 'TASK_UNKNOWN',
+            blockedIteration: 1,
+            blockedContextReference: 'RUN_EXECUTION',
+            blockingReason: result.error ?? 'Halted for human authorization',
+            resumePoint: 'TASK_SELECTION',
+          }
+        : null,
+      lastCheckpoint: lastCp,
+      metadata: current?.metadata,
+    });
+  }
+
+  // Record lifecycle run event in HistoryManager
+  const historyManager = new HistoryManager({ baseDir: projectRoot });
+  await historyManager.appendEvent({
+    eventType: result.success ? 'PROJECT_COMPLETE' : 'TASK_FAILED',
+    actor: Actor.ORCHESTRATOR,
+    taskId: result.completedTasks[result.completedTasks.length - 1] ?? result.failedTasks[0] ?? null,
+    payload: {
+      finalMacroState: result.finalMacroState,
+      completedTasks: [...result.completedTasks],
+      failedTasks: [...result.failedTasks],
+      durationMs,
+      error: result.error ?? null,
+    },
+  });
 
   // 8. Determine exit code
   let exitCode: CliExitCode;
