@@ -513,3 +513,10 @@ export class ApprovalPackageEngine {
     }
   }
 }
+
+/**
+ * Convenience helper to check if development is authorized under an approval package.
+ */
+export function isDevelopmentAuthorized(pkg: ProjectApprovalPackage): boolean {
+  return new ApprovalPackageEngine().isDevelopmentAuthorized(pkg);
+}

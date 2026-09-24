@@ -51,6 +51,7 @@ const createPackageInputSchema = z.object({
   projectId: z.string().optional(),
   clarificationSessionId: z.string().optional(),
   metadata: z.record(z.string(), z.unknown()).optional(),
+  discoveryReport: z.record(z.string(), z.unknown()).optional(),
 });
 
 export const approvalPackageCreateToolDefinition: McpToolDefinition = {
@@ -76,6 +77,10 @@ export const approvalPackageCreateToolDefinition: McpToolDefinition = {
         type: 'object',
         description: 'Optional metadata to associate with the package.',
       },
+      discoveryReport: {
+        type: 'object',
+        description: 'Optional pre-computed ProjectDiscoveryReport to avoid re-parsing repository state.',
+      },
     },
   },
 };
@@ -90,12 +95,17 @@ export function createApprovalPackageCreateTool(
       const delegate = context.delegate ?? defaultDelegate;
       const resolvedRoot = parsed.workspaceRoot ?? delegate?.projectRoot ?? process.cwd();
 
-      // 1. Discover repository findings
-      const discoveryEngine = new ProjectDiscoveryEngine({
-        workspaceRoot: resolvedRoot,
-        delegate,
-      });
-      const discoveryReport: ProjectDiscoveryReport = await discoveryEngine.discover();
+      // 1. Discover repository findings or consume pre-computed report
+      let discoveryReport: ProjectDiscoveryReport;
+      if (parsed.discoveryReport) {
+        discoveryReport = parsed.discoveryReport as unknown as ProjectDiscoveryReport;
+      } else {
+        const discoveryEngine = new ProjectDiscoveryEngine({
+          workspaceRoot: resolvedRoot,
+          delegate,
+        });
+        discoveryReport = await discoveryEngine.discover();
+      }
 
       // 2. Load clarification session if specified or active
       const clarifStore =
@@ -276,6 +286,7 @@ export function createApprovalPackageReadinessTool(
         revision: pkg.revision,
         currentStatus: pkg.status,
         readiness,
+        isDevelopmentAuthorized: engine.isDevelopmentAuthorized(pkg),
       };
 
       return {

@@ -47,6 +47,7 @@ const createSessionInputSchema = z.object({
   workspaceRoot: z.string().optional(),
   projectId: z.string().optional(),
   metadata: z.record(z.string(), z.unknown()).optional(),
+  discoveryReport: z.record(z.string(), z.unknown()).optional(),
 });
 
 export const clarificationCreateToolDefinition: McpToolDefinition = {
@@ -68,6 +69,10 @@ export const clarificationCreateToolDefinition: McpToolDefinition = {
         type: 'object',
         description: 'Optional metadata to associate with the clarification session.',
       },
+      discoveryReport: {
+        type: 'object',
+        description: 'Optional pre-computed ProjectDiscoveryReport to avoid re-parsing repository state.',
+      },
     },
   },
 };
@@ -82,12 +87,17 @@ export function createClarificationCreateTool(
       const delegate = context.delegate ?? defaultDelegate;
       const resolvedRoot = parsed.workspaceRoot ?? delegate?.projectRoot ?? process.cwd();
 
-      // Discover repository findings in read-only manner
-      const discoveryEngine = new ProjectDiscoveryEngine({
-        workspaceRoot: resolvedRoot,
-        delegate,
-      });
-      const discoveryReport: ProjectDiscoveryReport = await discoveryEngine.discover();
+      // Discover repository findings in read-only manner or consume pre-computed report
+      let discoveryReport: ProjectDiscoveryReport;
+      if (parsed.discoveryReport) {
+        discoveryReport = parsed.discoveryReport as unknown as ProjectDiscoveryReport;
+      } else {
+        const discoveryEngine = new ProjectDiscoveryEngine({
+          workspaceRoot: resolvedRoot,
+          delegate,
+        });
+        discoveryReport = await discoveryEngine.discover();
+      }
 
       // Create session
       const sessionEngine = new ClarificationSessionEngine();
