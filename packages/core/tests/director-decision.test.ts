@@ -40,6 +40,10 @@
  * 42. No Antigravity invocation
  * 43. No Git mutation
  * 44. No autonomous loop
+ * 45. List cross-project binding rejected
+ * 46. Understanding revision matching accepted
+ * 47. Understanding revision mismatch rejected
+ * 48. Understanding revision missing authority rejected
  */
 
 import { describe, it, beforeEach, afterEach } from 'node:test';
@@ -69,6 +73,7 @@ import {
   DirectorContextStaleError,
   DirectorContextIncompleteError,
   DirectorApprovalRevisionMismatchError,
+  DirectorUnderstandingRevisionMismatchError,
   DIRECTOR_DECISION_PROTOCOL_VERSION,
   DIRECTOR_DECISION_SCHEMA_VERSION,
   DIRECTOR_DECISION_TYPES,
@@ -1299,5 +1304,167 @@ describe('Phase 9 — Typed Director Decision Protocol (TASK-P9-03)', () => {
 
     assert.ok(decision);
     assert.ok(duration < 5000, 'Decision creation should be fast and synchronous');
+  });
+
+  // ==========================================================================
+  // 12. Project & Revision Hardening (TASK-P9-03 fixes)
+  // ==========================================================================
+
+  it('T45_list_cross_project_rejected: listDecisions validates projectId against canonical project identity', async () => {
+    await decisionEngine.createDecision({
+      directorSessionId: activeSession.directorSessionId,
+      workspaceRoot: tempDir,
+      decisionType: 'ACCEPT_CONTEXT',
+      rationale: 'Project binding test',
+      basedOnContextFingerprint: activeSnapshot.logicalFingerprint,
+    });
+
+    const canonical = activeSession.projectId;
+
+    // 1. Listing with matching canonical projectId succeeds
+    const matchingDecisions = await decisionEngine.listDecisions({
+      workspaceRoot: tempDir,
+      projectId: canonical,
+    });
+    assert.equal(matchingDecisions.length, 1);
+    assert.equal(matchingDecisions[0]?.projectId, canonical);
+
+    // 2. Listing with mismatched/foreign projectId throws DirectorProjectBindingMismatchError
+    await assert.rejects(
+      async () => {
+        await decisionEngine.listDecisions({
+          workspaceRoot: tempDir,
+          projectId: 'foreign-project',
+        });
+      },
+      (err: unknown) => {
+        assert.ok(err instanceof DirectorProjectBindingMismatchError);
+        assert.match((err as Error).message, /Project ID mismatch.*foreign-project/);
+        return true;
+      }
+    );
+
+    // 3. Listing without specifying projectId filters correctly via canonical project root
+    const rootDecisions = await decisionEngine.listDecisions({
+      workspaceRoot: tempDir,
+    });
+    assert.equal(rootDecisions.length, 1);
+    assert.equal(rootDecisions[0]?.projectId, canonical);
+  });
+
+  it('T46_understanding_revision_matching_accepted: decision with matching authoritative understanding revision accepted', async () => {
+    const sessionWithRev = await sessionEngine.createSession({
+      workspaceRoot: tempDir,
+      directorSessionId: 'dir-sess-dec-rev-match',
+      understandingRevision: 5,
+    });
+    const snapshotWithRev = await synchronizer.synchronize({
+      directorSessionId: sessionWithRev.directorSessionId,
+      workspaceRoot: tempDir,
+    });
+
+    // Dry-run validate succeeds
+    const valResult = await decisionEngine.validateDecision({
+      directorSessionId: sessionWithRev.directorSessionId,
+      workspaceRoot: tempDir,
+      decisionType: 'ACCEPT_CONTEXT',
+      rationale: 'Matching revision test',
+      basedOnContextFingerprint: snapshotWithRev.logicalFingerprint,
+      basedOnUnderstandingRevision: 5,
+    });
+    assert.equal(valResult.isValid, true);
+    assert.equal(valResult.code, 'VALID');
+
+    // Create decision succeeds with revision
+    const decision = await decisionEngine.createDecision({
+      directorSessionId: sessionWithRev.directorSessionId,
+      workspaceRoot: tempDir,
+      decisionType: 'ACCEPT_CONTEXT',
+      rationale: 'Matching revision test',
+      basedOnContextFingerprint: snapshotWithRev.logicalFingerprint,
+      basedOnUnderstandingRevision: 5,
+    });
+
+    assert.equal(decision.basedOnUnderstandingRevision, 5);
+  });
+
+  it('T47_understanding_revision_mismatch_rejected: decision referencing mismatched understanding revision rejected', async () => {
+    const sessionWithRev = await sessionEngine.createSession({
+      workspaceRoot: tempDir,
+      directorSessionId: 'dir-sess-dec-rev-mismatch',
+      understandingRevision: 5,
+    });
+    const snapshotWithRev = await synchronizer.synchronize({
+      directorSessionId: sessionWithRev.directorSessionId,
+      workspaceRoot: tempDir,
+    });
+
+    // Dry-run validate fails with UNDERSTANDING_REVISION_MISMATCH
+    const valResult = await decisionEngine.validateDecision({
+      directorSessionId: sessionWithRev.directorSessionId,
+      workspaceRoot: tempDir,
+      decisionType: 'ACCEPT_CONTEXT',
+      rationale: 'Mismatched revision test',
+      basedOnContextFingerprint: snapshotWithRev.logicalFingerprint,
+      basedOnUnderstandingRevision: 4,
+    });
+    assert.equal(valResult.isValid, false);
+    assert.equal(valResult.code, 'UNDERSTANDING_REVISION_MISMATCH');
+
+    // Create decision throws DirectorUnderstandingRevisionMismatchError
+    await assert.rejects(
+      async () => {
+        await decisionEngine.createDecision({
+          directorSessionId: sessionWithRev.directorSessionId,
+          workspaceRoot: tempDir,
+          decisionType: 'ACCEPT_CONTEXT',
+          rationale: 'Mismatched revision test',
+          basedOnContextFingerprint: snapshotWithRev.logicalFingerprint,
+          basedOnUnderstandingRevision: 4,
+        });
+      },
+      (err: unknown) => {
+        assert.ok(err instanceof DirectorUnderstandingRevisionMismatchError);
+        assert.match((err as Error).message, /understanding revision/i);
+        return true;
+      }
+    );
+  });
+
+  it('T48_understanding_revision_missing_authority_rejected: decision referencing understanding revision when session has none rejected', async () => {
+    // activeSession has understandingRevision = null
+    assert.equal(activeSession.understandingRevision, null);
+
+    // Dry-run validate fails with UNDERSTANDING_REVISION_MISMATCH
+    const valResult = await decisionEngine.validateDecision({
+      directorSessionId: activeSession.directorSessionId,
+      workspaceRoot: tempDir,
+      decisionType: 'ACCEPT_CONTEXT',
+      rationale: 'Missing authority revision test',
+      basedOnContextFingerprint: activeSnapshot.logicalFingerprint,
+      basedOnUnderstandingRevision: 5,
+    });
+    assert.equal(valResult.isValid, false);
+    assert.equal(valResult.code, 'UNDERSTANDING_REVISION_MISMATCH');
+    assert.match(valResult.message, /no authoritative understanding revision/i);
+
+    // Create decision throws DirectorUnderstandingRevisionMismatchError
+    await assert.rejects(
+      async () => {
+        await decisionEngine.createDecision({
+          directorSessionId: activeSession.directorSessionId,
+          workspaceRoot: tempDir,
+          decisionType: 'ACCEPT_CONTEXT',
+          rationale: 'Missing authority revision test',
+          basedOnContextFingerprint: activeSnapshot.logicalFingerprint,
+          basedOnUnderstandingRevision: 5,
+        });
+      },
+      (err: unknown) => {
+        assert.ok(err instanceof DirectorUnderstandingRevisionMismatchError);
+        assert.match((err as Error).message, /no authoritative understanding revision/i);
+        return true;
+      }
+    );
   });
 });

@@ -328,10 +328,18 @@ export class DirectorDecisionEngine {
       input.basedOnUnderstandingRevision !== null
     ) {
       if (
-        session.understandingRevision !== null &&
-        session.understandingRevision !== undefined &&
-        session.understandingRevision !== input.basedOnUnderstandingRevision
+        session.understandingRevision === null ||
+        session.understandingRevision === undefined
       ) {
+        return {
+          isValid: false,
+          code: 'UNDERSTANDING_REVISION_MISMATCH',
+          message: `Decision references understanding revision ${input.basedOnUnderstandingRevision}, but session has no authoritative understanding revision.`,
+          details: { basedOnUnderstandingRevision: input.basedOnUnderstandingRevision },
+        };
+      }
+
+      if (session.understandingRevision !== input.basedOnUnderstandingRevision) {
         return {
           isValid: false,
           code: 'UNDERSTANDING_REVISION_MISMATCH',
@@ -567,11 +575,19 @@ export class DirectorDecisionEngine {
       );
     }
 
-    let filterProjectId = input.projectId;
-    if (!filterProjectId && (input.workspaceRoot || this.workspaceRoot)) {
-      const targetRoot = input.workspaceRoot ?? this.workspaceRoot ?? process.cwd();
-      filterProjectId = resolveCanonicalProjectIdentity(targetRoot).projectId;
+    const targetRoot = input.workspaceRoot ?? this.workspaceRoot ?? process.cwd();
+    const canonical = resolveCanonicalProjectIdentity(targetRoot);
+
+    if (input.projectId !== undefined && input.projectId !== null) {
+      const trimmed = input.projectId.trim();
+      if (trimmed.length > 0 && trimmed !== canonical.projectId) {
+        throw new DirectorProjectBindingMismatchError(
+          `Project ID mismatch: requested '${trimmed}', canonical is '${canonical.projectId}' at '${canonical.projectRoot}'. Accidental cross-project binding rejected.`
+        );
+      }
     }
+
+    const filterProjectId = canonical.projectId;
 
     return this.decisionStore.listDecisions({
       sessionId: input.directorSessionId,
