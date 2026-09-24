@@ -24,6 +24,7 @@ import { ContextEngine } from '../context-engine/context-engine.js';
 import { TaskDagEngine } from '../task-engine/dag-engine.js';
 import { ClarificationStore } from '../clarification/clarification-store.js';
 import { ApprovalStore } from '../approval/approval-store.js';
+import { DirectorSessionStore } from '../director/director-session-store.js';
 
 // ============================================================================
 // 1. STATUS CONTRACTS
@@ -110,6 +111,11 @@ export interface McpOrchestratorDelegate {
   readonly approvalStore?: ApprovalStore;
 
   /**
+   * Authoritative DirectorSessionStore instance.
+   */
+  readonly directorSessionStore?: DirectorSessionStore;
+
+  /**
    * Query system-verified evidence through the orchestrator.
    */
   getEvidence?(
@@ -142,6 +148,7 @@ export interface DefaultMcpOrchestratorDelegateOptions {
   readonly dagEngine?: TaskDagEngine;
   readonly clarificationStore?: ClarificationStore;
   readonly approvalStore?: ApprovalStore;
+  readonly directorSessionStore?: DirectorSessionStore;
   readonly evidenceProvider?: (
     params: {
       taskId?: string;
@@ -167,6 +174,7 @@ export class DefaultMcpOrchestratorDelegate implements McpOrchestratorDelegate {
   readonly dagEngine?: TaskDagEngine;
   readonly clarificationStore?: ClarificationStore;
   readonly approvalStore?: ApprovalStore;
+  readonly directorSessionStore?: DirectorSessionStore;
   private readonly evidenceProvider?: (
     params: {
       taskId?: string;
@@ -212,6 +220,14 @@ export class DefaultMcpOrchestratorDelegate implements McpOrchestratorDelegate {
       options.approvalStore ??
       (this.projectRoot
         ? new ApprovalStore({
+            baseDir: this.projectRoot,
+            historyManager: this.historyManager,
+          })
+        : undefined);
+    this.directorSessionStore =
+      options.directorSessionStore ??
+      (this.projectRoot
+        ? new DirectorSessionStore({
             baseDir: this.projectRoot,
             historyManager: this.historyManager,
           })

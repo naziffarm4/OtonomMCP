@@ -55,6 +55,7 @@ import {
 } from './tools/director-read-tools.js';
 import { registerClarificationTools } from './tools/clarification-tools.js';
 import { registerApprovalTools } from './tools/approval-tools.js';
+import { registerDirectorSessionTools } from './tools/director-session-tools.js';
 
 export class McpServer {
   readonly name: string;
@@ -113,6 +114,11 @@ export class McpServer {
     // Register Director approval gate tools if enabled
     if (config.approvalTools) {
       registerApprovalTools(this);
+    }
+
+    // Register Director session identity tools if enabled
+    if (config.directorSessionTools) {
+      registerDirectorSessionTools(this);
     }
   }
 

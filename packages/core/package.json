@@ -109,6 +109,10 @@
     "./approval": {
       "types": "./dist/approval/index.d.ts",
       "import": "./dist/approval/index.js"
+    },
+    "./director": {
+      "types": "./dist/director/index.d.ts",
+      "import": "./dist/director/index.js"
     }
   },
   "bin": {
