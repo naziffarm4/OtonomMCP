@@ -297,4 +297,11 @@ export class ExecutionRequestLimitsInvalidError extends ExecutionRequestError {
   }
 }
 
+export class ExecutionRequestTaskRevisionMismatchError extends ExecutionRequestError {
+  constructor(message: string, details?: AidmErrorDetails) {
+    super(message, 'ERR_TASK_REVISION_MISMATCH', details);
+  }
+}
+
+
 

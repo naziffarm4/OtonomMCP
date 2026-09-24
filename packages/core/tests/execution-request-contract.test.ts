@@ -48,6 +48,18 @@
  * T42: MCP tool aidm.execution.request.create: alias tool behavior
  * T43: MCP tool rejection on path traversal, forgery, and invalid limits
  * T44: Architectural invariant: zero child process, zero Antigravity call, zero DAG mutation
+ * T45: Structurally valid but unauthorized/fake ExecutionIntent MUST NOT produce ExecutionRequest
+ * T46: ExecutionRequest MCP build with forged raw intent MUST be rejected by authoritative P10-01 authorization
+ * T47: Approval authorization revoked/stale after intent formulation MUST prevent request creation
+ * T48: Context becomes stale/changed after intent formulation MUST prevent request creation
+ * T49: Task revision changes after intent formulation MUST prevent request creation
+ * T50: Task revision mismatch during SpecStore instruction fallback MUST reject
+ * T51: Task revision matching intent MUST allow fallback
+ * T52: Old task revision + new task description MUST never produce a mixed request
+ * T53: Caller-provided instruction must not bypass P10-01 authorization
+ * T54: A caller-provided fake "verified" marker/result must not bypass authorization
+ * T55: Successful request creation still has deterministic requestId
+ * T56: Successful request creation remains zero-execution
  */
 
 import { describe, it, beforeEach, afterEach } from 'node:test';
@@ -72,6 +84,30 @@ import {
   ExecutionRequestRepositoryForgeryError,
   ExecutionRequestIntentMismatchError,
   ExecutionRequestLimitsInvalidError,
+  ExecutionRequestTaskRevisionMismatchError,
+  ExecutionIntentSessionMismatchError,
+  ExecutionIntentDecisionInvalidError,
+  ExecutionIntentProjectMismatchError,
+  ExecutionIntentContextMismatchError,
+  ExecutionIntentContextStaleError,
+  ExecutionIntentRevisionMismatchError,
+  ExecutionIntentUnauthorizedError,
+  ExecutionIntentTaskInvalidError,
+  ExecutionAuthorizer,
+  DirectorSessionStore,
+  DirectorSessionEngine,
+  DirectorDecisionStore,
+  DirectorDecisionEngine,
+  ApprovalStore,
+  ApprovalPackageEngine,
+  HumanApprovalEngine,
+  InitialProjectUnderstandingBuilder,
+  DirectorContextSynchronizer,
+  ContextEngine,
+  DurableStateManager,
+  TaskDagEngine,
+  HistoryManager,
+  DefaultMcpOrchestratorDelegate,
   FakeGitPort,
   SpecStore,
   TaskStatus,
@@ -81,36 +117,136 @@ import {
   InMemoryMcpTransport,
   AIDM_EXECUTION_REQUEST_BUILD_TOOL_NAME,
   AIDM_EXECUTION_REQUEST_CREATE_TOOL_NAME,
+  type DirectorSession,
+  type DirectorDecision,
+  type DirectorContextSnapshot,
+  type ProjectApprovalPackage,
+  type ProjectDiscoveryReport,
 } from '../dist/index.js';
 
 describe('Deterministic Execution Request Contract (Phase 10 TASK-P10-02)', () => {
   let tempDir: string;
-  let fakeGitPort: FakeGitPort;
+  let historyManager: HistoryManager;
+  let sessionStore: DirectorSessionStore;
+  let sessionEngine: DirectorSessionEngine;
+  let decisionStore: DirectorDecisionStore;
+  let approvalStore: ApprovalStore;
+  let approvalPackageEngine: ApprovalPackageEngine;
+  let humanApprovalEngine: HumanApprovalEngine;
   let specStore: SpecStore;
+  let durableManager: DurableStateManager;
+  let contextEngine: ContextEngine;
+  let synchronizer: DirectorContextSynchronizer;
+  let fakeGitPort: FakeGitPort;
+  let delegate: DefaultMcpOrchestratorDelegate;
+  let executionAuthorizer: ExecutionAuthorizer;
   let builder: ExecutionRequestBuilder;
+
+  let activeSession: DirectorSession;
+  let activeSnapshot: DirectorContextSnapshot;
+  let testPackage: ProjectApprovalPackage;
+  let implementDecision: DirectorDecision;
+  let sampleIntent: ExecutionIntent;
 
   const validBaseCommit = 'a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2';
   const alternativeCommit = 'f6e5d4c3b2a1f6e5d4c3b2a1f6e5d4c3b2a1f6e5';
 
-  const sampleIntent: ExecutionIntent = {
-    intentId: 'intent-sample-001',
-    directorSessionId: 'session-dir-20260924-001',
-    directorDecisionId: 'dec-dir-20260924-001',
-    projectId: 'proj-omega-01',
-    taskId: 'TASK-P10-01',
-    taskRevision: 2,
-    contextFingerprint: 'ctx-fp-99887766554433221100',
-    understandingRevision: 3,
-    approvalPackageRevision: 1,
-    operationType: 'IMPLEMENT_TASK',
-    protocolVersion: 'P10-01',
-    schemaVersion: 1,
-    createdAt: '2026-09-24T20:00:00.000Z',
-    metadata: { source: 'test-suite' },
-  };
+  function createMockReport(workspaceRoot: string): ProjectDiscoveryReport {
+    return {
+      projectIdentity: {
+        name: 'test-exec-project',
+        version: '1.0.0',
+        workspaceRoot,
+        ecosystem: 'Node.js',
+        evidence: [{ sourceType: 'PACKAGE_MANIFEST', sourceIdentifier: 'package.json' }],
+      },
+      purpose: {
+        classification: 'UNDERSTOOD',
+        summary: 'A deterministic agent orchestration platform',
+        domainKeywords: ['orchestration', 'agent'],
+        evidence: [{ sourceType: 'FILE', sourceIdentifier: 'README.md' }],
+      },
+      technologyStack: {
+        primaryLanguages: ['TypeScript'],
+        frameworks: [],
+        buildTools: ['tsc'],
+        packageManagers: ['npm'],
+        runtimes: ['node'],
+        containerization: [],
+        ciCd: [],
+        workspaceType: 'standalone',
+      },
+      architecture: {
+        summary: 'Standard modular TypeScript architecture',
+        architecturalPattern: 'Modular',
+        identifiedAreas: [],
+        evidence: [{ sourceType: 'FILE', sourceIdentifier: 'src/index.ts' }],
+      },
+      currentImplementationState: {
+        lifecycleState: 'REQUIREMENTS_INGESTION',
+        hasActiveTask: false,
+        isBlocked: false,
+        totalTasksInDag: 0,
+        completedTasksCount: 0,
+        evidence: [{ sourceType: 'STATE_MANAGER', sourceIdentifier: 'durable-state.json' }],
+      },
+      unknowns: [],
+      contradictions: [],
+      evidenceInventory: [],
+      generatedAt: new Date().toISOString(),
+    };
+  }
 
-  beforeEach(() => {
+  async function createReadyTasks() {
+    await specStore.saveTasks([
+      {
+        task_id: 'FEAT-ROOT-001',
+        parent_feature_id: 'ROOT',
+        title: 'Feature Root',
+        description: 'Root feature',
+        traceability_sources: ['REQ-001'],
+        dependencies: [],
+        acceptance_criteria: ['AC-ROOT'],
+        status: TaskStatus.READY,
+        attempt: 1,
+        max_attempts: 3,
+        priority: TaskPriority.HIGH,
+        risk_level: RiskLevel.SAFE,
+        hierarchy_level: 'FEATURE' as any,
+        created_at: new Date().toISOString(),
+        started_at: null,
+        completed_at: null,
+        metadata: { revision: 1 },
+      },
+      {
+        task_id: 'TASK-P10-01',
+        parent_feature_id: 'FEAT-ROOT-001',
+        title: 'Phase 10 Execution Task',
+        description: 'Authoritative description from SpecStore Task DAG',
+        traceability_sources: ['REQ-001'],
+        dependencies: [],
+        acceptance_criteria: ['SpecStore AC-1', 'SpecStore AC-2'],
+        status: TaskStatus.READY,
+        attempt: 1,
+        max_attempts: 3,
+        priority: TaskPriority.HIGH,
+        risk_level: RiskLevel.SAFE,
+        created_at: new Date().toISOString(),
+        started_at: null,
+        completed_at: null,
+        metadata: { revision: 2 },
+      },
+    ]);
+  }
+
+  beforeEach(async () => {
     tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'aidm-p10-02-test-'));
+
+    // Create minimal project file
+    fs.writeFileSync(
+      path.join(tempDir, 'package.json'),
+      JSON.stringify({ name: 'test-exec-project', version: '1.0.0' }, null, 2)
+    );
 
     fakeGitPort = new FakeGitPort({
       initialState: {
@@ -123,13 +259,143 @@ describe('Deterministic Execution Request Contract (Phase 10 TASK-P10-02)', () =
       },
     });
 
+    historyManager = new HistoryManager({ baseDir: tempDir });
+    sessionStore = new DirectorSessionStore({ baseDir: tempDir, historyManager });
+    sessionEngine = new DirectorSessionEngine({ store: sessionStore, workspaceRoot: tempDir });
+    decisionStore = new DirectorDecisionStore({ sessionStore, historyManager });
+    approvalStore = new ApprovalStore({ baseDir: tempDir, historyManager });
+    approvalPackageEngine = new ApprovalPackageEngine();
+    durableManager = new DurableStateManager({ baseDir: tempDir });
     specStore = new SpecStore({ baseDir: tempDir });
+    contextEngine = new ContextEngine({ workspaceRoot: tempDir });
+
+    delegate = new DefaultMcpOrchestratorDelegate({
+      projectRoot: tempDir,
+      durableStateManager: durableManager,
+      specStore,
+      historyManager,
+      approvalStore,
+      contextEngine,
+      gitPort: fakeGitPort,
+      directorSessionStore: sessionStore,
+      directorDecisionStore: decisionStore,
+    });
+
+    synchronizer = new DirectorContextSynchronizer({
+      workspaceRoot: tempDir,
+      delegate,
+      sessionEngine,
+      sessionStore,
+    });
+
+    humanApprovalEngine = new HumanApprovalEngine({
+      workspaceRoot: tempDir,
+      delegate,
+      approvalStore,
+      approvalPackageEngine,
+      sessionStore,
+      sessionEngine,
+      decisionStore,
+      historyManager,
+    });
+
+    executionAuthorizer = new ExecutionAuthorizer({
+      workspaceRoot: tempDir,
+      delegate,
+      sessionStore,
+      sessionEngine,
+      decisionStore,
+      approvalStore,
+      approvalPackageEngine,
+      specStore,
+      dagEngine: new TaskDagEngine(),
+      historyManager,
+    });
 
     builder = new ExecutionRequestBuilder({
       workspaceRoot: tempDir,
       gitPort: fakeGitPort,
       specStore,
+      authorizer: executionAuthorizer,
+      delegate,
     });
+
+    // 1. Create active Director session
+    activeSession = await sessionEngine.createSession({
+      workspaceRoot: tempDir,
+      directorSessionId: 'dir-sess-p10-02-001',
+      understandingRevision: 5,
+    });
+
+    // 2. Synchronize context snapshot
+    activeSnapshot = await synchronizer.synchronize({
+      directorSessionId: activeSession.directorSessionId,
+      workspaceRoot: tempDir,
+    });
+
+    // 3. Build & approve package with explicit Product Owner approval
+    const report = createMockReport(tempDir);
+    const understandingBuilder = new InitialProjectUnderstandingBuilder();
+    const understanding = understandingBuilder.build(report, undefined, { projectId: 'test-exec-project' });
+    testPackage = approvalPackageEngine.buildPackage(understanding, undefined, {
+      packageId: 'pkg-p10-02-001',
+    });
+    await approvalStore.savePackage(testPackage);
+
+    const approvalResult = await humanApprovalEngine.submitApproval({
+      workspaceRoot: tempDir,
+      projectId: 'test-exec-project',
+      directorSessionId: activeSession.directorSessionId,
+      packageId: testPackage.packageId,
+      revision: testPackage.revision,
+      contextFingerprint: activeSnapshot.logicalFingerprint,
+      understandingRevision: 5,
+      actor: 'alice-po',
+      actorRole: 'PRODUCT_OWNER',
+      intent: 'EXPLICIT_APPROVAL',
+      comment: 'Approved for execution request testing',
+    });
+    assert.equal(approvalResult.isDevelopmentAuthorized, true);
+    testPackage = approvalResult.package;
+
+    // 4. Create READY task
+    await createReadyTasks();
+
+    // 5. Create IMPLEMENT_TASK decision
+    implementDecision = {
+      decisionId: `dec-impl-${Date.now()}`,
+      directorSessionId: activeSession.directorSessionId,
+      projectId: 'test-exec-project',
+      protocolVersion: 'P9-03',
+      schemaVersion: 1,
+      actor: 'DIRECTOR' as const,
+      decisionType: 'IMPLEMENT_TASK',
+      rationale: 'Implement task TASK-P10-01',
+      basedOnContextFingerprint: activeSnapshot.logicalFingerprint,
+      basedOnApprovalRevision: testPackage.revision,
+      basedOnUnderstandingRevision: 5,
+      createdAt: new Date().toISOString(),
+      metadata: {},
+      hasImplementationAuthority: false as const,
+    };
+    await decisionStore.saveDecision(implementDecision);
+
+    // 6. Formulate verified sampleIntent
+    const authResult = await executionAuthorizer.validateExecutionIntent({
+      workspaceRoot: tempDir,
+      projectId: 'test-exec-project',
+      directorSessionId: activeSession.directorSessionId,
+      directorDecisionId: implementDecision.decisionId,
+      taskId: 'TASK-P10-01',
+      taskRevision: 2,
+      contextFingerprint: activeSnapshot.logicalFingerprint,
+      understandingRevision: 5,
+      approvalPackageRevision: testPackage.revision,
+      operationType: 'IMPLEMENT_TASK',
+    });
+    assert.equal(authResult.isValid, true);
+    assert.ok(authResult.intent);
+    sampleIntent = authResult.intent;
   });
 
   afterEach(() => {
@@ -241,20 +507,6 @@ describe('Deterministic Execution Request Contract (Phase 10 TASK-P10-02)', () =
       instruction: { ...baseInput.instruction!, constraints: ['C2'] },
     });
     assert.notStrictEqual(baseReq.requestId, reqDiffConstraints.requestId);
-
-    // Task revision changed
-    const reqDiffTaskRev = await builder.buildExecutionRequest({
-      ...baseInput,
-      intent: { ...sampleIntent, taskRevision: 99 },
-    });
-    assert.notStrictEqual(baseReq.requestId, reqDiffTaskRev.requestId);
-
-    // Context fingerprint changed
-    const reqDiffFp = await builder.buildExecutionRequest({
-      ...baseInput,
-      intent: { ...sampleIntent, contextFingerprint: 'different-fingerprint' },
-    });
-    assert.notStrictEqual(baseReq.requestId, reqDiffFp.requestId);
 
     // Limits changed
     const reqDiffLimits = await builder.buildExecutionRequest({
@@ -512,6 +764,8 @@ describe('Deterministic Execution Request Contract (Phase 10 TASK-P10-02)', () =
     const brokenBuilder = new ExecutionRequestBuilder({
       workspaceRoot: tempDir,
       gitPort: uninitGitPort,
+      authorizer: executionAuthorizer,
+      delegate,
     });
 
     await assert.rejects(
@@ -813,6 +1067,7 @@ describe('Deterministic Execution Request Contract (Phase 10 TASK-P10-02)', () =
   // ==========================================================================
 
   it('T33: Objective empty or missing rejection', async () => {
+    // When instruction has no objective and specStore has no task
     await assert.rejects(
       async () => {
         await builder.buildExecutionRequest({
@@ -885,26 +1140,6 @@ describe('Deterministic Execution Request Contract (Phase 10 TASK-P10-02)', () =
   // ==========================================================================
 
   it('T37: SpecStore fallback: derives objective and criteria from task when omitted by caller', async () => {
-    await specStore.saveTasks([
-      {
-        task_id: sampleIntent.taskId,
-        parent_feature_id: 'FEAT-P10-EXEC',
-        title: 'Phase 10 Execution Task',
-        description: 'Authoritative description from SpecStore Task DAG',
-        traceability_sources: ['REQ-001'],
-        dependencies: [],
-        acceptance_criteria: ['SpecStore AC-1', 'SpecStore AC-2'],
-        status: TaskStatus.READY,
-        attempt: 1,
-        max_attempts: 3,
-        priority: TaskPriority.HIGH,
-        risk_level: RiskLevel.LOW,
-        created_at: new Date().toISOString(),
-        started_at: null,
-        completed_at: null,
-      },
-    ]);
-
     const request = await builder.buildExecutionRequest({
       intent: sampleIntent,
       instruction: {
@@ -987,11 +1222,7 @@ describe('Deterministic Execution Request Contract (Phase 10 TASK-P10-02)', () =
     const server = new McpServer({
       transport,
       executionRequestTools: true,
-      delegate: {
-        projectRoot: tempDir,
-        gitPort: fakeGitPort,
-        specStore,
-      } as any,
+      delegate,
     });
 
     await server.start();
@@ -1034,11 +1265,7 @@ describe('Deterministic Execution Request Contract (Phase 10 TASK-P10-02)', () =
     const server = new McpServer({
       transport,
       executionRequestTools: true,
-      delegate: {
-        projectRoot: tempDir,
-        gitPort: fakeGitPort,
-        specStore,
-      } as any,
+      delegate,
     });
 
     await server.start();
@@ -1073,11 +1300,7 @@ describe('Deterministic Execution Request Contract (Phase 10 TASK-P10-02)', () =
     const server = new McpServer({
       transport,
       executionRequestTools: true,
-      delegate: {
-        projectRoot: tempDir,
-        gitPort: fakeGitPort,
-        specStore,
-      } as any,
+      delegate,
     });
 
     await server.start();
@@ -1157,26 +1380,6 @@ describe('Deterministic Execution Request Contract (Phase 10 TASK-P10-02)', () =
   // ==========================================================================
 
   it('T44: Architectural invariant: zero child process, zero Antigravity call, zero DAG mutation', async () => {
-    await specStore.saveTasks([
-      {
-        task_id: sampleIntent.taskId,
-        parent_feature_id: 'FEAT-P10-EXEC',
-        title: 'Initial Task Title',
-        description: 'Initial Task Description',
-        traceability_sources: ['REQ-001'],
-        dependencies: [],
-        acceptance_criteria: ['Initial AC'],
-        status: TaskStatus.READY,
-        attempt: 1,
-        max_attempts: 3,
-        priority: TaskPriority.HIGH,
-        risk_level: RiskLevel.LOW,
-        created_at: new Date().toISOString(),
-        started_at: null,
-        completed_at: null,
-      },
-    ]);
-
     const tasksBefore = await specStore.loadTasks();
 
     const request = await builder.buildExecutionRequest({
@@ -1188,7 +1391,310 @@ describe('Deterministic Execution Request Contract (Phase 10 TASK-P10-02)', () =
     // SpecStore tasks must NOT have mutated
     const tasksAfter = await specStore.loadTasks();
     assert.deepStrictEqual(tasksAfter, tasksBefore);
-    assert.strictEqual(tasksAfter[0].status, TaskStatus.READY);
-    assert.strictEqual(tasksAfter[0].attempt, 1);
+    assert.strictEqual(tasksAfter[1].status, TaskStatus.READY);
+    assert.strictEqual(tasksAfter[1].attempt, 1);
+  });
+
+  // ==========================================================================
+  // 12. HARDENED P10-02 VERIFIED INTENT & TASK REVISION BINDING (T45–T56)
+  // ==========================================================================
+
+  it('T45: Structurally valid but unauthorized/fake ExecutionIntent MUST NOT produce ExecutionRequest', async () => {
+    const fakeIntent: ExecutionIntent = {
+      intentId: 'fake-intent-001',
+      directorSessionId: 'non-existent-session',
+      directorDecisionId: 'non-existent-decision',
+      projectId: 'test-exec-project',
+      taskId: 'TASK-P10-01',
+      taskRevision: 2,
+      contextFingerprint: activeSnapshot.logicalFingerprint,
+      understandingRevision: 5,
+      approvalPackageRevision: testPackage.revision,
+      operationType: 'IMPLEMENT_TASK',
+      protocolVersion: 'P10-01',
+      schemaVersion: 1,
+      createdAt: new Date().toISOString(),
+    };
+
+    await assert.rejects(
+      async () => {
+        await builder.buildExecutionRequest({
+          intent: fakeIntent,
+          instruction: { objective: 'Test', acceptanceCriteria: ['AC-1'] },
+        });
+      },
+      (err: unknown) => {
+        assert.ok(err instanceof ExecutionIntentSessionMismatchError);
+        return true;
+      }
+    );
+  });
+
+  it('T46: ExecutionRequest MCP build with forged raw intent MUST be rejected by authoritative P10-01 authorization', async () => {
+    const transport = new InMemoryMcpTransport();
+    const server = new McpServer({
+      transport,
+      executionRequestTools: true,
+      delegate,
+    });
+
+    await server.start();
+    const buildTool = server.getTool(AIDM_EXECUTION_REQUEST_BUILD_TOOL_NAME)!;
+
+    const forgedIntent: ExecutionIntent = {
+      intentId: 'forged-intent-002',
+      directorSessionId: activeSession.directorSessionId,
+      directorDecisionId: 'fake-decision-id',
+      projectId: 'test-exec-project',
+      taskId: 'TASK-P10-01',
+      taskRevision: 2,
+      contextFingerprint: activeSnapshot.logicalFingerprint,
+      understandingRevision: 5,
+      approvalPackageRevision: testPackage.revision,
+      operationType: 'IMPLEMENT_TASK',
+      protocolVersion: 'P10-01',
+      schemaVersion: 1,
+      createdAt: new Date().toISOString(),
+    };
+
+    const res = await buildTool.handler(
+      {
+        intent: forgedIntent,
+        instruction: { objective: 'Test', acceptanceCriteria: ['AC-1'] },
+      },
+      {
+        correlation: { correlationId: 'corr-fake', requestId: 'req-fake', receivedAt: new Date().toISOString() },
+        delegate: server.delegate,
+      }
+    );
+
+    assert.strictEqual(res.isError, true);
+    const parsed = JSON.parse(res.content[0].text as string);
+    assert.strictEqual(parsed.success, false);
+    assert.strictEqual(parsed.code, 'ERR_EXECUTION_INTENT_DECISION_INVALID');
+
+    await server.stop();
+  });
+
+  it('T47: Approval authorization revoked/stale after intent formulation MUST prevent request creation', async () => {
+    // Revoke approval by marking package REJECTED
+    await approvalStore.savePackage({
+      ...testPackage,
+      status: 'REJECTED' as any,
+    });
+
+    await assert.rejects(
+      async () => {
+        await builder.buildExecutionRequest({
+          intent: sampleIntent,
+          instruction: { objective: 'Test', acceptanceCriteria: ['AC-1'] },
+        });
+      },
+      (err: unknown) => {
+        assert.ok(err instanceof ExecutionIntentUnauthorizedError);
+        return true;
+      }
+    );
+  });
+
+  it('T48: Context becomes stale/changed after intent formulation MUST prevent request creation', async () => {
+    // Modify a file in workspace causing context snapshot to change
+    fs.writeFileSync(path.join(tempDir, 'new-file.txt'), 'new content');
+    // Synchronize fresh context snapshot
+    const freshSnapshot = await synchronizer.synchronize({
+      directorSessionId: activeSession.directorSessionId,
+      workspaceRoot: tempDir,
+    });
+    assert.notStrictEqual(freshSnapshot.logicalFingerprint, sampleIntent.contextFingerprint);
+
+    // Old intent now has stale context fingerprint
+    await assert.rejects(
+      async () => {
+        await builder.buildExecutionRequest({
+          intent: sampleIntent,
+          instruction: { objective: 'Test', acceptanceCriteria: ['AC-1'] },
+        });
+      },
+      (err: unknown) => {
+        assert.ok(
+          err instanceof ExecutionIntentContextMismatchError ||
+          err instanceof ExecutionIntentContextStaleError
+        );
+        return true;
+      }
+    );
+  });
+
+  it('T49: Task revision changes after intent formulation MUST prevent request creation', async () => {
+    // Bump task revision in SpecStore from 2 to 3
+    const tasks = await specStore.loadTasks();
+    const taskIndex = tasks.findIndex((t) => t.task_id === 'TASK-P10-01');
+    tasks[taskIndex].metadata = { revision: 3 };
+    await specStore.saveTasks(tasks);
+
+    // Intent still has taskRevision: 2
+    await assert.rejects(
+      async () => {
+        await builder.buildExecutionRequest({
+          intent: sampleIntent,
+          instruction: { objective: 'Test', acceptanceCriteria: ['AC-1'] },
+        });
+      },
+      (err: unknown) => {
+        assert.ok(
+          err instanceof ExecutionIntentRevisionMismatchError ||
+          err instanceof ExecutionRequestTaskRevisionMismatchError
+        );
+        return true;
+      }
+    );
+  });
+
+  it('T50: Task revision mismatch during SpecStore instruction fallback MUST reject', async () => {
+    // Task in SpecStore has revision 2, intent has revision 1
+    const intentOldRev: ExecutionIntent = {
+      ...sampleIntent,
+      taskRevision: 1,
+    };
+
+    await assert.rejects(
+      async () => {
+        await builder.buildExecutionRequest({
+          intent: intentOldRev,
+          // Omit objective to trigger SpecStore fallback
+        });
+      },
+      (err: unknown) => {
+        assert.ok(
+          err instanceof ExecutionIntentRevisionMismatchError ||
+          err instanceof ExecutionRequestTaskRevisionMismatchError
+        );
+        return true;
+      }
+    );
+  });
+
+  it('T51: Task revision matching intent MUST allow fallback', async () => {
+    // Both intent and SpecStore have taskRevision: 2
+    const request = await builder.buildExecutionRequest({
+      intent: sampleIntent,
+      // Omit objective to trigger fallback
+    });
+
+    assert.ok(request);
+    assert.strictEqual(request.taskRevision, 2);
+    assert.strictEqual(request.instruction.objective, 'Authoritative description from SpecStore Task DAG');
+    assert.deepStrictEqual(request.instruction.acceptanceCriteria, ['SpecStore AC-1', 'SpecStore AC-2']);
+  });
+
+  it('T52: Old task revision + new task description MUST never produce a mixed request', async () => {
+    // Update task description and bump revision to 3
+    const tasks = await specStore.loadTasks();
+    const taskIndex = tasks.findIndex((t) => t.task_id === 'TASK-P10-01');
+    tasks[taskIndex].description = 'New task description for revision 3';
+    tasks[taskIndex].metadata = { revision: 3 };
+    await specStore.saveTasks(tasks);
+
+    // Old intent specifies taskRevision: 2
+    await assert.rejects(
+      async () => {
+        await builder.buildExecutionRequest({
+          intent: sampleIntent, // taskRevision is 2
+        });
+      },
+      (err: unknown) => {
+        assert.ok(
+          err instanceof ExecutionIntentRevisionMismatchError ||
+          err instanceof ExecutionRequestTaskRevisionMismatchError
+        );
+        return true;
+      }
+    );
+  });
+
+  it('T53: Caller-provided instruction must not bypass P10-01 authorization', async () => {
+    const unapprovedIntent: ExecutionIntent = {
+      ...sampleIntent,
+      directorDecisionId: 'unapproved-decision-id',
+    };
+
+    await assert.rejects(
+      async () => {
+        await builder.buildExecutionRequest({
+          intent: unapprovedIntent,
+          instruction: {
+            objective: 'Explicit caller objective that tries to bypass authorization',
+            acceptanceCriteria: ['Explicit AC'],
+          },
+        });
+      },
+      (err: unknown) => {
+        assert.ok(err instanceof ExecutionIntentDecisionInvalidError);
+        return true;
+      }
+    );
+  });
+
+  it('T54: A caller-provided fake "verified" marker/result must not bypass authorization', async () => {
+    const fakePayload = {
+      intent: {
+        ...sampleIntent,
+        directorDecisionId: 'forged-decision',
+        verified: true, // Fake boolean
+        isAuthorized: true, // Fake boolean
+      },
+      isVerified: true, // Fake outer marker
+      instruction: { objective: 'Test', acceptanceCriteria: ['AC-1'] },
+    };
+
+    await assert.rejects(
+      async () => {
+        await builder.buildExecutionRequest(fakePayload as any);
+      },
+      (err: unknown) => {
+        assert.ok(err instanceof ExecutionIntentDecisionInvalidError);
+        return true;
+      }
+    );
+  });
+
+  it('T55: Successful request creation still has deterministic requestId', async () => {
+    const reqA = await builder.buildExecutionRequest({
+      intent: sampleIntent,
+      instruction: { objective: 'Deterministic test', acceptanceCriteria: ['AC-1'] },
+    });
+
+    const reqB = await builder.buildExecutionRequest({
+      intent: sampleIntent,
+      instruction: { objective: 'Deterministic test', acceptanceCriteria: ['AC-1'] },
+    });
+
+    assert.strictEqual(reqA.requestId, reqB.requestId);
+    assert.match(reqA.requestId, /^req-[a-f0-9]{32}$/);
+  });
+
+  it('T56: Successful request creation remains zero-execution', async () => {
+    const durableStateBefore = await durableManager.load();
+    const tasksBefore = await specStore.loadTasks();
+    const pkgBefore = await approvalStore.getActivePackage();
+
+    const request = await builder.buildExecutionRequest({
+      intent: sampleIntent,
+      instruction: { objective: 'Zero execution check', acceptanceCriteria: ['AC-1'] },
+    });
+
+    assert.ok(request);
+
+    // 1. FSM not mutated
+    const durableStateAfter = await durableManager.load();
+    assert.deepStrictEqual(durableStateAfter, durableStateBefore);
+
+    // 2. SpecStore tasks not mutated
+    const tasksAfter = await specStore.loadTasks();
+    assert.deepStrictEqual(tasksAfter, tasksBefore);
+
+    // 3. ApprovalStore package not mutated
+    const pkgAfter = await approvalStore.getActivePackage();
+    assert.deepStrictEqual(pkgAfter, pkgBefore);
   });
 });

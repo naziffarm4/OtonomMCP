@@ -145,7 +145,9 @@ export function createExecutionRequestBuildTool(
         workspaceRoot,
         gitPort: delegate?.gitPort,
         specStore: delegate?.specStore,
+        delegate,
       });
+
 
       try {
         const request = await builder.buildExecutionRequest(parsed.data as BuildExecutionRequestInput);

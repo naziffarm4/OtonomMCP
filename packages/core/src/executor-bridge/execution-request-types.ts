@@ -31,7 +31,9 @@ import {
   ExecutionRequestRepositoryForgeryError,
   ExecutionRequestIntentMismatchError,
   ExecutionRequestLimitsInvalidError,
+  ExecutionRequestTaskRevisionMismatchError,
 } from '../director/director-errors.js';
+
 
 // ============================================================================
 // 1. PROTOCOL CONSTANTS
@@ -269,4 +271,6 @@ export {
   ExecutionRequestRepositoryForgeryError,
   ExecutionRequestIntentMismatchError,
   ExecutionRequestLimitsInvalidError,
+  ExecutionRequestTaskRevisionMismatchError,
 };
+
