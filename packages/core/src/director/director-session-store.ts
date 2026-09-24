@@ -24,6 +24,7 @@ import {
   DirectorSessionIdZodSchema,
   type DirectorSession,
 } from './director-types.js';
+import type { DirectorContextSnapshot } from './director-context-types.js';
 import {
   DirectorValidationError,
   DirectorSessionNotFoundError,
@@ -40,11 +41,14 @@ export type DirectorAuditEventType =
   | 'DIRECTOR_SESSION_RESUMED'
   | 'DIRECTOR_SESSION_SUSPENDED'
   | 'DIRECTOR_SESSION_CLOSED'
-  | 'DIRECTOR_SESSION_ACTIVITY_UPDATED';
+  | 'DIRECTOR_SESSION_ACTIVITY_UPDATED'
+  | 'DIRECTOR_CONTEXT_SYNCHRONIZED'
+  | 'DIRECTOR_CONTEXT_SYNC_FAILED';
 
 export class DirectorSessionStore {
   readonly directorDir: string;
   readonly sessionsDir: string;
+  readonly snapshotsDir: string;
   readonly activeSessionPath: string;
   private readonly historyManager?: HistoryManager;
 
@@ -56,6 +60,7 @@ export class DirectorSessionStore {
       this.directorDir = path.join(baseDir, '.ai-manager', 'director');
     }
     this.sessionsDir = path.join(this.directorDir, 'sessions');
+    this.snapshotsDir = path.join(this.directorDir, 'snapshots');
     this.activeSessionPath = path.join(this.directorDir, 'active-session.json');
     this.historyManager = options?.historyManager;
   }
@@ -227,5 +232,82 @@ export class DirectorSessionStore {
 
     // Sort descending by lastActivityAt
     return sessions.sort((a, b) => b.lastActivityAt.localeCompare(a.lastActivityAt));
+  }
+
+  /**
+   * Atomically saves a derived Director context snapshot under .ai-manager/director/snapshots/.
+   * Invariant: Persisted snapshot remains derived read-only data, not authoritative project state.
+   */
+  async saveSnapshot(snapshot: DirectorContextSnapshot): Promise<void> {
+    const safeSessionId = this.sanitizeSessionId(snapshot.directorSessionId);
+    const sessionSnapshotsDir = path.join(this.snapshotsDir, safeSessionId);
+
+    // Sanitize any metadata in snapshot before writing
+    const sanitizedSnapshot = sanitizeMcpPayload(snapshot) as DirectorContextSnapshot;
+
+    // 1. Write immutable snapshot file for this synchronization event: snapshots/<sessionId>/<fingerprint>.json
+    const snapshotFilePath = path.join(
+      sessionSnapshotsDir,
+      `${sanitizedSnapshot.logicalFingerprint}.json`
+    );
+    await atomicWriteJson(snapshotFilePath, sanitizedSnapshot);
+
+    // 2. Write latest snapshot pointer: snapshots/<sessionId>/latest.json
+    const latestFilePath = path.join(sessionSnapshotsDir, 'latest.json');
+    await atomicWriteJson(latestFilePath, sanitizedSnapshot);
+
+    // 3. Log audit event via HistoryManager
+    if (this.historyManager) {
+      try {
+        await this.historyManager.appendEvent({
+          eventType: 'DIRECTOR_CONTEXT_SYNCHRONIZED',
+          actor: Actor.DIRECTOR,
+          payload: {
+            directorSessionId: sanitizedSnapshot.directorSessionId,
+            projectId: sanitizedSnapshot.projectId,
+            projectRoot: sanitizedSnapshot.projectRoot,
+            syncStatus: sanitizedSnapshot.syncStatus,
+            logicalFingerprint: sanitizedSnapshot.logicalFingerprint,
+            priorFingerprint: sanitizedSnapshot.priorFingerprint ?? null,
+            isComplete: sanitizedSnapshot.isComplete,
+            unavailableSections: sanitizedSnapshot.unavailableSections,
+            staleSections: sanitizedSnapshot.staleSections,
+            synchronizedAt: sanitizedSnapshot.synchronizedAt,
+          },
+        });
+      } catch {
+        // Logging failure must not break persistence
+      }
+    }
+  }
+
+  /**
+   * Loads the latest context snapshot for a session if persisted, or null.
+   */
+  async loadLatestSnapshot(sessionId: string): Promise<DirectorContextSnapshot | null> {
+    const safeSessionId = this.sanitizeSessionId(sessionId);
+    const latestFilePath = path.join(this.snapshotsDir, safeSessionId, 'latest.json');
+    if (!fs.existsSync(latestFilePath)) {
+      return null;
+    }
+    return readJsonFile<DirectorContextSnapshot>(latestFilePath);
+  }
+
+  /**
+   * Loads a specific snapshot by session ID and fingerprint.
+   */
+  async loadSnapshot(
+    sessionId: string,
+    fingerprint: string
+  ): Promise<DirectorContextSnapshot | null> {
+    const safeSessionId = this.sanitizeSessionId(sessionId);
+    if (!/^[a-f0-9]{32,64}$/i.test(fingerprint)) {
+      throw new DirectorValidationError(`Invalid snapshot fingerprint format: '${fingerprint}'`);
+    }
+    const filePath = path.join(this.snapshotsDir, safeSessionId, `${fingerprint}.json`);
+    if (!fs.existsSync(filePath)) {
+      return null;
+    }
+    return readJsonFile<DirectorContextSnapshot>(filePath);
   }
 }

@@ -30,6 +30,8 @@ import {
   DIRECTOR_ACTOR_ROLES,
 } from '../../director/director-types.js';
 import { DirectorSessionError } from '../../director/director-errors.js';
+import { DirectorContextSynchronizer } from '../../director/director-context-synchronizer.js';
+import { DirectorContextSyncInputZodSchema } from '../../director/director-context-types.js';
 
 // ============================================================================
 // TOOL NAMES
@@ -40,6 +42,7 @@ export const AIDM_DIRECTOR_SESSION_GET_TOOL_NAME = 'aidm.director.session.get';
 export const AIDM_DIRECTOR_SESSION_SUSPEND_TOOL_NAME = 'aidm.director.session.suspend';
 export const AIDM_DIRECTOR_SESSION_CLOSE_TOOL_NAME = 'aidm.director.session.close';
 export const AIDM_DIRECTOR_SESSION_RESUME_TOOL_NAME = 'aidm.director.session.resume';
+export const AIDM_DIRECTOR_CONTEXT_SYNC_TOOL_NAME = 'aidm.director.context.sync';
 
 // Helper to instantiate DirectorSessionEngine from request context
 function getSessionEngine(
@@ -506,6 +509,101 @@ export function createDirectorSessionResumeTool(
 }
 
 // ============================================================================
+// 6. CONTEXT SYNC TOOL (Phase 9 TASK-P9-02)
+// ============================================================================
+
+export const directorContextSyncToolDefinition: McpToolDefinition = {
+  name: AIDM_DIRECTOR_CONTEXT_SYNC_TOOL_NAME,
+  description:
+    'Synchronizes authoritative AIDM project state and context into a deterministic, derived Director reasoning snapshot. Strictly read-only; reports stale/incomplete state and does NOT mutate project state or grant development authorization.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      directorSessionId: {
+        type: 'string',
+        description:
+          'Optional Director session ID. If omitted, uses active Director session for project.',
+      },
+      workspaceRoot: {
+        type: 'string',
+        description: 'Optional path to the project root. Defaults to delegate project root.',
+      },
+      projectId: {
+        type: 'string',
+        description: 'Optional project identifier for cross-project binding validation.',
+      },
+      priorFingerprint: {
+        type: 'string',
+        description: 'Optional prior snapshot fingerprint to detect if state has changed or is unchanged.',
+      },
+      targetPaths: {
+        type: 'array',
+        items: { type: 'string' },
+        description: 'Optional source paths to inspect via ContextEngine.',
+      },
+      evidenceLimit: {
+        type: 'number',
+        description: 'Optional maximum number of evidence items to include (default 20).',
+      },
+      historyLimit: {
+        type: 'number',
+        description: 'Optional maximum number of history events to include (default 20).',
+      },
+    },
+  },
+};
+
+export function createDirectorContextSyncTool(
+  defaultDelegate?: McpOrchestratorDelegate
+): { definition: McpToolDefinition; handler: McpToolHandler } {
+  return {
+    definition: directorContextSyncToolDefinition,
+    handler: async (args: Record<string, unknown>, context: McpRequestContext) => {
+      let parsed: z.infer<typeof DirectorContextSyncInputZodSchema>;
+      try {
+        parsed = DirectorContextSyncInputZodSchema.parse(args ?? {});
+      } catch (err) {
+        if (err instanceof z.ZodError) {
+          throw new McpInvalidRequestError(`Invalid Director context sync request: ${err.message}`, {
+            issues: err.issues,
+          });
+        }
+        throw err;
+      }
+
+      const delegate = context.delegate ?? defaultDelegate;
+      const resolvedRoot = parsed.workspaceRoot ?? delegate?.projectRoot ?? process.cwd();
+
+      const synchronizer = new DirectorContextSynchronizer({
+        workspaceRoot: resolvedRoot,
+        delegate,
+      });
+
+      try {
+        const snapshot = await synchronizer.synchronize({
+          ...parsed,
+          workspaceRoot: resolvedRoot,
+        });
+
+        return {
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify(sanitizeMcpPayload(snapshot), null, 2),
+            },
+          ],
+        };
+      } catch (err) {
+        if (err instanceof DirectorSessionError) {
+          throw new McpInvalidRequestError(err.message, { code: err.code, details: err.details });
+        }
+        throw err;
+      }
+    },
+  };
+}
+
+// ============================================================================
 // REGISTRATION
 // ============================================================================
 
@@ -516,9 +614,11 @@ export function registerDirectorSessionTools(server: McpServer): void {
     createDirectorSessionSuspendTool(server.delegate),
     createDirectorSessionCloseTool(server.delegate),
     createDirectorSessionResumeTool(server.delegate),
+    createDirectorContextSyncTool(server.delegate),
   ];
 
   for (const tool of tools) {
     server.registerTool(tool.definition, tool.handler);
   }
 }
+

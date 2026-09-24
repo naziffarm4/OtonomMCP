@@ -7,3 +7,6 @@ export * from './director-errors.js';
 export * from './project-identity-resolver.js';
 export * from './director-session-store.js';
 export * from './director-session-engine.js';
+export * from './director-context-types.js';
+export * from './director-context-synchronizer.js';
+
