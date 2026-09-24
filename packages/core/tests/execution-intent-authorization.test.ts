@@ -163,6 +163,27 @@ describe('Phase 10 — Execution Intent Authorization Boundary (TASK-P10-01)', (
     metadataOverride?: Record<string, unknown>
   ) {
     const tasks = await specStore.loadTasks().catch(() => []);
+    if (!tasks.some(t => t.task_id === 'FEAT-TEST-001')) {
+      tasks.push({
+        task_id: 'FEAT-TEST-001',
+        parent_feature_id: 'ROOT',
+        title: 'Test Feature',
+        description: 'Test Feature for execution intent testing',
+        traceability_sources: ['REQ-001'],
+        dependencies: [],
+        acceptance_criteria: ['AC-FEAT-001'],
+        status: 'READY' as any,
+        attempt: 1,
+        max_attempts: 3,
+        priority: 'MEDIUM',
+        risk_level: 'SAFE',
+        hierarchy_level: 'FEATURE' as any,
+        created_at: new Date().toISOString(),
+        started_at: null,
+        completed_at: null,
+        metadata: { revision: 1 },
+      });
+    }
     tasks.push({
       task_id: taskId,
       parent_feature_id: 'FEAT-TEST-001',
@@ -175,7 +196,7 @@ describe('Phase 10 — Execution Intent Authorization Boundary (TASK-P10-01)', (
       attempt: 1,
       max_attempts: 3,
       priority: 'MEDIUM',
-      risk_level: 'MEDIUM',
+      risk_level: 'SAFE',
       created_at: new Date().toISOString(),
       started_at: null,
       completed_at: null,
@@ -192,7 +213,8 @@ describe('Phase 10 — Execution Intent Authorization Boundary (TASK-P10-01)', (
     projectId: string,
     fingerprint: string,
     understandingRevision?: number | null,
-    decisionType = 'IMPLEMENT_TASK' as any
+    decisionType = 'IMPLEMENT_TASK' as any,
+    basedOnApprovalRevision: number | null = null
   ): Promise<DirectorDecision> {
     const decision: DirectorDecision = {
       decisionId: `dec-${Date.now()}-${Math.random().toString(36).substring(2, 8)}`,
@@ -204,7 +226,7 @@ describe('Phase 10 — Execution Intent Authorization Boundary (TASK-P10-01)', (
       decisionType,
       rationale: 'Implement the next task per Director analysis',
       basedOnContextFingerprint: fingerprint,
-      basedOnApprovalRevision: null,
+      basedOnApprovalRevision,
       basedOnUnderstandingRevision: understandingRevision ?? null,
       createdAt: new Date().toISOString(),
       metadata: {},
@@ -420,8 +442,10 @@ describe('Phase 10 — Execution Intent Authorization Boundary (TASK-P10-01)', (
       directorSessionId: activeSession.directorSessionId,
       directorDecisionId: implementDecision.decisionId,
       taskId: 'TASK-P10-IMPL-001',
+      taskRevision: 1,
       contextFingerprint: activeSnapshot.logicalFingerprint,
       understandingRevision: 5,
+      approvalPackageRevision: testPackage.revision,
     });
 
     assert.equal(result.isValid, false);
@@ -456,8 +480,10 @@ describe('Phase 10 — Execution Intent Authorization Boundary (TASK-P10-01)', (
       directorSessionId: activeSession.directorSessionId,
       directorDecisionId: implementDecision.decisionId,
       taskId: 'TASK-P10-IMPL-001',
+      taskRevision: 1,
       contextFingerprint: activeSnapshot.logicalFingerprint,
       understandingRevision: 5,
+      approvalPackageRevision: testPackage.revision,
     });
 
     assert.equal(result.isValid, false);
@@ -475,8 +501,10 @@ describe('Phase 10 — Execution Intent Authorization Boundary (TASK-P10-01)', (
       directorSessionId: activeSession.directorSessionId,
       directorDecisionId: implementDecision.decisionId,
       taskId: 'TASK-P10-IMPL-001',
+      taskRevision: 1,
       contextFingerprint: activeSnapshot.logicalFingerprint,
       understandingRevision: 5,
+      approvalPackageRevision: testPackage.revision,
     });
 
     assert.equal(result.isValid, false);
@@ -493,8 +521,10 @@ describe('Phase 10 — Execution Intent Authorization Boundary (TASK-P10-01)', (
       directorSessionId: 'dir-sess-nonexistent',
       directorDecisionId: implementDecision.decisionId,
       taskId: 'TASK-P10-IMPL-001',
+      taskRevision: 1,
       contextFingerprint: activeSnapshot.logicalFingerprint,
       understandingRevision: 5,
+      approvalPackageRevision: testPackage.revision,
     });
 
     assert.equal(result.isValid, false);
@@ -525,8 +555,10 @@ describe('Phase 10 — Execution Intent Authorization Boundary (TASK-P10-01)', (
       directorSessionId: session2.directorSessionId,
       directorDecisionId: implementDecision.decisionId,
       taskId: 'TASK-P10-IMPL-001',
+      taskRevision: 1,
       contextFingerprint: activeSnapshot.logicalFingerprint,
       understandingRevision: 5,
+      approvalPackageRevision: testPackage.revision,
     });
 
     assert.equal(result.isValid, false);
@@ -552,8 +584,10 @@ describe('Phase 10 — Execution Intent Authorization Boundary (TASK-P10-01)', (
       directorSessionId: activeSession.directorSessionId,
       directorDecisionId: clarifyDecision.decisionId,
       taskId: 'TASK-P10-IMPL-001',
+      taskRevision: 1,
       contextFingerprint: activeSnapshot.logicalFingerprint,
       understandingRevision: 5,
+      approvalPackageRevision: testPackage.revision,
     });
 
     assert.equal(result.isValid, false);
@@ -570,8 +604,10 @@ describe('Phase 10 — Execution Intent Authorization Boundary (TASK-P10-01)', (
       directorSessionId: activeSession.directorSessionId,
       directorDecisionId: implementDecision.decisionId,
       taskId: 'TASK-NONEXISTENT',
+      taskRevision: 1,
       contextFingerprint: activeSnapshot.logicalFingerprint,
       understandingRevision: 5,
+      approvalPackageRevision: testPackage.revision,
     });
 
     assert.equal(result.isValid, false);
@@ -590,8 +626,10 @@ describe('Phase 10 — Execution Intent Authorization Boundary (TASK-P10-01)', (
       directorSessionId: activeSession.directorSessionId,
       directorDecisionId: implementDecision.decisionId,
       taskId: 'TASK-P10-DONE-001',
+      taskRevision: 1,
       contextFingerprint: activeSnapshot.logicalFingerprint,
       understandingRevision: 5,
+      approvalPackageRevision: testPackage.revision,
     });
 
     assert.equal(result.isValid, false);
@@ -611,6 +649,7 @@ describe('Phase 10 — Execution Intent Authorization Boundary (TASK-P10-01)', (
       taskRevision: 999,
       contextFingerprint: activeSnapshot.logicalFingerprint,
       understandingRevision: 5,
+      approvalPackageRevision: testPackage.revision,
     });
 
     assert.equal(result.isValid, false);
@@ -627,8 +666,10 @@ describe('Phase 10 — Execution Intent Authorization Boundary (TASK-P10-01)', (
       directorSessionId: activeSession.directorSessionId,
       directorDecisionId: implementDecision.decisionId,
       taskId: 'TASK-P10-IMPL-001',
+      taskRevision: 1,
       contextFingerprint: 'wrong-fingerprint-abc123',
       understandingRevision: 5,
+      approvalPackageRevision: testPackage.revision,
     });
 
     assert.equal(result.isValid, false);
@@ -657,8 +698,10 @@ describe('Phase 10 — Execution Intent Authorization Boundary (TASK-P10-01)', (
       directorSessionId: activeSession.directorSessionId,
       directorDecisionId: implementDecision.decisionId,
       taskId: 'TASK-P10-IMPL-001',
+      taskRevision: 1,
       contextFingerprint: snapshot.logicalFingerprint,
       understandingRevision: 5,
+      approvalPackageRevision: testPackage.revision,
     });
 
     assert.equal(result.isValid, false);
@@ -690,8 +733,10 @@ describe('Phase 10 — Execution Intent Authorization Boundary (TASK-P10-01)', (
       directorSessionId: activeSession.directorSessionId,
       directorDecisionId: implementDecision.decisionId,
       taskId: 'TASK-P10-IMPL-001',
+      taskRevision: 1,
       contextFingerprint: snapshot.logicalFingerprint,
       understandingRevision: 5,
+      approvalPackageRevision: testPackage.revision,
     });
 
     assert.equal(result.isValid, false);
@@ -729,8 +774,10 @@ describe('Phase 10 — Execution Intent Authorization Boundary (TASK-P10-01)', (
       directorSessionId: noRevSession.directorSessionId,
       directorDecisionId: noRevDecision.decisionId,
       taskId: 'TASK-P10-IMPL-001',
+      taskRevision: 1,
       contextFingerprint: noRevSnapshot.logicalFingerprint,
       understandingRevision: 5,
+      approvalPackageRevision: testPackage.revision,
     });
 
     assert.equal(result.isValid, false);
@@ -748,9 +795,11 @@ describe('Phase 10 — Execution Intent Authorization Boundary (TASK-P10-01)', (
       directorSessionId: activeSession.directorSessionId,
       directorDecisionId: implementDecision.decisionId,
       taskId: 'TASK-P10-IMPL-001',
+      taskRevision: 1,
       contextFingerprint: activeSnapshot.logicalFingerprint,
+      approvalPackageRevision: testPackage.revision,
       // understandingRevision intentionally omitted
-    });
+    } as any);
 
     assert.equal(result.isValid, false);
     assert.equal(result.code, 'UNDERSTANDING_REVISION_MISMATCH');
@@ -767,8 +816,10 @@ describe('Phase 10 — Execution Intent Authorization Boundary (TASK-P10-01)', (
       directorSessionId: activeSession.directorSessionId,
       directorDecisionId: implementDecision.decisionId,
       taskId: 'TASK-P10-IMPL-001',
+      taskRevision: 1,
       contextFingerprint: activeSnapshot.logicalFingerprint,
       understandingRevision: 99,
+      approvalPackageRevision: testPackage.revision,
     });
 
     assert.equal(result.isValid, false);
@@ -787,6 +838,7 @@ describe('Phase 10 — Execution Intent Authorization Boundary (TASK-P10-01)', (
       directorSessionId: activeSession.directorSessionId,
       directorDecisionId: implementDecision.decisionId,
       taskId: 'TASK-P10-IMPL-001',
+      taskRevision: 1,
       contextFingerprint: activeSnapshot.logicalFingerprint,
       understandingRevision: 5,
       approvalPackageRevision: 999,
@@ -830,8 +882,10 @@ describe('Phase 10 — Execution Intent Authorization Boundary (TASK-P10-01)', (
       directorSessionId: closedSession.directorSessionId,
       directorDecisionId: closedDecision.decisionId,
       taskId: 'TASK-P10-IMPL-001',
+      taskRevision: 1,
       contextFingerprint: activeSnapshot.logicalFingerprint,
       understandingRevision: 5,
+      approvalPackageRevision: testPackage.revision,
     });
 
     assert.equal(result.isValid, false);
@@ -887,8 +941,10 @@ describe('Phase 10 — Execution Intent Authorization Boundary (TASK-P10-01)', (
       directorSessionId: activeSession.directorSessionId,
       directorDecisionId: badDecisionId,
       taskId: 'TASK-P10-IMPL-001',
+      taskRevision: 1,
       contextFingerprint: activeSnapshot.logicalFingerprint,
       understandingRevision: 5,
+      approvalPackageRevision: testPackage.revision,
     });
 
     assert.equal(result.isValid, false);
@@ -916,6 +972,7 @@ describe('Phase 10 — Execution Intent Authorization Boundary (TASK-P10-01)', (
       taskRevision: 1,
       contextFingerprint: activeSnapshot.logicalFingerprint,
       understandingRevision: 5,
+      approvalPackageRevision: testPackage.revision,
     });
 
     // Run an invalid one too
@@ -924,8 +981,10 @@ describe('Phase 10 — Execution Intent Authorization Boundary (TASK-P10-01)', (
       directorSessionId: activeSession.directorSessionId,
       directorDecisionId: implementDecision.decisionId,
       taskId: 'TASK-NONEXISTENT',
+      taskRevision: 1,
       contextFingerprint: activeSnapshot.logicalFingerprint,
       understandingRevision: 5,
+      approvalPackageRevision: testPackage.revision,
     });
 
     // Verify no mutation
@@ -975,6 +1034,7 @@ describe('Phase 10 — Execution Intent Authorization Boundary (TASK-P10-01)', (
           taskRevision: 1,
           contextFingerprint: activeSnapshot.logicalFingerprint,
           understandingRevision: 5,
+          approvalPackageRevision: testPackage.revision,
         },
       },
     });
@@ -999,8 +1059,10 @@ describe('Phase 10 — Execution Intent Authorization Boundary (TASK-P10-01)', (
       directorSessionId: activeSession.directorSessionId,
       directorDecisionId: 'dec-nonexistent-123',
       taskId: 'TASK-P10-IMPL-001',
+      taskRevision: 1,
       contextFingerprint: activeSnapshot.logicalFingerprint,
       understandingRevision: 5,
+      approvalPackageRevision: testPackage.revision,
     });
 
     assert.equal(result.isValid, false);
@@ -1020,6 +1082,7 @@ describe('Phase 10 — Execution Intent Authorization Boundary (TASK-P10-01)', (
       taskRevision: 1,
       contextFingerprint: activeSnapshot.logicalFingerprint,
       understandingRevision: 5,
+      approvalPackageRevision: testPackage.revision,
     });
 
     assert.ok(intent);
@@ -1046,8 +1109,10 @@ describe('Phase 10 — Execution Intent Authorization Boundary (TASK-P10-01)', (
           directorSessionId: activeSession.directorSessionId,
           directorDecisionId: implementDecision.decisionId,
           taskId: 'TASK-P10-IMPL-001',
+          taskRevision: 1,
           contextFingerprint: activeSnapshot.logicalFingerprint,
           understandingRevision: 5,
+          approvalPackageRevision: testPackage.revision,
         });
       },
       (err: unknown) => {
@@ -1064,8 +1129,10 @@ describe('Phase 10 — Execution Intent Authorization Boundary (TASK-P10-01)', (
           directorSessionId: 'nonexistent-session',
           directorDecisionId: implementDecision.decisionId,
           taskId: 'TASK-P10-IMPL-001',
+          taskRevision: 1,
           contextFingerprint: activeSnapshot.logicalFingerprint,
           understandingRevision: 5,
+          approvalPackageRevision: testPackage.revision,
         });
       },
       (err: unknown) => {
@@ -1082,8 +1149,10 @@ describe('Phase 10 — Execution Intent Authorization Boundary (TASK-P10-01)', (
           directorSessionId: activeSession.directorSessionId,
           directorDecisionId: implementDecision.decisionId,
           taskId: 'TASK-NONEXISTENT',
+          taskRevision: 1,
           contextFingerprint: activeSnapshot.logicalFingerprint,
           understandingRevision: 5,
+          approvalPackageRevision: testPackage.revision,
         });
       },
       (err: unknown) => {
@@ -1100,8 +1169,10 @@ describe('Phase 10 — Execution Intent Authorization Boundary (TASK-P10-01)', (
           directorSessionId: activeSession.directorSessionId,
           directorDecisionId: implementDecision.decisionId,
           taskId: 'TASK-P10-IMPL-001',
+          taskRevision: 1,
           contextFingerprint: activeSnapshot.logicalFingerprint,
           understandingRevision: 99,
+          approvalPackageRevision: testPackage.revision,
         });
       },
       (err: unknown) => {
@@ -1148,8 +1219,10 @@ describe('Phase 10 — Execution Intent Authorization Boundary (TASK-P10-01)', (
       directorSessionId: activeSession.directorSessionId,
       directorDecisionId: implementDecision.decisionId,
       taskId: 'TASK-P10-IMPL-001',
+      taskRevision: 1,
       contextFingerprint: activeSnapshot.logicalFingerprint,
       understandingRevision: 5,
+      approvalPackageRevision: testPackage.revision,
     });
 
     assert.equal(result.isValid, false);
@@ -1193,8 +1266,10 @@ describe('Phase 10 — Execution Intent Authorization Boundary (TASK-P10-01)', (
       directorSessionId: activeSession.directorSessionId,
       directorDecisionId: implementDecision.decisionId,
       taskId: 'TASK-P10-IMPL-001',
+      taskRevision: 1,
       contextFingerprint: activeSnapshot.logicalFingerprint,
       understandingRevision: 5,
+      approvalPackageRevision: testPackage.revision,
     });
 
     assert.equal(result.isValid, false);
@@ -1242,8 +1317,10 @@ describe('Phase 10 — Execution Intent Authorization Boundary (TASK-P10-01)', (
       directorSessionId: activeSession.directorSessionId,
       directorDecisionId: implementDecision.decisionId,
       taskId: 'TASK-P10-IMPL-001',
+      taskRevision: 1,
       contextFingerprint: activeSnapshot.logicalFingerprint,
       understandingRevision: 5,
+      approvalPackageRevision: testPackage.revision,
     });
 
     assert.equal(result.isValid, false);
@@ -1264,8 +1341,10 @@ describe('Phase 10 — Execution Intent Authorization Boundary (TASK-P10-01)', (
       directorSessionId: activeSession.directorSessionId,
       directorDecisionId: implementDecision.decisionId,
       taskId: 'TASK-P10-BLOCKED-001',
+      taskRevision: 1,
       contextFingerprint: activeSnapshot.logicalFingerprint,
       understandingRevision: 5,
+      approvalPackageRevision: testPackage.revision,
     });
 
     assert.equal(result.isValid, false);
@@ -1287,8 +1366,10 @@ describe('Phase 10 — Execution Intent Authorization Boundary (TASK-P10-01)', (
       directorSessionId: activeSession.directorSessionId,
       directorDecisionId: implementDecision.decisionId,
       taskId: 'TASK-P10-CHILD-001',
+      taskRevision: 1,
       contextFingerprint: activeSnapshot.logicalFingerprint,
       understandingRevision: 5,
+      approvalPackageRevision: testPackage.revision,
     });
 
     assert.equal(result.isValid, false);
@@ -1297,10 +1378,10 @@ describe('Phase 10 — Execution Intent Authorization Boundary (TASK-P10-01)', (
   });
 
   // ==========================================================================
-  // ADDITIONAL: RESUME decision type is execution-eligible
+  // T30: RESUME decision type is REJECTED (not execution-eligible)
   // ==========================================================================
 
-  it('T30_resume_decision_eligible: RESUME decision type is execution-eligible', async () => {
+  it('T30_resume_decision_rejected: RESUME decision type is rejected and not execution-eligible', async () => {
     const resumeDecision = await createImplementTaskDecision(
       activeSession.directorSessionId,
       'test-exec-intent-project',
@@ -1317,14 +1398,16 @@ describe('Phase 10 — Execution Intent Authorization Boundary (TASK-P10-01)', (
       taskRevision: 1,
       contextFingerprint: activeSnapshot.logicalFingerprint,
       understandingRevision: 5,
+      approvalPackageRevision: testPackage.revision,
     });
 
-    assert.equal(result.isValid, true);
-    assert.equal(result.code, 'VALID');
+    assert.equal(result.isValid, false);
+    assert.equal(result.code, 'DECISION_TYPE_INVALID');
+    assert.match(result.message, /RESUME is not an execution intent/);
   });
 
   // ==========================================================================
-  // ADDITIONAL: BLOCK decision type is NOT execution-eligible
+  // T31: BLOCK decision type is NOT execution-eligible
   // ==========================================================================
 
   it('T31_block_decision_not_eligible: BLOCK decision type returns DECISION_TYPE_INVALID', async () => {
@@ -1341,8 +1424,10 @@ describe('Phase 10 — Execution Intent Authorization Boundary (TASK-P10-01)', (
       directorSessionId: activeSession.directorSessionId,
       directorDecisionId: blockDecision.decisionId,
       taskId: 'TASK-P10-IMPL-001',
+      taskRevision: 1,
       contextFingerprint: activeSnapshot.logicalFingerprint,
       understandingRevision: 5,
+      approvalPackageRevision: testPackage.revision,
     });
 
     assert.equal(result.isValid, false);
@@ -1350,7 +1435,7 @@ describe('Phase 10 — Execution Intent Authorization Boundary (TASK-P10-01)', (
   });
 
   // ==========================================================================
-  // ADDITIONAL: IN_PROGRESS task is execution-eligible
+  // T32: IN_PROGRESS task is execution-eligible
   // ==========================================================================
 
   it('T32_in_progress_task_eligible: IN_PROGRESS task is execution-eligible', async () => {
@@ -1361,8 +1446,10 @@ describe('Phase 10 — Execution Intent Authorization Boundary (TASK-P10-01)', (
       directorSessionId: activeSession.directorSessionId,
       directorDecisionId: implementDecision.decisionId,
       taskId: 'TASK-P10-WIP-001',
+      taskRevision: 1,
       contextFingerprint: activeSnapshot.logicalFingerprint,
       understandingRevision: 5,
+      approvalPackageRevision: testPackage.revision,
     });
 
     assert.equal(result.isValid, true);
@@ -1370,28 +1457,34 @@ describe('Phase 10 — Execution Intent Authorization Boundary (TASK-P10-01)', (
   });
 
   // ==========================================================================
-  // ADDITIONAL: Intent ID generation is deterministic
+  // T33: Intent ID generation is deterministic and context-dependent
   // ==========================================================================
 
-  it('T33_deterministic_intent_id: same inputs generate same intent ID', async () => {
+  it('T33_deterministic_intent_id: same inputs generate same ID, different contextFingerprint generates different ID', async () => {
     const id1 = executionAuthorizer.generateIntentId(
-      'test-project', 'sess-1', 'dec-1', 'task-1'
+      'test-project', 'dec-1', 'task-1', 'fingerprint-A'
     );
     const id2 = executionAuthorizer.generateIntentId(
-      'test-project', 'sess-1', 'dec-1', 'task-1'
+      'test-project', 'dec-1', 'task-1', 'fingerprint-A'
     );
     assert.equal(id1, id2);
     assert.ok(id1.startsWith('intent-'));
 
-    // Different inputs → different ID
+    // Different contextFingerprint → different ID
     const id3 = executionAuthorizer.generateIntentId(
-      'test-project', 'sess-2', 'dec-1', 'task-1'
+      'test-project', 'dec-1', 'task-1', 'fingerprint-B'
     );
     assert.notEqual(id1, id3);
+
+    // Different decisionId → different ID
+    const id4 = executionAuthorizer.generateIntentId(
+      'test-project', 'dec-2', 'task-1', 'fingerprint-A'
+    );
+    assert.notEqual(id1, id4);
   });
 
   // ==========================================================================
-  // ADDITIONAL: null understandingRevision in intent → UNDERSTANDING_REVISION_MISMATCH
+  // T34: null understandingRevision in intent → UNDERSTANDING_REVISION_MISMATCH
   // ==========================================================================
 
   it('T34_null_understanding_revision_intent: null understandingRevision in intent returns UNDERSTANDING_REVISION_MISMATCH', async () => {
@@ -1400,8 +1493,10 @@ describe('Phase 10 — Execution Intent Authorization Boundary (TASK-P10-01)', (
       directorSessionId: activeSession.directorSessionId,
       directorDecisionId: implementDecision.decisionId,
       taskId: 'TASK-P10-IMPL-001',
+      taskRevision: 1,
       contextFingerprint: activeSnapshot.logicalFingerprint,
-      understandingRevision: null,
+      understandingRevision: null as any,
+      approvalPackageRevision: testPackage.revision,
     });
 
     assert.equal(result.isValid, false);
@@ -1409,7 +1504,7 @@ describe('Phase 10 — Execution Intent Authorization Boundary (TASK-P10-01)', (
   });
 
   // ==========================================================================
-  // ADDITIONAL: Validation input schema rejection
+  // T35: Validation input schema rejection
   // ==========================================================================
 
   it('T35_input_schema_validation: malformed input returns VALIDATION_ERROR', async () => {
@@ -1418,7 +1513,10 @@ describe('Phase 10 — Execution Intent Authorization Boundary (TASK-P10-01)', (
       directorSessionId: '',
       directorDecisionId: 'dec-1',
       taskId: 'TASK-1',
+      taskRevision: 1,
       contextFingerprint: 'fp-1',
+      understandingRevision: 1,
+      approvalPackageRevision: 1,
     } as any);
 
     assert.equal(result.isValid, false);
@@ -1426,7 +1524,7 @@ describe('Phase 10 — Execution Intent Authorization Boundary (TASK-P10-01)', (
   });
 
   // ==========================================================================
-  // ADDITIONAL: MCP tool with invalid input returns error
+  // T36: MCP tool with invalid input returns error
   // ==========================================================================
 
   it('T36_mcp_tool_invalid_input: MCP tool rejects malformed input', async () => {
@@ -1445,13 +1543,12 @@ describe('Phase 10 — Execution Intent Authorization Boundary (TASK-P10-01)', (
       params: {
         name: AIDM_EXECUTION_INTENT_VALIDATE_TOOL_NAME,
         arguments: {
-          // Missing required fields, empty directorSessionId
+          // Missing required fields
           directorSessionId: '',
         },
       },
     });
 
-    // Should return an error response
     assert.ok(resp);
     assert.ok('error' in resp);
 
@@ -1459,11 +1556,10 @@ describe('Phase 10 — Execution Intent Authorization Boundary (TASK-P10-01)', (
   });
 
   // ==========================================================================
-  // ADDITIONAL: Decision project mismatch → DECISION_PROJECT_MISMATCH
+  // T37: Decision project mismatch → DECISION_PROJECT_MISMATCH
   // ==========================================================================
 
   it('T37_decision_project_mismatch: decision for different project returns DECISION_PROJECT_MISMATCH', async () => {
-    // Create a decision with a different projectId
     const wrongProjDecision: DirectorDecision = {
       decisionId: `dec-wrongproj-${Date.now()}`,
       directorSessionId: activeSession.directorSessionId,
@@ -1487,11 +1583,330 @@ describe('Phase 10 — Execution Intent Authorization Boundary (TASK-P10-01)', (
       directorSessionId: activeSession.directorSessionId,
       directorDecisionId: wrongProjDecision.decisionId,
       taskId: 'TASK-P10-IMPL-001',
+      taskRevision: 1,
       contextFingerprint: activeSnapshot.logicalFingerprint,
       understandingRevision: 5,
+      approvalPackageRevision: testPackage.revision,
     });
 
     assert.equal(result.isValid, false);
     assert.equal(result.code, 'DECISION_PROJECT_MISMATCH');
+  });
+
+  // ==========================================================================
+  // T38: Mandatory approvalPackageRevision: missing from input → APPROVAL_REVISION_MISMATCH
+  // ==========================================================================
+
+  it('T38_missing_approval_package_revision: omitted approvalPackageRevision returns APPROVAL_REVISION_MISMATCH', async () => {
+    const result = await executionAuthorizer.validateExecutionIntent({
+      workspaceRoot: tempDir,
+      directorSessionId: activeSession.directorSessionId,
+      directorDecisionId: implementDecision.decisionId,
+      taskId: 'TASK-P10-IMPL-001',
+      taskRevision: 1,
+      contextFingerprint: activeSnapshot.logicalFingerprint,
+      understandingRevision: 5,
+      // approvalPackageRevision omitted
+    } as any);
+
+    assert.equal(result.isValid, false);
+    assert.equal(result.code, 'APPROVAL_REVISION_MISMATCH');
+    assert.match(result.message, /mandatory/i);
+  });
+
+  // ==========================================================================
+  // T39: Decision context fingerprint mismatch → CONTEXT_FINGERPRINT_MISMATCH
+  // ==========================================================================
+
+  it('T39_decision_context_fingerprint_mismatch: decision with stale/foreign fingerprint returns CONTEXT_FINGERPRINT_MISMATCH', async () => {
+    const staleDecision = await createImplementTaskDecision(
+      activeSession.directorSessionId,
+      'test-exec-intent-project',
+      'foreign-stale-fingerprint-999',
+      5
+    );
+
+    const result = await executionAuthorizer.validateExecutionIntent({
+      workspaceRoot: tempDir,
+      directorSessionId: activeSession.directorSessionId,
+      directorDecisionId: staleDecision.decisionId,
+      taskId: 'TASK-P10-IMPL-001',
+      taskRevision: 1,
+      contextFingerprint: activeSnapshot.logicalFingerprint,
+      understandingRevision: 5,
+      approvalPackageRevision: testPackage.revision,
+    });
+
+    assert.equal(result.isValid, false);
+    assert.equal(result.code, 'CONTEXT_FINGERPRINT_MISMATCH');
+    assert.match(result.message, /Decision was made on a different or stale context snapshot/);
+  });
+
+  // ==========================================================================
+  // T40: Decision understanding revision mismatch → UNDERSTANDING_REVISION_MISMATCH
+  // ==========================================================================
+
+  it('T40_decision_understanding_revision_mismatch: decision with different understanding revision returns UNDERSTANDING_REVISION_MISMATCH', async () => {
+    const mismatchedDecision = await createImplementTaskDecision(
+      activeSession.directorSessionId,
+      'test-exec-intent-project',
+      activeSnapshot.logicalFingerprint,
+      3 // different from session revision 5
+    );
+
+    const result = await executionAuthorizer.validateExecutionIntent({
+      workspaceRoot: tempDir,
+      directorSessionId: activeSession.directorSessionId,
+      directorDecisionId: mismatchedDecision.decisionId,
+      taskId: 'TASK-P10-IMPL-001',
+      taskRevision: 1,
+      contextFingerprint: activeSnapshot.logicalFingerprint,
+      understandingRevision: 5,
+      approvalPackageRevision: testPackage.revision,
+    });
+
+    assert.equal(result.isValid, false);
+    assert.equal(result.code, 'UNDERSTANDING_REVISION_MISMATCH');
+    assert.match(result.message, /Director decision was based on understanding revision 3/);
+  });
+
+  // ==========================================================================
+  // T41: Decision approval revision mismatch → APPROVAL_REVISION_MISMATCH
+  // ==========================================================================
+
+  it('T41_decision_approval_revision_mismatch: decision with different approval revision returns APPROVAL_REVISION_MISMATCH', async () => {
+    const mismatchedDecision = await createImplementTaskDecision(
+      activeSession.directorSessionId,
+      'test-exec-intent-project',
+      activeSnapshot.logicalFingerprint,
+      5,
+      'IMPLEMENT_TASK',
+      99 // different from testPackage.revision (1)
+    );
+
+    const result = await executionAuthorizer.validateExecutionIntent({
+      workspaceRoot: tempDir,
+      directorSessionId: activeSession.directorSessionId,
+      directorDecisionId: mismatchedDecision.decisionId,
+      taskId: 'TASK-P10-IMPL-001',
+      taskRevision: 1,
+      contextFingerprint: activeSnapshot.logicalFingerprint,
+      understandingRevision: 5,
+      approvalPackageRevision: testPackage.revision,
+    });
+
+    assert.equal(result.isValid, false);
+    assert.equal(result.code, 'APPROVAL_REVISION_MISMATCH');
+    assert.match(result.message, /Director decision was based on approval revision 99/);
+  });
+
+  // ==========================================================================
+  // T42: Decision with exact matching bindings → VALID
+  // ==========================================================================
+
+  it('T42_decision_exact_bindings_valid: decision with matching context, understanding, and approval revisions is accepted', async () => {
+    const fullyBoundDecision = await createImplementTaskDecision(
+      activeSession.directorSessionId,
+      'test-exec-intent-project',
+      activeSnapshot.logicalFingerprint,
+      5,
+      'IMPLEMENT_TASK',
+      testPackage.revision
+    );
+
+    const result = await executionAuthorizer.validateExecutionIntent({
+      workspaceRoot: tempDir,
+      directorSessionId: activeSession.directorSessionId,
+      directorDecisionId: fullyBoundDecision.decisionId,
+      taskId: 'TASK-P10-IMPL-001',
+      taskRevision: 1,
+      contextFingerprint: activeSnapshot.logicalFingerprint,
+      understandingRevision: 5,
+      approvalPackageRevision: testPackage.revision,
+    });
+
+    assert.equal(result.isValid, true);
+    assert.equal(result.code, 'VALID');
+  });
+
+  // ==========================================================================
+  // T43: Mandatory taskRevision: missing from input → TASK_REVISION_MISMATCH
+  // ==========================================================================
+
+  it('T43_missing_task_revision: omitted taskRevision returns TASK_REVISION_MISMATCH', async () => {
+    const result = await executionAuthorizer.validateExecutionIntent({
+      workspaceRoot: tempDir,
+      directorSessionId: activeSession.directorSessionId,
+      directorDecisionId: implementDecision.decisionId,
+      taskId: 'TASK-P10-IMPL-001',
+      contextFingerprint: activeSnapshot.logicalFingerprint,
+      understandingRevision: 5,
+      approvalPackageRevision: testPackage.revision,
+      // taskRevision omitted
+    } as any);
+
+    assert.equal(result.isValid, false);
+    assert.equal(result.code, 'TASK_REVISION_MISMATCH');
+    assert.match(result.message, /mandatory/i);
+  });
+
+  // ==========================================================================
+  // T44: Authoritative taskRevision from metadata.revision (not attempt)
+  // ==========================================================================
+
+  it('T44_task_revision_from_metadata: authoritative task revision is read from metadata.revision, not attempt', async () => {
+    // Create a task where attempt is 3, but metadata.revision is 2
+    await createReadyTask('TASK-P10-ATTEMPT-DIFF-001', [], 'READY', { revision: 2 });
+    const tasks = await specStore.loadTasks();
+    const task = tasks.find(t => t.task_id === 'TASK-P10-ATTEMPT-DIFF-001')!;
+    task.attempt = 3; // attempt != revision
+    await specStore.saveTasks(tasks);
+
+    // Using attempt (3) should fail
+    const attemptResult = await executionAuthorizer.validateExecutionIntent({
+      workspaceRoot: tempDir,
+      directorSessionId: activeSession.directorSessionId,
+      directorDecisionId: implementDecision.decisionId,
+      taskId: 'TASK-P10-ATTEMPT-DIFF-001',
+      taskRevision: 3, // using attempt instead of metadata.revision
+      contextFingerprint: activeSnapshot.logicalFingerprint,
+      understandingRevision: 5,
+      approvalPackageRevision: testPackage.revision,
+    });
+    assert.equal(attemptResult.isValid, false);
+    assert.equal(attemptResult.code, 'TASK_REVISION_MISMATCH');
+
+    // Using metadata.revision (2) should succeed
+    const validResult = await executionAuthorizer.validateExecutionIntent({
+      workspaceRoot: tempDir,
+      directorSessionId: activeSession.directorSessionId,
+      directorDecisionId: implementDecision.decisionId,
+      taskId: 'TASK-P10-ATTEMPT-DIFF-001',
+      taskRevision: 2,
+      contextFingerprint: activeSnapshot.logicalFingerprint,
+      understandingRevision: 5,
+      approvalPackageRevision: testPackage.revision,
+    });
+    assert.equal(validResult.isValid, true);
+    assert.equal(validResult.code, 'VALID');
+  });
+
+  // ==========================================================================
+  // T45: Lifecycle: P10-01 does NOT emit EXECUTION_REQUESTED history event
+  // ==========================================================================
+
+  it('T45_lifecycle_no_execution_requested_event: createExecutionIntent does NOT emit EXECUTION_REQUESTED event', async () => {
+    const eventsBefore = await historyManager.readEvents();
+    const executionRequestedBefore = eventsBefore.filter(e => e.eventType === 'EXECUTION_REQUESTED');
+
+    const intent = await executionAuthorizer.createExecutionIntent({
+      workspaceRoot: tempDir,
+      directorSessionId: activeSession.directorSessionId,
+      directorDecisionId: implementDecision.decisionId,
+      taskId: 'TASK-P10-IMPL-001',
+      taskRevision: 1,
+      contextFingerprint: activeSnapshot.logicalFingerprint,
+      understandingRevision: 5,
+      approvalPackageRevision: testPackage.revision,
+    });
+
+    assert.ok(intent);
+
+    const eventsAfter = await historyManager.readEvents();
+    const executionRequestedAfter = eventsAfter.filter(e => e.eventType === 'EXECUTION_REQUESTED');
+
+    // P10-01 must NOT emit EXECUTION_REQUESTED
+    assert.equal(executionRequestedAfter.length, executionRequestedBefore.length);
+  });
+
+  // ==========================================================================
+  // T46: Operation type restriction: only IMPLEMENT_TASK is authorized in P10-01
+  // ==========================================================================
+
+  it('T46_operation_type_narrowed: non-IMPLEMENT_TASK operation type is rejected in P10-01', async () => {
+    const result = await executionAuthorizer.validateExecutionIntent({
+      workspaceRoot: tempDir,
+      directorSessionId: activeSession.directorSessionId,
+      directorDecisionId: implementDecision.decisionId,
+      taskId: 'TASK-P10-IMPL-001',
+      taskRevision: 1,
+      contextFingerprint: activeSnapshot.logicalFingerprint,
+      understandingRevision: 5,
+      approvalPackageRevision: testPackage.revision,
+      operationType: 'EXECUTE_TEST' as any,
+    });
+
+    assert.equal(result.isValid, false);
+    assert.equal(result.code, 'DECISION_TYPE_INVALID');
+    assert.match(result.message, /EXECUTE_TEST/);
+  });
+
+  // ==========================================================================
+  // T47: Task authority: TaskDagEngine validates structural integrity of tasks
+  // ==========================================================================
+
+  it('T47_task_dag_engine_structural_validation: corrupted Task DAG graph fails validation', async () => {
+    // Add a corrupted task with missing parent and missing dependency
+    const tasks = await specStore.loadTasks();
+    tasks.push({
+      task_id: 'TASK-P10-CORRUPT-001',
+      parent_feature_id: '', // empty parent
+      title: 'Corrupt task',
+      description: 'Corrupt task with missing dependency',
+      traceability_sources: ['REQ-001'],
+      dependencies: ['TASK-NONEXISTENT-DEP-999'], // missing dependency
+      acceptance_criteria: ['AC-001'],
+      status: 'READY',
+      attempt: 1,
+      max_attempts: 3,
+      priority: 'MEDIUM',
+      risk_level: 'MEDIUM',
+      created_at: new Date().toISOString(),
+      started_at: null,
+      completed_at: null,
+      metadata: { revision: 1 },
+    });
+    await specStore.saveTasks(tasks);
+
+    const result = await executionAuthorizer.validateExecutionIntent({
+      workspaceRoot: tempDir,
+      directorSessionId: activeSession.directorSessionId,
+      directorDecisionId: implementDecision.decisionId,
+      taskId: 'TASK-P10-IMPL-001',
+      taskRevision: 1,
+      contextFingerprint: activeSnapshot.logicalFingerprint,
+      understandingRevision: 5,
+      approvalPackageRevision: testPackage.revision,
+    });
+
+    assert.equal(result.isValid, false);
+    assert.equal(result.code, 'TASK_STATE_INVALID');
+    assert.match(result.message, /Task DAG structural integrity check failed/);
+  });
+
+  // ==========================================================================
+  // T48: Non-mutation boundary: execution intent creation does NOT mutate FSM or DAG
+  // ==========================================================================
+
+  it('T48_no_fsm_or_dag_mutation: intent creation does NOT mutate durable state or task state', async () => {
+    const fsmBefore = await durableManager.load();
+    const tasksBefore = await specStore.loadTasks();
+
+    await executionAuthorizer.createExecutionIntent({
+      workspaceRoot: tempDir,
+      directorSessionId: activeSession.directorSessionId,
+      directorDecisionId: implementDecision.decisionId,
+      taskId: 'TASK-P10-IMPL-001',
+      taskRevision: 1,
+      contextFingerprint: activeSnapshot.logicalFingerprint,
+      understandingRevision: 5,
+      approvalPackageRevision: testPackage.revision,
+    });
+
+    const fsmAfter = await durableManager.load();
+    const tasksAfter = await specStore.loadTasks();
+
+    assert.deepEqual(fsmBefore, fsmAfter);
+    assert.deepEqual(tasksBefore, tasksAfter);
   });
 });

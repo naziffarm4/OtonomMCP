@@ -128,15 +128,16 @@ export class ExecutionAuthorizer {
   }
 
   /**
-   * Generates a deterministic intentId derived from project, session, decision, and task.
+   * Generates a deterministic intentId derived from project, decision, task, and context fingerprint.
+   * Format: intent-<sha256(projectId:directorDecisionId:taskId:contextFingerprint)[:16]>
    */
   generateIntentId(
     projectId: string,
-    sessionId: string,
     decisionId: string,
-    taskId: string
+    taskId: string,
+    contextFingerprint: string
   ): string {
-    const raw = `${projectId}:${sessionId}:${decisionId}:${taskId}`;
+    const raw = `${projectId}:${decisionId}:${taskId}:${contextFingerprint}`;
     const hash = crypto.createHash('sha256').update(raw, 'utf8').digest('hex').substring(0, 16);
     return `intent-${hash}`;
   }
@@ -144,11 +145,13 @@ export class ExecutionAuthorizer {
   /**
    * Validates an execution intent against all authoritative boundaries:
    * 1. Director Session: Active, correct project.
-   * 2. Director Decision: Exists, matches session/project, valid decisionType.
+   * 2. Director Decision: Exists, matches session/project, strictly IMPLEMENT_TASK decisionType,
+   *    and decision's own bindings (contextFingerprint, understandingRevision, approvalRevision) match.
    * 3. Director Context Snapshot: Fresh, complete, matching fingerprint.
-   * 4. Understanding Revision: Authoritative session revision matches intent revision.
-   * 5. Approval & Development Authorization: isDevelopmentAuthorized() === true, matching revisions.
-   * 6. Task DAG: Task exists, valid executable state, dependencies satisfied, revision matches.
+   * 4. Understanding Revision: Authoritative session revision matches intent revision and decision revision.
+   * 5. Approval & Development Authorization: isDevelopmentAuthorized() === true, exact revision match.
+   * 6. Task DAG: Task exists in authoritative Task DAG (validated via TaskDagEngine), valid executable state,
+   *    all dependencies satisfied (ACCEPTED), and exact taskRevision match.
    * 7. Cross-project protection.
    *
    * Non-mutating: does NOT invoke executor, mutate task state, or modify FSM.
@@ -167,7 +170,18 @@ export class ExecutionAuthorizer {
       };
     }
 
-    // 2. Canonical project identity resolution
+    // 2. Operation type constraint: P10-01 only authorizes IMPLEMENT_TASK
+    const operationType = input.operationType ?? 'IMPLEMENT_TASK';
+    if (operationType !== 'IMPLEMENT_TASK') {
+      return {
+        isValid: false,
+        code: 'DECISION_TYPE_INVALID',
+        message: `Execution operation type '${operationType}' is not authorized in P10-01. Only 'IMPLEMENT_TASK' is supported at this execution boundary.`,
+        details: { operationType },
+      };
+    }
+
+    // 3. Canonical project identity resolution
     const targetRoot = input.workspaceRoot ?? this.workspaceRoot ?? process.cwd();
     const canonical = resolveCanonicalProjectIdentity(targetRoot);
 
@@ -187,7 +201,7 @@ export class ExecutionAuthorizer {
       }
     }
 
-    // 3. Director Session validation
+    // 4. Director Session validation
     let session;
     try {
       session = await this.sessionEngine.getSession(input.directorSessionId, {
@@ -225,7 +239,7 @@ export class ExecutionAuthorizer {
       };
     }
 
-    // 4. Director Decision validation
+    // 5. Director Decision validation
     let decision;
     try {
       decision = await this.decisionStore.loadDecision(input.directorDecisionId);
@@ -271,13 +285,12 @@ export class ExecutionAuthorizer {
       };
     }
 
-    // Decision type must be appropriate for execution intent
-    const allowedDecisionTypes = ['IMPLEMENT_TASK', 'RESUME'];
-    if (!allowedDecisionTypes.includes(decision.decisionType)) {
+    // Decision type must strictly be IMPLEMENT_TASK in P10-01 (RESUME is rejected)
+    if (decision.decisionType !== 'IMPLEMENT_TASK') {
       return {
         isValid: false,
         code: 'DECISION_TYPE_INVALID',
-        message: `Director decision type '${decision.decisionType}' cannot form an execution intent. Only 'IMPLEMENT_TASK' and 'RESUME' are execution-eligible.`,
+        message: `Director decision type '${decision.decisionType}' cannot form an execution intent. Only 'IMPLEMENT_TASK' is execution-eligible at the Phase 10 execution boundary. RESUME is not an execution intent.`,
         details: { decisionType: decision.decisionType },
       };
     }
@@ -291,7 +304,7 @@ export class ExecutionAuthorizer {
       };
     }
 
-    // 5. Director Context Snapshot validation
+    // 6. Director Context Snapshot validation
     const latestSnapshot = await this.sessionStore.loadLatestSnapshot(session.directorSessionId);
     if (!latestSnapshot) {
       return {
@@ -336,7 +349,20 @@ export class ExecutionAuthorizer {
       };
     }
 
-    // 6. Understanding Revision validation (Strict P9-04 binding rule)
+    // Verify Decision's own context fingerprint matches authoritative snapshot
+    if (decision.basedOnContextFingerprint !== latestSnapshot.logicalFingerprint) {
+      return {
+        isValid: false,
+        code: 'CONTEXT_FINGERPRINT_MISMATCH',
+        message: `Director decision was based on context fingerprint '${decision.basedOnContextFingerprint}', which does not match authoritative snapshot fingerprint '${latestSnapshot.logicalFingerprint}'. Decision was made on a different or stale context snapshot.`,
+        details: {
+          decisionContextFingerprint: decision.basedOnContextFingerprint,
+          authoritativeFingerprint: latestSnapshot.logicalFingerprint,
+        },
+      };
+    }
+
+    // 7. Understanding Revision validation (Strict P9-04 binding rule)
     if (session.understandingRevision === null || session.understandingRevision === undefined) {
       return {
         isValid: false,
@@ -344,7 +370,7 @@ export class ExecutionAuthorizer {
         message: `Director session '${session.directorSessionId}' has no authoritative understanding revision. Execution requires an authoritative understanding baseline.`,
         details: {
           sessionUnderstandingRevision: null,
-          specifiedUnderstandingRevision: input.understandingRevision ?? null,
+          specifiedUnderstandingRevision: input.understandingRevision,
         },
       };
     }
@@ -373,7 +399,24 @@ export class ExecutionAuthorizer {
       };
     }
 
-    // 7. Approval & Development Authorization validation
+    // Verify Decision's own understanding revision matches session understanding revision if present
+    if (
+      decision.basedOnUnderstandingRevision !== null &&
+      decision.basedOnUnderstandingRevision !== undefined &&
+      decision.basedOnUnderstandingRevision !== session.understandingRevision
+    ) {
+      return {
+        isValid: false,
+        code: 'UNDERSTANDING_REVISION_MISMATCH',
+        message: `Director decision was based on understanding revision ${decision.basedOnUnderstandingRevision}, which does not match session understanding revision ${session.understandingRevision}.`,
+        details: {
+          decisionUnderstandingRevision: decision.basedOnUnderstandingRevision,
+          sessionUnderstandingRevision: session.understandingRevision,
+        },
+      };
+    }
+
+    // 8. Approval & Development Authorization validation
     const pkg = await this.approvalStore.getActivePackage();
     if (!pkg) {
       return {
@@ -429,11 +472,23 @@ export class ExecutionAuthorizer {
       };
     }
 
-    // Approval revision check
+    // Mandatory approval revision check: input.approvalPackageRevision must be provided and match pkg.revision exactly
     if (
-      input.approvalPackageRevision !== undefined &&
-      input.approvalPackageRevision !== pkg.revision
+      input.approvalPackageRevision === undefined ||
+      input.approvalPackageRevision === null
     ) {
+      return {
+        isValid: false,
+        code: 'APPROVAL_REVISION_MISMATCH',
+        message: `Approval package revision binding is mandatory: active approved package revision is ${pkg.revision}, but intent omitted approvalPackageRevision.`,
+        details: {
+          specifiedRevision: null,
+          activePackageRevision: pkg.revision,
+        },
+      };
+    }
+
+    if (input.approvalPackageRevision !== pkg.revision) {
       return {
         isValid: false,
         code: 'APPROVAL_REVISION_MISMATCH',
@@ -445,7 +500,24 @@ export class ExecutionAuthorizer {
       };
     }
 
-    // 8. Task DAG validation
+    // Verify Decision's own approval revision matches active package revision if present
+    if (
+      decision.basedOnApprovalRevision !== null &&
+      decision.basedOnApprovalRevision !== undefined &&
+      decision.basedOnApprovalRevision !== pkg.revision
+    ) {
+      return {
+        isValid: false,
+        code: 'APPROVAL_REVISION_MISMATCH',
+        message: `Director decision was based on approval revision ${decision.basedOnApprovalRevision}, which does not match active approved package revision ${pkg.revision}.`,
+        details: {
+          decisionApprovalRevision: decision.basedOnApprovalRevision,
+          activePackageRevision: pkg.revision,
+        },
+      };
+    }
+
+    // 9. Task DAG validation: Read tasks from authoritative SpecStore and validate structural integrity via TaskDagEngine
     let tasks: TaskDefinition[] = [];
     try {
       tasks = await this.specStore.loadTasks();
@@ -465,6 +537,45 @@ export class ExecutionAuthorizer {
         message: `Task '${input.taskId}' not found in authoritative Task DAG.`,
         details: { taskId: input.taskId },
       };
+    }
+
+    // Mandatory Task revision check: task.metadata.revision is the authoritative task revision
+    const taskRevision = (task.metadata?.revision as number) ?? 1;
+    if (input.taskRevision === undefined || input.taskRevision === null) {
+      return {
+        isValid: false,
+        code: 'TASK_REVISION_MISMATCH',
+        message: `Task revision binding is mandatory: authoritative task revision is ${taskRevision}, but intent omitted taskRevision.`,
+        details: {
+          specifiedTaskRevision: null,
+          currentTaskRevision: taskRevision,
+        },
+      };
+    }
+
+    if (input.taskRevision !== taskRevision) {
+      return {
+        isValid: false,
+        code: 'TASK_REVISION_MISMATCH',
+        message: `Task revision mismatch: intent specifies revision ${input.taskRevision}, but authoritative task revision is ${taskRevision}.`,
+        details: {
+          specifiedTaskRevision: input.taskRevision,
+          currentTaskRevision: taskRevision,
+        },
+      };
+    }
+
+    // Task DAG structural integrity check
+    if (tasks.length > 0) {
+      try {
+        this.dagEngine.assertValidGraph(tasks);
+      } catch (err) {
+        return {
+          isValid: false,
+          code: 'TASK_STATE_INVALID',
+          message: `Task DAG structural integrity check failed: ${err instanceof Error ? err.message : String(err)}`,
+        };
+      }
     }
 
     // Task state must be eligible for execution
@@ -495,28 +606,14 @@ export class ExecutionAuthorizer {
       }
     }
 
-    // Task revision check
-    const taskRevision = (task.metadata?.revision as number) ?? task.attempt ?? 1;
-    if (input.taskRevision !== undefined && input.taskRevision !== taskRevision) {
-      return {
-        isValid: false,
-        code: 'TASK_REVISION_MISMATCH',
-        message: `Task revision mismatch: intent specifies revision ${input.taskRevision}, but current task revision is ${taskRevision}.`,
-        details: {
-          specifiedTaskRevision: input.taskRevision,
-          currentTaskRevision: taskRevision,
-        },
-      };
-    }
-
-    // 9. Construct verified ExecutionIntent
+    // 10. Construct verified ExecutionIntent
     const intentId =
       input.intentId ??
       this.generateIntentId(
         canonical.projectId,
-        session.directorSessionId,
         decision.decisionId,
-        task.task_id
+        task.task_id,
+        latestSnapshot.logicalFingerprint
       );
 
     const intent: ExecutionIntent = {
@@ -529,7 +626,7 @@ export class ExecutionAuthorizer {
       contextFingerprint: latestSnapshot.logicalFingerprint,
       understandingRevision: session.understandingRevision,
       approvalPackageRevision: pkg.revision,
-      operationType: input.operationType ?? 'IMPLEMENT_TASK',
+      operationType: 'IMPLEMENT_TASK',
       protocolVersion: EXECUTION_INTENT_PROTOCOL_VERSION,
       schemaVersion: EXECUTION_INTENT_SCHEMA_VERSION,
       createdAt: new Date().toISOString(),
@@ -556,7 +653,9 @@ export class ExecutionAuthorizer {
 
   /**
    * Creates and verifies an ExecutionIntent. Throws specific domain error if validation fails.
-   * Records audit event into HistoryManager upon successful creation or validation failure.
+   * Records DIRECTOR_DECISION_VALIDATION_FAILED audit event upon failure.
+   * INVARIANT: Does NOT emit EXECUTION_REQUESTED at this stage; execution request dispatch
+   * is reserved for P10-02+.
    */
   async createExecutionIntent(input: ValidateExecutionIntentInput): Promise<ExecutionIntent> {
     const result = await this.validateExecutionIntent(input);
@@ -612,31 +711,6 @@ export class ExecutionAuthorizer {
           throw new ExecutionIntentTaskInvalidError(result.message, result.details);
         default:
           throw new ExecutionIntentValidationError(result.message, result.details);
-      }
-    }
-
-    if (this.historyManager && result.intent) {
-      try {
-        await this.historyManager.appendEvent({
-          eventType: 'EXECUTION_REQUESTED',
-          actor: Actor.DIRECTOR,
-          payload: {
-            intentId: result.intent.intentId,
-            directorSessionId: result.intent.directorSessionId,
-            directorDecisionId: result.intent.directorDecisionId,
-            projectId: result.intent.projectId,
-            taskId: result.intent.taskId,
-            taskRevision: result.intent.taskRevision,
-            contextFingerprint: result.intent.contextFingerprint,
-            understandingRevision: result.intent.understandingRevision,
-            approvalPackageRevision: result.intent.approvalPackageRevision,
-            operationType: result.intent.operationType,
-            protocolVersion: result.intent.protocolVersion,
-            schemaVersion: result.intent.schemaVersion,
-          },
-        });
-      } catch {
-        // ignore audit failure
       }
     }
 

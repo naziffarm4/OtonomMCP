@@ -109,10 +109,10 @@ export interface ValidateExecutionIntentInput {
   readonly directorSessionId: string;
   readonly directorDecisionId: string;
   readonly taskId: string;
-  readonly taskRevision?: number;
+  readonly taskRevision?: number | null;
   readonly contextFingerprint: string;
   readonly understandingRevision?: number | null;
-  readonly approvalPackageRevision?: number;
+  readonly approvalPackageRevision?: number | null;
   readonly operationType?: ExecutionOperationType;
   readonly intentId?: string;
   readonly metadata?: Readonly<Record<string, unknown>>;
@@ -148,10 +148,10 @@ export const ValidateExecutionIntentInputZodSchema = z.object({
   directorSessionId: DirectorSessionIdZodSchema,
   directorDecisionId: z.string().min(1, 'directorDecisionId is required'),
   taskId: z.string().min(1, 'taskId is required'),
-  taskRevision: z.number().int().nonnegative().optional(),
+  taskRevision: z.number().int().nonnegative('taskRevision must be a non-negative integer').nullable().optional(),
   contextFingerprint: z.string().min(1, 'contextFingerprint is required'),
-  understandingRevision: z.number().int().nonnegative().nullable().optional(),
-  approvalPackageRevision: z.number().int().positive().optional(),
+  understandingRevision: z.number().int().nonnegative('understandingRevision must be a non-negative integer').nullable().optional(),
+  approvalPackageRevision: z.number().int().positive('approvalPackageRevision must be a positive integer').nullable().optional(),
   operationType: ExecutionOperationTypeZodSchema.optional(),
   intentId: z.string().optional(),
   metadata: z.record(z.string(), z.unknown()).optional(),

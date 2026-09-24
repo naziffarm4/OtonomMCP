@@ -58,7 +58,10 @@ export const executionIntentValidateToolDefinition: McpToolDefinition = {
       'directorSessionId',
       'directorDecisionId',
       'taskId',
+      'taskRevision',
       'contextFingerprint',
+      'understandingRevision',
+      'approvalPackageRevision',
     ],
     properties: {
       workspaceRoot: {
@@ -75,7 +78,7 @@ export const executionIntentValidateToolDefinition: McpToolDefinition = {
       },
       directorDecisionId: {
         type: 'string',
-        description: 'Director decision identifier. Must be IMPLEMENT_TASK or RESUME decision type.',
+        description: 'Director decision identifier. Must be an IMPLEMENT_TASK decision.',
       },
       taskId: {
         type: 'string',
@@ -83,24 +86,24 @@ export const executionIntentValidateToolDefinition: McpToolDefinition = {
       },
       taskRevision: {
         type: 'number',
-        description: 'Optional expected task revision / attempt counter for strict revision binding.',
+        description: 'Mandatory expected authoritative task revision for strict revision binding.',
       },
       contextFingerprint: {
         type: 'string',
         description: 'Logical fingerprint of the non-stale context snapshot. Must match the authoritative snapshot.',
       },
       understandingRevision: {
-        type: ['number', 'null'],
-        description: 'Authoritative understanding revision baseline. Must match session understanding revision exactly.',
+        type: 'number',
+        description: 'Mandatory authoritative understanding revision baseline. Must match session understanding revision exactly.',
       },
       approvalPackageRevision: {
         type: 'number',
-        description: 'Optional bound human approval package revision for strict revision binding.',
+        description: 'Mandatory bound human approval package revision for strict revision binding.',
       },
       operationType: {
         type: 'string',
-        enum: ['IMPLEMENT_TASK', 'EXECUTE_TEST', 'EXECUTE_BUILD', 'INSPECT_WORKSPACE', 'APPLY_REPAIR'],
-        description: 'Optional intended executor operation type. Defaults to IMPLEMENT_TASK.',
+        enum: ['IMPLEMENT_TASK'],
+        description: 'Intended executor operation type. Must strictly be IMPLEMENT_TASK in P10-01.',
       },
       intentId: {
         type: 'string',
