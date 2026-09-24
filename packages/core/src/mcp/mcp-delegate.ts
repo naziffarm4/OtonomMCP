@@ -22,6 +22,7 @@ import { DefaultGitPort } from '../git/default-git-port.js';
 import type { GitPort } from '../git/git-port.js';
 import { ContextEngine } from '../context-engine/context-engine.js';
 import { TaskDagEngine } from '../task-engine/dag-engine.js';
+import { ClarificationStore } from '../clarification/clarification-store.js';
 
 // ============================================================================
 // 1. STATUS CONTRACTS
@@ -98,6 +99,11 @@ export interface McpOrchestratorDelegate {
   readonly dagEngine?: TaskDagEngine;
 
   /**
+   * Authoritative ClarificationStore instance.
+   */
+  readonly clarificationStore?: ClarificationStore;
+
+  /**
    * Query system-verified evidence through the orchestrator.
    */
   getEvidence?(
@@ -128,6 +134,7 @@ export interface DefaultMcpOrchestratorDelegateOptions {
   readonly gitPort?: GitPort;
   readonly contextEngine?: ContextEngine;
   readonly dagEngine?: TaskDagEngine;
+  readonly clarificationStore?: ClarificationStore;
   readonly evidenceProvider?: (
     params: {
       taskId?: string;
@@ -151,6 +158,7 @@ export class DefaultMcpOrchestratorDelegate implements McpOrchestratorDelegate {
   readonly gitPort?: GitPort;
   readonly contextEngine?: ContextEngine;
   readonly dagEngine?: TaskDagEngine;
+  readonly clarificationStore?: ClarificationStore;
   private readonly evidenceProvider?: (
     params: {
       taskId?: string;
@@ -184,6 +192,14 @@ export class DefaultMcpOrchestratorDelegate implements McpOrchestratorDelegate {
       options.contextEngine ??
       (this.projectRoot ? new ContextEngine({ workspaceRoot: this.projectRoot }) : undefined);
     this.dagEngine = options.dagEngine ?? new TaskDagEngine();
+    this.clarificationStore =
+      options.clarificationStore ??
+      (this.projectRoot
+        ? new ClarificationStore({
+            baseDir: this.projectRoot,
+            historyManager: this.historyManager,
+          })
+        : undefined);
     this.evidenceProvider = options.evidenceProvider;
   }
 

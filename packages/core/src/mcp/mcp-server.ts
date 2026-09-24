@@ -53,6 +53,7 @@ import {
   registerDirectorReadTools,
   registerDiscoveryTools,
 } from './tools/director-read-tools.js';
+import { registerClarificationTools } from './tools/clarification-tools.js';
 
 export class McpServer {
   readonly name: string;
@@ -101,6 +102,11 @@ export class McpServer {
     // Register Director project discovery tool if enabled
     if (config.discoveryTools) {
       registerDiscoveryTools(this);
+    }
+
+    // Register Director clarification protocol tools if enabled
+    if (config.clarificationTools) {
+      registerClarificationTools(this);
     }
   }
 

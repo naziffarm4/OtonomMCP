@@ -21,4 +21,5 @@ export * from './tools/evidence-get-tool.js';
 export * from './tools/history-get-tool.js';
 export * from './tools/git-status-tool.js';
 export * from './tools/project-discover-tool.js';
+export * from './tools/clarification-tools.js';
 export * from './tools/director-read-tools.js';

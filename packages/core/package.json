@@ -97,6 +97,14 @@
     "./mcp": {
       "types": "./dist/mcp/index.d.ts",
       "import": "./dist/mcp/index.js"
+    },
+    "./discovery": {
+      "types": "./dist/discovery/index.d.ts",
+      "import": "./dist/discovery/index.js"
+    },
+    "./clarification": {
+      "types": "./dist/clarification/index.d.ts",
+      "import": "./dist/clarification/index.js"
     }
   },
   "bin": {
