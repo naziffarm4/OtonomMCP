@@ -60,6 +60,7 @@ import { registerDirectorDecisionTools } from './tools/director-decision-tools.j
 import { registerHumanApprovalTools } from './tools/human-approval-tools.js';
 import { registerExecutionIntentTools } from './tools/execution-intent-tools.js';
 import { registerExecutionRequestTools } from './tools/execution-request-tools.js';
+import { registerExecutorTools } from './tools/executor-tools.js';
 
 
 export class McpServer {
@@ -144,6 +145,11 @@ export class McpServer {
     // Register Execution request contract tools if enabled
     if (config.executionRequestTools) {
       registerExecutionRequestTools(this);
+    }
+
+    // Register Executor adapter boundary tools if enabled
+    if (config.executorTools) {
+      registerExecutorTools(this);
     }
   }
 

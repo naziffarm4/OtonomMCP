@@ -18,5 +18,5 @@ export * from './execution-intent-types.js';
 export * from './execution-authorizer.js';
 export * from '../executor-bridge/execution-request-types.js';
 export * from '../executor-bridge/execution-request-builder.js';
-
-
+export * from '../executor-bridge/raw-executor-outcome.js';
+export * from '../executor-bridge/executor-guard.js';

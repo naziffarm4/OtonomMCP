@@ -24,6 +24,9 @@ import {
   type ExecutionIntent,
   ExecutionIntentZodSchema,
 } from '../director/execution-intent-types.js';
+
+export type { ExecutionOperationType };
+export { ExecutionOperationTypeZodSchema };
 import {
   ExecutionRequestError,
   ExecutionRequestValidationError,

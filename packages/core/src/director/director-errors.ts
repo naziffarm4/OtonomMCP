@@ -303,5 +303,48 @@ export class ExecutionRequestTaskRevisionMismatchError extends ExecutionRequestE
   }
 }
 
+// ============================================================================
+// P10-03 EXECUTOR ADAPTER ERRORS
+// ============================================================================
+
+export class ExecutorAdapterError extends AidmError {
+  constructor(message: string, code = 'ERR_EXECUTOR_ADAPTER', details?: AidmErrorDetails) {
+    super(message, code, details);
+    this.name = this.constructor.name;
+    Object.setPrototypeOf(this, new.target.prototype);
+  }
+}
+
+export class ExecutorPreconditionError extends ExecutorAdapterError {
+  constructor(message: string, details?: AidmErrorDetails) {
+    super(message, 'ERR_EXECUTOR_PRECONDITION', details);
+  }
+}
+
+export class ExecutorSecurityViolationError extends ExecutorAdapterError {
+  constructor(message: string, details?: AidmErrorDetails) {
+    super(message, 'ERR_EXECUTOR_SECURITY_VIOLATION', details);
+  }
+}
+
+export class ExecutorTimeoutError extends ExecutorAdapterError {
+  constructor(message: string, details?: AidmErrorDetails) {
+    super(message, 'ERR_EXECUTOR_TIMEOUT', details);
+  }
+}
+
+export class ExecutorCancellationError extends ExecutorAdapterError {
+  constructor(message: string, details?: AidmErrorDetails) {
+    super(message, 'ERR_EXECUTOR_CANCELLED', details);
+  }
+}
+
+export class ExecutorInvocationError extends ExecutorAdapterError {
+  constructor(message: string, details?: AidmErrorDetails) {
+    super(message, 'ERR_EXECUTOR_INVOCATION', details);
+  }
+}
+
+
 
 
