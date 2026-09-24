@@ -64,8 +64,16 @@ export type McpErrorCode = (typeof McpErrorCode)[keyof typeof McpErrorCode];
 // 2. SECRET SANITIZATION UTILITIES
 // ============================================================================
 
+const SAFE_DOMAIN_KEYS = new Set([
+  'authority',
+  'isauthoritative',
+  'author',
+  'traceabilitysources',
+  'traceability_sources',
+]);
+
 /**
- * Recursively sanitize objects to prevent leaking secrets in error details.
+ * Recursively sanitize objects to prevent leaking secrets in error details and outputs.
  */
 export function sanitizeMcpPayload<T>(value: T): T {
   if (value === null || value === undefined) return value;
@@ -79,14 +87,17 @@ export function sanitizeMcpPayload<T>(value: T): T {
     const result: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(value)) {
       const lowerKey = k.toLowerCase();
-      if (
-        lowerKey.includes('secret') ||
-        lowerKey.includes('token') ||
-        lowerKey.includes('key') ||
-        lowerKey.includes('password') ||
-        lowerKey.includes('auth') ||
-        lowerKey.includes('credential')
-      ) {
+      const isSensitiveKey =
+        !SAFE_DOMAIN_KEYS.has(lowerKey) &&
+        (lowerKey.includes('secret') ||
+          lowerKey.includes('token') ||
+          lowerKey.includes('password') ||
+          lowerKey.includes('credential') ||
+          lowerKey.endsWith('key') ||
+          lowerKey === 'key' ||
+          (lowerKey.includes('auth') && !lowerKey.includes('author')));
+
+      if (isSensitiveKey) {
         result[k] = '***REDACTED***';
       } else {
         result[k] = sanitizeMcpPayload(v);

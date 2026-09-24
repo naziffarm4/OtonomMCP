@@ -2,6 +2,7 @@ import * as path from 'node:path';
 import * as fs from 'node:fs';
 import { z } from 'zod';
 import { Actor, ACTORS } from '../actors.js';
+import type { TaskDefinition } from '../task-engine/task-types.js';
 import { StateValidationError } from '../errors/state-validation-error.js';
 import { atomicWriteJson, readJsonFile } from './atomic-writer.js';
 
@@ -78,6 +79,7 @@ export class SpecStore {
   readonly specDir: string;
   readonly requirementsPath: string;
   readonly decisionsPath: string;
+  readonly tasksPath: string;
 
   constructor(options?: SpecStoreOptions) {
     if (options?.specDir) {
@@ -88,6 +90,7 @@ export class SpecStore {
     }
     this.requirementsPath = path.join(this.specDir, 'requirements.json');
     this.decisionsPath = path.join(this.specDir, 'decisions.json');
+    this.tasksPath = path.join(this.specDir, 'tasks.json');
   }
 
   async saveRequirements(inputs: RequirementInput[]): Promise<Requirement[]> {
@@ -215,5 +218,25 @@ export class SpecStore {
     }
 
     return validated;
+  }
+
+  async saveTasks(tasks: TaskDefinition[]): Promise<TaskDefinition[]> {
+    await atomicWriteJson(this.tasksPath, tasks);
+    return tasks;
+  }
+
+  async loadTasks(): Promise<TaskDefinition[]> {
+    const raw = await readJsonFile<unknown>(this.tasksPath);
+    if (raw === null) {
+      return [];
+    }
+
+    if (!Array.isArray(raw)) {
+      throw new StateValidationError('tasks.json must contain a JSON array', {
+        filePath: this.tasksPath,
+      });
+    }
+
+    return raw as TaskDefinition[];
   }
 }

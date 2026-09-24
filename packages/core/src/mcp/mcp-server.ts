@@ -49,6 +49,7 @@ import {
   type McpRequestCorrelation,
 } from './mcp-correlation.js';
 import { createHealthTool } from './tools/health-tool.js';
+import { registerDirectorReadTools } from './tools/director-read-tools.js';
 
 export class McpServer {
   readonly name: string;
@@ -88,6 +89,11 @@ export class McpServer {
       aidmVersion: this.aidmVersion,
     });
     this.registerTool(healthTool.definition, healthTool.handler);
+
+    // Register Director read-only tools if enabled
+    if (config.directorTools) {
+      registerDirectorReadTools(this);
+    }
   }
 
   // ==========================================================================
