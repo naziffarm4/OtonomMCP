@@ -255,3 +255,46 @@ export class ExecutionIntentDecisionInvalidError extends ExecutionIntentError {
   }
 }
 
+// ============================================================================
+// P10-02 EXECUTION REQUEST ERRORS
+// ============================================================================
+
+export class ExecutionRequestError extends AidmError {
+  constructor(message: string, code = 'ERR_EXECUTION_REQUEST', details?: AidmErrorDetails) {
+    super(message, code, details);
+    this.name = this.constructor.name;
+    Object.setPrototypeOf(this, new.target.prototype);
+  }
+}
+
+export class ExecutionRequestValidationError extends ExecutionRequestError {
+  constructor(message: string, details?: AidmErrorDetails) {
+    super(message, 'ERR_EXECUTION_REQUEST_VALIDATION', details);
+  }
+}
+
+export class ExecutionRequestInvalidPathError extends ExecutionRequestError {
+  constructor(message: string, details?: AidmErrorDetails) {
+    super(message, 'ERR_EXECUTION_REQUEST_INVALID_PATH', details);
+  }
+}
+
+export class ExecutionRequestRepositoryForgeryError extends ExecutionRequestError {
+  constructor(message: string, details?: AidmErrorDetails) {
+    super(message, 'ERR_EXECUTION_REQUEST_REPOSITORY_FORGERY', details);
+  }
+}
+
+export class ExecutionRequestIntentMismatchError extends ExecutionRequestError {
+  constructor(message: string, details?: AidmErrorDetails) {
+    super(message, 'ERR_EXECUTION_REQUEST_INTENT_MISMATCH', details);
+  }
+}
+
+export class ExecutionRequestLimitsInvalidError extends ExecutionRequestError {
+  constructor(message: string, details?: AidmErrorDetails) {
+    super(message, 'ERR_EXECUTION_REQUEST_LIMITS_INVALID', details);
+  }
+}
+
+

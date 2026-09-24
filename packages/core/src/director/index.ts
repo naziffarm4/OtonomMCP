@@ -16,4 +16,7 @@ export * from './human-approval-types.js';
 export * from './human-approval-engine.js';
 export * from './execution-intent-types.js';
 export * from './execution-authorizer.js';
+export * from '../executor-bridge/execution-request-types.js';
+export * from '../executor-bridge/execution-request-builder.js';
+
 

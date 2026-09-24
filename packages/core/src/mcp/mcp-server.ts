@@ -59,6 +59,8 @@ import { registerDirectorSessionTools } from './tools/director-session-tools.js'
 import { registerDirectorDecisionTools } from './tools/director-decision-tools.js';
 import { registerHumanApprovalTools } from './tools/human-approval-tools.js';
 import { registerExecutionIntentTools } from './tools/execution-intent-tools.js';
+import { registerExecutionRequestTools } from './tools/execution-request-tools.js';
+
 
 export class McpServer {
   readonly name: string;
@@ -138,7 +140,13 @@ export class McpServer {
     if (config.executionIntentTools) {
       registerExecutionIntentTools(this);
     }
+
+    // Register Execution request contract tools if enabled
+    if (config.executionRequestTools) {
+      registerExecutionRequestTools(this);
+    }
   }
+
 
   // ==========================================================================
   // LIFECYCLE MANAGEMENT
