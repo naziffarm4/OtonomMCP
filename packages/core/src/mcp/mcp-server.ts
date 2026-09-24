@@ -54,6 +54,7 @@ import {
   registerDiscoveryTools,
 } from './tools/director-read-tools.js';
 import { registerClarificationTools } from './tools/clarification-tools.js';
+import { registerApprovalTools } from './tools/approval-tools.js';
 
 export class McpServer {
   readonly name: string;
@@ -107,6 +108,11 @@ export class McpServer {
     // Register Director clarification protocol tools if enabled
     if (config.clarificationTools) {
       registerClarificationTools(this);
+    }
+
+    // Register Director approval gate tools if enabled
+    if (config.approvalTools) {
+      registerApprovalTools(this);
     }
   }
 

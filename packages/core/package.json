@@ -105,6 +105,10 @@
     "./clarification": {
       "types": "./dist/clarification/index.d.ts",
       "import": "./dist/clarification/index.js"
+    },
+    "./approval": {
+      "types": "./dist/approval/index.d.ts",
+      "import": "./dist/approval/index.js"
     }
   },
   "bin": {

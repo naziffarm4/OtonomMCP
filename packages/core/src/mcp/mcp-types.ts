@@ -240,4 +240,5 @@ export interface McpServerConfig {
   readonly directorTools?: boolean;
   readonly discoveryTools?: boolean;
   readonly clarificationTools?: boolean;
+  readonly approvalTools?: boolean;
 }

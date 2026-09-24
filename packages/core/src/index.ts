@@ -22,4 +22,5 @@ export * from './cli/index.js';
 export * from './mcp/index.js';
 export * from './discovery/index.js';
 export * from './clarification/index.js';
+export * from './approval/index.js';
 export type { GitState } from './git/index.js';

@@ -23,6 +23,7 @@ import type { GitPort } from '../git/git-port.js';
 import { ContextEngine } from '../context-engine/context-engine.js';
 import { TaskDagEngine } from '../task-engine/dag-engine.js';
 import { ClarificationStore } from '../clarification/clarification-store.js';
+import { ApprovalStore } from '../approval/approval-store.js';
 
 // ============================================================================
 // 1. STATUS CONTRACTS
@@ -104,6 +105,11 @@ export interface McpOrchestratorDelegate {
   readonly clarificationStore?: ClarificationStore;
 
   /**
+   * Authoritative ApprovalStore instance.
+   */
+  readonly approvalStore?: ApprovalStore;
+
+  /**
    * Query system-verified evidence through the orchestrator.
    */
   getEvidence?(
@@ -135,6 +141,7 @@ export interface DefaultMcpOrchestratorDelegateOptions {
   readonly contextEngine?: ContextEngine;
   readonly dagEngine?: TaskDagEngine;
   readonly clarificationStore?: ClarificationStore;
+  readonly approvalStore?: ApprovalStore;
   readonly evidenceProvider?: (
     params: {
       taskId?: string;
@@ -159,6 +166,7 @@ export class DefaultMcpOrchestratorDelegate implements McpOrchestratorDelegate {
   readonly contextEngine?: ContextEngine;
   readonly dagEngine?: TaskDagEngine;
   readonly clarificationStore?: ClarificationStore;
+  readonly approvalStore?: ApprovalStore;
   private readonly evidenceProvider?: (
     params: {
       taskId?: string;
@@ -196,6 +204,14 @@ export class DefaultMcpOrchestratorDelegate implements McpOrchestratorDelegate {
       options.clarificationStore ??
       (this.projectRoot
         ? new ClarificationStore({
+            baseDir: this.projectRoot,
+            historyManager: this.historyManager,
+          })
+        : undefined);
+    this.approvalStore =
+      options.approvalStore ??
+      (this.projectRoot
+        ? new ApprovalStore({
             baseDir: this.projectRoot,
             historyManager: this.historyManager,
           })
