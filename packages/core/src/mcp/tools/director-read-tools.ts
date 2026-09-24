@@ -64,6 +64,11 @@ import {
   createGitStatusTool,
   gitStatusToolDefinition,
 } from './git-status-tool.js';
+import {
+  AIDM_PROJECT_DISCOVER_TOOL_NAME,
+  createProjectDiscoverTool,
+  projectDiscoverToolDefinition,
+} from './project-discover-tool.js';
 
 export {
   AIDM_PROJECT_STATUS_TOOL_NAME,
@@ -75,6 +80,9 @@ export {
   AIDM_EVIDENCE_GET_TOOL_NAME,
   AIDM_HISTORY_GET_TOOL_NAME,
   AIDM_GIT_STATUS_TOOL_NAME,
+  AIDM_PROJECT_DISCOVER_TOOL_NAME,
+  createProjectDiscoverTool,
+  projectDiscoverToolDefinition,
 };
 
 export const DIRECTOR_READ_TOOL_NAMES = [
@@ -123,3 +131,12 @@ export function registerDirectorReadTools(server: McpServer): void {
     server.registerTool(tool.definition, tool.handler);
   }
 }
+
+/**
+ * Registers the project discovery tool (P8-03) onto an McpServer instance.
+ */
+export function registerDiscoveryTools(server: McpServer): void {
+  const tool = createProjectDiscoverTool(server.delegate);
+  server.registerTool(tool.definition, tool.handler);
+}
+

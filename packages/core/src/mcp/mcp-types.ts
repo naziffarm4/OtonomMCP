@@ -238,4 +238,5 @@ export interface McpServerConfig {
   readonly instructions?: string;
   readonly correlationGenerator?: () => string;
   readonly directorTools?: boolean;
+  readonly discoveryTools?: boolean;
 }
