@@ -334,26 +334,41 @@ export class HumanApprovalEngine {
       };
     }
 
-    // 7. Understanding revision validation
-    if (
-      session.understandingRevision !== null &&
-      session.understandingRevision !== undefined
-    ) {
-      if (
-        input.understandingRevision !== undefined &&
-        input.understandingRevision !== null &&
-        input.understandingRevision !== session.understandingRevision
-      ) {
-        return {
-          isValid: false,
-          code: 'UNDERSTANDING_REVISION_MISMATCH',
-          message: `Understanding revision mismatch: approval specifies revision ${input.understandingRevision}, but session understanding revision is ${session.understandingRevision}.`,
-          details: {
-            specifiedUnderstandingRevision: input.understandingRevision,
-            sessionUnderstandingRevision: session.understandingRevision,
-          },
-        };
-      }
+    // 7. Understanding revision validation (authoritative binding is mandatory in P9-04)
+    if (session.understandingRevision === null || session.understandingRevision === undefined) {
+      return {
+        isValid: false,
+        code: 'UNDERSTANDING_REVISION_MISMATCH',
+        message: `Director session '${session.directorSessionId}' has no authoritative understanding revision. Human approval requires an authoritative understanding revision baseline.`,
+        details: {
+          sessionUnderstandingRevision: null,
+          specifiedUnderstandingRevision: input.understandingRevision ?? null,
+        },
+      };
+    }
+
+    if (input.understandingRevision === undefined || input.understandingRevision === null) {
+      return {
+        isValid: false,
+        code: 'UNDERSTANDING_REVISION_MISMATCH',
+        message: `Understanding revision binding is mandatory: session understanding revision is ${session.understandingRevision}, but approval input omitted understandingRevision.`,
+        details: {
+          sessionUnderstandingRevision: session.understandingRevision,
+          specifiedUnderstandingRevision: null,
+        },
+      };
+    }
+
+    if (input.understandingRevision !== session.understandingRevision) {
+      return {
+        isValid: false,
+        code: 'UNDERSTANDING_REVISION_MISMATCH',
+        message: `Understanding revision mismatch: approval specifies revision ${input.understandingRevision}, but session understanding revision is ${session.understandingRevision}.`,
+        details: {
+          specifiedUnderstandingRevision: input.understandingRevision,
+          sessionUnderstandingRevision: session.understandingRevision,
+        },
+      };
     }
 
     // 8. Approval Package & Revision validation
@@ -805,14 +820,40 @@ export class HumanApprovalEngine {
       };
     }
 
-    // Check understanding revision if present
-    if (
-      record.understandingRevision !== undefined &&
-      record.understandingRevision !== null &&
-      session.understandingRevision !== null &&
-      session.understandingRevision !== undefined &&
-      record.understandingRevision !== session.understandingRevision
-    ) {
+    // Check understanding revision (authoritative binding is mandatory in P9-04)
+    if (session.understandingRevision === null || session.understandingRevision === undefined) {
+      return {
+        canResume: false,
+        code: 'RESUME_BLOCKED_UNDERSTANDING_MISMATCH',
+        message: `Director session '${session.directorSessionId}' has no authoritative understanding revision. Resume requires an authoritative understanding revision baseline.`,
+        isDevelopmentAuthorized: true,
+        approvedPackage: pkg,
+        directorSession: session,
+        contextFingerprint: latestSnapshot.logicalFingerprint,
+        details: {
+          sessionUnderstandingRevision: null,
+          approvedUnderstandingRevision: record.understandingRevision ?? null,
+        },
+      };
+    }
+
+    if (record.understandingRevision === undefined || record.understandingRevision === null) {
+      return {
+        canResume: false,
+        code: 'RESUME_BLOCKED_UNDERSTANDING_MISMATCH',
+        message: `Approval record has no bound understanding revision. Resume requires explicit understanding revision binding.`,
+        isDevelopmentAuthorized: true,
+        approvedPackage: pkg,
+        directorSession: session,
+        contextFingerprint: latestSnapshot.logicalFingerprint,
+        details: {
+          sessionUnderstandingRevision: session.understandingRevision,
+          approvedUnderstandingRevision: null,
+        },
+      };
+    }
+
+    if (record.understandingRevision !== session.understandingRevision) {
       return {
         canResume: false,
         code: 'RESUME_BLOCKED_UNDERSTANDING_MISMATCH',
@@ -820,6 +861,11 @@ export class HumanApprovalEngine {
         isDevelopmentAuthorized: true,
         approvedPackage: pkg,
         directorSession: session,
+        contextFingerprint: latestSnapshot.logicalFingerprint,
+        details: {
+          approvedUnderstandingRevision: record.understandingRevision,
+          sessionUnderstandingRevision: session.understandingRevision,
+        },
       };
     }
 

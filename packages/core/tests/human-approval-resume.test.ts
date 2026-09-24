@@ -207,6 +207,7 @@ describe('Phase 9 — Human Approval & Resume Protocol (TASK-P9-04)', () => {
     activeSession = await sessionEngine.createSession({
       workspaceRoot: tempDir,
       directorSessionId: 'dir-sess-p904-001',
+      understandingRevision: 1,
     });
 
     activeSnapshot = await synchronizer.synchronize({
@@ -244,6 +245,7 @@ describe('Phase 9 — Human Approval & Resume Protocol (TASK-P9-04)', () => {
       packageId: testPackage.packageId,
       revision: testPackage.revision,
       contextFingerprint: activeSnapshot.logicalFingerprint,
+      understandingRevision: 1,
       actor: 'alice-po',
       actorRole: 'PRODUCT_OWNER',
       intent: 'EXPLICIT_APPROVAL',
@@ -257,6 +259,7 @@ describe('Phase 9 — Human Approval & Resume Protocol (TASK-P9-04)', () => {
     assert.equal(result.verifiedBindings.projectId, 'test-approval-project');
     assert.equal(result.verifiedBindings.directorSessionId, activeSession.directorSessionId);
     assert.equal(result.verifiedBindings.contextFingerprint, activeSnapshot.logicalFingerprint);
+    assert.equal(result.verifiedBindings.understandingRevision, 1);
     assert.equal(result.verifiedBindings.approvalRevision, 1);
 
     // Verify stored package in ApprovalStore
@@ -267,6 +270,7 @@ describe('Phase 9 — Human Approval & Resume Protocol (TASK-P9-04)', () => {
     assert.equal(stored.approvalRecord?.actorRole, 'PRODUCT_OWNER');
     assert.equal(stored.approvalRecord?.directorSessionId, activeSession.directorSessionId);
     assert.equal(stored.approvalRecord?.contextFingerprint, activeSnapshot.logicalFingerprint);
+    assert.equal(stored.approvalRecord?.understandingRevision, 1);
   });
 
   // ==========================================================================
@@ -537,6 +541,7 @@ describe('Phase 9 — Human Approval & Resume Protocol (TASK-P9-04)', () => {
       packageId: testPackage.packageId,
       revision: testPackage.revision,
       contextFingerprint: activeSnapshot.logicalFingerprint,
+      understandingRevision: 1,
       actor: 'alice-po',
       actorRole: 'PRODUCT_OWNER',
       intent: 'EXPLICIT_APPROVAL',
@@ -551,6 +556,7 @@ describe('Phase 9 — Human Approval & Resume Protocol (TASK-P9-04)', () => {
           packageId: testPackage.packageId,
           revision: testPackage.revision,
           contextFingerprint: activeSnapshot.logicalFingerprint,
+          understandingRevision: 1,
           actor: 'alice-po',
           actorRole: 'PRODUCT_OWNER',
           intent: 'EXPLICIT_APPROVAL',
@@ -593,6 +599,7 @@ describe('Phase 9 — Human Approval & Resume Protocol (TASK-P9-04)', () => {
       packageId: testPackage.packageId,
       revision: testPackage.revision,
       contextFingerprint: activeSnapshot.logicalFingerprint,
+      understandingRevision: 1,
       actor: 'alice-po',
       actorRole: 'PRODUCT_OWNER',
       intent: 'EXPLICIT_APPROVAL',
@@ -626,6 +633,7 @@ describe('Phase 9 — Human Approval & Resume Protocol (TASK-P9-04)', () => {
       packageId: testPackage.packageId,
       revision: testPackage.revision,
       contextFingerprint: activeSnapshot.logicalFingerprint,
+      understandingRevision: 1,
       actor: 'alice-po',
       actorRole: 'PRODUCT_OWNER',
       intent: 'EXPLICIT_APPROVAL',
@@ -653,6 +661,7 @@ describe('Phase 9 — Human Approval & Resume Protocol (TASK-P9-04)', () => {
       packageId: testPackage.packageId,
       revision: testPackage.revision,
       contextFingerprint: activeSnapshot.logicalFingerprint,
+      understandingRevision: 1,
       actor: 'alice-po',
       actorRole: 'PRODUCT_OWNER',
       intent: 'EXPLICIT_APPROVAL',
@@ -673,6 +682,7 @@ describe('Phase 9 — Human Approval & Resume Protocol (TASK-P9-04)', () => {
       packageId: testPackage.packageId,
       revision: testPackage.revision,
       contextFingerprint: activeSnapshot.logicalFingerprint,
+      understandingRevision: 1,
       actor: 'alice-po',
       actorRole: 'PRODUCT_OWNER',
       intent: 'EXPLICIT_APPROVAL',
@@ -793,6 +803,7 @@ describe('Phase 9 — Human Approval & Resume Protocol (TASK-P9-04)', () => {
       packageId: testPackage.packageId,
       revision: testPackage.revision,
       contextFingerprint: activeSnapshot.logicalFingerprint,
+      understandingRevision: 1,
       actor: 'bob-po',
       actorRole: 'USER',
       intent: 'EXPLICIT_APPROVAL',
@@ -806,6 +817,7 @@ describe('Phase 9 — Human Approval & Resume Protocol (TASK-P9-04)', () => {
     assert.equal(loaded.approvalRecord?.actor, 'bob-po');
     assert.equal(loaded.approvalRecord?.directorSessionId, activeSession.directorSessionId);
     assert.equal(loaded.approvalRecord?.contextFingerprint, activeSnapshot.logicalFingerprint);
+    assert.equal(loaded.approvalRecord?.understandingRevision, 1);
   });
 
   it('T20_history_audit_events: HistoryManager records HUMAN_APPROVAL_GRANTED event', async () => {
@@ -815,6 +827,7 @@ describe('Phase 9 — Human Approval & Resume Protocol (TASK-P9-04)', () => {
       packageId: testPackage.packageId,
       revision: testPackage.revision,
       contextFingerprint: activeSnapshot.logicalFingerprint,
+      understandingRevision: 1,
       actor: 'alice-po',
       actorRole: 'PRODUCT_OWNER',
       intent: 'EXPLICIT_APPROVAL',
@@ -826,6 +839,7 @@ describe('Phase 9 — Human Approval & Resume Protocol (TASK-P9-04)', () => {
     assert.equal(approvalEvents[0].actor, Actor.USER);
     assert.equal((approvalEvents[0].payload as any).directorSessionId, activeSession.directorSessionId);
     assert.equal((approvalEvents[0].payload as any).contextFingerprint, activeSnapshot.logicalFingerprint);
+    assert.equal((approvalEvents[0].payload as any).understandingRevision, 1);
   });
 
   it('T21_no_fsm_mutation: DurableStateManager global FSM state is untouched by approval', async () => {
@@ -838,6 +852,7 @@ describe('Phase 9 — Human Approval & Resume Protocol (TASK-P9-04)', () => {
       packageId: testPackage.packageId,
       revision: testPackage.revision,
       contextFingerprint: activeSnapshot.logicalFingerprint,
+      understandingRevision: 1,
       actor: 'alice-po',
       actorRole: 'PRODUCT_OWNER',
       intent: 'EXPLICIT_APPROVAL',
@@ -858,6 +873,7 @@ describe('Phase 9 — Human Approval & Resume Protocol (TASK-P9-04)', () => {
       packageId: testPackage.packageId,
       revision: testPackage.revision,
       contextFingerprint: activeSnapshot.logicalFingerprint,
+      understandingRevision: 1,
       actor: 'alice-po',
       actorRole: 'PRODUCT_OWNER',
       intent: 'EXPLICIT_APPROVAL',
@@ -892,6 +908,7 @@ describe('Phase 9 — Human Approval & Resume Protocol (TASK-P9-04)', () => {
           packageId: testPackage.packageId,
           revision: testPackage.revision,
           contextFingerprint: activeSnapshot.logicalFingerprint,
+          understandingRevision: 1,
           actor: 'alice-po',
           actorRole: 'PRODUCT_OWNER',
           intent: 'EXPLICIT_APPROVAL',
@@ -917,6 +934,7 @@ describe('Phase 9 — Human Approval & Resume Protocol (TASK-P9-04)', () => {
           packageId: testPackage.packageId,
           revision: testPackage.revision,
           contextFingerprint: activeSnapshot.logicalFingerprint,
+          understandingRevision: 1,
           actor: 'alice-po',
           actorRole: 'PRODUCT_OWNER',
           intent: 'EXPLICIT_APPROVAL',
@@ -962,6 +980,7 @@ describe('Phase 9 — Human Approval & Resume Protocol (TASK-P9-04)', () => {
       packageId: testPackage.packageId,
       revision: testPackage.revision,
       contextFingerprint: activeSnapshot.logicalFingerprint,
+      understandingRevision: 1,
       actor: 'alice-po',
       actorRole: 'PRODUCT_OWNER',
       intent: 'EXPLICIT_APPROVAL',
@@ -997,6 +1016,7 @@ describe('Phase 9 — Human Approval & Resume Protocol (TASK-P9-04)', () => {
           packageId: testPackage.packageId,
           revision: 99, // actual is 1
           contextFingerprint: activeSnapshot.logicalFingerprint,
+          understandingRevision: 1,
           actor: 'alice-po',
           actorRole: 'PRODUCT_OWNER',
           intent: 'EXPLICIT_APPROVAL',
@@ -1004,6 +1024,223 @@ describe('Phase 9 — Human Approval & Resume Protocol (TASK-P9-04)', () => {
       },
       (err: unknown) => {
         assert.ok(err instanceof ApprovalRevisionMismatchError);
+        return true;
+      }
+    );
+  });
+
+  // ==========================================================================
+  // FIX-1 ADVERSARIAL TESTS: AUTHORITATIVE UNDERSTANDING REVISION BINDING
+  // ==========================================================================
+
+  it('T26_understanding_revision_required: session revision 5 + input revision omitted is rejected', async () => {
+    const sessionRev5 = await sessionEngine.createSession({
+      workspaceRoot: tempDir,
+      directorSessionId: 'dir-sess-und-rev-5',
+      understandingRevision: 5,
+    });
+    const snapshotRev5 = await synchronizer.synchronize({
+      directorSessionId: sessionRev5.directorSessionId,
+      workspaceRoot: tempDir,
+    });
+
+    // 1. validateApproval check
+    const validation = await humanApprovalEngine.validateApproval({
+      workspaceRoot: tempDir,
+      directorSessionId: sessionRev5.directorSessionId,
+      packageId: testPackage.packageId,
+      revision: testPackage.revision,
+      contextFingerprint: snapshotRev5.logicalFingerprint,
+      // understandingRevision intentionally omitted
+      actor: 'alice-po',
+      actorRole: 'PRODUCT_OWNER',
+      intent: 'EXPLICIT_APPROVAL',
+    });
+    assert.equal(validation.isValid, false);
+    assert.equal(validation.code, 'UNDERSTANDING_REVISION_MISMATCH');
+    assert.match(validation.message, /Understanding revision binding is mandatory/);
+
+    // 2. submitApproval throws HumanApprovalRevisionMismatchError
+    await assert.rejects(
+      async () => {
+        await humanApprovalEngine.submitApproval({
+          workspaceRoot: tempDir,
+          directorSessionId: sessionRev5.directorSessionId,
+          packageId: testPackage.packageId,
+          revision: testPackage.revision,
+          contextFingerprint: snapshotRev5.logicalFingerprint,
+          // understandingRevision intentionally omitted
+          actor: 'alice-po',
+          actorRole: 'PRODUCT_OWNER',
+          intent: 'EXPLICIT_APPROVAL',
+        });
+      },
+      (err: unknown) => {
+        assert.ok(err instanceof HumanApprovalRevisionMismatchError);
+        assert.match(err.message, /Understanding revision binding is mandatory/);
+        return true;
+      }
+    );
+  });
+
+  it('T27_understanding_revision_authority_missing: session revision null + input revision 5 is rejected', async () => {
+    const sessionNoRev = await sessionEngine.createSession({
+      workspaceRoot: tempDir,
+      directorSessionId: 'dir-sess-und-rev-null',
+      understandingRevision: null,
+    });
+    const snapshotNoRev = await synchronizer.synchronize({
+      directorSessionId: sessionNoRev.directorSessionId,
+      workspaceRoot: tempDir,
+    });
+
+    // 1. validateApproval check
+    const validation = await humanApprovalEngine.validateApproval({
+      workspaceRoot: tempDir,
+      directorSessionId: sessionNoRev.directorSessionId,
+      packageId: testPackage.packageId,
+      revision: testPackage.revision,
+      contextFingerprint: snapshotNoRev.logicalFingerprint,
+      understandingRevision: 5,
+      actor: 'alice-po',
+      actorRole: 'PRODUCT_OWNER',
+      intent: 'EXPLICIT_APPROVAL',
+    });
+    assert.equal(validation.isValid, false);
+    assert.equal(validation.code, 'UNDERSTANDING_REVISION_MISMATCH');
+    assert.match(validation.message, /has no authoritative understanding revision/);
+
+    // 2. submitApproval throws HumanApprovalRevisionMismatchError
+    await assert.rejects(
+      async () => {
+        await humanApprovalEngine.submitApproval({
+          workspaceRoot: tempDir,
+          directorSessionId: sessionNoRev.directorSessionId,
+          packageId: testPackage.packageId,
+          revision: testPackage.revision,
+          contextFingerprint: snapshotNoRev.logicalFingerprint,
+          understandingRevision: 5,
+          actor: 'alice-po',
+          actorRole: 'PRODUCT_OWNER',
+          intent: 'EXPLICIT_APPROVAL',
+        });
+      },
+      (err: unknown) => {
+        assert.ok(err instanceof HumanApprovalRevisionMismatchError);
+        assert.match(err.message, /has no authoritative understanding revision/);
+        return true;
+      }
+    );
+  });
+
+  it('T28_understanding_revision_exact_match: session revision 5 + input revision 5 is accepted', async () => {
+    const sessionRev5 = await sessionEngine.createSession({
+      workspaceRoot: tempDir,
+      directorSessionId: 'dir-sess-und-rev-exact-5',
+      understandingRevision: 5,
+    });
+    const snapshotRev5 = await synchronizer.synchronize({
+      directorSessionId: sessionRev5.directorSessionId,
+      workspaceRoot: tempDir,
+    });
+
+    // Build dedicated test package to avoid conflict
+    const report = createMockReport(tempDir);
+    const builder = new InitialProjectUnderstandingBuilder();
+    const understanding = builder.build(report, undefined, { projectId: 'test-approval-project' });
+    const pkgRev5 = approvalPackageEngine.buildPackage(understanding, undefined, {
+      packageId: 'pkg-p904-exact-5',
+    });
+    await approvalStore.savePackage(pkgRev5);
+
+    // 1. validateApproval check
+    const validation = await humanApprovalEngine.validateApproval({
+      workspaceRoot: tempDir,
+      directorSessionId: sessionRev5.directorSessionId,
+      packageId: pkgRev5.packageId,
+      revision: pkgRev5.revision,
+      contextFingerprint: snapshotRev5.logicalFingerprint,
+      understandingRevision: 5,
+      actor: 'alice-po',
+      actorRole: 'PRODUCT_OWNER',
+      intent: 'EXPLICIT_APPROVAL',
+    });
+    assert.equal(validation.isValid, true);
+    assert.equal(validation.code, 'VALID');
+
+    // 2. submitApproval succeeds
+    const result = await humanApprovalEngine.submitApproval({
+      workspaceRoot: tempDir,
+      directorSessionId: sessionRev5.directorSessionId,
+      packageId: pkgRev5.packageId,
+      revision: pkgRev5.revision,
+      contextFingerprint: snapshotRev5.logicalFingerprint,
+      understandingRevision: 5,
+      actor: 'alice-po',
+      actorRole: 'PRODUCT_OWNER',
+      intent: 'EXPLICIT_APPROVAL',
+    });
+    assert.equal(result.package.status, 'APPROVED');
+    assert.equal(result.isDevelopmentAuthorized, true);
+    assert.equal(result.verifiedBindings.understandingRevision, 5);
+    assert.equal(result.approvalRecord.understandingRevision, 5);
+
+    // 3. evaluateResume succeeds
+    const resumeResult = await humanApprovalEngine.evaluateResume({
+      workspaceRoot: tempDir,
+      directorSessionId: sessionRev5.directorSessionId,
+      packageId: pkgRev5.packageId,
+    });
+    assert.equal(resumeResult.canResume, true);
+    assert.equal(resumeResult.code, 'RESUME_AUTHORIZED');
+    assert.equal(resumeResult.isDevelopmentAuthorized, true);
+  });
+
+  it('T29_understanding_revision_mismatch: session revision 5 + input revision 4 is rejected', async () => {
+    const sessionRev5 = await sessionEngine.createSession({
+      workspaceRoot: tempDir,
+      directorSessionId: 'dir-sess-und-rev-diff-5',
+      understandingRevision: 5,
+    });
+    const snapshotRev5 = await synchronizer.synchronize({
+      directorSessionId: sessionRev5.directorSessionId,
+      workspaceRoot: tempDir,
+    });
+
+    // 1. validateApproval check
+    const validation = await humanApprovalEngine.validateApproval({
+      workspaceRoot: tempDir,
+      directorSessionId: sessionRev5.directorSessionId,
+      packageId: testPackage.packageId,
+      revision: testPackage.revision,
+      contextFingerprint: snapshotRev5.logicalFingerprint,
+      understandingRevision: 4,
+      actor: 'alice-po',
+      actorRole: 'PRODUCT_OWNER',
+      intent: 'EXPLICIT_APPROVAL',
+    });
+    assert.equal(validation.isValid, false);
+    assert.equal(validation.code, 'UNDERSTANDING_REVISION_MISMATCH');
+    assert.match(validation.message, /Understanding revision mismatch: approval specifies revision 4, but session understanding revision is 5/);
+
+    // 2. submitApproval throws HumanApprovalRevisionMismatchError
+    await assert.rejects(
+      async () => {
+        await humanApprovalEngine.submitApproval({
+          workspaceRoot: tempDir,
+          directorSessionId: sessionRev5.directorSessionId,
+          packageId: testPackage.packageId,
+          revision: testPackage.revision,
+          contextFingerprint: snapshotRev5.logicalFingerprint,
+          understandingRevision: 4,
+          actor: 'alice-po',
+          actorRole: 'PRODUCT_OWNER',
+          intent: 'EXPLICIT_APPROVAL',
+        });
+      },
+      (err: unknown) => {
+        assert.ok(err instanceof HumanApprovalRevisionMismatchError);
+        assert.match(err.message, /Understanding revision mismatch/);
         return true;
       }
     );
