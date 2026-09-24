@@ -345,6 +345,44 @@ export class ExecutorInvocationError extends ExecutorAdapterError {
   }
 }
 
+// ============================================================================
+// P10-04 SYSTEM EVIDENCE PIPELINE ERRORS
+// ============================================================================
 
+export class SystemEvidenceError extends AidmError {
+  constructor(message: string, code = 'ERR_SYSTEM_EVIDENCE', details?: AidmErrorDetails) {
+    super(message, code, details);
+    this.name = this.constructor.name;
+    Object.setPrototypeOf(this, new.target.prototype);
+  }
+}
 
+export class SystemEvidenceValidationError extends SystemEvidenceError {
+  constructor(message: string, details?: AidmErrorDetails) {
+    super(message, 'ERR_SYSTEM_EVIDENCE_VALIDATION', details);
+  }
+}
 
+export class SystemEvidenceBindingMismatchError extends SystemEvidenceError {
+  constructor(message: string, details?: AidmErrorDetails) {
+    super(message, 'ERR_SYSTEM_EVIDENCE_BINDING_MISMATCH', details);
+  }
+}
+
+export class SystemEvidenceSecurityViolationError extends SystemEvidenceError {
+  constructor(message: string, details?: AidmErrorDetails) {
+    super(message, 'ERR_SYSTEM_EVIDENCE_SECURITY_VIOLATION', details);
+  }
+}
+
+export class SystemEvidenceVerificationError extends SystemEvidenceError {
+  constructor(message: string, details?: AidmErrorDetails) {
+    super(message, 'ERR_SYSTEM_EVIDENCE_VERIFICATION_FAILED', details);
+  }
+}
+
+export class SystemEvidenceInfrastructureError extends SystemEvidenceError {
+  constructor(message: string, details?: AidmErrorDetails) {
+    super(message, 'ERR_SYSTEM_EVIDENCE_INFRASTRUCTURE', details);
+  }
+}

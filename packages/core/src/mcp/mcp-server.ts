@@ -61,6 +61,7 @@ import { registerHumanApprovalTools } from './tools/human-approval-tools.js';
 import { registerExecutionIntentTools } from './tools/execution-intent-tools.js';
 import { registerExecutionRequestTools } from './tools/execution-request-tools.js';
 import { registerExecutorTools } from './tools/executor-tools.js';
+import { registerEvidenceVerifyTools } from './tools/evidence-verify-tool.js';
 
 
 export class McpServer {
@@ -150,6 +151,11 @@ export class McpServer {
     // Register Executor adapter boundary tools if enabled
     if (config.executorTools) {
       registerExecutorTools(this);
+    }
+
+    // Register Evidence verification pipeline tools if enabled
+    if (config.evidenceVerifyTools) {
+      registerEvidenceVerifyTools(this);
     }
   }
 
