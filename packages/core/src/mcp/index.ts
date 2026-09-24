@@ -27,3 +27,4 @@ export * from './tools/director-read-tools.js';
 export * from './tools/director-session-tools.js';
 export * from './tools/director-decision-tools.js';
 export * from './tools/human-approval-tools.js';
+export * from './tools/execution-intent-tools.js';

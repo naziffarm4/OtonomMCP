@@ -244,4 +244,5 @@ export interface McpServerConfig {
   readonly directorSessionTools?: boolean;
   readonly directorDecisionTools?: boolean;
   readonly humanApprovalTools?: boolean;
+  readonly executionIntentTools?: boolean;
 }

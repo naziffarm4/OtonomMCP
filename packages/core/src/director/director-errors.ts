@@ -183,3 +183,75 @@ export class ResumeUnauthorizedError extends HumanApprovalError {
   }
 }
 
+// ============================================================================
+// P10-01 EXECUTION INTENT & AUTHORIZATION ERRORS
+// ============================================================================
+
+export class ExecutionIntentError extends AidmError {
+  constructor(message: string, code = 'ERR_EXECUTION_INTENT', details?: AidmErrorDetails) {
+    super(message, code, details);
+    this.name = this.constructor.name;
+    Object.setPrototypeOf(this, new.target.prototype);
+  }
+}
+
+export class ExecutionIntentValidationError extends ExecutionIntentError {
+  constructor(message: string, details?: AidmErrorDetails) {
+    super(message, 'ERR_EXECUTION_INTENT_VALIDATION', details);
+  }
+}
+
+export class ExecutionIntentUnauthorizedError extends ExecutionIntentError {
+  constructor(message: string, details?: AidmErrorDetails) {
+    super(message, 'ERR_EXECUTION_INTENT_UNAUTHORIZED', details);
+  }
+}
+
+export class ExecutionIntentSessionMismatchError extends ExecutionIntentError {
+  constructor(message: string, details?: AidmErrorDetails) {
+    super(message, 'ERR_EXECUTION_INTENT_SESSION_MISMATCH', details);
+  }
+}
+
+export class ExecutionIntentProjectMismatchError extends ExecutionIntentError {
+  constructor(message: string, details?: AidmErrorDetails) {
+    super(message, 'ERR_EXECUTION_INTENT_PROJECT_MISMATCH', details);
+  }
+}
+
+export class ExecutionIntentContextMismatchError extends ExecutionIntentError {
+  constructor(message: string, details?: AidmErrorDetails) {
+    super(message, 'ERR_EXECUTION_INTENT_CONTEXT_MISMATCH', details);
+  }
+}
+
+export class ExecutionIntentContextStaleError extends ExecutionIntentError {
+  constructor(message: string, details?: AidmErrorDetails) {
+    super(message, 'ERR_EXECUTION_INTENT_CONTEXT_STALE', details);
+  }
+}
+
+export class ExecutionIntentContextIncompleteError extends ExecutionIntentError {
+  constructor(message: string, details?: AidmErrorDetails) {
+    super(message, 'ERR_EXECUTION_INTENT_CONTEXT_INCOMPLETE', details);
+  }
+}
+
+export class ExecutionIntentRevisionMismatchError extends ExecutionIntentError {
+  constructor(message: string, details?: AidmErrorDetails) {
+    super(message, 'ERR_EXECUTION_INTENT_REVISION_MISMATCH', details);
+  }
+}
+
+export class ExecutionIntentTaskInvalidError extends ExecutionIntentError {
+  constructor(message: string, details?: AidmErrorDetails) {
+    super(message, 'ERR_EXECUTION_INTENT_TASK_INVALID', details);
+  }
+}
+
+export class ExecutionIntentDecisionInvalidError extends ExecutionIntentError {
+  constructor(message: string, details?: AidmErrorDetails) {
+    super(message, 'ERR_EXECUTION_INTENT_DECISION_INVALID', details);
+  }
+}
+

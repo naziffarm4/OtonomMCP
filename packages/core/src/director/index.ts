@@ -14,4 +14,6 @@ export * from './director-decision-store.js';
 export * from './director-decision-engine.js';
 export * from './human-approval-types.js';
 export * from './human-approval-engine.js';
+export * from './execution-intent-types.js';
+export * from './execution-authorizer.js';
 

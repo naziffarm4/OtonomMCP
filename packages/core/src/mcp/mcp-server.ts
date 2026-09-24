@@ -58,6 +58,7 @@ import { registerApprovalTools } from './tools/approval-tools.js';
 import { registerDirectorSessionTools } from './tools/director-session-tools.js';
 import { registerDirectorDecisionTools } from './tools/director-decision-tools.js';
 import { registerHumanApprovalTools } from './tools/human-approval-tools.js';
+import { registerExecutionIntentTools } from './tools/execution-intent-tools.js';
 
 export class McpServer {
   readonly name: string;
@@ -131,6 +132,11 @@ export class McpServer {
     // Register Human approval & resume protocol tools if enabled
     if (config.humanApprovalTools) {
       registerHumanApprovalTools(this);
+    }
+
+    // Register Execution intent authorization boundary tools if enabled
+    if (config.executionIntentTools) {
+      registerExecutionIntentTools(this);
     }
   }
 

@@ -34,6 +34,7 @@ export const DIRECTOR_DECISION_TYPES = [
   'DEFER',
   'BLOCK',
   'RESUME',
+  'IMPLEMENT_TASK',
 ] as const;
 
 export type DirectorDecisionType = (typeof DIRECTOR_DECISION_TYPES)[number];
