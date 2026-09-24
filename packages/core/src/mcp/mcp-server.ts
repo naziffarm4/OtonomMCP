@@ -57,6 +57,7 @@ import { registerClarificationTools } from './tools/clarification-tools.js';
 import { registerApprovalTools } from './tools/approval-tools.js';
 import { registerDirectorSessionTools } from './tools/director-session-tools.js';
 import { registerDirectorDecisionTools } from './tools/director-decision-tools.js';
+import { registerHumanApprovalTools } from './tools/human-approval-tools.js';
 
 export class McpServer {
   readonly name: string;
@@ -125,6 +126,11 @@ export class McpServer {
     // Register Director decision protocol tools if enabled
     if (config.directorDecisionTools) {
       registerDirectorDecisionTools(this);
+    }
+
+    // Register Human approval & resume protocol tools if enabled
+    if (config.humanApprovalTools) {
+      registerHumanApprovalTools(this);
     }
   }
 

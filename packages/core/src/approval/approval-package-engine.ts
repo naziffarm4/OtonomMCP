@@ -340,6 +340,11 @@ export class ApprovalPackageEngine {
       comment: input.comment,
       approvedAt: now,
       packageHash,
+      ...(input.directorSessionId ? { directorSessionId: input.directorSessionId } : {}),
+      ...(input.contextFingerprint ? { contextFingerprint: input.contextFingerprint } : {}),
+      ...(input.understandingRevision !== undefined ? { understandingRevision: input.understandingRevision } : {}),
+      ...(input.protocolVersion ? { protocolVersion: input.protocolVersion } : {}),
+      ...(input.schemaVersion ? { schemaVersion: input.schemaVersion } : {}),
     });
 
     const approvedPkg: ProjectApprovalPackage = Object.freeze({

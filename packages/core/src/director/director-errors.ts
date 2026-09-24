@@ -116,3 +116,70 @@ export class DirectorUnderstandingRevisionMismatchError extends DirectorDecision
     super(message, 'ERR_DIRECTOR_UNDERSTANDING_REVISION_MISMATCH', details);
   }
 }
+
+// ============================================================================
+// P9-04 HUMAN APPROVAL & RESUME ERRORS
+// ============================================================================
+
+export class HumanApprovalError extends AidmError {
+  constructor(message: string, code = 'ERR_HUMAN_APPROVAL', details?: AidmErrorDetails) {
+    super(message, code, details);
+    this.name = this.constructor.name;
+    Object.setPrototypeOf(this, new.target.prototype);
+  }
+}
+
+export class HumanApprovalValidationError extends HumanApprovalError {
+  constructor(message: string, details?: AidmErrorDetails) {
+    super(message, 'ERR_HUMAN_APPROVAL_VALIDATION', details);
+  }
+}
+
+export class HumanApprovalUnauthorizedActorError extends HumanApprovalError {
+  constructor(message: string, details?: AidmErrorDetails) {
+    super(message, 'ERR_HUMAN_APPROVAL_UNAUTHORIZED_ACTOR', details);
+  }
+}
+
+export class HumanApprovalProjectBindingMismatchError extends HumanApprovalError {
+  constructor(message: string, details?: AidmErrorDetails) {
+    super(message, 'ERR_HUMAN_APPROVAL_PROJECT_BINDING_MISMATCH', details);
+  }
+}
+
+export class HumanApprovalContextMismatchError extends HumanApprovalError {
+  constructor(message: string, details?: AidmErrorDetails) {
+    super(message, 'ERR_HUMAN_APPROVAL_CONTEXT_MISMATCH', details);
+  }
+}
+
+export class HumanApprovalContextStaleError extends HumanApprovalError {
+  constructor(message: string, details?: AidmErrorDetails) {
+    super(message, 'ERR_HUMAN_APPROVAL_CONTEXT_STALE', details);
+  }
+}
+
+export class HumanApprovalContextIncompleteError extends HumanApprovalError {
+  constructor(message: string, details?: AidmErrorDetails) {
+    super(message, 'ERR_HUMAN_APPROVAL_CONTEXT_INCOMPLETE', details);
+  }
+}
+
+export class HumanApprovalRevisionMismatchError extends HumanApprovalError {
+  constructor(message: string, details?: AidmErrorDetails) {
+    super(message, 'ERR_HUMAN_APPROVAL_REVISION_MISMATCH', details);
+  }
+}
+
+export class HumanApprovalReplayError extends HumanApprovalError {
+  constructor(message: string, details?: AidmErrorDetails) {
+    super(message, 'ERR_HUMAN_APPROVAL_REPLAY', details);
+  }
+}
+
+export class ResumeUnauthorizedError extends HumanApprovalError {
+  constructor(message: string, details?: AidmErrorDetails) {
+    super(message, 'ERR_RESUME_UNAUTHORIZED', details);
+  }
+}
+

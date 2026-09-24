@@ -12,4 +12,6 @@ export * from './director-context-synchronizer.js';
 export * from './director-decision-types.js';
 export * from './director-decision-store.js';
 export * from './director-decision-engine.js';
+export * from './human-approval-types.js';
+export * from './human-approval-engine.js';
 

@@ -151,6 +151,11 @@ export interface ProjectApprovalRecord {
   readonly comment?: string;
   readonly approvedAt: string;
   readonly packageHash: string;
+  readonly directorSessionId?: string;
+  readonly contextFingerprint?: string;
+  readonly understandingRevision?: number | null;
+  readonly protocolVersion?: string;
+  readonly schemaVersion?: number;
 }
 
 export interface ProjectRejectionRecord {
@@ -212,6 +217,11 @@ export interface ProjectApprovalInput {
   readonly intent: 'EXPLICIT_APPROVAL';
   readonly comment?: string;
   readonly timestamp?: string;
+  readonly directorSessionId?: string;
+  readonly contextFingerprint?: string;
+  readonly understandingRevision?: number | null;
+  readonly protocolVersion?: string;
+  readonly schemaVersion?: number;
 }
 
 export interface ProjectRejectionInput {
@@ -265,6 +275,11 @@ export const ProjectApprovalRecordZodSchema = z.object({
   comment: z.string().optional(),
   approvedAt: z.string().min(1),
   packageHash: z.string().min(1),
+  directorSessionId: z.string().optional(),
+  contextFingerprint: z.string().optional(),
+  understandingRevision: z.number().int().nonnegative().nullable().optional(),
+  protocolVersion: z.string().optional(),
+  schemaVersion: z.number().int().positive().optional(),
 });
 
 export const ProjectRejectionRecordZodSchema = z.object({
@@ -326,6 +341,11 @@ export const ProjectApprovalInputZodSchema = z.object({
   intent: z.literal('EXPLICIT_APPROVAL', { message: "intent must be strictly 'EXPLICIT_APPROVAL'" }),
   comment: z.string().optional(),
   timestamp: z.string().optional(),
+  directorSessionId: z.string().optional(),
+  contextFingerprint: z.string().optional(),
+  understandingRevision: z.number().int().nonnegative().nullable().optional(),
+  protocolVersion: z.string().optional(),
+  schemaVersion: z.number().int().positive().optional(),
 });
 
 export const ProjectRejectionInputZodSchema = z.object({
