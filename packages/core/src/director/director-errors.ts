@@ -60,3 +60,59 @@ export class DirectorSecurityError extends DirectorSessionError {
     super(message, 'ERR_DIRECTOR_SECURITY_VIOLATION', details);
   }
 }
+
+export class DirectorDecisionError extends DirectorSessionError {
+  constructor(message: string, code = 'ERR_DIRECTOR_DECISION', details?: AidmErrorDetails) {
+    super(message, code, details);
+    this.name = this.constructor.name;
+    Object.setPrototypeOf(this, new.target.prototype);
+  }
+}
+
+export class DirectorDecisionNotFoundError extends DirectorDecisionError {
+  constructor(decisionId: string, details?: AidmErrorDetails) {
+    super(`Director decision not found: '${decisionId}'`, 'ERR_DIRECTOR_DECISION_NOT_FOUND', {
+      decisionId,
+      ...details,
+    });
+  }
+}
+
+export class DirectorDecisionAlreadyExistsError extends DirectorDecisionError {
+  constructor(decisionId: string, details?: AidmErrorDetails) {
+    super(`Director decision already exists: '${decisionId}'`, 'ERR_DIRECTOR_DECISION_ALREADY_EXISTS', {
+      decisionId,
+      ...details,
+    });
+  }
+}
+
+export class DirectorContextMismatchError extends DirectorDecisionError {
+  constructor(message: string, details?: AidmErrorDetails) {
+    super(message, 'ERR_DIRECTOR_CONTEXT_MISMATCH', details);
+  }
+}
+
+export class DirectorContextStaleError extends DirectorDecisionError {
+  constructor(message: string, details?: AidmErrorDetails) {
+    super(message, 'ERR_DIRECTOR_CONTEXT_STALE', details);
+  }
+}
+
+export class DirectorContextIncompleteError extends DirectorDecisionError {
+  constructor(message: string, details?: AidmErrorDetails) {
+    super(message, 'ERR_DIRECTOR_CONTEXT_INCOMPLETE', details);
+  }
+}
+
+export class DirectorApprovalRevisionMismatchError extends DirectorDecisionError {
+  constructor(message: string, details?: AidmErrorDetails) {
+    super(message, 'ERR_DIRECTOR_APPROVAL_REVISION_MISMATCH', details);
+  }
+}
+
+export class DirectorUnderstandingRevisionMismatchError extends DirectorDecisionError {
+  constructor(message: string, details?: AidmErrorDetails) {
+    super(message, 'ERR_DIRECTOR_UNDERSTANDING_REVISION_MISMATCH', details);
+  }
+}

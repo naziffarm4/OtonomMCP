@@ -43,14 +43,17 @@ export type DirectorAuditEventType =
   | 'DIRECTOR_SESSION_CLOSED'
   | 'DIRECTOR_SESSION_ACTIVITY_UPDATED'
   | 'DIRECTOR_CONTEXT_SYNCHRONIZED'
-  | 'DIRECTOR_CONTEXT_SYNC_FAILED';
+  | 'DIRECTOR_CONTEXT_SYNC_FAILED'
+  | 'DIRECTOR_DECISION_CREATED'
+  | 'DIRECTOR_DECISION_VALIDATION_FAILED';
 
 export class DirectorSessionStore {
   readonly directorDir: string;
   readonly sessionsDir: string;
   readonly snapshotsDir: string;
+  readonly decisionsDir: string;
   readonly activeSessionPath: string;
-  private readonly historyManager?: HistoryManager;
+  readonly historyManager?: HistoryManager;
 
   constructor(options?: DirectorSessionStoreOptions) {
     if (options?.directorDir) {
@@ -61,6 +64,7 @@ export class DirectorSessionStore {
     }
     this.sessionsDir = path.join(this.directorDir, 'sessions');
     this.snapshotsDir = path.join(this.directorDir, 'snapshots');
+    this.decisionsDir = path.join(this.directorDir, 'decisions');
     this.activeSessionPath = path.join(this.directorDir, 'active-session.json');
     this.historyManager = options?.historyManager;
   }

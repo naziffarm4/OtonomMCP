@@ -25,6 +25,7 @@ import { TaskDagEngine } from '../task-engine/dag-engine.js';
 import { ClarificationStore } from '../clarification/clarification-store.js';
 import { ApprovalStore } from '../approval/approval-store.js';
 import { DirectorSessionStore } from '../director/director-session-store.js';
+import { DirectorDecisionStore } from '../director/director-decision-store.js';
 import { ProjectDiscoveryEngine } from '../discovery/discovery-engine.js';
 
 // ============================================================================
@@ -117,6 +118,11 @@ export interface McpOrchestratorDelegate {
   readonly directorSessionStore?: DirectorSessionStore;
 
   /**
+   * Authoritative DirectorDecisionStore instance.
+   */
+  readonly directorDecisionStore?: DirectorDecisionStore;
+
+  /**
    * Authoritative ProjectDiscoveryEngine instance.
    */
   readonly discoveryEngine?: ProjectDiscoveryEngine;
@@ -155,6 +161,7 @@ export interface DefaultMcpOrchestratorDelegateOptions {
   readonly clarificationStore?: ClarificationStore;
   readonly approvalStore?: ApprovalStore;
   readonly directorSessionStore?: DirectorSessionStore;
+  readonly directorDecisionStore?: DirectorDecisionStore;
   readonly discoveryEngine?: ProjectDiscoveryEngine;
   readonly evidenceProvider?: (
     params: {
@@ -182,6 +189,7 @@ export class DefaultMcpOrchestratorDelegate implements McpOrchestratorDelegate {
   readonly clarificationStore?: ClarificationStore;
   readonly approvalStore?: ApprovalStore;
   readonly directorSessionStore?: DirectorSessionStore;
+  readonly directorDecisionStore?: DirectorDecisionStore;
   readonly discoveryEngine?: ProjectDiscoveryEngine;
   private readonly evidenceProvider?: (
     params: {
@@ -237,6 +245,14 @@ export class DefaultMcpOrchestratorDelegate implements McpOrchestratorDelegate {
       (this.projectRoot
         ? new DirectorSessionStore({
             baseDir: this.projectRoot,
+            historyManager: this.historyManager,
+          })
+        : undefined);
+    this.directorDecisionStore =
+      options.directorDecisionStore ??
+      (this.projectRoot
+        ? new DirectorDecisionStore({
+            sessionStore: this.directorSessionStore,
             historyManager: this.historyManager,
           })
         : undefined);

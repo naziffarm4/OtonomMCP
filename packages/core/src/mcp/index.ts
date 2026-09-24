@@ -25,3 +25,4 @@ export * from './tools/clarification-tools.js';
 export * from './tools/approval-tools.js';
 export * from './tools/director-read-tools.js';
 export * from './tools/director-session-tools.js';
+export * from './tools/director-decision-tools.js';

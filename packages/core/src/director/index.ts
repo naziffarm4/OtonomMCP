@@ -9,4 +9,7 @@ export * from './director-session-store.js';
 export * from './director-session-engine.js';
 export * from './director-context-types.js';
 export * from './director-context-synchronizer.js';
+export * from './director-decision-types.js';
+export * from './director-decision-store.js';
+export * from './director-decision-engine.js';
 

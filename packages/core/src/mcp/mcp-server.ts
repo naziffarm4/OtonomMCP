@@ -56,6 +56,7 @@ import {
 import { registerClarificationTools } from './tools/clarification-tools.js';
 import { registerApprovalTools } from './tools/approval-tools.js';
 import { registerDirectorSessionTools } from './tools/director-session-tools.js';
+import { registerDirectorDecisionTools } from './tools/director-decision-tools.js';
 
 export class McpServer {
   readonly name: string;
@@ -119,6 +120,11 @@ export class McpServer {
     // Register Director session identity tools if enabled
     if (config.directorSessionTools) {
       registerDirectorSessionTools(this);
+    }
+
+    // Register Director decision protocol tools if enabled
+    if (config.directorDecisionTools) {
+      registerDirectorDecisionTools(this);
     }
   }
 
