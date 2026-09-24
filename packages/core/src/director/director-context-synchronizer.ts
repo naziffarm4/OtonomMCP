@@ -34,6 +34,7 @@ import { ApprovalPackageEngine } from '../approval/approval-package-engine.js';
 import { DirectorSessionStore } from './director-session-store.js';
 import { DirectorSessionEngine } from './director-session-engine.js';
 import { validateProjectBinding, resolveCanonicalProjectIdentity } from './project-identity-resolver.js';
+import { ProjectDiscoveryEngine } from '../discovery/discovery-engine.js';
 import {
   type DirectorContextSnapshot,
   type DirectorContextSections,
@@ -70,6 +71,7 @@ export interface DirectorContextSynchronizerOptions {
   readonly delegate?: McpOrchestratorDelegate;
   readonly sessionEngine?: DirectorSessionEngine;
   readonly sessionStore?: DirectorSessionStore;
+  readonly discoveryEngine?: ProjectDiscoveryEngine;
 }
 
 export class DirectorContextSynchronizer {
@@ -77,10 +79,12 @@ export class DirectorContextSynchronizer {
   readonly delegate?: McpOrchestratorDelegate;
   readonly sessionEngine: DirectorSessionEngine;
   readonly sessionStore: DirectorSessionStore;
+  readonly discoveryEngine?: ProjectDiscoveryEngine;
 
   constructor(options: DirectorContextSynchronizerOptions = {}) {
     this.workspaceRoot = options.workspaceRoot ?? options.delegate?.projectRoot;
     this.delegate = options.delegate;
+    this.discoveryEngine = options.discoveryEngine ?? options.delegate?.discoveryEngine;
     this.sessionStore =
       options.sessionStore ??
       options.delegate?.directorSessionStore ??
@@ -682,15 +686,49 @@ export class DirectorContextSynchronizer {
     let discoverySection: DirectorDiscoverySection;
     let discoveryMeta: SyncSectionMetadata;
     try {
-      const canonical = resolveCanonicalProjectIdentity(projectRoot);
+      const discoveryEngine =
+        this.discoveryEngine ??
+        this.delegate?.discoveryEngine ??
+        new ProjectDiscoveryEngine({
+          workspaceRoot: projectRoot,
+          delegate: this.delegate,
+        });
+
+      const report = await discoveryEngine.discover();
+
+      const techItems: Array<{ name: string; version?: string }> = [];
+      const seenTech = new Set<string>();
+      const addTech = (name?: string) => {
+        if (name && typeof name === 'string' && !seenTech.has(name.toLowerCase())) {
+          seenTech.add(name.toLowerCase());
+          techItems.push({ name });
+        }
+      };
+
+      if (report.technologyStack) {
+        for (const lang of report.technologyStack.primaryLanguages ?? []) addTech(lang);
+        for (const fw of report.technologyStack.frameworks ?? []) addTech(fw);
+        for (const bt of report.technologyStack.buildTools ?? []) addTech(bt);
+        for (const rt of report.technologyStack.runtimes ?? []) addTech(rt);
+        for (const pm of report.technologyStack.packageManagers ?? []) addTech(pm);
+        for (const c of report.technologyStack.containerization ?? []) addTech(c);
+        for (const ci of report.technologyStack.ciCd ?? []) addTech(ci);
+      }
+      techItems.sort((a, b) => a.name.localeCompare(b.name));
+
+      const isDiscovered =
+        (report.purpose?.classification !== undefined && report.purpose.classification !== 'UNKNOWN') ||
+        (report.entryPoints?.length ?? 0) > 0 ||
+        techItems.length > 0;
+
       discoverySection = {
-        isDiscovered: true,
-        projectName: canonical.projectName,
-        apparentPurposeClassification: 'KNOWN',
-        technologyStack: [{ name: canonical.ecosystem }],
-        entryPointsCount: 1,
-        unknownsCount: 0,
-        contradictionsCount: 0,
+        isDiscovered,
+        projectName: report.projectIdentity?.name ?? projectId,
+        apparentPurposeClassification: report.purpose?.classification ?? 'UNKNOWN',
+        technologyStack: techItems,
+        entryPointsCount: report.entryPoints?.length ?? 0,
+        unknownsCount: report.unknowns?.length ?? 0,
+        contradictionsCount: report.contradictions?.length ?? 0,
       };
       discoveryMeta = {
         synchronized: true,

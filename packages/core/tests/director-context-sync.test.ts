@@ -78,6 +78,7 @@ import {
   ClarificationStore,
   ContextEngine,
   DefaultGitPort,
+  ProjectDiscoveryEngine,
 } from '../dist/index.js';
 
 describe('Phase 9 — Director Context Synchronization (TASK-P9-02)', () => {
@@ -924,5 +925,277 @@ describe('Phase 9 — Director Context Synchronization (TASK-P9-02)', () => {
 
     const contentAfter = fs.readFileSync(pkgPath, 'utf8');
     assert.equal(contentBefore, contentAfter);
+  });
+
+  // 41. Discovery data appears in Director snapshot from authoritative source
+  it('T41_discovery_data_in_snapshot: authoritative discovery report is reflected in snapshot', async () => {
+    fs.writeFileSync(
+      path.join(tempDir, 'package.json'),
+      JSON.stringify(
+        {
+          name: 'authoritative-pkg',
+          version: '2.0.0',
+          description: 'A dedicated test project for discovery verification',
+          main: 'index.js',
+          dependencies: { express: '^4.18.2' },
+        },
+        null,
+        2
+      )
+    );
+    fs.writeFileSync(path.join(tempDir, 'index.js'), 'console.log("hello");');
+
+    const snapshot = await synchronizer.synchronize({
+      directorSessionId: activeSession.directorSessionId,
+    });
+
+    assert.ok(snapshot.sections.discovery);
+    assert.equal(snapshot.sections.discovery.isDiscovered, true);
+    assert.equal(snapshot.sections.discovery.projectName, 'authoritative-pkg');
+    assert.ok(['UNDERSTOOD', 'PARTIALLY_UNDERSTOOD', 'UNKNOWN'].includes(snapshot.sections.discovery.apparentPurposeClassification));
+    assert.ok(snapshot.sections.discovery.entryPointsCount >= 1);
+    assert.ok(Array.isArray(snapshot.sections.discovery.technologyStack));
+    assert.equal(typeof snapshot.sections.discovery.unknownsCount, 'number');
+    assert.equal(typeof snapshot.sections.discovery.contradictionsCount, 'number');
+    assert.equal(snapshot.sectionMetadata.discovery.available, true);
+  });
+
+  // 42. Changing authoritative discovery data changes relevant section
+  it('T42_changing_discovery_data_updates_section: updating files updates discovery section and fingerprint', async () => {
+    const snapBefore = await synchronizer.synchronize({
+      directorSessionId: activeSession.directorSessionId,
+    });
+
+    // Add multiple entry points and cargo manifest to change tech stack & entry points
+    fs.writeFileSync(
+      path.join(tempDir, 'Cargo.toml'),
+      '[package]\nname = "rust-addon"\nversion = "0.1.0"\nedition = "2021"\n'
+    );
+    fs.mkdirSync(path.join(tempDir, 'src'), { recursive: true });
+    fs.writeFileSync(path.join(tempDir, 'src', 'main.rs'), 'fn main() {}');
+
+    const snapAfter = await synchronizer.synchronize({
+      directorSessionId: activeSession.directorSessionId,
+      priorFingerprint: snapBefore.logicalFingerprint,
+    });
+
+    assert.notEqual(snapBefore.sections.discovery.technologyStack, snapAfter.sections.discovery.technologyStack);
+    assert.notEqual(snapBefore.logicalFingerprint, snapAfter.logicalFingerprint);
+    assert.equal(snapAfter.syncStatus, 'CHANGED');
+  });
+
+  // 43. Discovery values are not hard-coded
+  it('T43_discovery_values_not_hardcoded: dynamic numbers and classifications match discovery report', async () => {
+    const mockDiscoveryEngine = {
+      discover: async () => ({
+        projectIdentity: {
+          id: 'custom-proj-id',
+          name: 'custom-proj-name',
+          rootPath: tempDir,
+          isMonorepoRoot: false,
+          workspaceType: 'standalone' as const,
+        },
+        purpose: {
+          classification: 'PARTIALLY_UNDERSTOOD' as const,
+          summary: 'Custom purpose summary',
+          domainKeywords: ['testing'],
+          evidence: [],
+        },
+        technologyStack: {
+          primaryLanguages: ['Rust'],
+          frameworks: ['Actix'],
+          buildTools: ['Cargo'],
+          packageManagers: ['cargo'],
+          runtimes: ['native'],
+          containerization: [],
+          ciCd: [],
+          workspaceType: 'standalone' as const,
+          dependencies: [],
+          devDependencies: [],
+          evidence: [],
+        },
+        repositoryStructure: {
+          totalFiles: 42,
+          directories: [],
+          topLevelDirectories: [],
+          architecturalAreas: [],
+          manifestLocations: [],
+          evidence: [],
+        },
+        architecture: {
+          subsystems: [],
+          patterns: [],
+          evidence: [],
+        },
+        entryPoints: [
+          { path: 'src/main.rs', type: 'CLI' as const, evidence: [] },
+          { path: 'src/lib.rs', type: 'LIBRARY' as const, evidence: [] },
+          { path: 'src/bin/worker.rs', type: 'BACKGROUND_WORKER' as const, evidence: [] },
+        ],
+        commands: {
+          scripts: {},
+          inferredCommands: [],
+          evidence: [],
+        },
+        featureInventory: [],
+        documentationSummary: {
+          readmePresent: false,
+          docFiles: [],
+          evidence: [],
+        },
+        requirementsSummary: {
+          count: 0,
+          statusCounts: {},
+          evidence: [],
+        },
+        decisionsSummary: {
+          count: 0,
+          statusCounts: {},
+          evidence: [],
+        },
+        currentImplementationState: {
+          totalFiles: 42,
+          evidence: [],
+        },
+        gitStatus: {
+          isGit: false,
+          evidence: [],
+        },
+        facts: [],
+        observations: [],
+        inferences: [],
+        unknowns: [
+          { id: 'unk-1', category: 'DOMAIN' as const, description: 'Unknown domain', severity: 'HIGH' as const, candidateClarification: false },
+          { id: 'unk-2', category: 'ARCHITECTURE' as const, description: 'Unknown arch', severity: 'MEDIUM' as const, candidateClarification: false },
+        ],
+        contradictions: [
+          { id: 'contra-1', severity: 'HIGH' as const, description: 'Contradicting configs', conflictingSources: [] },
+        ],
+        clarificationCandidates: [],
+        recommendedNextAction: 'PROCEED_TO_CLARIFICATION' as const,
+        timestamp: '2026-09-24T12:00:00.000Z',
+      }),
+    } as unknown as ProjectDiscoveryEngine;
+
+    const customSync = new DirectorContextSynchronizer({
+      workspaceRoot: tempDir,
+      delegate,
+      sessionEngine,
+      sessionStore,
+      discoveryEngine: mockDiscoveryEngine,
+    });
+
+    const snapshot = await customSync.synchronize({
+      directorSessionId: activeSession.directorSessionId,
+    });
+
+    assert.equal(snapshot.sections.discovery.projectName, 'custom-proj-name');
+    assert.equal(snapshot.sections.discovery.apparentPurposeClassification, 'PARTIALLY_UNDERSTOOD');
+    assert.equal(snapshot.sections.discovery.entryPointsCount, 3);
+    assert.equal(snapshot.sections.discovery.unknownsCount, 2);
+    assert.equal(snapshot.sections.discovery.contradictionsCount, 1);
+    assert.ok(snapshot.sections.discovery.technologyStack.some((t) => t.name === 'Rust'));
+    assert.ok(snapshot.sections.discovery.technologyStack.some((t) => t.name === 'Actix'));
+  });
+
+  // 44. Missing discovery state represented as unavailable/unknown
+  it('T44_missing_discovery_state_represented_unavailable: failed discovery yields INCOMPLETE with unavailable discovery', async () => {
+    const failingDiscoveryEngine = {
+      discover: async () => {
+        throw new Error('Filesystem access forbidden or scan failed');
+      },
+    } as unknown as ProjectDiscoveryEngine;
+
+    const failingSync = new DirectorContextSynchronizer({
+      workspaceRoot: tempDir,
+      delegate,
+      sessionEngine,
+      sessionStore,
+      discoveryEngine: failingDiscoveryEngine,
+    });
+
+    const snapshot = await failingSync.synchronize({
+      directorSessionId: activeSession.directorSessionId,
+    });
+
+    assert.equal(snapshot.sections.discovery.isDiscovered, false);
+    assert.equal(snapshot.sections.discovery.apparentPurposeClassification, 'UNKNOWN');
+    assert.equal(snapshot.sections.discovery.entryPointsCount, 0);
+    assert.equal(snapshot.sections.discovery.unknownsCount, 0);
+    assert.equal(snapshot.sections.discovery.contradictionsCount, 0);
+    assert.deepEqual(snapshot.sections.discovery.technologyStack, []);
+    assert.equal(snapshot.sectionMetadata.discovery.available, false);
+    assert.ok(snapshot.unavailableSections.includes('discovery'));
+    assert.equal(snapshot.isComplete, false);
+    assert.equal(snapshot.syncStatus, 'INCOMPLETE');
+  });
+
+  // 45. Discovery section contributes to logicalFingerprint
+  it('T45_discovery_contributes_to_logical_fingerprint: distinct discovery reports generate distinct fingerprints', async () => {
+    const engineA = {
+      discover: async () => ({
+        projectIdentity: { id: 'pA', name: 'projA', rootPath: tempDir, isMonorepoRoot: false, workspaceType: 'standalone' as const },
+        purpose: { classification: 'UNDERSTOOD' as const, summary: 'A', domainKeywords: [], evidence: [] },
+        technologyStack: { primaryLanguages: ['TypeScript'], frameworks: [], buildTools: [], packageManagers: [], runtimes: [], containerization: [], ciCd: [], workspaceType: 'standalone' as const, dependencies: [], devDependencies: [], evidence: [] },
+        entryPoints: [],
+        unknowns: [],
+        contradictions: [],
+        facts: [], observations: [], inferences: [], clarificationCandidates: [], featureInventory: [],
+        commands: { scripts: {}, inferredCommands: [], evidence: [] },
+        documentationSummary: { readmePresent: false, docFiles: [], evidence: [] },
+        requirementsSummary: { count: 0, statusCounts: {}, evidence: [] },
+        decisionsSummary: { count: 0, statusCounts: {}, evidence: [] },
+        currentImplementationState: { totalFiles: 1, evidence: [] },
+        gitStatus: { isGit: false, evidence: [] },
+        repositoryStructure: { totalFiles: 1, directories: [], topLevelDirectories: [], architecturalAreas: [], manifestLocations: [], evidence: [] },
+        architecture: { subsystems: [], patterns: [], evidence: [] },
+        recommendedNextAction: 'PROCEED_TO_CLARIFICATION' as const,
+        timestamp: '2026-09-24T12:00:00.000Z',
+      }),
+    } as unknown as ProjectDiscoveryEngine;
+
+    const engineB = {
+      discover: async () => ({
+        projectIdentity: { id: 'pB', name: 'projB', rootPath: tempDir, isMonorepoRoot: false, workspaceType: 'standalone' as const },
+        purpose: { classification: 'PARTIALLY_UNDERSTOOD' as const, summary: 'B', domainKeywords: [], evidence: [] },
+        technologyStack: { primaryLanguages: ['Python'], frameworks: ['Django'], buildTools: [], packageManagers: [], runtimes: [], containerization: [], ciCd: [], workspaceType: 'standalone' as const, dependencies: [], devDependencies: [], evidence: [] },
+        entryPoints: [{ path: 'manage.py', type: 'CLI' as const, evidence: [] }],
+        unknowns: [],
+        contradictions: [],
+        facts: [], observations: [], inferences: [], clarificationCandidates: [], featureInventory: [],
+        commands: { scripts: {}, inferredCommands: [], evidence: [] },
+        documentationSummary: { readmePresent: false, docFiles: [], evidence: [] },
+        requirementsSummary: { count: 0, statusCounts: {}, evidence: [] },
+        decisionsSummary: { count: 0, statusCounts: {}, evidence: [] },
+        currentImplementationState: { totalFiles: 1, evidence: [] },
+        gitStatus: { isGit: false, evidence: [] },
+        repositoryStructure: { totalFiles: 1, directories: [], topLevelDirectories: [], architecturalAreas: [], manifestLocations: [], evidence: [] },
+        architecture: { subsystems: [], patterns: [], evidence: [] },
+        recommendedNextAction: 'PROCEED_TO_CLARIFICATION' as const,
+        timestamp: '2026-09-24T12:00:00.000Z',
+      }),
+    } as unknown as ProjectDiscoveryEngine;
+
+    const syncA = new DirectorContextSynchronizer({ workspaceRoot: tempDir, delegate, sessionEngine, sessionStore, discoveryEngine: engineA });
+    const syncB = new DirectorContextSynchronizer({ workspaceRoot: tempDir, delegate, sessionEngine, sessionStore, discoveryEngine: engineB });
+
+    const snapA = await syncA.synchronize({ directorSessionId: activeSession.directorSessionId });
+    const snapB = await syncB.synchronize({ directorSessionId: activeSession.directorSessionId });
+
+    assert.notEqual(snapA.logicalFingerprint, snapB.logicalFingerprint);
+    assert.notEqual(snapA.sections.discovery.projectName, snapB.sections.discovery.projectName);
+  });
+
+  // 46. Synchronization remains read-only with authoritative discovery
+  it('T46_discovery_synchronization_readonly: discovery inspection does not write or mutate any project files', async () => {
+    const filesBefore = fs.readdirSync(tempDir);
+    await synchronizer.synchronize({
+      directorSessionId: activeSession.directorSessionId,
+    });
+    const filesAfter = fs.readdirSync(tempDir);
+
+    const nonAiFilesBefore = filesBefore.filter((f) => f !== '.ai-manager');
+    const nonAiFilesAfter = filesAfter.filter((f) => f !== '.ai-manager');
+    assert.deepEqual(nonAiFilesBefore, nonAiFilesAfter);
   });
 });
