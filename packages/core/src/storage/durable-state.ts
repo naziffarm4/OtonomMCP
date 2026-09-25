@@ -2,10 +2,13 @@ import * as path from 'node:path';
 import * as fs from 'node:fs';
 import { z } from 'zod';
 import { LifecycleState, LIFECYCLE_STATES } from '../lifecycle.js';
+import { VALID_LIFECYCLE_TRANSITIONS } from '../fsm/state-machine.js';
+import { InvalidStateTransitionError } from '../errors/invalid-state-transition-error.js';
 import { StateValidationError } from '../errors/state-validation-error.js';
 import { SchemaVersionError } from '../errors/schema-version-error.js';
 import { atomicWriteJson, readJsonFile } from './atomic-writer.js';
 import { BlockedStateZodSchema, toSnakeCaseBlockedState, type BlockedState } from './blocked-state-schema.js';
+
 
 export const CURRENT_DURABLE_STATE_SCHEMA_VERSION = 1;
 
@@ -207,4 +210,218 @@ export class DurableStateManager {
       }
     }
   }
+
+  /**
+   * Transitions top-level lifecycle state enforcing VALID_LIFECYCLE_TRANSITIONS.
+   * Throws InvalidStateTransitionError if transition is disallowed.
+   */
+  async transitionLifecycleState(
+    targetState: LifecycleState,
+    options?: { metadata?: Record<string, unknown> }
+  ): Promise<DurableState> {
+    const current = (await this.load()) ?? {
+      schemaVersion: CURRENT_DURABLE_STATE_SCHEMA_VERSION,
+      currentLifecycleState: LifecycleState.INITIALIZING,
+      activeTaskId: null,
+      completedTaskIds: [],
+      blockedState: null,
+      lastCheckpoint: null,
+      updatedAt: new Date().toISOString(),
+    };
+
+    if (current.currentLifecycleState === targetState) {
+      return current;
+    }
+
+    const allowed = VALID_LIFECYCLE_TRANSITIONS.get(current.currentLifecycleState);
+    if (!allowed || !allowed.has(targetState)) {
+      const allowedArr = allowed ? Array.from(allowed) : [];
+      throw new InvalidStateTransitionError(
+        `Invalid lifecycle transition in DurableState: Cannot transition from '${current.currentLifecycleState}' to '${targetState}'. Allowed transitions: [${allowedArr.join(', ')}]`,
+        {
+          fromState: current.currentLifecycleState,
+          toState: targetState,
+          allowedTransitions: allowedArr,
+          reason: `Transition from ${current.currentLifecycleState} to ${targetState} is disallowed by the authoritative transition table.`,
+        }
+      );
+    }
+
+    const updated: DurableState = {
+      ...current,
+      currentLifecycleState: targetState,
+      updatedAt: new Date().toISOString(),
+      metadata: options?.metadata ? { ...(current.metadata ?? {}), ...options.metadata } : current.metadata,
+    };
+
+    return this.save(updated);
+  }
+
+  /**
+   * Authoritatively records completion of a task in DurableState.
+   * Adds taskId to completedTaskIds (deduplicated, sorted), clears activeTaskId if matched.
+   * Validates legal lifecycle state (cannot complete tasks if PROJECT_COMPLETE).
+   */
+  async recordTaskCompletion(
+    taskId: string,
+    options?: { metadata?: Record<string, unknown> }
+  ): Promise<DurableState> {
+    if (!taskId || typeof taskId !== 'string' || taskId.trim().length === 0) {
+      throw new StateValidationError('taskId must be a non-empty string to record completion', {
+        filePath: this.filePath,
+      });
+    }
+
+    const current = (await this.load()) ?? {
+      schemaVersion: CURRENT_DURABLE_STATE_SCHEMA_VERSION,
+      currentLifecycleState: LifecycleState.TASK_LOOP,
+      activeTaskId: null,
+      completedTaskIds: [],
+      blockedState: null,
+      lastCheckpoint: null,
+      updatedAt: new Date().toISOString(),
+    };
+
+    if (current.currentLifecycleState === LifecycleState.PROJECT_COMPLETE) {
+      throw new InvalidStateTransitionError(
+        `Cannot record task completion: current lifecycle state is terminal '${LifecycleState.PROJECT_COMPLETE}'`,
+        {
+          fromState: current.currentLifecycleState,
+          toState: current.currentLifecycleState,
+          reason: 'Project is already marked complete; no further tasks may be completed.',
+        }
+      );
+    }
+
+    const completedSet = new Set(current.completedTaskIds);
+    completedSet.add(taskId);
+    const sortedCompleted = Array.from(completedSet).sort((a, b) => a.localeCompare(b));
+
+    const updated: DurableState = {
+      ...current,
+      completedTaskIds: sortedCompleted,
+      activeTaskId: current.activeTaskId === taskId ? null : current.activeTaskId,
+      updatedAt: new Date().toISOString(),
+      metadata: options?.metadata ? { ...(current.metadata ?? {}), ...options.metadata } : current.metadata,
+    };
+
+    return this.save(updated);
+  }
+
+  /**
+   * Authoritatively records a task as blocked in DurableState.
+   * Enters BLOCKED_ON_HUMAN state with structured blocked state schema.
+   */
+  async recordTaskBlocked(
+    taskId: string,
+    blockedStateData: BlockedState,
+    options?: { metadata?: Record<string, unknown> }
+  ): Promise<DurableState> {
+    if (!taskId || typeof taskId !== 'string' || taskId.trim().length === 0) {
+      throw new StateValidationError('taskId must be a non-empty string to record task blocked', {
+        filePath: this.filePath,
+      });
+    }
+
+    const parsedBlocked = BlockedStateZodSchema.safeParse(blockedStateData);
+    if (!parsedBlocked.success) {
+      throw new StateValidationError(
+        `Invalid blocked state payload: ${parsedBlocked.error.message}`,
+        {
+          filePath: this.filePath,
+          validationErrors: parsedBlocked.error.issues,
+        }
+      );
+    }
+
+    const current = (await this.load()) ?? {
+      schemaVersion: CURRENT_DURABLE_STATE_SCHEMA_VERSION,
+      currentLifecycleState: LifecycleState.TASK_LOOP,
+      activeTaskId: taskId,
+      completedTaskIds: [],
+      blockedState: null,
+      lastCheckpoint: null,
+      updatedAt: new Date().toISOString(),
+    };
+
+    // Transition to BLOCKED_ON_HUMAN if valid or if already in a task execution state
+    let targetLifecycle = current.currentLifecycleState;
+    if (targetLifecycle !== LifecycleState.BLOCKED_ON_HUMAN) {
+      const allowed = VALID_LIFECYCLE_TRANSITIONS.get(current.currentLifecycleState);
+      if (allowed && allowed.has(LifecycleState.BLOCKED_ON_HUMAN)) {
+        targetLifecycle = LifecycleState.BLOCKED_ON_HUMAN;
+      }
+    }
+
+    const updated: DurableState = {
+      ...current,
+      currentLifecycleState: targetLifecycle,
+      activeTaskId: current.activeTaskId === taskId ? null : current.activeTaskId,
+      blockedState: parsedBlocked.data,
+      updatedAt: new Date().toISOString(),
+      metadata: options?.metadata ? { ...(current.metadata ?? {}), ...options.metadata } : current.metadata,
+    };
+
+    return this.save(updated);
+  }
+
+  /**
+   * Authoritatively records an active task execution.
+   */
+  async recordTaskExecution(taskId: string): Promise<DurableState> {
+    if (!taskId || typeof taskId !== 'string' || taskId.trim().length === 0) {
+      throw new StateValidationError('taskId must be a non-empty string to record task execution', {
+        filePath: this.filePath,
+      });
+    }
+
+    const current = (await this.load()) ?? {
+      schemaVersion: CURRENT_DURABLE_STATE_SCHEMA_VERSION,
+      currentLifecycleState: LifecycleState.TASK_LOOP,
+      activeTaskId: null,
+      completedTaskIds: [],
+      blockedState: null,
+      lastCheckpoint: null,
+      updatedAt: new Date().toISOString(),
+    };
+
+    const updated: DurableState = {
+      ...current,
+      activeTaskId: taskId,
+      updatedAt: new Date().toISOString(),
+    };
+
+    return this.save(updated);
+  }
+
+  /**
+   * Clears the active task ID if matching or unspecified.
+   */
+  async clearActiveTask(taskId?: string): Promise<DurableState> {
+    const current = await this.load();
+    if (!current) {
+      return {
+        schemaVersion: CURRENT_DURABLE_STATE_SCHEMA_VERSION,
+        currentLifecycleState: LifecycleState.INITIALIZING,
+        activeTaskId: null,
+        completedTaskIds: [],
+        blockedState: null,
+        lastCheckpoint: null,
+        updatedAt: new Date().toISOString(),
+      };
+    }
+
+    if (taskId && current.activeTaskId !== taskId) {
+      return current;
+    }
+
+    const updated: DurableState = {
+      ...current,
+      activeTaskId: null,
+      updatedAt: new Date().toISOString(),
+    };
+
+    return this.save(updated);
+  }
 }
+

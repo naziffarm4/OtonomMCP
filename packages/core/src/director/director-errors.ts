@@ -386,3 +386,58 @@ export class SystemEvidenceInfrastructureError extends SystemEvidenceError {
     super(message, 'ERR_SYSTEM_EVIDENCE_INFRASTRUCTURE', details);
   }
 }
+
+// ============================================================================
+// P10-05 EXECUTION STATE INTEGRATION ERRORS
+// ============================================================================
+
+export class ExecutionIntegrationError extends AidmError {
+  constructor(message: string, code = 'ERR_EXECUTION_INTEGRATION', details?: AidmErrorDetails) {
+    super(message, code, details);
+    this.name = this.constructor.name;
+    Object.setPrototypeOf(this, new.target.prototype);
+  }
+}
+
+export class ExecutionIntegrationValidationError extends ExecutionIntegrationError {
+  constructor(message: string, details?: AidmErrorDetails) {
+    super(message, 'ERR_EXECUTION_INTEGRATION_VALIDATION', details);
+  }
+}
+
+export class ExecutionIntegrationBindingMismatchError extends ExecutionIntegrationError {
+  constructor(message: string, details?: AidmErrorDetails) {
+    super(message, 'ERR_EXECUTION_INTEGRATION_BINDING_MISMATCH', details);
+  }
+}
+
+export class ExecutionIntegrationStaleResultError extends ExecutionIntegrationError {
+  constructor(message: string, details?: AidmErrorDetails) {
+    super(message, 'ERR_EXECUTION_INTEGRATION_STALE_RESULT', details);
+  }
+}
+
+export class ExecutionIntegrationConflictError extends ExecutionIntegrationError {
+  constructor(message: string, details?: AidmErrorDetails) {
+    super(message, 'ERR_EXECUTION_INTEGRATION_CONFLICT', details);
+  }
+}
+
+export class ExecutionIntegrationSecurityViolationError extends ExecutionIntegrationError {
+  constructor(message: string, details?: AidmErrorDetails) {
+    super(message, 'ERR_EXECUTION_INTEGRATION_SECURITY_VIOLATION', details);
+  }
+}
+
+export class ExecutionIntegrationStateTransitionError extends ExecutionIntegrationError {
+  constructor(message: string, details?: AidmErrorDetails) {
+    super(message, 'ERR_EXECUTION_INTEGRATION_STATE_TRANSITION', details);
+  }
+}
+
+export class ExecutionIntegrationPersistenceError extends ExecutionIntegrationError {
+  constructor(message: string, details?: AidmErrorDetails) {
+    super(message, 'ERR_EXECUTION_INTEGRATION_PERSISTENCE', details);
+  }
+}
+

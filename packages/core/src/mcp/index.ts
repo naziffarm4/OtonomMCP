@@ -31,4 +31,5 @@ export * from './tools/execution-intent-tools.js';
 export * from './tools/execution-request-tools.js';
 export * from './tools/executor-tools.js';
 export * from './tools/evidence-verify-tool.js';
+export * from './tools/execution-integrate-tool.js';
 

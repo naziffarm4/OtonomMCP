@@ -24,4 +24,5 @@ export * from './discovery/index.js';
 export * from './clarification/index.js';
 export * from './approval/index.js';
 export * from './director/index.js';
+export * from './execution-integration/index.js';
 export type { GitState } from './git/index.js';
