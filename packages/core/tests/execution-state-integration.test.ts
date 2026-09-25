@@ -438,6 +438,41 @@ describe('Phase 10 TASK-P10-05: Verified Execution State Integration', () => {
   });
 
   // ==========================================================================
+  // 15b. Same taskId + same taskRevision + different requestId does NOT conflict
+  // ==========================================================================
+  it('15b. Same taskId + same taskRevision + different requestId does NOT conflict', async () => {
+    // ev1 is a REJECT on request 1 (task remains not completed)
+    const ev1 = createMockEvidence({
+      evidenceId: 'ev-req1-11111111111111111111',
+      requestId: 'req-first-1111111111111111111',
+      taskId: 'TASK-MULTI-REQ',
+      taskRevision: 1,
+      verificationDecision: 'REJECT',
+    });
+
+    const res1 = await integrator.integrate(ev1);
+    assert.equal(res1.success, true);
+    assert.equal(res1.taskStatus, TaskStatus.REJECTED);
+
+    // ev2 is a subsequent execution under a different requestId for the same task and revision
+    const ev2 = createMockEvidence({
+      evidenceId: 'ev-req2-22222222222222222222',
+      requestId: 'req-second-222222222222222222',
+      taskId: 'TASK-MULTI-REQ',
+      taskRevision: 1,
+      verificationDecision: 'ACCEPT',
+    });
+
+    const res2 = await integrator.integrate(ev2);
+    assert.equal(res2.success, true);
+    assert.equal(res2.taskStatus, TaskStatus.ACCEPTED);
+
+    const reloaded = await durableManager.load();
+    assert.ok(reloaded);
+    assert.ok(reloaded.completedTaskIds.includes('TASK-MULTI-REQ'));
+  });
+
+  // ==========================================================================
   // 16. Existing unrelated DurableState fields are preserved
   // ==========================================================================
   it('16. Existing unrelated DurableState fields are preserved', async () => {

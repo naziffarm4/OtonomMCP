@@ -403,22 +403,6 @@ export class ExecutionStateIntegrator {
       );
     }
 
-    // Check conflict for same task revision under different requestId
-    const existingForTaskRevision = existingList.find(
-      (r) => r.taskId === taskId && r.taskRevision === taskRevision
-    );
-    if (existingForTaskRevision && existingForTaskRevision.requestId !== requestId) {
-      throw new ExecutionIntegrationConflictError(
-        `Conflicting execution evidence detected for task '${taskId}' revision ${taskRevision}: already integrated under requestId '${existingForTaskRevision.requestId}', incoming requestId '${requestId}'.`,
-        {
-          taskId,
-          taskRevision,
-          existingRequestId: existingForTaskRevision.requestId,
-          incomingRequestId: requestId,
-        }
-      );
-    }
-
     // 4. Authoritative SpecStore task check (if SpecStore configured)
     let specTasks: TaskDefinition[] | undefined;
     if (this.specStore) {
