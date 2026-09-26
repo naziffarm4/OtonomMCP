@@ -1192,4 +1192,571 @@ describe('Phase 10 TASK-P10-04: System Evidence Collection & Verification Pipeli
     const parsed = JSON.parse(result.content[0].text);
     assert.equal(parsed.code, 'ERR_FABRICATED_EVIDENCE_REJECTED');
   });
+
+  // ==========================================================================
+  // P11-03-C: Post-Execution implementationScope Verification
+  // ==========================================================================
+  describe('P11-03-C — Post-Execution implementationScope Verification', () => {
+    // 1. Non-empty implementationScope + all files in scope -> PASS
+    it('C01: Non-empty implementationScope + all files in scope -> CHECK_IMPLEMENTATION_SCOPE PASS', async () => {
+      fakeGitPort.currentState = {
+        ...fakeGitPort.currentState,
+        staged_changes: ['packages/core/src/foo.ts', 'packages/core/src/bar.ts'],
+        unstaged_changes: [],
+        untracked_files: [],
+      };
+
+      const req: ExecutionRequest = {
+        ...sampleRequest,
+        instruction: {
+          ...sampleRequest.instruction,
+          implementationScope: ['packages/core/src'],
+          acceptanceCriteria: ['Task objective verified'],
+        },
+      };
+
+      const evidence = await collector.collectAndVerify(req, sampleRawOutcome);
+
+      const scopeCheck = evidence.verificationChecks.find((c) => c.checkId === 'CHECK_IMPLEMENTATION_SCOPE');
+      assert.ok(scopeCheck);
+      assert.equal(scopeCheck.status, 'PASS');
+      assert.equal(scopeCheck.type, 'FILE_SCOPE');
+      assert.equal(evidence.verificationDecision, 'ACCEPT');
+    });
+
+    // 2. Non-empty implementationScope + one out-of-scope file -> FAIL
+    it('C02: Non-empty implementationScope + one out-of-scope file -> FAIL and unexpectedFiles contains offending path', async () => {
+      fakeGitPort.currentState = {
+        ...fakeGitPort.currentState,
+        staged_changes: ['packages/core/src/foo.ts', 'packages/core/secret.env'],
+        unstaged_changes: [],
+        untracked_files: [],
+      };
+
+      const req: ExecutionRequest = {
+        ...sampleRequest,
+        instruction: {
+          ...sampleRequest.instruction,
+          implementationScope: ['packages/core/src'],
+        },
+      };
+
+      const evidence = await collector.collectAndVerify(req, sampleRawOutcome);
+
+      const scopeCheck = evidence.verificationChecks.find((c) => c.checkId === 'CHECK_IMPLEMENTATION_SCOPE');
+      assert.ok(scopeCheck);
+      assert.equal(scopeCheck.status, 'FAIL');
+      assert.ok(scopeCheck.evidence?.includes('packages/core/secret.env'));
+      assert.equal(evidence.verificationDecision, 'REJECT');
+    });
+
+    // 3. Multiple out-of-scope files -> all relevant violations reported
+    it('C03: Multiple out-of-scope files -> all relevant violations reported', async () => {
+      fakeGitPort.currentState = {
+        ...fakeGitPort.currentState,
+        staged_changes: ['packages/core/src/foo.ts', 'packages/core/secret.env'],
+        unstaged_changes: ['config/hacked.json'],
+        untracked_files: [],
+      };
+
+      const req: ExecutionRequest = {
+        ...sampleRequest,
+        instruction: {
+          ...sampleRequest.instruction,
+          implementationScope: ['packages/core/src'],
+        },
+      };
+
+      const evidence = await collector.collectAndVerify(req, sampleRawOutcome);
+
+      const scopeCheck = evidence.verificationChecks.find((c) => c.checkId === 'CHECK_IMPLEMENTATION_SCOPE');
+      assert.ok(scopeCheck);
+      assert.equal(scopeCheck.status, 'FAIL');
+      assert.ok(scopeCheck.evidence?.includes('packages/core/secret.env'));
+      assert.ok(scopeCheck.evidence?.includes('config/hacked.json'));
+      assert.equal(evidence.verificationDecision, 'REJECT');
+    });
+
+    // 4. Exact file matching
+    it('C04: Exact file matching in implementationScope', async () => {
+      fakeGitPort.currentState = {
+        ...fakeGitPort.currentState,
+        staged_changes: ['packages/core/src/foo.ts'],
+        unstaged_changes: [],
+        untracked_files: [],
+      };
+
+      const req: ExecutionRequest = {
+        ...sampleRequest,
+        instruction: {
+          ...sampleRequest.instruction,
+          implementationScope: ['packages/core/src/foo.ts'],
+          acceptanceCriteria: ['Task objective verified'],
+        },
+      };
+
+      const evidence = await collector.collectAndVerify(req, sampleRawOutcome);
+
+      const scopeCheck = evidence.verificationChecks.find((c) => c.checkId === 'CHECK_IMPLEMENTATION_SCOPE');
+      assert.ok(scopeCheck);
+      assert.equal(scopeCheck.status, 'PASS');
+      assert.equal(evidence.verificationDecision, 'ACCEPT');
+    });
+
+    // 5. Directory scope matching
+    it('C05: Directory scope matching in implementationScope', async () => {
+      fakeGitPort.currentState = {
+        ...fakeGitPort.currentState,
+        staged_changes: ['packages/core/src/nested/deep/file.ts'],
+        unstaged_changes: [],
+        untracked_files: [],
+      };
+
+      const req: ExecutionRequest = {
+        ...sampleRequest,
+        instruction: {
+          ...sampleRequest.instruction,
+          implementationScope: ['packages/core/src'],
+          acceptanceCriteria: ['Task objective verified'],
+        },
+      };
+
+      const evidence = await collector.collectAndVerify(req, sampleRawOutcome);
+
+      const scopeCheck = evidence.verificationChecks.find((c) => c.checkId === 'CHECK_IMPLEMENTATION_SCOPE');
+      assert.ok(scopeCheck);
+      assert.equal(scopeCheck.status, 'PASS');
+      assert.equal(evidence.verificationDecision, 'ACCEPT');
+    });
+
+    // 6. Directory boundary protection (boundary-safe prefix)
+    it('C06: Directory boundary protection: scope "packages/core/src" does not match "packages/core/src_backup/foo.ts"', async () => {
+      fakeGitPort.currentState = {
+        ...fakeGitPort.currentState,
+        staged_changes: ['packages/core/src_backup/foo.ts'],
+        unstaged_changes: [],
+        untracked_files: [],
+      };
+
+      const req: ExecutionRequest = {
+        ...sampleRequest,
+        instruction: {
+          ...sampleRequest.instruction,
+          implementationScope: ['packages/core/src'],
+        },
+      };
+
+      const evidence = await collector.collectAndVerify(req, sampleRawOutcome);
+
+      const scopeCheck = evidence.verificationChecks.find((c) => c.checkId === 'CHECK_IMPLEMENTATION_SCOPE');
+      assert.ok(scopeCheck);
+      assert.equal(scopeCheck.status, 'FAIL');
+      assert.ok(scopeCheck.evidence?.includes('packages/core/src_backup/foo.ts'));
+      assert.equal(evidence.verificationDecision, 'REJECT');
+    });
+
+    // 7. Empty implementationScope + zero changes -> PASS
+    it('C07: Empty implementationScope + zero changes -> PASS', async () => {
+      fakeGitPort.currentState = {
+        ...fakeGitPort.currentState,
+        working_tree_clean: true,
+        staged_changes: [],
+        unstaged_changes: [],
+        untracked_files: [],
+      };
+
+      const req: ExecutionRequest = {
+        ...sampleRequest,
+        instruction: {
+          ...sampleRequest.instruction,
+          implementationScope: [],
+          acceptanceCriteria: ['Task objective verified'],
+        },
+      };
+
+      const evidence = await collector.collectAndVerify(req, sampleRawOutcome);
+
+      const scopeCheck = evidence.verificationChecks.find((c) => c.checkId === 'CHECK_IMPLEMENTATION_SCOPE');
+      assert.ok(scopeCheck);
+      assert.equal(scopeCheck.status, 'PASS');
+      assert.equal(evidence.verificationDecision, 'ACCEPT');
+    });
+
+    // 8. Empty implementationScope + one change -> FAIL -> REJECT
+    it('C08: Empty implementationScope + one change -> FAIL and REJECT', async () => {
+      fakeGitPort.currentState = {
+        ...fakeGitPort.currentState,
+        staged_changes: ['any/file.ts'],
+        unstaged_changes: [],
+        untracked_files: [],
+      };
+
+      const req: ExecutionRequest = {
+        ...sampleRequest,
+        instruction: {
+          ...sampleRequest.instruction,
+          implementationScope: [],
+        },
+      };
+
+      const evidence = await collector.collectAndVerify(req, sampleRawOutcome);
+
+      const scopeCheck = evidence.verificationChecks.find((c) => c.checkId === 'CHECK_IMPLEMENTATION_SCOPE');
+      assert.ok(scopeCheck);
+      assert.equal(scopeCheck.status, 'FAIL');
+      assert.ok(scopeCheck.evidence?.includes('any/file.ts'));
+      assert.equal(evidence.verificationDecision, 'REJECT');
+    });
+
+    // 9. implementationScope omitted -> existing CHECK_TARGET_FILES_SCOPE behavior preserved
+    it('C09: implementationScope omitted -> existing CHECK_TARGET_FILES_SCOPE checkId generated', async () => {
+      fakeGitPort.currentState = {
+        ...fakeGitPort.currentState,
+        staged_changes: ['src/pipeline.ts'],
+        unstaged_changes: [],
+        untracked_files: [],
+      };
+
+      const req: ExecutionRequest = {
+        ...sampleRequest,
+        instruction: {
+          ...sampleRequest.instruction,
+          implementationScope: undefined,
+          targetFiles: ['src/pipeline.ts'],
+        },
+      };
+
+      const evidence = await collector.collectAndVerify(req, sampleRawOutcome);
+
+      const scopeCheck = evidence.verificationChecks.find((c) => c.checkId === 'CHECK_TARGET_FILES_SCOPE');
+      assert.ok(scopeCheck);
+      assert.equal(scopeCheck.status, 'PASS');
+      const implScopeCheck = evidence.verificationChecks.find((c) => c.checkId === 'CHECK_IMPLEMENTATION_SCOPE');
+      assert.equal(implScopeCheck, undefined);
+    });
+
+    // 10. implementationScope omitted + targetFiles specified -> exact match fallback preserved
+    it('C10: implementationScope omitted + targetFiles specified -> exact match fallback preserved (out of scope fails)', async () => {
+      fakeGitPort.currentState = {
+        ...fakeGitPort.currentState,
+        staged_changes: ['src/pipeline.ts', 'src/other.ts'],
+        unstaged_changes: [],
+        untracked_files: [],
+      };
+
+      const req: ExecutionRequest = {
+        ...sampleRequest,
+        instruction: {
+          ...sampleRequest.instruction,
+          implementationScope: undefined,
+          targetFiles: ['src/pipeline.ts'],
+        },
+      };
+
+      const evidence = await collector.collectAndVerify(req, sampleRawOutcome);
+
+      const scopeCheck = evidence.verificationChecks.find((c) => c.checkId === 'CHECK_TARGET_FILES_SCOPE');
+      assert.ok(scopeCheck);
+      assert.equal(scopeCheck.status, 'FAIL');
+      assert.ok(scopeCheck.evidence?.includes('src/other.ts'));
+      assert.equal(evidence.verificationDecision, 'REJECT');
+    });
+
+    // 11. implementationScope omitted + targetFiles empty -> unrestricted PASS behavior preserved
+    it('C11: implementationScope omitted + targetFiles empty -> unrestricted PASS preserved', async () => {
+      fakeGitPort.currentState = {
+        ...fakeGitPort.currentState,
+        staged_changes: ['src/any-file.ts', 'lib/other.ts'],
+        unstaged_changes: [],
+        untracked_files: [],
+      };
+
+      const req: ExecutionRequest = {
+        ...sampleRequest,
+        instruction: {
+          ...sampleRequest.instruction,
+          implementationScope: undefined,
+          targetFiles: [],
+          acceptanceCriteria: ['Task objective verified'],
+        },
+      };
+
+      const evidence = await collector.collectAndVerify(req, sampleRawOutcome);
+
+      const scopeCheck = evidence.verificationChecks.find((c) => c.checkId === 'CHECK_TARGET_FILES_SCOPE');
+      assert.ok(scopeCheck);
+      assert.equal(scopeCheck.status, 'PASS');
+      assert.equal(evidence.verificationDecision, 'ACCEPT');
+    });
+
+    // 12. analysisScope present but implementationScope absent -> analysisScope must NOT affect post-execution modification verification
+    it('C12: analysisScope present but implementationScope absent -> analysisScope does not restrict changed files', async () => {
+      fakeGitPort.currentState = {
+        ...fakeGitPort.currentState,
+        staged_changes: ['src/pipeline.ts'],
+        unstaged_changes: [],
+        untracked_files: [],
+      };
+
+      const req: ExecutionRequest = {
+        ...sampleRequest,
+        instruction: {
+          ...sampleRequest.instruction,
+          analysisScope: ['docs/README.md'], // completely different from changed files
+          implementationScope: undefined,
+          targetFiles: ['src/pipeline.ts'],
+          acceptanceCriteria: ['Task objective verified'],
+        },
+      };
+
+      const evidence = await collector.collectAndVerify(req, sampleRawOutcome);
+
+      const scopeCheck = evidence.verificationChecks.find((c) => c.checkId === 'CHECK_TARGET_FILES_SCOPE');
+      assert.ok(scopeCheck);
+      assert.equal(scopeCheck.status, 'PASS');
+      assert.equal(evidence.verificationDecision, 'ACCEPT');
+    });
+
+    // 13. analysisScope excludes a changed file but implementationScope includes it -> PASS (proves separation)
+    it('C13: analysisScope excludes a changed file but implementationScope includes it -> PASS (separation verified)', async () => {
+      fakeGitPort.currentState = {
+        ...fakeGitPort.currentState,
+        staged_changes: ['packages/core/src/pipeline.ts'],
+        unstaged_changes: [],
+        untracked_files: [],
+      };
+
+      const req: ExecutionRequest = {
+        ...sampleRequest,
+        instruction: {
+          ...sampleRequest.instruction,
+          analysisScope: ['packages/core/README.md'], // analysis does not include pipeline.ts
+          implementationScope: ['packages/core/src'],  // implementation does include pipeline.ts
+          targetFiles: ['packages/core/src/pipeline.ts'],
+          acceptanceCriteria: ['Task objective verified'],
+        },
+      };
+
+      const evidence = await collector.collectAndVerify(req, sampleRawOutcome);
+
+      const scopeCheck = evidence.verificationChecks.find((c) => c.checkId === 'CHECK_IMPLEMENTATION_SCOPE');
+      assert.ok(scopeCheck);
+      assert.equal(scopeCheck.status, 'PASS');
+      assert.equal(evidence.verificationDecision, 'ACCEPT');
+    });
+
+    // 14. Rename: old in scope -> new in scope -> PASS
+    it('C14: Rename: old in scope -> new in scope -> PASS', async () => {
+      fakeGitPort.currentState = {
+        ...fakeGitPort.currentState,
+        staged_changes: ['packages/core/src/old.ts -> packages/core/src/new.ts'],
+        unstaged_changes: [],
+        untracked_files: [],
+      };
+
+      const req: ExecutionRequest = {
+        ...sampleRequest,
+        instruction: {
+          ...sampleRequest.instruction,
+          implementationScope: ['packages/core/src'],
+          acceptanceCriteria: ['Task objective verified'],
+        },
+      };
+
+      const evidence = await collector.collectAndVerify(req, sampleRawOutcome);
+
+      const scopeCheck = evidence.verificationChecks.find((c) => c.checkId === 'CHECK_IMPLEMENTATION_SCOPE');
+      assert.ok(scopeCheck);
+      assert.equal(scopeCheck.status, 'PASS');
+      assert.equal(evidence.verificationDecision, 'ACCEPT');
+    });
+
+    // 15. Rename: old in scope -> new outside scope -> FAIL
+    it('C15: Rename: old in scope -> new outside scope -> FAIL and reports new path', async () => {
+      fakeGitPort.currentState = {
+        ...fakeGitPort.currentState,
+        staged_changes: ['packages/core/src/old.ts -> packages/other/new.ts'],
+        unstaged_changes: [],
+        untracked_files: [],
+      };
+
+      const req: ExecutionRequest = {
+        ...sampleRequest,
+        instruction: {
+          ...sampleRequest.instruction,
+          implementationScope: ['packages/core/src'],
+        },
+      };
+
+      const evidence = await collector.collectAndVerify(req, sampleRawOutcome);
+
+      const scopeCheck = evidence.verificationChecks.find((c) => c.checkId === 'CHECK_IMPLEMENTATION_SCOPE');
+      assert.ok(scopeCheck);
+      assert.equal(scopeCheck.status, 'FAIL');
+      assert.ok(scopeCheck.evidence?.includes('packages/other/new.ts'));
+      assert.equal(evidence.verificationDecision, 'REJECT');
+    });
+
+    // 16. Rename: old outside scope -> new in scope -> FAIL
+    it('C16: Rename: old outside scope -> new in scope -> FAIL and reports old path', async () => {
+      fakeGitPort.currentState = {
+        ...fakeGitPort.currentState,
+        staged_changes: ['packages/other/old.ts -> packages/core/src/new.ts'],
+        unstaged_changes: [],
+        untracked_files: [],
+      };
+
+      const req: ExecutionRequest = {
+        ...sampleRequest,
+        instruction: {
+          ...sampleRequest.instruction,
+          implementationScope: ['packages/core/src'],
+        },
+      };
+
+      const evidence = await collector.collectAndVerify(req, sampleRawOutcome);
+
+      const scopeCheck = evidence.verificationChecks.find((c) => c.checkId === 'CHECK_IMPLEMENTATION_SCOPE');
+      assert.ok(scopeCheck);
+      assert.equal(scopeCheck.status, 'FAIL');
+      assert.ok(scopeCheck.evidence?.includes('packages/other/old.ts'));
+      assert.equal(evidence.verificationDecision, 'REJECT');
+    });
+
+    // 17. Rename: both outside scope -> FAIL
+    it('C17: Rename: both outside scope -> FAIL and reports both paths', async () => {
+      fakeGitPort.currentState = {
+        ...fakeGitPort.currentState,
+        staged_changes: ['packages/alpha/old.ts -> packages/beta/new.ts'],
+        unstaged_changes: [],
+        untracked_files: [],
+      };
+
+      const req: ExecutionRequest = {
+        ...sampleRequest,
+        instruction: {
+          ...sampleRequest.instruction,
+          implementationScope: ['packages/core/src'],
+        },
+      };
+
+      const evidence = await collector.collectAndVerify(req, sampleRawOutcome);
+
+      const scopeCheck = evidence.verificationChecks.find((c) => c.checkId === 'CHECK_IMPLEMENTATION_SCOPE');
+      assert.ok(scopeCheck);
+      assert.equal(scopeCheck.status, 'FAIL');
+      assert.ok(scopeCheck.evidence?.includes('packages/alpha/old.ts'));
+      assert.ok(scopeCheck.evidence?.includes('packages/beta/new.ts'));
+      assert.equal(evidence.verificationDecision, 'REJECT');
+    });
+
+    // 18. Delete + untracked/create representation: both paths must independently satisfy scope
+    it('C18: Delete + untracked/create representation: both paths must independently satisfy scope', async () => {
+      fakeGitPort.currentState = {
+        ...fakeGitPort.currentState,
+        staged_changes: ['packages/core/src/deleted.ts'],
+        unstaged_changes: [],
+        untracked_files: ['packages/core/src/created.ts'],
+      };
+
+      const req: ExecutionRequest = {
+        ...sampleRequest,
+        instruction: {
+          ...sampleRequest.instruction,
+          implementationScope: ['packages/core/src'],
+          acceptanceCriteria: ['Task objective verified'],
+        },
+      };
+
+      const evidence = await collector.collectAndVerify(req, sampleRawOutcome);
+
+      const scopeCheck = evidence.verificationChecks.find((c) => c.checkId === 'CHECK_IMPLEMENTATION_SCOPE');
+      assert.ok(scopeCheck);
+      assert.equal(scopeCheck.status, 'PASS');
+      assert.equal(evidence.verificationDecision, 'ACCEPT');
+
+      // Now with one of them outside scope
+      fakeGitPort.currentState = {
+        ...fakeGitPort.currentState,
+        staged_changes: ['packages/core/src/deleted.ts'],
+        unstaged_changes: [],
+        untracked_files: ['outside/created.ts'],
+      };
+
+      const evidence2 = await collector.collectAndVerify(req, sampleRawOutcome);
+      const scopeCheck2 = evidence2.verificationChecks.find((c) => c.checkId === 'CHECK_IMPLEMENTATION_SCOPE');
+      assert.ok(scopeCheck2);
+      assert.equal(scopeCheck2.status, 'FAIL');
+      assert.ok(scopeCheck2.evidence?.includes('outside/created.ts'));
+      assert.equal(evidence2.verificationDecision, 'REJECT');
+    });
+
+    // 19. QA bridge: scope check FAIL -> final decision REJECT
+    it('C19: QA bridge: scope check FAIL -> final decision REJECT', async () => {
+      fakeGitPort.currentState = {
+        ...fakeGitPort.currentState,
+        staged_changes: ['outside/unauthorized.ts'],
+        unstaged_changes: [],
+        untracked_files: [],
+      };
+
+      const req: ExecutionRequest = {
+        ...sampleRequest,
+        instruction: {
+          ...sampleRequest.instruction,
+          implementationScope: ['packages/core/src'],
+        },
+      };
+
+      const evidence = await collector.collectAndVerify(req, sampleRawOutcome);
+
+      assert.equal(evidence.verificationDecision, 'REJECT');
+      const scopeCheck = evidence.verificationChecks.find((c) => c.checkId === 'CHECK_IMPLEMENTATION_SCOPE');
+      assert.ok(scopeCheck);
+      assert.equal(scopeCheck.status, 'FAIL');
+    });
+
+    // 20. Existing unrelated verification checks continue to behave exactly as before
+    it('C20: Existing unrelated verification checks continue to behave exactly as before', async () => {
+      fakeGitPort.currentState = {
+        ...fakeGitPort.currentState,
+        staged_changes: ['packages/core/src/foo.ts'],
+        unstaged_changes: [],
+        untracked_files: [],
+      };
+
+      fakeProcessExecutor.setHandler((cmd) => {
+        return {
+          command: cmd,
+          exitCode: 1,
+          stdout: '',
+          stderr: 'test failed',
+          durationMs: 50,
+        };
+      });
+
+      const req: ExecutionRequest = {
+        ...sampleRequest,
+        instruction: {
+          ...sampleRequest.instruction,
+          implementationScope: ['packages/core/src'],
+        },
+      };
+
+      const evidence = await collector.collectAndVerify(req, sampleRawOutcome, {
+        verificationCommands: [{ id: 'TEST_01', type: 'TEST', command: 'npm test' }],
+      });
+
+      // Scope check PASS
+      const scopeCheck = evidence.verificationChecks.find((c) => c.checkId === 'CHECK_IMPLEMENTATION_SCOPE');
+      assert.ok(scopeCheck);
+      assert.equal(scopeCheck.status, 'PASS');
+
+      // Command check FAIL -> final decision REJECT
+      const testCheck = evidence.verificationChecks.find((c) => c.checkId === 'CHECK_TEST_01');
+      assert.ok(testCheck);
+      assert.equal(testCheck.status, 'FAIL');
+      assert.equal(evidence.verificationDecision, 'REJECT');
+    });
+  });
 });

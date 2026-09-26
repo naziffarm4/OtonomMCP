@@ -96,6 +96,15 @@ export function isSafeRelativePath(filePath: string): boolean {
   const trimmed = filePath.trim();
   if (trimmed.length === 0) return false;
   if (trimmed.includes('\0')) return false;
+
+  // Handle Git status porcelain rename representation: oldPath -> newPath
+  if (trimmed.includes(' -> ')) {
+    const parts = trimmed.split(' -> ');
+    if (parts.length === 2) {
+      return isSafeRelativePath(parts[0]) && isSafeRelativePath(parts[1]);
+    }
+  }
+
   if (SHELL_INJECTION_PATTERN.test(trimmed)) return false;
   if (WINDOWS_DRIVE_PATTERN.test(trimmed)) return false;
   if (UNC_PATH_PATTERN.test(trimmed)) return false;

@@ -276,6 +276,33 @@ export class SystemEvidenceCollector {
     // Helper to process changed file safely
     const processPath = (rawPath: string, status: string) => {
       const normalized = rawPath.replace(/\\/g, '/').trim();
+      if (normalized.includes(' -> ')) {
+        const parts = normalized.split(' -> ');
+        const oldP = parts[0]?.trim() ?? '';
+        const newP = parts[1]?.trim() ?? '';
+
+        const oldSafe = isSafeRelativePath(oldP);
+        const newSafe = isSafeRelativePath(newP);
+
+        if (!oldSafe || !newSafe) {
+          if (!oldSafe) unsafePathsFound.push(oldP);
+          if (!newSafe) unsafePathsFound.push(newP);
+          if (options.throwOnSecurityViolation) {
+            throw new SystemEvidenceSecurityViolationError(
+              `Unsafe path detected in repository changes: '${normalized}'. Path traversal and absolute paths cannot enter evidence.`,
+              { path: normalized }
+            );
+          }
+          return;
+        }
+
+        if (!seenPaths.has(normalized)) {
+          seenPaths.add(normalized);
+          changedFiles.push({ path: normalized, status });
+        }
+        return;
+      }
+
       if (!isSafeRelativePath(normalized)) {
         unsafePathsFound.push(normalized);
         if (options.throwOnSecurityViolation) {
@@ -322,39 +349,97 @@ export class SystemEvidenceCollector {
       });
     }
 
-    // 5. Scope Leak & Target Files Validation
+    // 5. Scope Leak, Implementation Scope & Target Files Validation
+    const implementationScope = request.instruction?.implementationScope;
     const targetFiles = request.instruction?.targetFiles ?? [];
     let unexpectedFiles: string[] = [];
 
-    if (targetFiles.length > 0) {
-      const targetNormalized = targetFiles.map((f) => f.replace(/\\/g, '/').trim());
-      unexpectedFiles = changedFiles
-        .map((c) => c.path)
-        .filter((p) => !targetNormalized.includes(p));
+    if (implementationScope !== undefined) {
+      // CASE 1 & CASE 2: implementationScope is defined
+      const normalizedScopeEntries = implementationScope.map((s) => s.replace(/\\/g, '/').trim());
+
+      const isPathInScope = (filePath: string): boolean => {
+        return normalizedScopeEntries.some((scope) => {
+          return filePath === scope || filePath.startsWith(scope + '/');
+        });
+      };
+
+      const outOfScopePaths: string[] = [];
+
+      for (const changed of changedFiles) {
+        if (changed.path.includes(' -> ')) {
+          const parts = changed.path.split(' -> ');
+          const oldPath = parts[0]?.trim() ?? '';
+          const newPath = parts[1]?.trim() ?? '';
+
+          if (oldPath.length > 0 && !isPathInScope(oldPath)) {
+            if (!outOfScopePaths.includes(oldPath)) {
+              outOfScopePaths.push(oldPath);
+            }
+          }
+          if (newPath.length > 0 && !isPathInScope(newPath)) {
+            if (!outOfScopePaths.includes(newPath)) {
+              outOfScopePaths.push(newPath);
+            }
+          }
+        } else {
+          if (!isPathInScope(changed.path)) {
+            if (!outOfScopePaths.includes(changed.path)) {
+              outOfScopePaths.push(changed.path);
+            }
+          }
+        }
+      }
+
+      unexpectedFiles = outOfScopePaths;
 
       if (unexpectedFiles.length > 0) {
         verificationChecks.push({
-          checkId: 'CHECK_TARGET_FILES_SCOPE',
+          checkId: 'CHECK_IMPLEMENTATION_SCOPE',
           type: 'FILE_SCOPE',
           status: 'FAIL',
-          evidence: `Unexpected file modification outside allowed targetFiles: [${unexpectedFiles.join(', ')}]`,
+          evidence: `Repository changes outside allowed implementationScope: [${unexpectedFiles.join(', ')}]`,
         });
       } else {
+        verificationChecks.push({
+          checkId: 'CHECK_IMPLEMENTATION_SCOPE',
+          type: 'FILE_SCOPE',
+          status: 'PASS',
+          evidence: `All changed files strictly match implementationScope: [${changedFiles.map((c) => c.path).join(', ')}]`,
+        });
+      }
+    } else {
+      // CASE 3: implementationScope is undefined (preserve backward compatibility)
+      if (targetFiles.length > 0) {
+        const targetNormalized = targetFiles.map((f) => f.replace(/\\/g, '/').trim());
+        unexpectedFiles = changedFiles
+          .map((c) => c.path)
+          .filter((p) => !targetNormalized.includes(p));
+
+        if (unexpectedFiles.length > 0) {
+          verificationChecks.push({
+            checkId: 'CHECK_TARGET_FILES_SCOPE',
+            type: 'FILE_SCOPE',
+            status: 'FAIL',
+            evidence: `Unexpected file modification outside allowed targetFiles: [${unexpectedFiles.join(', ')}]`,
+          });
+        } else {
+          verificationChecks.push({
+            checkId: 'CHECK_TARGET_FILES_SCOPE',
+            type: 'FILE_SCOPE',
+            status: 'PASS',
+            evidence: `All changed files strictly match targetFiles scope: [${changedFiles.map((c) => c.path).join(', ')}]`,
+          });
+        }
+      } else {
+        // If targetFiles is not specified, record info
         verificationChecks.push({
           checkId: 'CHECK_TARGET_FILES_SCOPE',
           type: 'FILE_SCOPE',
           status: 'PASS',
-          evidence: `All changed files strictly match targetFiles scope: [${changedFiles.map((c) => c.path).join(', ')}]`,
+          evidence: `No explicit targetFiles restriction; recorded ${changedFiles.length} modified file(s)`,
         });
       }
-    } else {
-      // If targetFiles is not specified, record info
-      verificationChecks.push({
-        checkId: 'CHECK_TARGET_FILES_SCOPE',
-        type: 'FILE_SCOPE',
-        status: 'PASS',
-        evidence: `No explicit targetFiles restriction; recorded ${changedFiles.length} modified file(s)`,
-      });
     }
 
     // 6. Independent Test & Build Verification Execution
