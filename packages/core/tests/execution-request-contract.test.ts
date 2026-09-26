@@ -122,6 +122,7 @@ import {
   type DirectorContextSnapshot,
   type ProjectApprovalPackage,
   type ProjectDiscoveryReport,
+  AntigravityAdapter,
 } from '../dist/index.js';
 
 describe('Deterministic Execution Request Contract (Phase 10 TASK-P10-02)', () => {
@@ -1696,5 +1697,70 @@ describe('Deterministic Execution Request Contract (Phase 10 TASK-P10-02)', () =
     // 3. ApprovalStore package not mutated
     const pkgAfter = await approvalStore.getActivePackage();
     assert.deepStrictEqual(pkgAfter, pkgBefore);
+  });
+
+  it('T57: AntigravityAdapter translates ExecutionRequest with Adaptive Targeted Analysis policy in prompt', async () => {
+    const request = await builder.buildExecutionRequest({
+      intent: sampleIntent,
+      instruction: {
+        objective: 'Implement adaptive analysis check',
+        targetFiles: ['packages/core/src/sample.ts'],
+        acceptanceCriteria: ['AC-1: targeted analysis policy is active'],
+      },
+    });
+
+    const adapter = new AntigravityAdapter({ workspaceRoot: tempDir });
+    const payload = adapter.translateExecutionRequest(request);
+
+    assert.ok(payload.structuredPrompt, 'Structured prompt must be generated');
+
+    // 1. Policy header
+    assert.ok(
+      payload.structuredPrompt.includes('ADAPTIVE TARGETED ANALYSIS POLICY:'),
+      'Must contain Adaptive Targeted Analysis Policy header'
+    );
+
+    // 2. Targeted analysis
+    assert.ok(
+      payload.structuredPrompt.includes('Targeted Analysis') &&
+      payload.structuredPrompt.includes('Do not read entire files sequentially'),
+      'Must instruct targeted symbol/local behavior analysis rather than sequential file reading'
+    );
+
+    // 3. Dependency & flow tracing
+    assert.ok(
+      payload.structuredPrompt.includes('Dependency & Flow Tracing') &&
+      payload.structuredPrompt.includes('callers/callees') &&
+      payload.structuredPrompt.includes('data/state flow'),
+      'Must instruct dependency and data/state flow tracing'
+    );
+
+    // 4. Context reuse
+    assert.ok(
+      payload.structuredPrompt.includes('Context Reuse') &&
+      payload.structuredPrompt.includes('reuse the finding without re-reading'),
+      'Must instruct context reuse without re-reading previously analyzed code'
+    );
+
+    // 5. Cycle protection
+    assert.ok(
+      payload.structuredPrompt.includes('Cycle Protection') &&
+      payload.structuredPrompt.includes('ANALYSIS_LOOP_DETECTED'),
+      'Must instruct cycle protection and loop detection'
+    );
+
+    // 6. Sufficient-context stop
+    assert.ok(
+      payload.structuredPrompt.includes('Sufficient-Context Stop') &&
+      payload.structuredPrompt.includes('STOP reading and implement'),
+      'Must instruct stopping analysis once sufficient context exists'
+    );
+
+    // 7. Correctness over premature token optimization
+    assert.ok(
+      payload.structuredPrompt.includes('Correctness Over Minimization') &&
+      payload.structuredPrompt.includes('Do not skip necessary analysis'),
+      'Must instruct prioritizing correctness over token minimization'
+    );
   });
 });

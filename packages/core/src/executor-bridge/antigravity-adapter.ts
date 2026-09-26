@@ -217,6 +217,14 @@ export class AntigravityAdapter implements ExecutorPort, ExecutionRequestExecuto
       ...(request.instruction.targetFiles.length > 0
         ? request.instruction.targetFiles.map((f) => `- ${f}`)
         : ['(None specified)']),
+      '',
+      'ADAPTIVE TARGETED ANALYSIS POLICY:',
+      '1. Targeted Analysis: Focus on relevant symbols and local behavior first. Do not read entire files sequentially.',
+      '2. Dependency & Flow Tracing: Follow callers/callees and data/state flow only when required to understand the behavior.',
+      '3. Context Reuse: If a symbol, contract, or behavior was already analyzed in this task, reuse the finding without re-reading.',
+      '4. Cycle Protection: Stop traversal if an analysis cycle is detected. If blocked by contradictions, report ANALYSIS_LOOP_DETECTED.',
+      '5. Sufficient-Context Stop: Once task requirements, relevant symbols, contracts, and side-effects are understood, STOP reading and implement.',
+      '6. Correctness Over Minimization: Do not skip necessary analysis, but avoid redundant or exploratory reading.',
       '=========================================',
     ];
 
