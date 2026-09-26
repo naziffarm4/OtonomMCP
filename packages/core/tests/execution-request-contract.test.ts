@@ -1763,4 +1763,242 @@ describe('Deterministic Execution Request Contract (Phase 10 TASK-P10-02)', () =
       'Must instruct prioritizing correctness over token minimization'
     );
   });
+
+  // ==========================================================================
+  // 11. TASK SCOPE CONTRACT (P11-03-B)
+  // ==========================================================================
+
+  it('T58: analysisScope and implementationScope are accepted together and preserved on ExecutionRequest', async () => {
+    const request = await builder.buildExecutionRequest({
+      intent: sampleIntent,
+      instruction: {
+        objective: 'Task scope contract test',
+        targetFiles: ['src/entry.ts'],
+        acceptanceCriteria: ['AC-1'],
+        analysisScope: ['src/read-only-model.ts', 'src/shared/types.ts'],
+        implementationScope: ['src/entry.ts', 'src/sub-module.ts'],
+      },
+    });
+
+    assert.ok(request);
+    assert.deepStrictEqual(request.instruction.targetFiles, ['src/entry.ts']);
+    assert.deepStrictEqual(request.instruction.analysisScope, ['src/read-only-model.ts', 'src/shared/types.ts']);
+    assert.deepStrictEqual(request.instruction.implementationScope, ['src/entry.ts', 'src/sub-module.ts']);
+  });
+
+  it('T59: omitted analysisScope and implementationScope preserve backward compatibility', async () => {
+    const request = await builder.buildExecutionRequest({
+      intent: sampleIntent,
+      instruction: {
+        objective: 'Backward compatibility test',
+        targetFiles: ['src/foo.ts'],
+        acceptanceCriteria: ['AC-1'],
+      },
+    });
+
+    assert.ok(request);
+    assert.strictEqual(request.instruction.analysisScope, undefined);
+    assert.strictEqual(request.instruction.implementationScope, undefined);
+    assert.deepStrictEqual(request.instruction.targetFiles, ['src/foo.ts']);
+  });
+
+  it('T60: empty scope arrays are valid and normalized to empty frozen arrays', async () => {
+    const request = await builder.buildExecutionRequest({
+      intent: sampleIntent,
+      instruction: {
+        objective: 'Empty scope test',
+        targetFiles: ['src/bar.ts'],
+        acceptanceCriteria: ['AC-1'],
+        analysisScope: [],
+        implementationScope: [],
+      },
+    });
+
+    assert.ok(request);
+    assert.deepStrictEqual(request.instruction.analysisScope, []);
+    assert.deepStrictEqual(request.instruction.implementationScope, []);
+  });
+
+  it('T61: analysisScope and implementationScope enforce deduplication, POSIX conversion, and lexicographical sort', async () => {
+    const request = await builder.buildExecutionRequest({
+      intent: sampleIntent,
+      instruction: {
+        objective: 'Scope normalization test',
+        targetFiles: ['src/bar.ts'],
+        acceptanceCriteria: ['AC-1'],
+        analysisScope: ['src\\z.ts', 'src/a.ts', './src/z.ts', 'src/a.ts'],
+        implementationScope: ['dist\\out.ts', './dist/out.ts'],
+      },
+    });
+
+    assert.deepStrictEqual(request.instruction.analysisScope, ['src/a.ts', 'src/z.ts']);
+    assert.deepStrictEqual(request.instruction.implementationScope, ['dist/out.ts']);
+  });
+
+  it('T62: scope path traversal ("..") is strictly rejected in analysisScope and implementationScope', async () => {
+    const badPaths = ['../secret.ts', 'packages/../../secret.ts', 'foo/..'];
+
+    for (const badPath of badPaths) {
+      await assert.rejects(
+        async () => {
+          await builder.buildExecutionRequest({
+            intent: sampleIntent,
+            instruction: {
+              objective: 'Bad analysis path test',
+              acceptanceCriteria: ['AC-1'],
+              analysisScope: [badPath],
+            },
+          });
+        },
+        (err: unknown) => {
+          assert.ok(err instanceof ExecutionRequestInvalidPathError);
+          assert.match(err.message, /Path traversal/);
+          return true;
+        }
+      );
+
+      await assert.rejects(
+        async () => {
+          await builder.buildExecutionRequest({
+            intent: sampleIntent,
+            instruction: {
+              objective: 'Bad implementation path test',
+              acceptanceCriteria: ['AC-1'],
+              implementationScope: [badPath],
+            },
+          });
+        },
+        (err: unknown) => {
+          assert.ok(err instanceof ExecutionRequestInvalidPathError);
+          assert.match(err.message, /Path traversal/);
+          return true;
+        }
+      );
+    }
+  });
+
+  it('T63: absolute paths are strictly rejected in analysisScope and implementationScope', async () => {
+    const absPaths = ['/etc/passwd', 'C:\\secret\\file.ts', '//server/share/file.ts'];
+
+    for (const abs of absPaths) {
+      await assert.rejects(
+        async () => {
+          await builder.buildExecutionRequest({
+            intent: sampleIntent,
+            instruction: {
+              objective: 'Absolute analysis path test',
+              acceptanceCriteria: ['AC-1'],
+              analysisScope: [abs],
+            },
+          });
+        },
+        (err: unknown) => {
+          assert.ok(err instanceof ExecutionRequestInvalidPathError);
+          assert.match(err.message, /Absolute paths/);
+          return true;
+        }
+      );
+    }
+  });
+
+  it('T64: empty or whitespace-only paths in scopes are strictly rejected', async () => {
+    const emptyEntries = ['', '   ', '\t\n'];
+
+    for (const empty of emptyEntries) {
+      await assert.rejects(
+        async () => {
+          await builder.buildExecutionRequest({
+            intent: sampleIntent,
+            instruction: {
+              objective: 'Empty entry test',
+              acceptanceCriteria: ['AC-1'],
+              implementationScope: [empty],
+            },
+          });
+        },
+        (err: unknown) => {
+          assert.ok(err instanceof ExecutionRequestInvalidPathError);
+          return true;
+        }
+      );
+    }
+  });
+
+  it('T65: scope changes deterministically affect requestId computation', async () => {
+    const reqBase = await builder.buildExecutionRequest({
+      intent: sampleIntent,
+      instruction: {
+        objective: 'Scope hash test',
+        acceptanceCriteria: ['AC-1'],
+      },
+    });
+
+    const reqWithScopeA = await builder.buildExecutionRequest({
+      intent: sampleIntent,
+      instruction: {
+        objective: 'Scope hash test',
+        acceptanceCriteria: ['AC-1'],
+        analysisScope: ['src/model.ts'],
+      },
+    });
+
+    const reqWithScopeB = await builder.buildExecutionRequest({
+      intent: sampleIntent,
+      instruction: {
+        objective: 'Scope hash test',
+        acceptanceCriteria: ['AC-1'],
+        analysisScope: ['src/model.ts'],
+        implementationScope: ['src/impl.ts'],
+      },
+    });
+
+    assert.notStrictEqual(reqBase.requestId, reqWithScopeA.requestId);
+    assert.notStrictEqual(reqWithScopeA.requestId, reqWithScopeB.requestId);
+    assert.match(reqWithScopeB.requestId, /^req-[a-f0-9]{32}$/);
+  });
+
+  it('T66: validateExecutionRequest() validates scope path safety and hash integrity', async () => {
+    const validReq = await builder.buildExecutionRequest({
+      intent: sampleIntent,
+      instruction: {
+        objective: 'Validation test',
+        acceptanceCriteria: ['AC-1'],
+        analysisScope: ['src/valid.ts'],
+        implementationScope: ['src/valid-impl.ts'],
+      },
+    });
+
+    const validationResult = builder.validateExecutionRequest(validReq);
+    assert.strictEqual(validationResult.isValid, true);
+    assert.strictEqual(validationResult.code, 'VALID');
+
+    // Unsafe analysisScope path validation
+    const unsafeReq = {
+      ...validReq,
+      instruction: {
+        ...validReq.instruction,
+        analysisScope: ['../unsafe.ts'],
+      },
+    };
+    const invalidPathResult = builder.validateExecutionRequest(unsafeReq);
+    assert.strictEqual(invalidPathResult.isValid, false);
+    assert.strictEqual(invalidPathResult.code, 'INVALID_PATH');
+  });
+
+  it('T67: no new scopeId or scopeRevision identifier is generated', async () => {
+    const req = await builder.buildExecutionRequest({
+      intent: sampleIntent,
+      instruction: {
+        objective: 'No scope ID test',
+        acceptanceCriteria: ['AC-1'],
+        analysisScope: ['src/model.ts'],
+        implementationScope: ['src/impl.ts'],
+      },
+    });
+
+    assert.strictEqual((req as any).scopeId, undefined);
+    assert.strictEqual((req as any).scopeRevision, undefined);
+    assert.strictEqual((req.instruction as any).scopeId, undefined);
+    assert.strictEqual((req.instruction as any).scopeRevision, undefined);
+  });
 });

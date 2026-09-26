@@ -72,6 +72,8 @@ export interface ExecutionInstruction {
   readonly constraints: readonly string[];
   readonly targetFiles: readonly string[];
   readonly acceptanceCriteria: readonly ExecutionAcceptanceCriterion[];
+  readonly analysisScope?: readonly string[];
+  readonly implementationScope?: readonly string[];
 }
 
 export interface ExpectedRepositoryState {
@@ -132,6 +134,8 @@ export interface ExecutionInstructionInput {
   readonly constraints?: readonly string[];
   readonly targetFiles?: readonly string[];
   readonly acceptanceCriteria?: readonly ExecutionAcceptanceCriterion[];
+  readonly analysisScope?: readonly string[];
+  readonly implementationScope?: readonly string[];
 }
 
 export interface BuildExecutionRequestInput {
@@ -193,6 +197,8 @@ export const ExecutionInstructionZodSchema = z.object({
   constraints: z.array(z.string()),
   targetFiles: z.array(z.string()),
   acceptanceCriteria: z.array(ExecutionAcceptanceCriterionZodSchema).min(1, 'acceptanceCriteria must contain at least one criterion'),
+  analysisScope: z.array(z.string()).optional(),
+  implementationScope: z.array(z.string()).optional(),
 });
 
 export const ExpectedRepositoryStateZodSchema = z.object({
@@ -242,6 +248,8 @@ export const BuildExecutionRequestInputZodSchema = z.object({
       constraints: z.array(z.string()).optional(),
       targetFiles: z.array(z.string()).optional(),
       acceptanceCriteria: z.array(ExecutionAcceptanceCriterionZodSchema).optional(),
+      analysisScope: z.array(z.string()).optional(),
+      implementationScope: z.array(z.string()).optional(),
     })
     .optional(),
   expectedRepositoryState: ExpectedRepositoryStateZodSchema.optional(),

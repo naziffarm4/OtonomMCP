@@ -276,6 +276,80 @@ export class ExecutionRequestBuilder {
   }
 
   /**
+   * Normalizes and validates task scope paths (analysisScope or implementationScope).
+   * Enforces relative POSIX paths, rejects traversal (..) and absolute paths,
+   * deduplicates, and sorts lexicographically. Returns undefined if rawPaths is omitted.
+   */
+  canonicalizeScopePaths(
+    rawPaths?: readonly string[],
+    scopeName: 'analysisScope' | 'implementationScope' = 'analysisScope'
+  ): readonly string[] | undefined {
+    if (rawPaths === undefined) {
+      return undefined;
+    }
+
+    if (rawPaths.length === 0) {
+      return Object.freeze([]);
+    }
+
+    const normalizedSet = new Set<string>();
+
+    for (const raw of rawPaths) {
+      if (typeof raw !== 'string') {
+        throw new ExecutionRequestInvalidPathError(
+          `Scope path in ${scopeName} must be a string, got ${typeof raw}`,
+          { [scopeName]: raw }
+        );
+      }
+
+      // Convert backslashes to forward slashes and trim
+      const posixPath = raw.replace(/\\/g, '/').trim();
+
+      if (posixPath.length === 0) {
+        throw new ExecutionRequestInvalidPathError(
+          `Scope path in ${scopeName} cannot be empty or whitespace only`,
+          { [scopeName]: raw }
+        );
+      }
+
+      // Reject path traversal ('..')
+      const segments = posixPath.split('/');
+      if (segments.includes('..')) {
+        throw new ExecutionRequestInvalidPathError(
+          `Path traversal ('..') is strictly prohibited in ${scopeName}: '${raw}'`,
+          { [scopeName]: raw }
+        );
+      }
+
+      // Reject absolute paths: Unix leading '/', Windows drive letter ('C:'), or UNC ('//')
+      if (
+        posixPath.startsWith('/') ||
+        /^[a-zA-Z]:/.test(posixPath) ||
+        posixPath.startsWith('//')
+      ) {
+        throw new ExecutionRequestInvalidPathError(
+          `Absolute paths are strictly prohibited in ${scopeName}: '${raw}'`,
+          { [scopeName]: raw }
+        );
+      }
+
+      // Remove redundant leading './'
+      const cleanPath = posixPath.replace(/^\.\//, '');
+      if (cleanPath.length === 0) {
+        throw new ExecutionRequestInvalidPathError(
+          `Scope path in ${scopeName} resolved to empty after normalization: '${raw}'`,
+          { [scopeName]: raw }
+        );
+      }
+
+      normalizedSet.add(cleanPath);
+    }
+
+    const sortedPaths = Array.from(normalizedSet).sort();
+    return Object.freeze(sortedPaths);
+  }
+
+  /**
    * Normalizes and validates execution constraints.
    * Trims whitespace, removes empties, deduplicates, and sorts lexicographically.
    */
@@ -633,12 +707,16 @@ export class ExecutionRequestBuilder {
     const canonicalConstraints = this.canonicalizeConstraints(input.instruction?.constraints);
     const canonicalTargetFiles = this.canonicalizeTargetFiles(input.instruction?.targetFiles);
     const canonicalAcceptanceCriteria = this.canonicalizeAcceptanceCriteria(acceptanceCriteriaInput);
+    const canonicalAnalysisScope = this.canonicalizeScopePaths(input.instruction?.analysisScope, 'analysisScope');
+    const canonicalImplementationScope = this.canonicalizeScopePaths(input.instruction?.implementationScope, 'implementationScope');
 
     const canonicalInstruction: ExecutionInstruction = Object.freeze({
       objective,
       constraints: canonicalConstraints,
       targetFiles: canonicalTargetFiles,
       acceptanceCriteria: canonicalAcceptanceCriteria,
+      ...(canonicalAnalysisScope !== undefined ? { analysisScope: canonicalAnalysisScope } : {}),
+      ...(canonicalImplementationScope !== undefined ? { implementationScope: canonicalImplementationScope } : {}),
     });
 
     // 5. Expected Repository State (Authoritative Git inspection)
@@ -713,9 +791,15 @@ export class ExecutionRequestBuilder {
 
     const req = parseResult.data as ExecutionRequest;
 
-    // 1. Verify target file path safety
+    // 1. Verify target file path safety and scope path safety
     try {
       this.canonicalizeTargetFiles(req.instruction.targetFiles);
+      if (req.instruction.analysisScope !== undefined) {
+        this.canonicalizeScopePaths(req.instruction.analysisScope, 'analysisScope');
+      }
+      if (req.instruction.implementationScope !== undefined) {
+        this.canonicalizeScopePaths(req.instruction.implementationScope, 'implementationScope');
+      }
     } catch (err) {
       return {
         isValid: false,
