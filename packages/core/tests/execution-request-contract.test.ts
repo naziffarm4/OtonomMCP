@@ -2001,4 +2001,265 @@ describe('Deterministic Execution Request Contract (Phase 10 TASK-P10-02)', () =
     assert.strictEqual((req.instruction as any).scopeId, undefined);
     assert.strictEqual((req.instruction as any).scopeRevision, undefined);
   });
+
+  // ==========================================================================
+  // P11-03-D: End-to-End Scope Propagation & Enforcement Integration
+  // ==========================================================================
+  describe('P11-03-D — Scope Propagation to Antigravity Structured Prompt', () => {
+    const adapter = new AntigravityAdapter();
+
+    it('D01: analysisScope appears in the Antigravity structured prompt', async () => {
+      const req = await builder.buildExecutionRequest({
+        intent: sampleIntent,
+        instruction: {
+          objective: 'Test D01',
+          acceptanceCriteria: ['AC-1'],
+          analysisScope: ['src/core/parser.ts'],
+        },
+      });
+
+      const translated = adapter.translateExecutionRequest(req);
+      assert.ok(translated.structuredPrompt.includes('ANALYSIS SCOPE:\n- src/core/parser.ts'));
+    });
+
+    it('D02: Multiple analysis scope entries are preserved', async () => {
+      const req = await builder.buildExecutionRequest({
+        intent: sampleIntent,
+        instruction: {
+          objective: 'Test D02',
+          acceptanceCriteria: ['AC-1'],
+          analysisScope: ['src/core/parser.ts', 'src/core/lexer.ts', 'docs/spec.md'],
+        },
+      });
+
+      const translated = adapter.translateExecutionRequest(req);
+      assert.ok(
+        translated.structuredPrompt.includes(
+          'ANALYSIS SCOPE:\n- docs/spec.md\n- src/core/lexer.ts\n- src/core/parser.ts'
+        )
+      );
+    });
+
+    it('D03: Empty analysisScope is represented distinctly from undefined', async () => {
+      const req = await builder.buildExecutionRequest({
+        intent: sampleIntent,
+        instruction: {
+          objective: 'Test D03',
+          acceptanceCriteria: ['AC-1'],
+          analysisScope: [],
+        },
+      });
+
+      const translated = adapter.translateExecutionRequest(req);
+      assert.ok(translated.structuredPrompt.includes('ANALYSIS SCOPE:\n(None specified)'));
+    });
+
+    it('D04: Undefined analysisScope preserves backward-compatible translation', async () => {
+      const req = await builder.buildExecutionRequest({
+        intent: sampleIntent,
+        instruction: {
+          objective: 'Test D04',
+          acceptanceCriteria: ['AC-1'],
+        },
+      });
+
+      const translated = adapter.translateExecutionRequest(req);
+      assert.ok(translated.structuredPrompt.includes('ANALYSIS SCOPE:\n(Not specified)'));
+    });
+
+    it('D05: implementationScope appears in the Antigravity structured prompt', async () => {
+      const req = await builder.buildExecutionRequest({
+        intent: sampleIntent,
+        instruction: {
+          objective: 'Test D05',
+          acceptanceCriteria: ['AC-1'],
+          implementationScope: ['src/core'],
+        },
+      });
+
+      const translated = adapter.translateExecutionRequest(req);
+      assert.ok(translated.structuredPrompt.includes('IMPLEMENTATION SCOPE:\n- src/core'));
+    });
+
+    it('D06: Multiple implementation scope entries are preserved', async () => {
+      const req = await builder.buildExecutionRequest({
+        intent: sampleIntent,
+        instruction: {
+          objective: 'Test D06',
+          acceptanceCriteria: ['AC-1'],
+          implementationScope: ['src/core', 'packages/shared'],
+        },
+      });
+
+      const translated = adapter.translateExecutionRequest(req);
+      assert.ok(
+        translated.structuredPrompt.includes(
+          'IMPLEMENTATION SCOPE:\n- packages/shared\n- src/core'
+        )
+      );
+    });
+
+    it('D07: Empty implementationScope explicitly communicates that modifications are not permitted', async () => {
+      const req = await builder.buildExecutionRequest({
+        intent: sampleIntent,
+        instruction: {
+          objective: 'Test D07',
+          acceptanceCriteria: ['AC-1'],
+          implementationScope: [],
+        },
+      });
+
+      const translated = adapter.translateExecutionRequest(req);
+      assert.ok(
+        translated.structuredPrompt.includes(
+          'IMPLEMENTATION SCOPE:\n(None specified — repository modifications are not permitted)'
+        )
+      );
+    });
+
+    it('D08: Undefined implementationScope preserves backward-compatible translation', async () => {
+      const req = await builder.buildExecutionRequest({
+        intent: sampleIntent,
+        instruction: {
+          objective: 'Test D08',
+          acceptanceCriteria: ['AC-1'],
+        },
+      });
+
+      const translated = adapter.translateExecutionRequest(req);
+      assert.ok(
+        translated.structuredPrompt.includes(
+          'IMPLEMENTATION SCOPE:\n(Not specified — existing targetFiles behavior applies)'
+        )
+      );
+    });
+
+    it('D09: analysisScope and implementationScope remain separate (no scope merging)', async () => {
+      const req = await builder.buildExecutionRequest({
+        intent: sampleIntent,
+        instruction: {
+          objective: 'Test D09',
+          acceptanceCriteria: ['AC-1'],
+          analysisScope: ['src/a.ts'],
+          implementationScope: ['src/b.ts'],
+        },
+      });
+
+      const translated = adapter.translateExecutionRequest(req);
+      const prompt = translated.structuredPrompt;
+
+      assert.ok(prompt.includes('ANALYSIS SCOPE:\n- src/a.ts'));
+      assert.ok(prompt.includes('IMPLEMENTATION SCOPE:\n- src/b.ts'));
+      assert.ok(!prompt.includes('ANALYSIS SCOPE:\n- src/a.ts\n- src/b.ts'));
+      assert.ok(!prompt.includes('IMPLEMENTATION SCOPE:\n- src/a.ts'));
+    });
+
+    it('D10: targetFiles, analysisScope, and implementationScope remain three distinct sections in required order', async () => {
+      const req = await builder.buildExecutionRequest({
+        intent: sampleIntent,
+        instruction: {
+          objective: 'Test D10',
+          acceptanceCriteria: ['AC-1'],
+          targetFiles: ['src/target.ts'],
+          analysisScope: ['src/analysis.ts'],
+          implementationScope: ['src/impl.ts'],
+        },
+      });
+
+      const translated = adapter.translateExecutionRequest(req);
+      const prompt = translated.structuredPrompt;
+
+      const targetIdx = prompt.indexOf('TARGET FILES:');
+      const analysisIdx = prompt.indexOf('ANALYSIS SCOPE:');
+      const implIdx = prompt.indexOf('IMPLEMENTATION SCOPE:');
+      const policyIdx = prompt.indexOf('ADAPTIVE TARGETED ANALYSIS POLICY:');
+
+      assert.ok(targetIdx !== -1);
+      assert.ok(analysisIdx !== -1);
+      assert.ok(implIdx !== -1);
+      assert.ok(policyIdx !== -1);
+
+      assert.ok(targetIdx < analysisIdx);
+      assert.ok(analysisIdx < implIdx);
+      assert.ok(implIdx < policyIdx);
+    });
+
+    it('D11: Existing adaptive targeted analysis policy remains present', async () => {
+      const req = await builder.buildExecutionRequest({
+        intent: sampleIntent,
+        instruction: {
+          objective: 'Test D11',
+          acceptanceCriteria: ['AC-1'],
+          analysisScope: ['src/analysis.ts'],
+          implementationScope: ['src/impl.ts'],
+        },
+      });
+
+      const translated = adapter.translateExecutionRequest(req);
+      assert.ok(translated.structuredPrompt.includes('ADAPTIVE TARGETED ANALYSIS POLICY:'));
+      assert.ok(translated.structuredPrompt.includes('1. Targeted Analysis:'));
+      assert.ok(translated.structuredPrompt.includes('5. Sufficient-Context Stop:'));
+    });
+
+    it('D12: Existing safety boundary behavior remains unchanged (no bypass flags)', async () => {
+      const req = await builder.buildExecutionRequest({
+        intent: sampleIntent,
+        instruction: {
+          objective: 'Test D12',
+          acceptanceCriteria: ['AC-1'],
+          analysisScope: ['src/analysis.ts'],
+          implementationScope: ['src/impl.ts'],
+        },
+      });
+
+      const translated = adapter.translateExecutionRequest(req);
+      assert.equal(translated.args.includes('--dangerously-skip-permissions'), false);
+      assert.ok(translated.args.includes('--project'));
+    });
+
+    it('D13: The adapter does not mutate the ExecutionRequest', async () => {
+      const req = await builder.buildExecutionRequest({
+        intent: sampleIntent,
+        instruction: {
+          objective: 'Test D13',
+          acceptanceCriteria: ['AC-1'],
+          analysisScope: ['src/analysis.ts'],
+          implementationScope: ['src/impl.ts'],
+        },
+      });
+
+      const beforeJSON = JSON.stringify(req);
+      adapter.translateExecutionRequest(req);
+      const afterJSON = JSON.stringify(req);
+
+      assert.strictEqual(beforeJSON, afterJSON);
+    });
+
+    it('D14: Identical requests produce identical structured prompts', async () => {
+      const req1 = await builder.buildExecutionRequest({
+        intent: sampleIntent,
+        instruction: {
+          objective: 'Test D14',
+          acceptanceCriteria: ['AC-1'],
+          analysisScope: ['src/analysis.ts'],
+          implementationScope: ['src/impl.ts'],
+        },
+      });
+
+      const req2 = await builder.buildExecutionRequest({
+        intent: sampleIntent,
+        instruction: {
+          objective: 'Test D14',
+          acceptanceCriteria: ['AC-1'],
+          analysisScope: ['src/analysis.ts'],
+          implementationScope: ['src/impl.ts'],
+        },
+      });
+
+      const translated1 = adapter.translateExecutionRequest(req1);
+      const translated2 = adapter.translateExecutionRequest(req2);
+
+      assert.strictEqual(translated1.structuredPrompt, translated2.structuredPrompt);
+    });
+  });
 });

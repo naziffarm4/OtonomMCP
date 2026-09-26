@@ -218,6 +218,20 @@ export class AntigravityAdapter implements ExecutorPort, ExecutionRequestExecuto
         ? request.instruction.targetFiles.map((f) => `- ${f}`)
         : ['(None specified)']),
       '',
+      'ANALYSIS SCOPE:',
+      ...(request.instruction.analysisScope !== undefined
+        ? request.instruction.analysisScope.length > 0
+          ? request.instruction.analysisScope.map((s) => `- ${s}`)
+          : ['(None specified)']
+        : ['(Not specified)']),
+      '',
+      'IMPLEMENTATION SCOPE:',
+      ...(request.instruction.implementationScope !== undefined
+        ? request.instruction.implementationScope.length > 0
+          ? request.instruction.implementationScope.map((s) => `- ${s}`)
+          : ['(None specified — repository modifications are not permitted)']
+        : ['(Not specified — existing targetFiles behavior applies)']),
+      '',
       'ADAPTIVE TARGETED ANALYSIS POLICY:',
       '1. Targeted Analysis: Focus on relevant symbols and local behavior first. Do not read entire files sequentially.',
       '2. Dependency & Flow Tracing: Follow callers/callees and data/state flow only when required to understand the behavior.',
