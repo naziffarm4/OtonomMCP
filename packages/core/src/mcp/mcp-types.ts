@@ -248,5 +248,6 @@ export interface McpServerConfig {
   readonly executionRequestTools?: boolean;
   readonly executorTools?: boolean;
   readonly evidenceVerifyTools?: boolean;
+  readonly phase11ContinuationTools?: boolean;
 }
 

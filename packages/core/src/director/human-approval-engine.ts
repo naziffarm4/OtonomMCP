@@ -77,6 +77,13 @@ import {
   EvaluateResumeInputZodSchema,
 } from './human-approval-types.js';
 import type { HistoryManager } from '../storage/history-manager.js';
+import { DurableStateManager } from '../storage/durable-state.js';
+import type { DirectorSession } from './director-types.js';
+import {
+  type ValidateContinuationRequestInput,
+  type ContinuationValidationResult,
+  ValidateContinuationRequestInputZodSchema,
+} from './human-approval-types.js';
 
 export interface HumanApprovalEngineOptions {
   readonly workspaceRoot?: string;
@@ -87,6 +94,7 @@ export interface HumanApprovalEngineOptions {
   readonly sessionEngine?: DirectorSessionEngine;
   readonly decisionStore?: DirectorDecisionStore;
   readonly historyManager?: HistoryManager;
+  readonly durableStateManager?: DurableStateManager;
 }
 
 export class HumanApprovalEngine {
@@ -98,11 +106,18 @@ export class HumanApprovalEngine {
   readonly sessionEngine: DirectorSessionEngine;
   readonly decisionStore: DirectorDecisionStore;
   readonly historyManager?: HistoryManager;
+  readonly durableStateManager: DurableStateManager;
 
   constructor(options: HumanApprovalEngineOptions = {}) {
     this.workspaceRoot = options.workspaceRoot ?? options.delegate?.projectRoot;
     this.delegate = options.delegate;
     this.historyManager = options.historyManager ?? options.delegate?.historyManager;
+
+    this.durableStateManager =
+      options.durableStateManager ??
+      new DurableStateManager({
+        baseDir: this.workspaceRoot,
+      });
 
     this.approvalStore =
       options.approvalStore ??
@@ -890,4 +905,259 @@ export class HumanApprovalEngine {
       },
     };
   }
+
+  /**
+   * Validates a Phase 11 continuation request against human authority, active session,
+   * context snapshot binding, and durable state WAITING status.
+   *
+   * STRICT GOVERNANCE RULES:
+   * 1. Actor must strictly be human ('PRODUCT_OWNER' or 'USER').
+   * 2. Rejects DIRECTOR, EXECUTOR, ANTIGRAVITY, SYSTEM, ORCHESTRATOR.
+   * 3. Validates canonical project and active session.
+   * 4. Validates context snapshot fingerprint.
+   * 5. Validates durable state continuationState === 'WAITING' (or returns CONTINUATION_NOT_NEEDED if already NONE).
+   * 6. Does NOT invoke Antigravity, does NOT mutate DAG, does NOT call isDevelopmentAuthorized().
+   */
+  async validateContinuationRequest(
+    input: ValidateContinuationRequestInput
+  ): Promise<ContinuationValidationResult> {
+    // 1. Zod input validation
+    const parsed = ValidateContinuationRequestInputZodSchema.safeParse(input);
+    if (!parsed.success) {
+      return {
+        isValid: false,
+        code: 'VALIDATION_ERROR',
+        message: `Invalid continuation request input: ${parsed.error.issues[0]?.message ?? 'validation failed'}`,
+        details: { issues: parsed.error.issues },
+      };
+    }
+
+    // 2. Strict Human Actor validation
+    const actor = input.actor.trim();
+    const normalizedActor = actor.toUpperCase();
+
+    if (
+      normalizedActor === 'DIRECTOR' ||
+      normalizedActor.includes('DIRECTOR') ||
+      (input.actorRole as string) === 'DIRECTOR'
+    ) {
+      return {
+        isValid: false,
+        code: 'ACTOR_UNAUTHORIZED',
+        message:
+          "Director actor cannot authorize continuation. Continuation authority strictly belongs to human Product Owner ('PRODUCT_OWNER' or 'USER').",
+        details: { actor: input.actor, actorRole: input.actorRole },
+      };
+    }
+
+    if (
+      normalizedActor === 'EXECUTOR' ||
+      normalizedActor === 'ANTIGRAVITY' ||
+      normalizedActor.includes('EXECUTOR') ||
+      normalizedActor.includes('ANTIGRAVITY')
+    ) {
+      return {
+        isValid: false,
+        code: 'SECURITY_VIOLATION',
+        message:
+          "Antigravity executor ('EXECUTOR') is strictly prohibited from authorizing continuation.",
+        details: { actor: input.actor, actorRole: input.actorRole },
+      };
+    }
+
+    for (const forbidden of FORBIDDEN_APPROVAL_ACTORS) {
+      if (normalizedActor === forbidden || normalizedActor.includes(forbidden)) {
+        return {
+          isValid: false,
+          code: 'ACTOR_UNAUTHORIZED',
+          message: `Unauthorized continuation actor: '${input.actor}'. Forbidden actor category: ${forbidden}.`,
+          details: { actor: input.actor, forbiddenActor: forbidden },
+        };
+      }
+    }
+
+    if (input.actorRole !== 'PRODUCT_OWNER' && input.actorRole !== 'USER') {
+      return {
+        isValid: false,
+        code: 'ACTOR_UNAUTHORIZED',
+        message: `Invalid actorRole '${input.actorRole}'. Continuation authorization requires human role 'PRODUCT_OWNER' or 'USER'.`,
+        details: { actorRole: input.actorRole },
+      };
+    }
+
+    // 3. Resolve and validate canonical project identity
+    const targetRoot = input.workspaceRoot ?? this.workspaceRoot ?? process.cwd();
+    const canonical = resolveCanonicalProjectIdentity(targetRoot);
+
+    if (input.projectId !== undefined && input.projectId !== null) {
+      const trimmed = input.projectId.trim();
+      if (trimmed.length > 0 && trimmed !== canonical.projectId) {
+        return {
+          isValid: false,
+          code: 'PROJECT_BINDING_MISMATCH',
+          message: `Specified projectId '${trimmed}' does not match canonical project '${canonical.projectId}' at '${canonical.projectRoot}'. Accidental cross-project continuation rejected.`,
+          details: {
+            specifiedProjectId: trimmed,
+            canonicalProjectId: canonical.projectId,
+            canonicalProjectRoot: canonical.projectRoot,
+          },
+        };
+      }
+    }
+
+    // 4. Resolve Director Session
+    let session: DirectorSession;
+    try {
+      session = await this.sessionEngine.getSession(input.directorSessionId, {
+        workspaceRoot: targetRoot,
+        projectId: canonical.projectId,
+      });
+    } catch (err) {
+      return {
+        isValid: false,
+        code: 'SESSION_INVALID',
+        message: err instanceof Error ? err.message : String(err),
+      };
+    }
+
+    if (session.status !== 'ACTIVE') {
+      return {
+        isValid: false,
+        code: 'SESSION_NOT_ACTIVE',
+        message: `Director session '${session.directorSessionId}' is ${session.status}. Continuation can only be authorized for an ACTIVE session.`,
+        details: {
+          directorSessionId: session.directorSessionId,
+          status: session.status,
+        },
+      };
+    }
+
+    try {
+      validateProjectBinding(session, {
+        workspaceRoot: targetRoot,
+        projectId: canonical.projectId,
+      });
+    } catch (err) {
+      return {
+        isValid: false,
+        code: 'PROJECT_BINDING_MISMATCH',
+        message: err instanceof Error ? err.message : String(err),
+      };
+    }
+
+    // 5. Context Fingerprint validation
+    const latestSnapshot = await this.sessionStore.loadLatestSnapshot(session.directorSessionId);
+    if (!latestSnapshot) {
+      return {
+        isValid: false,
+        code: 'CONTEXT_NOT_FOUND',
+        message: `No context snapshot found for Director session '${session.directorSessionId}'. Context synchronization must precede continuation.`,
+        details: { directorSessionId: session.directorSessionId },
+      };
+    }
+
+    if (latestSnapshot.logicalFingerprint !== input.contextFingerprint) {
+      return {
+        isValid: false,
+        code: 'CONTEXT_FINGERPRINT_MISMATCH',
+        message: `Context fingerprint mismatch: continuation request is based on '${input.contextFingerprint}', but current context snapshot is '${latestSnapshot.logicalFingerprint}'. Context has changed.`,
+        details: {
+          requestedFingerprint: input.contextFingerprint,
+          currentFingerprint: latestSnapshot.logicalFingerprint,
+        },
+      };
+    }
+
+    if (latestSnapshot.syncStatus === 'STALE' || latestSnapshot.staleSections.length > 0) {
+      return {
+        isValid: false,
+        code: 'CONTEXT_STALE',
+        message: `Context snapshot is stale (stale sections: ${latestSnapshot.staleSections.join(', ')}). Continuation cannot proceed on a stale snapshot.`,
+        details: { staleSections: latestSnapshot.staleSections },
+      };
+    }
+
+    if (
+      latestSnapshot.syncStatus === 'INCOMPLETE' ||
+      !latestSnapshot.isComplete ||
+      latestSnapshot.unavailableSections.length > 0
+    ) {
+      return {
+        isValid: false,
+        code: 'CONTEXT_INCOMPLETE',
+        message: `Context snapshot is incomplete (unavailable sections: ${latestSnapshot.unavailableSections.join(', ')}). Continuation cannot proceed on an incomplete snapshot.`,
+        details: { unavailableSections: latestSnapshot.unavailableSections },
+      };
+    }
+
+    // 6. Understanding Revision validation if provided
+    if (
+      input.understandingRevision !== undefined &&
+      input.understandingRevision !== null
+    ) {
+      if (
+        session.understandingRevision === null ||
+        session.understandingRevision === undefined
+      ) {
+        return {
+          isValid: false,
+          code: 'UNDERSTANDING_REVISION_MISMATCH',
+          message: `Continuation references understanding revision ${input.understandingRevision}, but session has no authoritative understanding revision.`,
+          details: { requestedUnderstandingRevision: input.understandingRevision },
+        };
+      }
+
+      if (session.understandingRevision !== input.understandingRevision) {
+        return {
+          isValid: false,
+          code: 'UNDERSTANDING_REVISION_MISMATCH',
+          message: `Continuation references understanding revision ${input.understandingRevision}, but session understanding revision is ${session.understandingRevision}.`,
+          details: {
+            requestedUnderstandingRevision: input.understandingRevision,
+            sessionUnderstandingRevision: session.understandingRevision,
+          },
+        };
+      }
+    }
+
+    // 7. Check DurableState continuationState
+    const durableState = await this.durableStateManager.load();
+    if (!durableState) {
+      return {
+        isValid: false,
+        code: 'CONTINUATION_NOT_WAITING',
+        message: 'No durable state document found.',
+      };
+    }
+
+    if (durableState.continuationState === 'NONE') {
+      return {
+        isValid: false,
+        code: 'CONTINUATION_NOT_NEEDED',
+        message: 'Continuation is not needed: continuationState is already NONE.',
+        details: { continuationState: durableState.continuationState },
+      };
+    }
+
+    if (durableState.continuationState !== 'WAITING') {
+      return {
+        isValid: false,
+        code: 'CONTINUATION_NOT_WAITING',
+        message: `Durable state continuationState is '${durableState.continuationState}', expected 'WAITING'.`,
+        details: { continuationState: durableState.continuationState },
+      };
+    }
+
+    return {
+      isValid: true,
+      code: 'VALID',
+      message: 'Continuation request validation passed.',
+      details: {
+        directorSessionId: session.directorSessionId,
+        projectId: canonical.projectId,
+        contextFingerprint: latestSnapshot.logicalFingerprint,
+      },
+    };
+  }
 }
+

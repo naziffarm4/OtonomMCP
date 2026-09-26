@@ -339,6 +339,8 @@ export interface ExecutionIntegrationOutcome {
   readonly affectedReadyTasks?: readonly string[];
   /** Informational message */
   readonly message: string;
+  /** Continuation state resulting from integration checkpoint evaluation */
+  readonly continuationState?: 'NONE' | 'WAITING';
   /** Sanitized outcome details */
   readonly details?: Readonly<Record<string, unknown>>;
 }

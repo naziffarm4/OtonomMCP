@@ -10,6 +10,12 @@ import { atomicWriteJson, readJsonFile } from './atomic-writer.js';
 import { BlockedStateZodSchema, toSnakeCaseBlockedState, type BlockedState } from './blocked-state-schema.js';
 
 
+export type ContinuationState = 'NONE' | 'WAITING';
+export type ContinuationPolicy = 'AUTONOMOUS' | 'MANUAL';
+
+export const CONTINUATION_STATES: readonly [ContinuationState, ...ContinuationState[]] = ['NONE', 'WAITING'];
+export const CONTINUATION_POLICIES: readonly [ContinuationPolicy, ...ContinuationPolicy[]] = ['AUTONOMOUS', 'MANUAL'];
+
 export const CURRENT_DURABLE_STATE_SCHEMA_VERSION = 1;
 
 /**
@@ -25,6 +31,8 @@ export const DurableStateZodSchema = z.preprocess((val) => {
       completedTaskIds: raw.completedTaskIds ?? raw.completed_task_ids ?? [],
       blockedState: raw.blockedState !== undefined ? raw.blockedState : (raw.blocked_state ?? null),
       lastCheckpoint: raw.lastCheckpoint !== undefined ? raw.lastCheckpoint : (raw.last_checkpoint ?? null),
+      continuationState: raw.continuationState ?? raw.continuation_state ?? 'NONE',
+      continuationPolicy: raw.continuationPolicy ?? raw.continuation_policy ?? 'AUTONOMOUS',
       updatedAt: raw.updatedAt ?? raw.updated_at,
       metadata: raw.metadata,
     };
@@ -39,6 +47,8 @@ export const DurableStateZodSchema = z.preprocess((val) => {
   completedTaskIds: z.array(z.string()).default([]),
   blockedState: BlockedStateZodSchema.nullable().optional().default(null),
   lastCheckpoint: z.string().nullable().optional().default(null),
+  continuationState: z.enum(CONTINUATION_STATES).default('NONE'),
+  continuationPolicy: z.enum(CONTINUATION_POLICIES).default('AUTONOMOUS'),
   updatedAt: z.string().min(1, 'updatedAt cannot be empty'),
   metadata: z.record(z.string(), z.unknown()).optional(),
 }));
@@ -50,14 +60,20 @@ export interface DurableState {
   completedTaskIds: string[];
   blockedState: BlockedState | null;
   lastCheckpoint?: string | null;
+  continuationState: ContinuationState;
+  continuationPolicy: ContinuationPolicy;
   updatedAt: string;
   metadata?: Record<string, unknown>;
 }
 
-export type DurableStateInput = Omit<DurableState, 'schemaVersion' | 'updatedAt'> & {
+export type DurableStateInput = Omit<DurableState, 'schemaVersion' | 'updatedAt' | 'continuationState' | 'continuationPolicy'> & {
   schemaVersion?: number;
+  continuationState?: ContinuationState;
+  continuationPolicy?: ContinuationPolicy;
   updatedAt?: string;
   blocked_state?: unknown;
+  continuation_state?: unknown;
+  continuation_policy?: unknown;
 };
 
 export interface DurableStateManagerOptions {
@@ -100,6 +116,8 @@ export class DurableStateManager {
       completedTaskIds: input.completedTaskIds ?? [],
       blockedState: input.blockedState ?? input.blocked_state ?? null,
       lastCheckpoint: input.lastCheckpoint ?? null,
+      continuationState: input.continuationState ?? input.continuation_state ?? 'NONE',
+      continuationPolicy: input.continuationPolicy ?? input.continuation_policy ?? 'AUTONOMOUS',
       updatedAt: input.updatedAt ?? new Date().toISOString(),
       metadata: input.metadata,
     };
@@ -144,6 +162,10 @@ export class DurableStateManager {
       blockedState: validated.blockedState,
       last_checkpoint: validated.lastCheckpoint,
       lastCheckpoint: validated.lastCheckpoint,
+      continuation_state: validated.continuationState,
+      continuationState: validated.continuationState,
+      continuation_policy: validated.continuationPolicy,
+      continuationPolicy: validated.continuationPolicy,
       updated_at: validated.updatedAt,
       updatedAt: validated.updatedAt,
       metadata: validated.metadata,
@@ -226,6 +248,8 @@ export class DurableStateManager {
       completedTaskIds: [],
       blockedState: null,
       lastCheckpoint: null,
+      continuationState: 'NONE',
+      continuationPolicy: 'AUTONOMOUS',
       updatedAt: new Date().toISOString(),
     };
 
@@ -279,6 +303,8 @@ export class DurableStateManager {
       completedTaskIds: [],
       blockedState: null,
       lastCheckpoint: null,
+      continuationState: 'NONE',
+      continuationPolicy: 'AUTONOMOUS',
       updatedAt: new Date().toISOString(),
     };
 
@@ -341,6 +367,8 @@ export class DurableStateManager {
       completedTaskIds: [],
       blockedState: null,
       lastCheckpoint: null,
+      continuationState: 'NONE',
+      continuationPolicy: 'AUTONOMOUS',
       updatedAt: new Date().toISOString(),
     };
 
@@ -382,6 +410,8 @@ export class DurableStateManager {
       completedTaskIds: [],
       blockedState: null,
       lastCheckpoint: null,
+      continuationState: 'NONE',
+      continuationPolicy: 'AUTONOMOUS',
       updatedAt: new Date().toISOString(),
     };
 
@@ -407,6 +437,8 @@ export class DurableStateManager {
         completedTaskIds: [],
         blockedState: null,
         lastCheckpoint: null,
+        continuationState: 'NONE',
+        continuationPolicy: 'AUTONOMOUS',
         updatedAt: new Date().toISOString(),
       };
     }

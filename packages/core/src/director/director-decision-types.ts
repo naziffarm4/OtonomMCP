@@ -55,6 +55,7 @@ export const DIRECTOR_DECISION_VALIDATION_CODES = [
   'DECISION_TYPE_INVALID',
   'SECURITY_VIOLATION',
   'VALIDATION_ERROR',
+  'CONTINUATION_WAITING',
 ] as const;
 
 export type DirectorDecisionValidationCode =

@@ -348,6 +348,8 @@ export class ExecutionStateIntegrator {
       completedTaskIds: [],
       blockedState: null,
       lastCheckpoint: null,
+      continuationState: 'NONE' as const,
+      continuationPolicy: 'AUTONOMOUS' as const,
       updatedAt: now,
       metadata: {},
     };
@@ -565,11 +567,24 @@ export class ExecutionStateIntegrator {
       [evidence.evidenceId]: integrationRecord,
     };
 
+    // Phase 11 Controlled Continuation Checkpoint Evaluation
+    // Under MANUAL continuationPolicy, when verified result is ACCEPT, set continuationState = 'WAITING'
+    // AUTONOMOUS policy maintains continuationState = 'NONE'.
+    let updatedContinuationState: 'NONE' | 'WAITING' = durableState.continuationState ?? 'NONE';
+    if (verificationDecision === 'ACCEPT') {
+      if (durableState.continuationPolicy === 'MANUAL') {
+        updatedContinuationState = 'WAITING';
+      } else {
+        updatedContinuationState = 'NONE';
+      }
+    }
+
     const updatedState: DurableState = {
       ...durableState,
       completedTaskIds: updatedCompletedTaskIds,
       activeTaskId: updatedActiveTaskId,
       blockedState: updatedBlockedState,
+      continuationState: updatedContinuationState,
       updatedAt: now,
       metadata: {
         ...metadata,
@@ -584,6 +599,35 @@ export class ExecutionStateIntegrator {
         `Failed to persist updated DurableState: ${saveErr instanceof Error ? saveErr.message : String(saveErr)}`,
         { taskId, cause: saveErr }
       );
+    }
+
+    // Phase 11: If WAITING continuation state was established, record PHASE11_CONTINUATION_WAITING in HistoryManager
+    if (updatedContinuationState === 'WAITING' && this.historyManager) {
+      try {
+        const waitingEventId = computeDeterministicIntegrationEventId(
+          integrationKey,
+          'PHASE11_CONTINUATION_WAITING'
+        );
+        await this.historyManager.appendEvent({
+          eventId: waitingEventId,
+          timestamp: now,
+          eventType: 'PHASE11_CONTINUATION_WAITING',
+          actor: Actor.ORCHESTRATOR,
+          taskId,
+          payload: {
+            projectId,
+            taskId,
+            taskRevision,
+            evidenceId: evidence.evidenceId,
+            requestId,
+            continuationState: 'WAITING',
+            continuationPolicy: durableState.continuationPolicy,
+            timestamp: now,
+          },
+        });
+      } catch {
+        // Non-fatal crash recovery
+      }
     }
 
     // 8. Update SpecStore if present (secondary spec authority, preserving DurableState primacy)
@@ -622,6 +666,7 @@ export class ExecutionStateIntegrator {
       historyEventId,
       isDuplicate: false,
       affectedReadyTasks,
+      continuationState: updatedContinuationState,
       message: `Execution evidence successfully integrated with decision ${verificationDecision}`,
       details: integrationRecord.details,
     };

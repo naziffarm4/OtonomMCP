@@ -65,6 +65,27 @@ export const HUMAN_APPROVAL_VALIDATION_CODES = [
 
 export type HumanApprovalValidationCode = (typeof HUMAN_APPROVAL_VALIDATION_CODES)[number];
 
+export const CONTINUATION_VALIDATION_CODES = [
+  'VALID',
+  'ACTOR_UNAUTHORIZED',
+  'INTENT_INVALID',
+  'PROJECT_BINDING_MISMATCH',
+  'SESSION_INVALID',
+  'SESSION_NOT_ACTIVE',
+  'CONTEXT_NOT_FOUND',
+  'CONTEXT_FINGERPRINT_MISMATCH',
+  'CONTEXT_STALE',
+  'CONTEXT_INCOMPLETE',
+  'UNDERSTANDING_REVISION_MISMATCH',
+  'APPROVAL_REVISION_MISMATCH',
+  'CONTINUATION_NOT_WAITING',
+  'CONTINUATION_NOT_NEEDED',
+  'SECURITY_VIOLATION',
+  'VALIDATION_ERROR',
+] as const;
+
+export type ContinuationValidationCode = (typeof CONTINUATION_VALIDATION_CODES)[number];
+
 export const RESUME_EVALUATION_CODES = [
   'RESUME_AUTHORIZED',
   'RESUME_BLOCKED_NO_APPROVAL',
@@ -159,9 +180,58 @@ export interface ResumeEvaluationResult {
   readonly details?: Readonly<Record<string, unknown>>;
 }
 
+export interface ValidateContinuationRequestInput {
+  readonly workspaceRoot?: string;
+  readonly projectId?: string;
+  readonly directorSessionId: string;
+  readonly contextFingerprint: string;
+  readonly understandingRevision?: number | null;
+  readonly approvalPackageRevision?: number | null;
+  readonly actor: string;
+  readonly actorRole: ApprovalActorRole | string;
+  readonly comment?: string;
+  readonly timestamp?: string;
+}
+
+export interface ContinuationValidationResult {
+  readonly isValid: boolean;
+  readonly code: ContinuationValidationCode;
+  readonly message: string;
+  readonly details?: Readonly<Record<string, unknown>>;
+}
+
+export interface ContinuationResult {
+  readonly success: boolean;
+  readonly code: ContinuationValidationCode;
+  readonly continuationState: 'NONE' | 'WAITING';
+  readonly message: string;
+  readonly timestamp: string;
+  readonly details?: Readonly<Record<string, unknown>>;
+}
+
 // ============================================================================
 // 3. ZOD VALIDATION SCHEMAS
 // ============================================================================
+
+export const ValidateContinuationRequestInputZodSchema = z.object({
+  workspaceRoot: z.string().optional(),
+  projectId: z.string().optional(),
+  directorSessionId: DirectorSessionIdZodSchema,
+  contextFingerprint: z.string().min(1, 'contextFingerprint is required'),
+  understandingRevision: z.number().int().nonnegative().nullable().optional(),
+  approvalPackageRevision: z.number().int().positive().nullable().optional(),
+  actor: z.string().min(1, 'actor is required'),
+  actorRole: z.string().min(1, 'actorRole is required'),
+  comment: z.string().optional(),
+  timestamp: z.string().optional(),
+});
+
+export const ContinuationValidationResultZodSchema = z.object({
+  isValid: z.boolean(),
+  code: z.enum(CONTINUATION_VALIDATION_CODES),
+  message: z.string(),
+  details: z.record(z.string(), z.unknown()).optional(),
+});
 
 export const ValidateHumanApprovalInputZodSchema = z.object({
   workspaceRoot: z.string().optional(),

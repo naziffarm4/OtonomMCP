@@ -58,6 +58,7 @@ import {
   DirectorUnderstandingRevisionMismatchError,
 } from './director-errors.js';
 import type { DirectorSession } from './director-types.js';
+import { DurableStateManager } from '../storage/durable-state.js';
 
 export interface DirectorDecisionEngineOptions {
   readonly workspaceRoot?: string;
@@ -66,6 +67,7 @@ export interface DirectorDecisionEngineOptions {
   readonly sessionStore?: DirectorSessionStore;
   readonly sessionEngine?: DirectorSessionEngine;
   readonly approvalStore?: ApprovalStore;
+  readonly durableStateManager?: DurableStateManager;
 }
 
 export class DirectorDecisionEngine {
@@ -75,10 +77,16 @@ export class DirectorDecisionEngine {
   readonly sessionStore: DirectorSessionStore;
   readonly sessionEngine: DirectorSessionEngine;
   readonly approvalStore?: ApprovalStore;
+  readonly durableStateManager: DurableStateManager;
 
   constructor(options: DirectorDecisionEngineOptions = {}) {
     this.workspaceRoot = options.workspaceRoot ?? options.delegate?.projectRoot;
     this.delegate = options.delegate;
+    this.durableStateManager =
+      options.durableStateManager ??
+      new DurableStateManager({
+        baseDir: this.workspaceRoot,
+      });
     this.sessionStore =
       options.sessionStore ??
       options.delegate?.directorSessionStore ??
@@ -217,6 +225,26 @@ export class DirectorDecisionEngine {
           status: session.status,
         },
       };
+    }
+
+    // 6.1. Phase 11 Controlled Continuation Checkpoint validation
+    // If durable state is in WAITING continuationState, Director must not proceed/select tasks
+    try {
+      const durableState = await this.durableStateManager.load();
+      if (durableState && durableState.continuationState === 'WAITING') {
+        return {
+          isValid: false,
+          code: 'CONTINUATION_WAITING',
+          message: `Execution continuation checkpoint is active (continuationState === 'WAITING'). Director cannot formulate decisions until human calls phase11.requestContinue.`,
+          details: {
+            continuationState: durableState.continuationState,
+            continuationPolicy: durableState.continuationPolicy,
+            directorSessionId: session.directorSessionId,
+          },
+        };
+      }
+    } catch {
+      // If durable state fails to read, proceed with standard validation
     }
 
     // 7. Validate project binding on session
@@ -458,6 +486,15 @@ export class DirectorDecisionEngine {
           throw new DirectorUnderstandingRevisionMismatchError(
             validation.message,
             validation.details
+          );
+        case 'CONTINUATION_WAITING':
+          throw new DirectorInvalidTransitionError(
+            'WAITING',
+            'DECISION',
+            {
+              reason: validation.message,
+              ...validation.details,
+            }
           );
         default:
           if (validation.message.includes('already exists')) {
