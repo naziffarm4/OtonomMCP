@@ -4,3 +4,8 @@ export * from './reconciliation.js';
 export * from './decision-engine.js';
 export * from './recovery-engine.js';
 export * from './recovery-git-integrator.js';
+export * from './failure-diagnosis-types.js';
+export * from './failure-diagnosis-engine.js';
+export * from './recovery-policy-types.js';
+export * from './recovery-policy-errors.js';
+export * from './recovery-policy-engine.js';
