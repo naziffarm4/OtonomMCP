@@ -1,0 +1,232 @@
+/**
+ * Task Retry Authorization MCP Tool (Phase 13 TASK-P13-02)
+ *
+ * Exposes the Bounded Task Retry Authorization & State Transition Bridge as an authoritative,
+ * secure MCP tool: `aidm.task.authorizeRetry`.
+ *
+ * HARD ARCHITECTURAL INVARIANTS:
+ * 1. AUTHORIZATION & TRANSITION BOUNDARY ONLY: Never invokes Antigravity or dispatches execution.
+ * 2. ZERO EXECUTOR TRUST: Accepts only verified SystemExecutionEvidence. Caller fabricated claims rejected.
+ * 3. NO FABRICATED VERIFICATION: Rejects any caller claims attempting to bypass verification or budget.
+ * 4. STRICT BUDGET: Rejects retry if attempt >= max_attempts.
+ * 5. NO COMPLETED RETRY: Rejects retry for ACCEPTED or completed tasks.
+ */
+
+import { z } from 'zod';
+import type { McpToolDefinition, McpToolHandler, McpRequestContext } from '../mcp-types.js';
+import type { McpOrchestratorDelegate } from '../mcp-delegate.js';
+import type { McpServer } from '../mcp-server.js';
+import { sanitizeMcpPayload, McpInvalidRequestError } from '../mcp-errors.js';
+import {
+  RetryAuthorizationService,
+  type RetryAuthorizationServiceOptions,
+} from '../../recovery/retry-authorization-service.js';
+import {
+  type RetryAuthorizationInput,
+  RetryAuthorizationInputZodSchema,
+} from '../../recovery/retry-authorization-types.js';
+import {
+  RetryAuthorizationError,
+  RetrySecurityViolationError,
+} from '../../recovery/retry-authorization-errors.js';
+import { assertNoForbiddenEvidenceFields } from '../../evidence/system-execution-evidence.js';
+
+export const AIDM_TASK_AUTHORIZE_RETRY_TOOL_NAME = 'aidm.task.authorizeRetry';
+
+const FORBIDDEN_MCP_RETRY_CLAIMS = [
+  'verified',
+  'systemAccepted',
+  'retryApproved',
+  'qaPassed',
+  'taskCompleted',
+  'systemApproved',
+  'accepted',
+  'completed',
+];
+
+export const retryAuthorizeToolDefinition: McpToolDefinition = {
+  name: AIDM_TASK_AUTHORIZE_RETRY_TOOL_NAME,
+  description:
+    'Authorizes and performs bounded task retry state transition following a verified execution failure and RETRY policy decision. Does NOT execute tasks.',
+  inputSchema: {
+    type: 'object',
+    required: ['evidence'],
+    properties: {
+      workspaceRoot: {
+        type: 'string',
+        description: 'Optional path to the project root. Defaults to configured delegate project root.',
+      },
+      projectId: {
+        type: 'string',
+        description: 'Optional canonical project identifier for cross-project safety check.',
+      },
+      evidence: {
+        type: 'object',
+        description:
+          'Canonical SystemExecutionEvidence object with verificationDecision REJECT.',
+      },
+      decision: {
+        type: 'object',
+        description:
+          'Optional canonical RecoveryPolicyDecision object from P13-01.',
+      },
+      directorSessionId: {
+        type: 'string',
+        description: 'Optional active Director session ID.',
+      },
+      contextFingerprint: {
+        type: 'string',
+        description: 'Optional context fingerprint assertion.',
+      },
+      understandingRevision: {
+        type: 'number',
+        description: 'Optional understanding revision assertion.',
+      },
+      approvalPackageRevision: {
+        type: 'number',
+        description: 'Optional approval package revision assertion.',
+      },
+    },
+  },
+};
+
+export function createRetryAuthorizeTool(options: {
+  retryService?: RetryAuthorizationService;
+  serviceOptions?: RetryAuthorizationServiceOptions;
+  defaultDelegate?: McpOrchestratorDelegate;
+} = {}): {
+  definition: McpToolDefinition;
+  handler: McpToolHandler;
+} {
+  return {
+    definition: retryAuthorizeToolDefinition,
+    handler: async (rawArgs: Readonly<Record<string, unknown>>, context: McpRequestContext) => {
+      try {
+        if (!rawArgs || typeof rawArgs !== 'object') {
+          throw new McpInvalidRequestError('Arguments must be a valid non-null object');
+        }
+
+        // Security check for forbidden caller claims
+        for (const forbidden of FORBIDDEN_MCP_RETRY_CLAIMS) {
+          if (forbidden in rawArgs && rawArgs[forbidden] !== undefined) {
+            throw new RetrySecurityViolationError(
+              `Forbidden caller claim '${forbidden}' detected in retry authorization arguments. Fabricated claims are rejected.`,
+              { forbiddenField: forbidden }
+            );
+          }
+        }
+
+        // Check inside evidence as well
+        if (rawArgs.evidence && typeof rawArgs.evidence === 'object') {
+          assertNoForbiddenEvidenceFields(rawArgs.evidence);
+        }
+
+        const parsed = RetryAuthorizationInputZodSchema.safeParse(rawArgs);
+        if (!parsed.success) {
+          throw new McpInvalidRequestError(
+            `Invalid retry authorization request: ${parsed.error.issues[0]?.message ?? parsed.error.message}`,
+            { issues: parsed.error.issues }
+          );
+        }
+
+        const delegate = context.delegate ?? options.defaultDelegate;
+        const resolvedRoot =
+          parsed.data.workspaceRoot ?? delegate?.projectRoot ?? process.cwd();
+
+        const service =
+          options.retryService ??
+          new RetryAuthorizationService({
+            workspaceRoot: resolvedRoot,
+            specStore: delegate?.specStore,
+            dagEngine: delegate?.dagEngine,
+            historyManager: delegate?.historyManager,
+            approvalStore: delegate?.approvalStore,
+            directorSessionStore: delegate?.directorSessionStore,
+            ...options.serviceOptions,
+          });
+
+        const outcome = await service.authorizeRetry(parsed.data);
+
+        return {
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify(sanitizeMcpPayload(outcome), null, 2),
+            },
+          ],
+          isError: false,
+        };
+      } catch (err: unknown) {
+        if (err instanceof RetryAuthorizationError) {
+          return {
+            content: [
+              {
+                type: 'text',
+                text: JSON.stringify(
+                  {
+                    success: false,
+                    code: err.code,
+                    message: err.message,
+                    details: err.details,
+                  },
+                  null,
+                  2
+                ),
+              },
+            ],
+            isError: true,
+          };
+        }
+        if (err instanceof McpInvalidRequestError) {
+          return {
+            content: [
+              {
+                type: 'text',
+                text: JSON.stringify(
+                  {
+                    success: false,
+                    code: err.code,
+                    message: err.message,
+                    details: err.details,
+                  },
+                  null,
+                  2
+                ),
+              },
+            ],
+            isError: true,
+          };
+        }
+        const message = err instanceof Error ? err.message : String(err);
+        return {
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify(
+                {
+                  success: false,
+                  code: 'ERR_RETRY_AUTHORIZATION_FAILED',
+                  message,
+                },
+                null,
+                2
+              ),
+            },
+          ],
+          isError: true,
+        };
+      }
+    },
+  };
+}
+
+export function registerRetryAuthorizeTools(
+  server: McpServer,
+  options: { retryService?: RetryAuthorizationService } = {}
+): void {
+  const { definition, handler } = createRetryAuthorizeTool({
+    retryService: options.retryService,
+    defaultDelegate: server.delegate,
+  });
+  server.registerTool(definition, handler);
+}

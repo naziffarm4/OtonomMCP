@@ -64,6 +64,7 @@ import { registerExecutorTools } from './tools/executor-tools.js';
 import { registerEvidenceVerifyTools } from './tools/evidence-verify-tool.js';
 import { registerPhase11ContinuationTools } from './tools/phase11-continuation-tool.js';
 import { registerTaskDecompositionTools } from './tools/task-decomposition-tools.js';
+import { registerRetryAuthorizeTools } from './tools/retry-authorize-tool.js';
 
 
 export class McpServer {
@@ -168,6 +169,11 @@ export class McpServer {
     // Register Phase 12 Task Decomposition boundary tools if enabled
     if (config.taskDecompositionTools) {
       registerTaskDecompositionTools(this);
+    }
+
+    // Register Phase 13 Task Retry Authorization boundary tools if enabled
+    if (config.retryAuthorizeTools) {
+      registerRetryAuthorizeTools(this);
     }
   }
 

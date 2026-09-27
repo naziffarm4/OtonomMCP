@@ -9,3 +9,6 @@ export * from './failure-diagnosis-engine.js';
 export * from './recovery-policy-types.js';
 export * from './recovery-policy-errors.js';
 export * from './recovery-policy-engine.js';
+export * from './retry-authorization-types.js';
+export * from './retry-authorization-errors.js';
+export * from './retry-authorization-service.js';
