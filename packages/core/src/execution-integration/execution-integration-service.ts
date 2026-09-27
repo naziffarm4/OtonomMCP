@@ -95,6 +95,7 @@ export interface ExecutionIntegrationServiceOptions {
   readonly expectedProjectId?: string;
   readonly baseDir?: string;
   readonly strictEvidenceIdCheck?: boolean;
+  readonly requirePersistedEvidence?: boolean;
 }
 
 export interface ExpectedExecutionBinding {
@@ -112,6 +113,7 @@ export interface ExpectedExecutionBinding {
 export interface IntegrateOptions {
   readonly expectedBinding?: ExpectedExecutionBinding;
   readonly strictEvidenceIdCheck?: boolean;
+  readonly requirePersistedEvidence?: boolean;
 }
 
 export class ExecutionStateIntegrator {
@@ -123,6 +125,7 @@ export class ExecutionStateIntegrator {
   readonly lock: ExecutionIntegrationLock;
   readonly expectedProjectId?: string;
   readonly strictEvidenceIdCheck?: boolean;
+  readonly requirePersistedEvidence?: boolean;
 
   constructor(options: ExecutionIntegrationServiceOptions = {}) {
     const baseDir = options.baseDir ?? process.cwd();
@@ -141,6 +144,7 @@ export class ExecutionStateIntegrator {
       });
     this.expectedProjectId = options.expectedProjectId;
     this.strictEvidenceIdCheck = options.strictEvidenceIdCheck;
+    this.requirePersistedEvidence = options.requirePersistedEvidence;
   }
 
   /**
@@ -148,14 +152,14 @@ export class ExecutionStateIntegrator {
    * Can be either SystemExecutionEvidence directly, or VerifiedExecutionResult envelope,
    * or an object wrapping { evidence, expectedBinding }.
    */
-  normalizeAndValidateEvidence(
+  async normalizeAndValidateEvidence(
     candidate: unknown,
     options?: IntegrateOptions
-  ): {
+  ): Promise<{
     evidence: SystemExecutionEvidence;
     decision: VerificationDecision;
     expectedBinding?: ExpectedExecutionBinding;
-  } {
+  }> {
     if (!candidate || typeof candidate !== 'object') {
       throw new ExecutionIntegrationValidationError(
         'Execution integration candidate must be a non-null object',
@@ -266,6 +270,48 @@ export class ExecutionStateIntegrator {
       }
     }
 
+    // Authoritative persistence check: verify evidence exists in evidenceStore and has not been tampered
+    const shouldCheckPersistence = options?.requirePersistedEvidence ?? this.requirePersistedEvidence ?? false;
+    if (shouldCheckPersistence) {
+      if (!this.evidenceStore) {
+        throw new ExecutionIntegrationSecurityViolationError(
+          `Evidence persistence verification required (requirePersistedEvidence: true), but no evidenceStore is configured on ExecutionStateIntegrator`,
+          { evidenceId: evidence.evidenceId }
+        );
+      }
+      const persisted = await this.evidenceStore.loadEvidence(evidence.evidenceId);
+      if (!persisted) {
+        throw new ExecutionIntegrationSecurityViolationError(
+          `Evidence '${evidence.evidenceId}' has no authoritative persisted record in SystemExecutionEvidenceStore. Unpersisted or caller-fabricated evidence cannot become authoritative.`,
+          { evidenceId: evidence.evidenceId }
+        );
+      }
+      if (persisted.verificationDecision !== evidence.verificationDecision) {
+        throw new ExecutionIntegrationSecurityViolationError(
+          `Evidence verificationDecision tampered: incoming candidate claims '${evidence.verificationDecision}', but authoritative record in evidenceStore is '${persisted.verificationDecision}'`,
+          { candidateDecision: evidence.verificationDecision, persistedDecision: persisted.verificationDecision }
+        );
+      }
+      if (persisted.requestId !== evidence.requestId || persisted.taskId !== evidence.taskId) {
+        throw new ExecutionIntegrationSecurityViolationError(
+          `Evidence identity tampered: candidate does not match authoritative record in evidenceStore`,
+          { candidateRequestId: evidence.requestId, persistedRequestId: persisted.requestId }
+        );
+      }
+      if (persisted.projectId !== evidence.projectId || persisted.taskRevision !== evidence.taskRevision) {
+        throw new ExecutionIntegrationSecurityViolationError(
+          `Evidence binding tampered: candidate does not match authoritative record in evidenceStore`,
+          { candidateProjectId: evidence.projectId, persistedProjectId: persisted.projectId }
+        );
+      }
+      if (persisted.contextFingerprint !== evidence.contextFingerprint) {
+        throw new ExecutionIntegrationSecurityViolationError(
+          `Evidence context fingerprint tampered: candidate does not match authoritative record in evidenceStore`,
+          { candidateFingerprint: evidence.contextFingerprint, persistedFingerprint: persisted.contextFingerprint }
+        );
+      }
+    }
+
     // Validate execution binding if expected fields are provided
     this.validateBinding(evidence, expectedBinding);
 
@@ -364,14 +410,14 @@ export class ExecutionStateIntegrator {
     candidate: unknown,
     options?: IntegrateOptions
   ): Promise<ExecutionIntegrationOutcome> {
-    const { evidence, decision, expectedBinding } = this.normalizeAndValidateEvidence(
+    const { evidence, decision, expectedBinding } = await this.normalizeAndValidateEvidence(
       candidate,
       options
     );
 
     // Acquire atomic filesystem lock before reading or modifying durable state
     return await this.lock.withLock(async () => {
-      return await this.executeIntegrationUnderLock(evidence, decision);
+      return await this.executeIntegrationUnderLock(evidence, decision, options);
     });
   }
 
@@ -380,7 +426,8 @@ export class ExecutionStateIntegrator {
    */
   private async executeIntegrationUnderLock(
     evidence: SystemExecutionEvidence,
-    verificationDecision: VerificationDecision
+    verificationDecision: VerificationDecision,
+    options?: IntegrateOptions
   ): Promise<ExecutionIntegrationOutcome> {
     const { projectId, requestId, taskId, taskRevision } = evidence;
     const now = new Date().toISOString();
@@ -479,6 +526,11 @@ export class ExecutionStateIntegrator {
               { expected: taskProjId, actual: projectId, field: 'projectId' }
             );
           }
+        } else if (specTasks.length > 0) {
+          throw new ExecutionIntegrationBindingMismatchError(
+            `Task '${taskId}' not found in authoritative SpecStore`,
+            { taskId, field: 'taskId' }
+          );
         }
       } catch (err) {
         if (err instanceof ExecutionIntegrationError) {
@@ -719,8 +771,14 @@ export class ExecutionStateIntegrator {
     if (this.evidenceStore) {
       try {
         await this.evidenceStore.saveEvidence(evidence);
-      } catch {
-        // Evidence store persistence failure is non-fatal to completed integration
+      } catch (err: any) {
+        const shouldCheckPersistence = options?.requirePersistedEvidence ?? this.requirePersistedEvidence ?? false;
+        if (shouldCheckPersistence) {
+          throw new ExecutionIntegrationPersistenceError(
+            `Failed to persist verified evidence '${evidence.evidenceId}' in SystemExecutionEvidenceStore: ${err.message}`,
+            { evidenceId: evidence.evidenceId, cause: err }
+          );
+        }
       }
     }
 

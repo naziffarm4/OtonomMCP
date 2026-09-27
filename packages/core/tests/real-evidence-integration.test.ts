@@ -88,8 +88,12 @@ import {
   ExecutionIntegrationBindingMismatchError,
   ExecutionIntegrationSecurityViolationError,
   ExecutionIntegrationStaleResultError,
+  ExecutionIntegrationValidationError,
+  ExecutionIntegrationPersistenceError,
   SystemEvidenceBindingMismatchError,
   SystemEvidenceSecurityViolationError,
+  SystemEvidenceValidationError,
+  isSafeRelativePath,
 } from '../dist/index.js';
 
 function createMockReport(workspaceRoot: string): ProjectDiscoveryReport {
@@ -989,19 +993,75 @@ describe('Phase 14 TASK-P14-03: Real Evidence Integration', () => {
   });
 
   // ==========================================================================
-  // 5. IDEMPOTENT INTEGRATION & DUPLICATE SUPPRESSION
+  // 5. EVIDENCE INTEGRITY VALIDATION AFTER RELOAD
   // ==========================================================================
-  it('5. processes repeated integration calls idempotently without duplicate side effects', async () => {
-    const projectId = 'test-p14-03-evidence-project';
-    const taskId = 'TASK-P14-03-IDEMPOTENT';
+  it('5. validates evidence integrity after reload and detects disk tampering', async () => {
+    // 1. Create and persist valid evidence
+    const summary = 'Validation summary for integrity test';
+    const evidenceId = computeDeterministicEvidenceId({
+      requestId: 'req-' + '5'.repeat(64),
+      projectId: 'test-p14-03-evidence-project',
+      taskId: 'TASK-P14-03-INTEGRITY',
+      taskRevision: 1,
+      contextFingerprint: 'fp-sha256-integrity',
+      headCommit: initialCommitSha,
+      verificationDecision: 'ACCEPT',
+      checkSummary: summary,
+    });
 
+    const validEvidence: SystemExecutionEvidence = {
+      evidenceId,
+      requestId: 'req-' + '5'.repeat(64),
+      projectId: 'test-p14-03-evidence-project',
+      taskId: 'TASK-P14-03-INTEGRITY',
+      taskRevision: 1,
+      contextFingerprint: 'fp-sha256-integrity',
+      understandingRevision: 1,
+      approvalPackageRevision: 1,
+      repositoryState: { baseCommit: initialCommitSha, headCommit: initialCommitSha, isClean: false },
+      changedFiles: [{ path: 'src/greeting.ts', status: 'M' }],
+      verificationChecks: [{ checkId: 'CHECK_1', type: 'GENERAL', status: 'PASS' }],
+      acceptanceCriteria: [{ criterion: 'AC1', status: 'PASS', evidence: 'passed' }],
+      executorOutcomeReference: { status: 'SUCCESS', exitCode: 0, durationMs: 25 },
+      verificationDecision: 'ACCEPT',
+      verifiedAt: new Date().toISOString(),
+      metadata: { evaluationSummary: summary },
+    };
+
+    await evidenceStore.saveEvidence(validEvidence);
+
+    // 2. Fresh store reloads and passes integrity
+    const freshEvidenceStore = new SystemExecutionEvidenceStore({
+      baseDir: tempDir,
+    });
+    const loaded = await freshEvidenceStore.loadEvidence(evidenceId);
+    assert.ok(loaded);
+    assert.strictEqual(verifyEvidenceIdIntegrity(loaded), true);
+
+    // 3. Tamper with file on disk directly
+    const evidenceFilePath = path.join(freshEvidenceStore.evidenceDir, `${evidenceId}.json`);
+    const rawDisk = JSON.parse(fs.readFileSync(evidenceFilePath, 'utf8'));
+    rawDisk.verificationDecision = 'REJECT'; // tampered on disk!
+    fs.writeFileSync(evidenceFilePath, JSON.stringify(rawDisk, null, 2), 'utf8');
+
+    // 4. Reload tampered file from disk and assert integrity fails
+    const tamperedLoaded = await freshEvidenceStore.loadEvidence(evidenceId);
+    assert.ok(tamperedLoaded);
+    assert.strictEqual(verifyEvidenceIdIntegrity(tamperedLoaded), false);
+  });
+
+  // ==========================================================================
+  // 6. IDEMPOTENT INTEGRATION (DUPLICATE INTEGRATION)
+  // ==========================================================================
+  it('6. handles duplicate integration calls idempotently without state corruption', async () => {
+    const taskId = 'TASK-P14-03-IDEM';
     await specStore.saveTasks([
       createParentFeature(),
       {
         task_id: taskId,
         parent_feature_id: 'FEAT-P14-03',
         title: 'Idempotency Task',
-        description: 'Verifies 3x repeated integration',
+        description: 'Verifies repeated integration',
         status: TaskStatus.READY,
         priority: TaskPriority.HIGH,
         dependencies: [],
@@ -1021,94 +1081,227 @@ describe('Phase 14 TASK-P14-03: Real Evidence Integration', () => {
       },
     ]);
 
-    fs.writeFileSync(path.join(tempDir, 'src', 'greeting.ts'), 'export const greeting = "idempotent_val";\n');
-
-    const request: ExecutionRequest = {
-      protocolVersion: 'P10-02',
-      schemaVersion: 1,
-      requestId: 'req-' + 'a'.repeat(64),
-      projectId,
+    const summary = 'Summary for idem check';
+    const evidenceId = computeDeterministicEvidenceId({
+      requestId: 'req-' + '6'.repeat(64),
+      projectId: 'test-p14-03-evidence-project',
       taskId,
       taskRevision: 1,
-      directorSessionId: 'sess-idem',
-      directorDecisionId: 'dec-idem',
+      contextFingerprint: 'fp-sha256-idem',
+      headCommit: initialCommitSha,
+      verificationDecision: 'ACCEPT',
+      checkSummary: summary,
+    });
+
+    const evidence: SystemExecutionEvidence = {
+      evidenceId,
+      requestId: 'req-' + '6'.repeat(64),
+      projectId: 'test-p14-03-evidence-project',
+      taskId,
+      taskRevision: 1,
       contextFingerprint: 'fp-sha256-idem',
       understandingRevision: 1,
       approvalPackageRevision: 1,
-      operationType: 'IMPLEMENT_TASK',
-      instruction: {
-        objective: 'Test idempotency',
-        acceptanceCriteria: ['Idempotency verified'],
-        constraints: [],
-        targetFiles: ['src/greeting.ts'],
-        implementationScope: ['src/greeting.ts'],
-      },
-      executionLimits: { timeoutMs: 10000, maxFileModifications: 5 },
-      expectedRepositoryState: { baseCommit: initialCommitSha, isClean: true },
+      repositoryState: { baseCommit: initialCommitSha, headCommit: initialCommitSha, isClean: false },
+      changedFiles: [{ path: 'src/greeting.ts', status: 'M' }],
+      verificationChecks: [{ checkId: 'CHECK_1', type: 'GENERAL', status: 'PASS' }],
+      acceptanceCriteria: [{ criterion: 'AC1', status: 'PASS', evidence: 'passed' }],
+      executorOutcomeReference: { status: 'SUCCESS', exitCode: 0, durationMs: 20 },
+      verificationDecision: 'ACCEPT',
+      verifiedAt: new Date().toISOString(),
+      metadata: { evaluationSummary: summary },
     };
 
-    const rawOutcome = createMockRawOutcome(request, {
-      status: 'SUCCESS',
-      exitCode: 0,
-      stdout: '',
-      durationMs: 50,
-      unverifiedAgentClaims: [],
-      unverifiedModifiedFiles: ['src/greeting.ts'],
-    });
+    await evidenceStore.saveEvidence(evidence);
 
-    const evidence = await collector.collectAndVerify(request, rawOutcome, {
-      workingDirectory: tempDir,
-      evidenceStore,
-    });
-
-    // 1st Integration: Main acceptance
     const call1 = await integrator.integrate(evidence, { strictEvidenceIdCheck: true });
     assert.strictEqual(call1.success, true);
     assert.strictEqual(call1.isDuplicate, false);
     assert.strictEqual(call1.taskStatus, TaskStatus.ACCEPTED);
 
-    const historyAfterCall1 = await historyManager.readEvents();
-    const eventCountCall1 = historyAfterCall1.filter(
-      (e) => e.taskId === taskId && e.eventType === 'EXECUTION_STATE_INTEGRATED'
-    ).length;
-    assert.strictEqual(eventCountCall1, 1);
-
-    // 2nd Integration: Idempotent duplicate
     const call2 = await integrator.integrate(evidence, { strictEvidenceIdCheck: true });
     assert.strictEqual(call2.success, true);
     assert.strictEqual(call2.isDuplicate, true);
     assert.strictEqual(call2.taskStatus, TaskStatus.ACCEPTED);
 
-    // 3rd Integration: Idempotent duplicate
     const call3 = await integrator.integrate(evidence, { strictEvidenceIdCheck: true });
     assert.strictEqual(call3.success, true);
     assert.strictEqual(call3.isDuplicate, true);
     assert.strictEqual(call3.taskStatus, TaskStatus.ACCEPTED);
-
-    // Verify history events were NOT duplicated
-    const historyAfterCall3 = await historyManager.readEvents();
-    const eventCountCall3 = historyAfterCall3.filter(
-      (e) => e.taskId === taskId && e.eventType === 'EXECUTION_STATE_INTEGRATED'
-    ).length;
-    assert.strictEqual(eventCountCall3, 1, 'History events must not be duplicated by re-integration');
-
-    // Verify completed tasks list is not duplicated
-    const durableState = await durableStateManager.load();
-    const taskOccurrences = durableState?.completedTaskIds.filter((id) => id === taskId).length;
-    assert.strictEqual(taskOccurrences, 1);
   });
 
   // ==========================================================================
-  // 6. BINDING SAFETY: REJECTS WRONG PROJECT, TASK, REVISION, OR REQUEST
+  // 7. DUPLICATE HISTORY SUPPRESSION & AUDIT TRAIL
   // ==========================================================================
-  it('6. rejects evidence with mismatched project, task, revision, or request', async () => {
-    const validEvidence: SystemExecutionEvidence = {
-      evidenceId: 'evi-valid-001',
-      requestId: 'req-' + 'b'.repeat(64),
-      projectId: 'project-alpha',
-      taskId: 'TASK-ALPHA-01',
+  it('7. suppresses duplicate history event emission across repeated integrations and records audit trail', async () => {
+    const taskId = 'TASK-P14-03-HIST-SUPPRESS';
+    await specStore.saveTasks([
+      createParentFeature(),
+      {
+        task_id: taskId,
+        parent_feature_id: 'FEAT-P14-03',
+        title: 'History Suppression Task',
+        description: 'Verifies history suppression',
+        status: TaskStatus.READY,
+        priority: TaskPriority.HIGH,
+        dependencies: [],
+        acceptance_criteria: ['History suppression verified'],
+        tags: ['p14-03', 'history'],
+        traceability_sources: ['REQ-001'],
+        assigned_to: 'antigravity',
+        estimated_complexity: 'LOW',
+        risk_level: RiskLevel.LOW,
+        attempt: 0,
+        max_attempts: 1,
+        created_at: new Date().toISOString(),
+        started_at: null,
+        completed_at: null,
+        hierarchy_level: 'TASK',
+        metadata: { revision: 1, targetFiles: ['src/greeting.ts'], implementationScope: ['src/greeting.ts'] },
+      },
+    ]);
+
+    const summary = 'Summary for history suppression';
+    const evidenceId = computeDeterministicEvidenceId({
+      requestId: 'req-' + '7'.repeat(64),
+      projectId: 'test-p14-03-evidence-project',
+      taskId,
       taskRevision: 1,
-      contextFingerprint: 'fp-alpha-sha256',
+      contextFingerprint: 'fp-sha256-hist',
+      headCommit: initialCommitSha,
+      verificationDecision: 'ACCEPT',
+      checkSummary: summary,
+    });
+
+    const evidence: SystemExecutionEvidence = {
+      evidenceId,
+      requestId: 'req-' + '7'.repeat(64),
+      projectId: 'test-p14-03-evidence-project',
+      taskId,
+      taskRevision: 1,
+      contextFingerprint: 'fp-sha256-hist',
+      understandingRevision: 1,
+      approvalPackageRevision: 1,
+      repositoryState: { baseCommit: initialCommitSha, headCommit: initialCommitSha, isClean: false },
+      changedFiles: [{ path: 'src/greeting.ts', status: 'M' }],
+      verificationChecks: [{ checkId: 'CHECK_1', type: 'GENERAL', status: 'PASS' }],
+      acceptanceCriteria: [{ criterion: 'AC1', status: 'PASS', evidence: 'passed' }],
+      executorOutcomeReference: { status: 'SUCCESS', exitCode: 0, durationMs: 20 },
+      verificationDecision: 'ACCEPT',
+      verifiedAt: new Date().toISOString(),
+      metadata: { evaluationSummary: summary },
+    };
+
+    await evidenceStore.saveEvidence(evidence);
+
+    await integrator.integrate(evidence, { strictEvidenceIdCheck: true });
+    await integrator.integrate(evidence, { strictEvidenceIdCheck: true });
+    await integrator.integrate(evidence, { strictEvidenceIdCheck: true });
+
+    const events = await historyManager.readEvents();
+    const integrationEvents = events.filter(
+      (e) => e.taskId === taskId && e.eventType === 'EXECUTION_STATE_INTEGRATED'
+    );
+    assert.strictEqual(integrationEvents.length, 1, 'History must contain exactly one event despite 3 integrations');
+
+    // Verify audit event details and zero secret leakage
+    const event = integrationEvents[0];
+    assert.strictEqual(event.actor, 'ORCHESTRATOR');
+    assert.strictEqual(event.payload.evidenceId, evidenceId);
+    assert.strictEqual(event.payload.verificationDecision, 'ACCEPT');
+    assert.strictEqual(event.payload.integrationResult, TaskStatus.ACCEPTED);
+
+    const rawContent = fs.readFileSync(historyManager.historyPath, 'utf8');
+    assert.strictEqual(rawContent.includes('secret'), false);
+    assert.strictEqual(rawContent.includes('bearer'), false);
+    assert.strictEqual(rawContent.includes('password'), false);
+    assert.strictEqual(rawContent.includes('token'), false);
+  });
+
+  // ==========================================================================
+  // 8. DUPLICATE COMPLETEDTASKIDS SUPPRESSION
+  // ==========================================================================
+  it('8. suppresses duplicate entries in DurableState completedTaskIds upon repeated integration', async () => {
+    const taskId = 'TASK-P14-03-DURABLE-SUPPRESS';
+    await specStore.saveTasks([
+      createParentFeature(),
+      {
+        task_id: taskId,
+        parent_feature_id: 'FEAT-P14-03',
+        title: 'Durable Suppression Task',
+        description: 'Verifies durable completedTaskIds suppression',
+        status: TaskStatus.READY,
+        priority: TaskPriority.HIGH,
+        dependencies: [],
+        acceptance_criteria: ['Durable suppression verified'],
+        tags: ['p14-03', 'durable'],
+        traceability_sources: ['REQ-001'],
+        assigned_to: 'antigravity',
+        estimated_complexity: 'LOW',
+        risk_level: RiskLevel.LOW,
+        attempt: 0,
+        max_attempts: 1,
+        created_at: new Date().toISOString(),
+        started_at: null,
+        completed_at: null,
+        hierarchy_level: 'TASK',
+        metadata: { revision: 1, targetFiles: ['src/greeting.ts'], implementationScope: ['src/greeting.ts'] },
+      },
+    ]);
+
+    const summary = 'Summary for durable suppression';
+    const evidenceId = computeDeterministicEvidenceId({
+      requestId: 'req-' + '8'.repeat(64),
+      projectId: 'test-p14-03-evidence-project',
+      taskId,
+      taskRevision: 1,
+      contextFingerprint: 'fp-sha256-durable',
+      headCommit: initialCommitSha,
+      verificationDecision: 'ACCEPT',
+      checkSummary: summary,
+    });
+
+    const evidence: SystemExecutionEvidence = {
+      evidenceId,
+      requestId: 'req-' + '8'.repeat(64),
+      projectId: 'test-p14-03-evidence-project',
+      taskId,
+      taskRevision: 1,
+      contextFingerprint: 'fp-sha256-durable',
+      understandingRevision: 1,
+      approvalPackageRevision: 1,
+      repositoryState: { baseCommit: initialCommitSha, headCommit: initialCommitSha, isClean: false },
+      changedFiles: [{ path: 'src/greeting.ts', status: 'M' }],
+      verificationChecks: [{ checkId: 'CHECK_1', type: 'GENERAL', status: 'PASS' }],
+      acceptanceCriteria: [{ criterion: 'AC1', status: 'PASS', evidence: 'passed' }],
+      executorOutcomeReference: { status: 'SUCCESS', exitCode: 0, durationMs: 20 },
+      verificationDecision: 'ACCEPT',
+      verifiedAt: new Date().toISOString(),
+      metadata: { evaluationSummary: summary },
+    };
+
+    await evidenceStore.saveEvidence(evidence);
+
+    await integrator.integrate(evidence, { strictEvidenceIdCheck: true });
+    await integrator.integrate(evidence, { strictEvidenceIdCheck: true });
+
+    const durableState = await durableStateManager.load();
+    const taskOccurrences = durableState?.completedTaskIds.filter((id) => id === taskId).length;
+    assert.strictEqual(taskOccurrences, 1, 'completedTaskIds must contain taskId exactly once');
+  });
+
+  // ==========================================================================
+  // 9. PROJECT BINDING MISMATCH
+  // ==========================================================================
+  it('9. rejects evidence with project binding mismatch', async () => {
+    const summary = 'Summary for project mismatch';
+    const evidence: SystemExecutionEvidence = {
+      evidenceId: 'evi-project-mismatch',
+      requestId: 'req-' + '9'.repeat(64),
+      projectId: 'project-expected-alpha',
+      taskId: 'TASK-P14-03-MISMATCH-1',
+      taskRevision: 1,
+      contextFingerprint: 'fp-project-mismatch',
       understandingRevision: 1,
       approvalPackageRevision: 1,
       repositoryState: { baseCommit: initialCommitSha, headCommit: initialCommitSha, isClean: false },
@@ -1118,169 +1311,189 @@ describe('Phase 14 TASK-P14-03: Real Evidence Integration', () => {
       executorOutcomeReference: { status: 'SUCCESS', exitCode: 0, durationMs: 10 },
       verificationDecision: 'ACCEPT',
       verifiedAt: new Date().toISOString(),
-      metadata: { evaluationSummary: 'Valid summary' },
-    };
-
-    // 1. Wrong Project
-    await assert.rejects(
-      () =>
-        integrator.integrate(validEvidence, {
-          expectedBinding: { projectId: 'project-beta' },
-          strictEvidenceIdCheck: false,
-        }),
-      (err: any) => err instanceof ExecutionIntegrationBindingMismatchError && err.message.includes('Project ID mismatch')
-    );
-
-    // 2. Wrong Task
-    await assert.rejects(
-      () =>
-        integrator.integrate(validEvidence, {
-          expectedBinding: { taskId: 'TASK-OTHER-99' },
-          strictEvidenceIdCheck: false,
-        }),
-      (err: any) => err instanceof ExecutionIntegrationBindingMismatchError && err.message.includes('Task ID mismatch')
-    );
-
-    // 3. Wrong Task Revision
-    await assert.rejects(
-      () =>
-        integrator.integrate(validEvidence, {
-          expectedBinding: { taskRevision: 2 },
-          strictEvidenceIdCheck: false,
-        }),
-      (err: any) => err instanceof ExecutionIntegrationBindingMismatchError && err.message.includes('Task revision mismatch')
-    );
-
-    // 4. Wrong Request ID
-    await assert.rejects(
-      () =>
-        integrator.integrate(validEvidence, {
-          expectedBinding: { requestId: 'req-' + 'c'.repeat(64) },
-          strictEvidenceIdCheck: false,
-        }),
-      (err: any) => err instanceof ExecutionIntegrationBindingMismatchError && err.message.includes('Request ID mismatch')
-    );
-  });
-
-  // ==========================================================================
-  // 7. FORGED EVIDENCE & FORGED ACCEPT RESULT REJECTION
-  // ==========================================================================
-  it('7. detects and rejects forged evidenceId and forged ACCEPT results via strict hash check', async () => {
-    const summary = 'Verification completed with PASS';
-    const realId = computeDeterministicEvidenceId({
-      requestId: 'req-' + 'd'.repeat(64),
-      projectId: 'test-p14-03-evidence-project',
-      taskId: 'TASK-P14-03-FORGERY',
-      taskRevision: 1,
-      contextFingerprint: 'fp-sha256-original',
-      headCommit: initialCommitSha,
-      verificationDecision: 'REJECT',
-      checkSummary: summary,
-    });
-
-    const legitimateRejectedEvidence: SystemExecutionEvidence = {
-      evidenceId: realId,
-      requestId: 'req-' + 'd'.repeat(64),
-      projectId: 'test-p14-03-evidence-project',
-      taskId: 'TASK-P14-03-FORGERY',
-      taskRevision: 1,
-      contextFingerprint: 'fp-sha256-original',
-      understandingRevision: 1,
-      approvalPackageRevision: 1,
-      repositoryState: { baseCommit: initialCommitSha, headCommit: initialCommitSha, isClean: false },
-      changedFiles: [{ path: 'src/greeting.ts', status: 'M' }],
-      verificationChecks: [{ checkId: 'CHECK_1', type: 'GENERAL', status: 'FAIL' }],
-      acceptanceCriteria: [{ criterion: 'AC1', status: 'FAIL', evidence: 'failed' }],
-      executorOutcomeReference: { status: 'SUCCESS', exitCode: 0, durationMs: 20 },
-      verificationDecision: 'REJECT',
-      verifiedAt: new Date().toISOString(),
       metadata: { evaluationSummary: summary },
     };
 
-    // Verify legitimate rejected evidence hash passes verification
-    assert.strictEqual(verifyEvidenceIdIntegrity(legitimateRejectedEvidence), true);
-
-    // 1. Attack Scenario A: Attacker alters decision to ACCEPT without recomputing hash
-    const forgedAcceptEvidence: SystemExecutionEvidence = {
-      ...legitimateRejectedEvidence,
-      verificationDecision: 'ACCEPT', // Forged promotion to ACCEPT!
-    };
-
-    assert.strictEqual(verifyEvidenceIdIntegrity(forgedAcceptEvidence), false);
-
     await assert.rejects(
-      () => integrator.integrate(forgedAcceptEvidence, { strictEvidenceIdCheck: true }),
+      () =>
+        integrator.integrate(evidence, {
+          expectedBinding: { projectId: 'project-different-beta' },
+          strictEvidenceIdCheck: false,
+        }),
       (err: any) =>
-        err instanceof ExecutionIntegrationSecurityViolationError && err.message.includes('Evidence ID hash mismatch')
-    );
-
-    // 2. Attack Scenario B: Attacker supplies arbitrary forged evidenceId
-    const forgedIdEvidence: SystemExecutionEvidence = {
-      ...legitimateRejectedEvidence,
-      evidenceId: 'evi-forged-arbitrary-identifier-000',
-    };
-
-    assert.strictEqual(verifyEvidenceIdIntegrity(forgedIdEvidence), false);
-
-    await assert.rejects(
-      () => integrator.integrate(forgedIdEvidence, { strictEvidenceIdCheck: true }),
-      (err: any) =>
-        err instanceof ExecutionIntegrationSecurityViolationError && err.message.includes('Evidence ID hash mismatch')
+        err instanceof ExecutionIntegrationBindingMismatchError && err.message.includes('Project ID mismatch')
     );
   });
 
   // ==========================================================================
-  // 8. STALE CONTEXT & STALE GIT BASELINE REJECTION
+  // 10. TASK BINDING MISMATCH
   // ==========================================================================
-  it('8. rejects evidence with stale context fingerprint or stale Git baseline', async () => {
-    const summary = 'Evaluation summary';
-    const evidenceId = computeDeterministicEvidenceId({
-      requestId: 'req-' + 'e'.repeat(64),
-      projectId: 'test-p14-03-evidence-project',
-      taskId: 'TASK-P14-03-STALE',
-      taskRevision: 1,
-      contextFingerprint: 'fp-stale-context-001',
-      headCommit: initialCommitSha,
-      verificationDecision: 'ACCEPT',
-      checkSummary: summary,
-    });
-
+  it('10. rejects evidence with task binding mismatch', async () => {
+    const summary = 'Summary for task mismatch';
     const evidence: SystemExecutionEvidence = {
-      evidenceId,
-      requestId: 'req-' + 'e'.repeat(64),
+      evidenceId: 'evi-task-mismatch',
+      requestId: 'req-' + 'a'.repeat(64),
       projectId: 'test-p14-03-evidence-project',
-      taskId: 'TASK-P14-03-STALE',
+      taskId: 'TASK-P14-03-EXPECTED',
       taskRevision: 1,
-      contextFingerprint: 'fp-stale-context-001',
+      contextFingerprint: 'fp-task-mismatch',
       understandingRevision: 1,
       approvalPackageRevision: 1,
       repositoryState: { baseCommit: initialCommitSha, headCommit: initialCommitSha, isClean: false },
       changedFiles: [{ path: 'src/greeting.ts', status: 'M' }],
       verificationChecks: [{ checkId: 'CHECK_1', type: 'GENERAL', status: 'PASS' }],
       acceptanceCriteria: [{ criterion: 'AC1', status: 'PASS', evidence: 'passed' }],
-      executorOutcomeReference: { status: 'SUCCESS', exitCode: 0, durationMs: 20 },
+      executorOutcomeReference: { status: 'SUCCESS', exitCode: 0, durationMs: 10 },
       verificationDecision: 'ACCEPT',
       verifiedAt: new Date().toISOString(),
       metadata: { evaluationSummary: summary },
     };
 
-    // 1. Stale context rejection
     await assert.rejects(
       () =>
         integrator.integrate(evidence, {
-          expectedBinding: { contextFingerprint: 'fp-new-resynced-context-002' },
-          strictEvidenceIdCheck: true,
+          expectedBinding: { taskId: 'TASK-P14-03-DIFFERENT' },
+          strictEvidenceIdCheck: false,
+        }),
+      (err: any) =>
+        err instanceof ExecutionIntegrationBindingMismatchError && err.message.includes('Task ID mismatch')
+    );
+  });
+
+  // ==========================================================================
+  // 11. TASK REVISION MISMATCH
+  // ==========================================================================
+  it('11. rejects evidence with task revision mismatch', async () => {
+    const summary = 'Summary for revision mismatch';
+    const evidence: SystemExecutionEvidence = {
+      evidenceId: 'evi-rev-mismatch',
+      requestId: 'req-' + 'b'.repeat(64),
+      projectId: 'test-p14-03-evidence-project',
+      taskId: 'TASK-P14-03-REV',
+      taskRevision: 1,
+      contextFingerprint: 'fp-rev-mismatch',
+      understandingRevision: 1,
+      approvalPackageRevision: 1,
+      repositoryState: { baseCommit: initialCommitSha, headCommit: initialCommitSha, isClean: false },
+      changedFiles: [{ path: 'src/greeting.ts', status: 'M' }],
+      verificationChecks: [{ checkId: 'CHECK_1', type: 'GENERAL', status: 'PASS' }],
+      acceptanceCriteria: [{ criterion: 'AC1', status: 'PASS', evidence: 'passed' }],
+      executorOutcomeReference: { status: 'SUCCESS', exitCode: 0, durationMs: 10 },
+      verificationDecision: 'ACCEPT',
+      verifiedAt: new Date().toISOString(),
+      metadata: { evaluationSummary: summary },
+    };
+
+    await assert.rejects(
+      () =>
+        integrator.integrate(evidence, {
+          expectedBinding: { taskRevision: 2 },
+          strictEvidenceIdCheck: false,
+        }),
+      (err: any) =>
+        err instanceof ExecutionIntegrationBindingMismatchError && err.message.includes('Task revision mismatch')
+    );
+  });
+
+  // ==========================================================================
+  // 12. REQUEST BINDING MISMATCH
+  // ==========================================================================
+  it('12. rejects evidence with request binding mismatch', async () => {
+    const summary = 'Summary for request mismatch';
+    const evidence: SystemExecutionEvidence = {
+      evidenceId: 'evi-req-mismatch',
+      requestId: 'req-' + '1'.repeat(64),
+      projectId: 'test-p14-03-evidence-project',
+      taskId: 'TASK-P14-03-REQ',
+      taskRevision: 1,
+      contextFingerprint: 'fp-req-mismatch',
+      understandingRevision: 1,
+      approvalPackageRevision: 1,
+      repositoryState: { baseCommit: initialCommitSha, headCommit: initialCommitSha, isClean: false },
+      changedFiles: [{ path: 'src/greeting.ts', status: 'M' }],
+      verificationChecks: [{ checkId: 'CHECK_1', type: 'GENERAL', status: 'PASS' }],
+      acceptanceCriteria: [{ criterion: 'AC1', status: 'PASS', evidence: 'passed' }],
+      executorOutcomeReference: { status: 'SUCCESS', exitCode: 0, durationMs: 10 },
+      verificationDecision: 'ACCEPT',
+      verifiedAt: new Date().toISOString(),
+      metadata: { evaluationSummary: summary },
+    };
+
+    await assert.rejects(
+      () =>
+        integrator.integrate(evidence, {
+          expectedBinding: { requestId: 'req-' + '2'.repeat(64) },
+          strictEvidenceIdCheck: false,
+        }),
+      (err: any) =>
+        err instanceof ExecutionIntegrationBindingMismatchError && err.message.includes('Request ID mismatch')
+    );
+  });
+
+  // ==========================================================================
+  // 13. CONTEXT FINGERPRINT MISMATCH
+  // ==========================================================================
+  it('13. rejects evidence with context fingerprint mismatch', async () => {
+    const summary = 'Summary for context fp mismatch';
+    const evidence: SystemExecutionEvidence = {
+      evidenceId: 'evi-fp-mismatch',
+      requestId: 'req-' + '3'.repeat(64),
+      projectId: 'test-p14-03-evidence-project',
+      taskId: 'TASK-P14-03-FP',
+      taskRevision: 1,
+      contextFingerprint: 'fp-old-state-001',
+      understandingRevision: 1,
+      approvalPackageRevision: 1,
+      repositoryState: { baseCommit: initialCommitSha, headCommit: initialCommitSha, isClean: false },
+      changedFiles: [{ path: 'src/greeting.ts', status: 'M' }],
+      verificationChecks: [{ checkId: 'CHECK_1', type: 'GENERAL', status: 'PASS' }],
+      acceptanceCriteria: [{ criterion: 'AC1', status: 'PASS', evidence: 'passed' }],
+      executorOutcomeReference: { status: 'SUCCESS', exitCode: 0, durationMs: 10 },
+      verificationDecision: 'ACCEPT',
+      verifiedAt: new Date().toISOString(),
+      metadata: { evaluationSummary: summary },
+    };
+
+    await assert.rejects(
+      () =>
+        integrator.integrate(evidence, {
+          expectedBinding: { contextFingerprint: 'fp-new-resynced-002' },
+          strictEvidenceIdCheck: false,
         }),
       (err: any) =>
         err instanceof ExecutionIntegrationBindingMismatchError && err.message.includes('Context fingerprint mismatch')
     );
+  });
 
-    // 2. Stale Git baseline rejection
+  // ==========================================================================
+  // 14. GIT BASELINE MISMATCH
+  // ==========================================================================
+  it('14. rejects evidence with Git baseline mismatch', async () => {
+    const summary = 'Summary for git baseline mismatch';
+    const evidence: SystemExecutionEvidence = {
+      evidenceId: 'evi-git-mismatch',
+      requestId: 'req-' + '4'.repeat(64),
+      projectId: 'test-p14-03-evidence-project',
+      taskId: 'TASK-P14-03-GIT',
+      taskRevision: 1,
+      contextFingerprint: 'fp-git-mismatch',
+      understandingRevision: 1,
+      approvalPackageRevision: 1,
+      repositoryState: { baseCommit: initialCommitSha, headCommit: initialCommitSha, isClean: false },
+      changedFiles: [{ path: 'src/greeting.ts', status: 'M' }],
+      verificationChecks: [{ checkId: 'CHECK_1', type: 'GENERAL', status: 'PASS' }],
+      acceptanceCriteria: [{ criterion: 'AC1', status: 'PASS', evidence: 'passed' }],
+      executorOutcomeReference: { status: 'SUCCESS', exitCode: 0, durationMs: 10 },
+      verificationDecision: 'ACCEPT',
+      verifiedAt: new Date().toISOString(),
+      metadata: { evaluationSummary: summary },
+    };
+
     await assert.rejects(
       () =>
         integrator.integrate(evidence, {
           expectedBinding: { expectedBaseCommit: '0000000000000000000000000000000000000000' },
-          strictEvidenceIdCheck: true,
+          strictEvidenceIdCheck: false,
         }),
       (err: any) =>
         err instanceof ExecutionIntegrationBindingMismatchError && err.message.includes('Git base commit mismatch')
@@ -1288,58 +1501,525 @@ describe('Phase 14 TASK-P14-03: Real Evidence Integration', () => {
   });
 
   // ==========================================================================
-  // 9. HISTORY AUDIT TRAIL & ZERO SECRET LEAKAGE
+  // 15. FORGED VERIFICATIONDECISION
   // ==========================================================================
-  it('9. records deterministic audit events in HistoryManager without leaking credentials', async () => {
-    const summary = 'Summary for audit check';
-    const evidenceId = computeDeterministicEvidenceId({
+  it('15. rejects forged verificationDecision via strict evidence ID hash check', async () => {
+    const summary = 'Verification finished with REJECT';
+    const legitimateRejectId = computeDeterministicEvidenceId({
       requestId: 'req-' + 'f'.repeat(64),
       projectId: 'test-p14-03-evidence-project',
-      taskId: 'TASK-P14-03-AUDIT',
+      taskId: 'TASK-P14-03-FORGE-DECISION',
       taskRevision: 1,
-      contextFingerprint: 'fp-audit-test',
+      contextFingerprint: 'fp-forge-decision',
       headCommit: initialCommitSha,
-      verificationDecision: 'ACCEPT',
+      verificationDecision: 'REJECT',
       checkSummary: summary,
     });
 
-    const evidence: SystemExecutionEvidence = {
-      evidenceId,
+    const legitimateEvidence: SystemExecutionEvidence = {
+      evidenceId: legitimateRejectId,
       requestId: 'req-' + 'f'.repeat(64),
       projectId: 'test-p14-03-evidence-project',
-      taskId: 'TASK-P14-03-AUDIT',
+      taskId: 'TASK-P14-03-FORGE-DECISION',
       taskRevision: 1,
-      contextFingerprint: 'fp-audit-test',
+      contextFingerprint: 'fp-forge-decision',
+      understandingRevision: 1,
+      approvalPackageRevision: 1,
+      repositoryState: { baseCommit: initialCommitSha, headCommit: initialCommitSha, isClean: false },
+      changedFiles: [{ path: 'src/greeting.ts', status: 'M' }],
+      verificationChecks: [{ checkId: 'CHECK_1', type: 'GENERAL', status: 'FAIL' }],
+      acceptanceCriteria: [{ criterion: 'AC1', status: 'FAIL', evidence: 'failed' }],
+      executorOutcomeReference: { status: 'FAILURE', exitCode: 1, durationMs: 10 },
+      verificationDecision: 'REJECT',
+      verifiedAt: new Date().toISOString(),
+      metadata: { evaluationSummary: summary },
+    };
+
+    // Adversary modifies verificationDecision from REJECT to ACCEPT without recomputing hash
+    const forgedEvidence: SystemExecutionEvidence = {
+      ...legitimateEvidence,
+      verificationDecision: 'ACCEPT',
+    };
+
+    assert.strictEqual(verifyEvidenceIdIntegrity(forgedEvidence), false);
+
+    await assert.rejects(
+      () => integrator.integrate(forgedEvidence, { strictEvidenceIdCheck: true }),
+      (err: any) =>
+        err instanceof ExecutionIntegrationSecurityViolationError && err.message.includes('Evidence ID hash mismatch')
+    );
+  });
+
+  // ==========================================================================
+  // 16. FORGED EVIDENCE IDENTITY
+  // ==========================================================================
+  it('16. rejects forged evidence identity via strict hash check', async () => {
+    const summary = 'Summary for forged id test';
+    const legitimateEvidence: SystemExecutionEvidence = {
+      evidenceId: 'evi-arbitrary-unhashed-fake-id-12345',
+      requestId: 'req-' + 'd'.repeat(64),
+      projectId: 'test-p14-03-evidence-project',
+      taskId: 'TASK-P14-03-FORGE-ID',
+      taskRevision: 1,
+      contextFingerprint: 'fp-forge-id',
       understandingRevision: 1,
       approvalPackageRevision: 1,
       repositoryState: { baseCommit: initialCommitSha, headCommit: initialCommitSha, isClean: false },
       changedFiles: [{ path: 'src/greeting.ts', status: 'M' }],
       verificationChecks: [{ checkId: 'CHECK_1', type: 'GENERAL', status: 'PASS' }],
       acceptanceCriteria: [{ criterion: 'AC1', status: 'PASS', evidence: 'passed' }],
-      executorOutcomeReference: { status: 'SUCCESS', exitCode: 0, durationMs: 30 },
+      executorOutcomeReference: { status: 'SUCCESS', exitCode: 0, durationMs: 10 },
       verificationDecision: 'ACCEPT',
       verifiedAt: new Date().toISOString(),
       metadata: { evaluationSummary: summary },
     };
 
-    await integrator.integrate(evidence, { strictEvidenceIdCheck: true });
+    assert.strictEqual(verifyEvidenceIdIntegrity(legitimateEvidence), false);
 
-    const events = await historyManager.readEvents();
-    const integrationEvent = events.find(
-      (e) => e.taskId === 'TASK-P14-03-AUDIT' && e.eventType === 'EXECUTION_STATE_INTEGRATED'
+    await assert.rejects(
+      () => integrator.integrate(legitimateEvidence, { strictEvidenceIdCheck: true }),
+      (err: any) =>
+        err instanceof ExecutionIntegrationSecurityViolationError && err.message.includes('Evidence ID hash mismatch')
+    );
+  });
+
+  // ==========================================================================
+  // 17. INVALID / MALFORMED EVIDENCE REJECTION
+  // ==========================================================================
+  it('17. rejects invalid or malformed evidence missing critical fields', async () => {
+    // Malformed: missing evidenceId
+    const missingEvidenceId: any = {
+      requestId: 'req-' + '1'.repeat(64),
+      projectId: 'test-p14-03-evidence-project',
+      taskId: 'TASK-P14-03-MALFORMED',
+      verificationDecision: 'ACCEPT',
+    };
+
+    await assert.rejects(
+      () => integrator.integrate(missingEvidenceId),
+      (err: any) => err instanceof ExecutionIntegrationValidationError
     );
 
-    assert.ok(integrationEvent);
-    assert.strictEqual(integrationEvent.actor, 'ORCHESTRATOR');
-    assert.strictEqual(integrationEvent.payload.evidenceId, evidenceId);
-    assert.strictEqual(integrationEvent.payload.verificationDecision, 'ACCEPT');
-    assert.strictEqual(integrationEvent.payload.integrationResult, TaskStatus.ACCEPTED);
+    // Malformed: missing repositoryState
+    const missingRepoState: any = {
+      evidenceId: 'evi-missing-repo',
+      requestId: 'req-' + '1'.repeat(64),
+      projectId: 'test-p14-03-evidence-project',
+      taskId: 'TASK-P14-03-MALFORMED',
+      taskRevision: 1,
+      contextFingerprint: 'fp-test',
+      verificationDecision: 'ACCEPT',
+      changedFiles: [],
+      verificationChecks: [],
+      acceptanceCriteria: [],
+    };
 
-    // Verify no secrets or credentials appear in raw JSON history line
-    const rawContent = fs.readFileSync(historyManager.historyPath, 'utf8');
-    assert.strictEqual(rawContent.includes('secret'), false);
-    assert.strictEqual(rawContent.includes('bearer'), false);
-    assert.strictEqual(rawContent.includes('password'), false);
-    assert.strictEqual(rawContent.includes('token'), false);
+    await assert.rejects(
+      () => integrator.integrate(missingRepoState),
+      (err: any) => err instanceof ExecutionIntegrationValidationError
+    );
+  });
+
+  // ==========================================================================
+  // 18. IMPLEMENTATION SCOPE VIOLATION
+  // ==========================================================================
+  it('18. rejects changes outside authorized implementation scope and marks REJECT', async () => {
+    const taskId = 'TASK-P14-03-SCOPE-VIOLATION';
+    const request: ExecutionRequest = {
+      protocolVersion: 'P10-02',
+      schemaVersion: 1,
+      requestId: 'req-' + '18'.repeat(32),
+      projectId: 'test-p14-03-evidence-project',
+      taskId,
+      taskRevision: 1,
+      directorSessionId: 'sess-scope',
+      directorDecisionId: 'dec-scope',
+      contextFingerprint: 'fp-scope',
+      understandingRevision: 1,
+      approvalPackageRevision: 1,
+      operationType: 'IMPLEMENT_TASK',
+      instruction: {
+        objective: 'Modify greeting',
+        acceptanceCriteria: ['Must modify greeting only'],
+        constraints: [],
+        targetFiles: ['src/greeting.ts'],
+        implementationScope: ['src/greeting.ts'], // ONLY src/greeting.ts allowed!
+      },
+      executionLimits: { timeoutMs: 10000, maxFileModifications: 5 },
+      expectedRepositoryState: { baseCommit: initialCommitSha, isClean: true },
+    };
+
+    // Untrusted executor modifies an out-of-scope file
+    const unauthorizedFile = path.join(tempDir, 'src', 'unauthorized.ts');
+    fs.writeFileSync(unauthorizedFile, 'export const secret = "leak";\n');
+
+    const rawOutcome = createMockRawOutcome(request, {
+      status: 'SUCCESS',
+      exitCode: 0,
+      stdout: '',
+      durationMs: 50,
+      unverifiedAgentClaims: [],
+      unverifiedModifiedFiles: ['src/unauthorized.ts'],
+    });
+
+    const evidence = await collector.collectAndVerify(request, rawOutcome, {
+      workingDirectory: tempDir,
+      evidenceStore,
+    });
+
+    // Verification must detect scope violation and set decision to REJECT
+    assert.strictEqual(evidence.verificationDecision, 'REJECT');
+    const scopeCheck = evidence.verificationChecks.find((c) => c.checkId === 'CHECK_IMPLEMENTATION_SCOPE');
+    assert.ok(scopeCheck);
+    assert.strictEqual(scopeCheck.status, 'FAIL');
+    assert.ok(scopeCheck.evidence?.includes('outside allowed implementationScope'));
+
+    // Cleanup file
+    fs.unlinkSync(unauthorizedFile);
+  });
+
+  // ==========================================================================
+  // 19. PATH TRAVERSAL / ABSOLUTE PATH REJECTION
+  // ==========================================================================
+  it('19. rejects path traversal and absolute paths in targetFiles and implementationScope', async () => {
+    // 1. isSafeRelativePath utility checks
+    assert.strictEqual(isSafeRelativePath('src/greeting.ts'), true);
+    assert.strictEqual(isSafeRelativePath('../outside.ts'), false);
+    assert.strictEqual(isSafeRelativePath('/etc/passwd'), false);
+    assert.strictEqual(isSafeRelativePath('C:\\Windows\\System32'), false);
+    assert.strictEqual(isSafeRelativePath('src/../../escaped.ts'), false);
+
+    // 2. ExecutorGuard rejects request with path traversal in targetFiles
+    const traversalRequest: ExecutionRequest = {
+      protocolVersion: 'P10-02',
+      schemaVersion: 1,
+      requestId: 'req-' + '19'.repeat(32),
+      projectId: 'test-p14-03-evidence-project',
+      taskId: 'TASK-P14-03-TRAVERSAL',
+      taskRevision: 1,
+      directorSessionId: 'sess-trav',
+      directorDecisionId: 'dec-trav',
+      contextFingerprint: 'fp-trav',
+      understandingRevision: 1,
+      approvalPackageRevision: 1,
+      operationType: 'IMPLEMENT_TASK',
+      instruction: {
+        objective: 'Test path traversal rejection',
+        acceptanceCriteria: ['Must fail'],
+        constraints: [],
+        targetFiles: ['../escaped.ts'],
+        implementationScope: ['../escaped.ts'],
+      },
+      executionLimits: { timeoutMs: 10000, maxFileModifications: 5 },
+      expectedRepositoryState: { baseCommit: initialCommitSha, isClean: true },
+    };
+
+    assert.throws(
+      () => ExecutorGuard.validateExecutionPreconditions(traversalRequest, { workingDirectory: tempDir }),
+      (err: any) => err.message.includes('Path traversal')
+    );
+  });
+
+  // ==========================================================================
+  // 20. RAWEXECUTOROUTCOME CANNOT DIRECTLY BECOME AUTHORITATIVE EVIDENCE
+  // ==========================================================================
+  it('20. enforces that RawExecutorOutcome cannot directly be integrated as authoritative evidence', async () => {
+    const rawOutcome: RawExecutorOutcome = {
+      status: 'SUCCESS',
+      exitCode: 0,
+      stdout: 'all tests passed!',
+      stderr: '',
+      durationMs: 42,
+      timedOut: false,
+      unverifiedAgentClaims: [{ claim: 'I wrote all features and tests pass', confidence: 1.0 }],
+      unverifiedModifiedFiles: ['src/greeting.ts'],
+    };
+
+    // Statically prevented by TypeScript, but at runtime passing raw object without evidence envelope fails closed
+    await assert.rejects(
+      () => integrator.integrate(rawOutcome as any),
+      (err: any) =>
+        err instanceof ExecutionIntegrationValidationError &&
+        err.message.includes('RawExecutorOutcome cannot be integrated directly')
+    );
+
+    // Also assertNotVerifiedEvidence rejects raw outcome claiming authoritative verification
+    const forgedRawOutcome = {
+      ...rawOutcome,
+      verified: true,
+      systemAccepted: true,
+    };
+    assert.throws(
+      () => assertNotVerifiedEvidence(forgedRawOutcome),
+      (err: any) => err.message.includes('forbidden system verification field')
+    );
+  });
+
+  // ==========================================================================
+  // 21. STALE EVIDENCE REJECTION
+  // ==========================================================================
+  it('21. rejects stale evidence when task revision or git baseline has advanced', async () => {
+    const summary = 'Summary for stale evidence';
+    const evidence: SystemExecutionEvidence = {
+      evidenceId: 'evi-stale-001',
+      requestId: 'req-' + '21'.repeat(32),
+      projectId: 'test-p14-03-evidence-project',
+      taskId: 'TASK-P14-03-STALE-CHECK',
+      taskRevision: 1, // Evidence generated for revision 1
+      contextFingerprint: 'fp-stale-001',
+      understandingRevision: 1,
+      approvalPackageRevision: 1,
+      repositoryState: { baseCommit: initialCommitSha, headCommit: initialCommitSha, isClean: false },
+      changedFiles: [{ path: 'src/greeting.ts', status: 'M' }],
+      verificationChecks: [{ checkId: 'CHECK_1', type: 'GENERAL', status: 'PASS' }],
+      acceptanceCriteria: [{ criterion: 'AC1', status: 'PASS', evidence: 'passed' }],
+      executorOutcomeReference: { status: 'SUCCESS', exitCode: 0, durationMs: 15 },
+      verificationDecision: 'ACCEPT',
+      verifiedAt: new Date().toISOString(),
+      metadata: { evaluationSummary: summary },
+    };
+
+    // Spec task is now at revision 2 (stale evidence against advanced task revision)
+    await assert.rejects(
+      () =>
+        integrator.integrate(evidence, {
+          expectedBinding: { taskRevision: 2 },
+          strictEvidenceIdCheck: false,
+        }),
+      (err: any) =>
+        err instanceof ExecutionIntegrationBindingMismatchError && err.message.includes('Task revision mismatch')
+    );
+  });
+
+  // ==========================================================================
+  // 22. ACCEPTANCE-CRITERIA FAILURE DESPITE RAW SUCCESS
+  // ==========================================================================
+  it('22. sets REJECT when acceptance criteria fail despite RawExecutorOutcome reporting SUCCESS', async () => {
+    const taskId = 'TASK-P14-03-AC-FAIL';
+    const request: ExecutionRequest = {
+      protocolVersion: 'P10-02',
+      schemaVersion: 1,
+      requestId: 'req-' + '22'.repeat(32),
+      projectId: 'test-p14-03-evidence-project',
+      taskId,
+      taskRevision: 1,
+      directorSessionId: 'sess-ac-fail',
+      directorDecisionId: 'dec-ac-fail',
+      contextFingerprint: 'fp-ac-fail',
+      understandingRevision: 1,
+      approvalPackageRevision: 1,
+      operationType: 'IMPLEMENT_TASK',
+      instruction: {
+        objective: 'Must set greeting to "required_token_123"',
+        acceptanceCriteria: [
+          {
+            criterionId: 'AC-TOKEN',
+            description: 'src/greeting.ts must export greeting with value "required_token_123"',
+            type: 'TEST',
+            mandatory: true,
+            expected_command: process.platform === 'win32'
+              ? 'cmd.exe /c findstr "required_token_123" src\\greeting.ts'
+              : 'grep "required_token_123" src/greeting.ts',
+          },
+        ],
+        constraints: [],
+        targetFiles: ['src/greeting.ts'],
+        implementationScope: ['src/greeting.ts'],
+      },
+      executionLimits: { timeoutMs: 10000, maxFileModifications: 5 },
+      expectedRepositoryState: { baseCommit: initialCommitSha, isClean: true },
+    };
+
+    // File was modified, but does NOT contain "required_token_123"
+    fs.writeFileSync(path.join(tempDir, 'src', 'greeting.ts'), 'export const greeting = "wrong_token_456";\n');
+
+    // Raw executor falsely claims SUCCESS!
+    const rawOutcome = createMockRawOutcome(request, {
+      status: 'SUCCESS',
+      exitCode: 0,
+      stdout: 'all good',
+      durationMs: 30,
+      unverifiedAgentClaims: [{ claim: 'criteria satisfied', confidence: 1.0 }],
+      unverifiedModifiedFiles: ['src/greeting.ts'],
+    });
+
+    const evidence = await collector.collectAndVerify(request, rawOutcome, {
+      workingDirectory: tempDir,
+      evidenceStore,
+    });
+
+    // Verification must independently reject the claim and set REJECT
+    assert.strictEqual(evidence.verificationDecision, 'REJECT');
+    const acCheck = evidence.acceptanceCriteria[0];
+    assert.ok(acCheck);
+    assert.strictEqual(acCheck.status, 'FAIL');
+  });
+
+  // ==========================================================================
+  // 23. INDEPENDENT VERIFICATION FAILURE
+  // ==========================================================================
+  it('23. sets REJECT when independent verification command fails despite agent claim', async () => {
+    const taskId = 'TASK-P14-03-CMD-FAIL';
+    const request: ExecutionRequest = {
+      protocolVersion: 'P10-02',
+      schemaVersion: 1,
+      requestId: 'req-' + '23'.repeat(32),
+      projectId: 'test-p14-03-evidence-project',
+      taskId,
+      taskRevision: 1,
+      directorSessionId: 'sess-cmd-fail',
+      directorDecisionId: 'dec-cmd-fail',
+      contextFingerprint: 'fp-cmd-fail',
+      understandingRevision: 1,
+      approvalPackageRevision: 1,
+      operationType: 'IMPLEMENT_TASK',
+      instruction: {
+        objective: 'Independent test run',
+        acceptanceCriteria: ['Verification command passes'],
+        constraints: [],
+        targetFiles: ['src/greeting.ts'],
+        implementationScope: ['src/greeting.ts'],
+      },
+      executionLimits: { timeoutMs: 10000, maxFileModifications: 5 },
+      expectedRepositoryState: { baseCommit: initialCommitSha, isClean: true },
+    };
+
+    fs.writeFileSync(path.join(tempDir, 'src', 'greeting.ts'), 'export const greeting = "cmd_fail_val";\n');
+
+    const rawOutcome = createMockRawOutcome(request, {
+      status: 'SUCCESS',
+      exitCode: 0,
+      stdout: '',
+      durationMs: 30,
+      unverifiedAgentClaims: [],
+      unverifiedModifiedFiles: ['src/greeting.ts'],
+    });
+
+    const evidence = await collector.collectAndVerify(request, rawOutcome, {
+      workingDirectory: tempDir,
+      evidenceStore,
+      verificationCommands: [
+        {
+          id: 'FAILS',
+          type: 'TEST',
+          command: process.platform === 'win32' ? 'cmd.exe /c exit 1' : 'sh -c "exit 1"',
+        },
+      ],
+    });
+
+    assert.strictEqual(evidence.verificationDecision, 'REJECT');
+    const failedCheck = evidence.verificationChecks.find((c) => c.checkId.includes('FAILS'));
+    assert.ok(failedCheck);
+    assert.strictEqual(failedCheck.status, 'FAIL');
+  });
+
+  // ==========================================================================
+  // 24. PERSISTENCE FAILURE / ATOMIC WRITE BEHAVIOR
+  // ==========================================================================
+  it('24. fails closed on persistence failure and guarantees atomic write cleanup', async () => {
+    // 1. Evidence store pointing to an invalid read-only / file path instead of directory
+    const invalidFilePath = path.join(tempDir, 'invalid-evidence-file.txt');
+    fs.writeFileSync(invalidFilePath, 'not a directory');
+
+    const failingStore = new SystemExecutionEvidenceStore({
+      evidenceDir: invalidFilePath, // Will fail mkdir/write
+    });
+
+    const sampleEvidence: SystemExecutionEvidence = {
+      evidenceId: 'evi-fail-persist',
+      requestId: 'req-' + '24'.repeat(32),
+      projectId: 'test-p14-03-evidence-project',
+      taskId: 'TASK-P14-03-PERSIST-FAIL',
+      taskRevision: 1,
+      contextFingerprint: 'fp-fail',
+      understandingRevision: 1,
+      approvalPackageRevision: 1,
+      repositoryState: { baseCommit: initialCommitSha, headCommit: initialCommitSha, isClean: false },
+      changedFiles: [{ path: 'src/greeting.ts', status: 'M' }],
+      verificationChecks: [{ checkId: 'CHECK_1', type: 'GENERAL', status: 'PASS' }],
+      acceptanceCriteria: [{ criterion: 'AC1', status: 'PASS', evidence: 'passed' }],
+      executorOutcomeReference: { status: 'SUCCESS', exitCode: 0, durationMs: 10 },
+      verificationDecision: 'ACCEPT',
+      verifiedAt: new Date().toISOString(),
+      metadata: { evaluationSummary: 'Fail summary' },
+    };
+
+    // saveEvidence must throw and not leave partial / corrupted state
+    await assert.rejects(
+      () => failingStore.saveEvidence(sampleEvidence),
+      (err: any) =>
+        err.name === 'StorageError' ||
+        err.message.includes('atomic write') ||
+        err.message.includes('Failed to create directory')
+    );
+
+    // Integrator with failing store and requirePersistedEvidence must fail closed
+    const failingIntegrator = new ExecutionStateIntegrator({
+      evidenceStore: failingStore,
+      requirePersistedEvidence: true,
+      workspaceRoot: tempDir,
+    });
+
+    await assert.rejects(
+      () => failingIntegrator.integrate(sampleEvidence),
+      (err: any) =>
+        err instanceof ExecutionIntegrationSecurityViolationError ||
+        err instanceof ExecutionIntegrationPersistenceError
+    );
+  });
+
+  // ==========================================================================
+  // 25. TRUSTED PROVENANCE REQUIREMENT (SECURITY AUDIT TEST)
+  // ==========================================================================
+  it('25. enforces trusted provenance: rejects fabricated in-memory evidence even when internal SHA-256 hash is self-consistent', async () => {
+    // ADVERSARIAL AUDIT SCENARIO:
+    // Attacker crafts a fabricated evidence object with verificationDecision = 'ACCEPT'.
+    // Attacker recomputes deterministic SHA-256 evidenceId so verifyEvidenceIdIntegrity(forged) returns true!
+    const summary = 'Adversarial forgery with recomputed valid hash';
+    const forgedEvidenceId = computeDeterministicEvidenceId({
+      requestId: 'req-' + '25'.repeat(32),
+      projectId: 'test-p14-03-evidence-project',
+      taskId: 'TASK-P14-03-ADVERSARY',
+      taskRevision: 1,
+      contextFingerprint: 'fp-sha256-adversary',
+      headCommit: initialCommitSha,
+      verificationDecision: 'ACCEPT',
+      checkSummary: summary,
+    });
+
+    const forgedSelfConsistentEvidence: SystemExecutionEvidence = {
+      evidenceId: forgedEvidenceId,
+      requestId: 'req-' + '25'.repeat(32),
+      projectId: 'test-p14-03-evidence-project',
+      taskId: 'TASK-P14-03-ADVERSARY',
+      taskRevision: 1,
+      contextFingerprint: 'fp-sha256-adversary',
+      understandingRevision: 1,
+      approvalPackageRevision: 1,
+      repositoryState: { baseCommit: initialCommitSha, headCommit: initialCommitSha, isClean: false },
+      changedFiles: [{ path: 'src/greeting.ts', status: 'M' }],
+      verificationChecks: [{ checkId: 'CHECK_1', type: 'GENERAL', status: 'PASS' }],
+      acceptanceCriteria: [{ criterion: 'AC1', status: 'PASS', evidence: 'passed' }],
+      executorOutcomeReference: { status: 'SUCCESS', exitCode: 0, durationMs: 10 },
+      verificationDecision: 'ACCEPT',
+      verifiedAt: new Date().toISOString(),
+      metadata: { evaluationSummary: summary },
+    };
+
+    // 1. Verify that internal SHA-256 hash self-consistency PASSES (integrity check alone is insufficient!)
+    assert.strictEqual(
+      verifyEvidenceIdIntegrity(forgedSelfConsistentEvidence),
+      true,
+      'Hash is self-consistent because attacker recomputed it'
+    );
+
+    // 2. Integration with requirePersistedEvidence MUST reject the forgery because it lacks authoritative provenance
+    // (was never collected and persisted by trusted SystemEvidenceCollector)
+    await assert.rejects(
+      () => integrator.integrate(forgedSelfConsistentEvidence, { requirePersistedEvidence: true }),
+      (err: any) =>
+        err instanceof ExecutionIntegrationSecurityViolationError &&
+        err.message.includes('has no authoritative persisted record')
+    );
   });
 });
