@@ -51,6 +51,7 @@ import {
   TaskDecompositionInvalidTraceabilityError,
   TaskDecompositionInvalidScopeError,
   TaskDecompositionConflictError,
+  TaskDecompositionImmutableStateConflictError,
   TaskDecompositionInvalidGraphError,
   TaskDecompositionOutOfScopeError,
 } from './task-decomposition-errors.js';
@@ -123,7 +124,7 @@ export class TaskDecompositionEngine {
 
   /**
    * Sanitizes and validates scope paths.
-   * Prohibits path traversal (..) and absolute paths.
+   * Prohibits path traversal (..), absolute paths, Windows drive paths, UNC network paths, and null bytes.
    */
   canonicalizeScopePaths(
     rawPaths?: readonly string[],
@@ -146,29 +147,52 @@ export class TaskDecompositionEngine {
         );
       }
 
-      const posixPath = raw.replace(/\\/g, '/').trim();
-      if (posixPath.length === 0) {
+      if (raw.includes('\0')) {
+        throw new TaskDecompositionInvalidScopeError(
+          `Null byte detected in ${scopeName}: '${raw}'`,
+          { [scopeName]: raw }
+        );
+      }
+
+      const trimmed = raw.trim();
+      if (trimmed.length === 0) {
         throw new TaskDecompositionInvalidScopeError(
           `Scope path in ${scopeName} cannot be empty or whitespace only`,
           { [scopeName]: raw }
         );
       }
 
-      const segments = posixPath.split('/');
-      if (segments.includes('..')) {
+      // Check UNC paths (\\ or //) before converting backslashes
+      if (/^(\/\/|\\\\)/.test(trimmed)) {
         throw new TaskDecompositionInvalidScopeError(
-          `Path traversal ('..') is strictly prohibited in ${scopeName}: '${raw}'`,
+          `UNC network paths are strictly prohibited in ${scopeName}: '${raw}'`,
           { [scopeName]: raw }
         );
       }
 
-      if (
-        posixPath.startsWith('/') ||
-        /^[a-zA-Z]:/.test(posixPath) ||
-        posixPath.startsWith('//')
-      ) {
+      // Check Windows drive letter paths (e.g. C:\ or c:/)
+      if (/^[a-zA-Z]:/.test(trimmed)) {
+        throw new TaskDecompositionInvalidScopeError(
+          `Windows drive paths are strictly prohibited in ${scopeName}: '${raw}'`,
+          { [scopeName]: raw }
+        );
+      }
+
+      const posixPath = trimmed.replace(/\\/g, '/');
+
+      // Check absolute Unix path
+      if (posixPath.startsWith('/')) {
         throw new TaskDecompositionInvalidScopeError(
           `Absolute paths are strictly prohibited in ${scopeName}: '${raw}'`,
+          { [scopeName]: raw }
+        );
+      }
+
+      // Check path traversal variants and segments
+      const segments = posixPath.split('/');
+      if (segments.includes('..')) {
+        throw new TaskDecompositionInvalidScopeError(
+          `Path traversal ('..') is strictly prohibited in ${scopeName}: '${raw}'`,
           { [scopeName]: raw }
         );
       }
@@ -189,22 +213,25 @@ export class TaskDecompositionEngine {
   }
 
   /**
-   * Generates a deterministic, stable task ID.
-   * Format: TASK-P{decompRev}-{featureIndex}-{slug}
+   * Generates a deterministic, stable task identity independent of approval revision.
+   * Format: TASK-{cleanFeature}-{cleanKey}-{hashSuffix}
    */
   generateDeterministicTaskId(
     featureId: string,
     index: number,
     semanticKey?: string,
-    decompositionRevision = 1
+    projectId?: string
   ): string {
     const cleanFeature = featureId
       .replace(/^(FEAT-|FEATURE-|EPIC-)/i, '')
       .replace(/[^a-zA-Z0-9]/g, '-')
-      .toUpperCase();
+      .replace(/-+/g, '-')
+      .replace(/^-|-$/g, '')
+      .toUpperCase() || 'CORE';
 
-    let slug = '';
+    let semanticSlug = '';
     const stepNum = String(index + 1).padStart(2, '0');
+
     if (semanticKey && semanticKey.trim().length > 0) {
       const cleanKey = semanticKey
         .trim()
@@ -214,12 +241,16 @@ export class TaskDecompositionEngine {
         .replace(/^-|-$/g, '')
         .substring(0, 24)
         .toUpperCase();
-      slug = `STEP-${stepNum}-${cleanKey}`;
+      semanticSlug = `STEP-${stepNum}-${cleanKey}`;
     } else {
-      slug = `STEP-${stepNum}`;
+      semanticSlug = `STEP-${stepNum}`;
     }
 
-    return `TASK-P${decompositionRevision}-${cleanFeature}-${slug}`;
+    // Deterministic hash component ensuring collision resistance
+    const rawCanonicalKey = `${projectId ? projectId.trim().toLowerCase() : ''}:${featureId.trim().toUpperCase()}:${semanticKey ? semanticKey.trim().toLowerCase() : ''}`;
+    const hash = crypto.createHash('sha256').update(rawCanonicalKey).digest('hex').substring(0, 6).toUpperCase();
+
+    return `TASK-${cleanFeature}-${semanticSlug}-${hash}`;
   }
 
   /**
@@ -583,7 +614,7 @@ export class TaskDecompositionEngine {
         // 2. Deterministic Task ID
         const taskId = prop.taskId && prop.taskId.trim().length > 0
           ? prop.taskId.trim()
-          : this.generateDeterministicTaskId(parentId, i, prop.semanticKey, decompositionRevision);
+          : this.generateDeterministicTaskId(parentId, i, prop.semanticKey ?? prop.title, projectId);
 
         // 3. Traceability Validation
         let traceability = prop.traceabilitySources ? [...prop.traceabilitySources] : [...defaultTraceability];
@@ -605,6 +636,30 @@ export class TaskDecompositionEngine {
           const analysisScope = this.canonicalizeScopePaths(prop.scope.analysisScope, 'analysisScope');
           const implementationScope = this.canonicalizeScopePaths(prop.scope.implementationScope, 'implementationScope');
           const targetFiles = this.canonicalizeScopePaths(prop.scope.targetFiles, 'targetFiles');
+
+          // Check against excludedScope in approved plan
+          const excludedScope = pkg.proposedDevelopmentPlan.excludedScope ?? [];
+          for (const excluded of excludedScope) {
+            const cleanEx = excluded.replace(/\\/g, '/').replace(/^\.\//, '').trim();
+            if (cleanEx.length === 0) continue;
+
+            const checkInScope = (paths?: readonly string[], fieldName?: string) => {
+              if (!paths) return;
+              for (const p of paths) {
+                if (p === cleanEx || p.startsWith(`${cleanEx}/`)) {
+                  throw new TaskDecompositionOutOfScopeError(
+                    `Path '${p}' in ${fieldName} references explicitly excluded scope '${excluded}' from approved plan.`,
+                    { path: p, excludedScope: excluded }
+                  );
+                }
+              }
+            };
+
+            checkInScope(analysisScope, 'analysisScope');
+            checkInScope(implementationScope, 'implementationScope');
+            checkInScope(targetFiles, 'targetFiles');
+          }
+
           canonicalScope = {
             ...(analysisScope !== undefined ? { analysisScope } : {}),
             ...(implementationScope !== undefined ? { implementationScope } : {}),
@@ -667,7 +722,7 @@ export class TaskDecompositionEngine {
           featNode.task_id,
           taskCounter,
           capability,
-          decompositionRevision
+          projectId
         );
 
         // Previous task within same feature forms sequential dependency
@@ -746,6 +801,23 @@ export class TaskDecompositionEngine {
         continue;
       }
 
+      // Check protection of authoritative execution states
+      if (exTask.status === 'ACCEPTED' || exTask.status === 'IN_PROGRESS') {
+        // If definitions are not strictly identical, forbid any mutation or replacement
+        const sameTitle = exTask.title === inTask.title;
+        const sameDesc = exTask.description === inTask.description;
+        const sameFeature = exTask.parent_feature_id === inTask.parent_feature_id;
+        if (!sameTitle || !sameDesc || !sameFeature) {
+          throw new TaskDecompositionImmutableStateConflictError(
+            `Task '${inTask.task_id}' is currently in protected status '${exTask.status}' in SpecStore and cannot be modified or replaced.`,
+            {
+              taskId: inTask.task_id,
+              currentStatus: exTask.status,
+            }
+          );
+        }
+      }
+
       // Check for incompatible conflict
       if (exTask.parent_feature_id !== inTask.parent_feature_id) {
         return {
@@ -753,6 +825,16 @@ export class TaskDecompositionEngine {
           hasConflict: true,
           conflictingTaskId: inTask.task_id,
           conflictReason: `Task '${inTask.task_id}' already exists in SpecStore with different parent_feature_id ('${exTask.parent_feature_id}' vs incoming '${inTask.parent_feature_id}').`,
+        };
+      }
+
+      // Check for material semantic divergence
+      if (exTask.title !== inTask.title || exTask.description !== inTask.description) {
+        return {
+          isIdenticalReplay: false,
+          hasConflict: true,
+          conflictingTaskId: inTask.task_id,
+          conflictReason: `Task '${inTask.task_id}' already exists in SpecStore with different definition/semantics.`,
         };
       }
 
@@ -764,17 +846,6 @@ export class TaskDecompositionEngine {
           hasConflict: true,
           conflictingTaskId: inTask.task_id,
           conflictReason: `Task '${inTask.task_id}' already exists in SpecStore with different revision (${exRev} vs incoming ${inRev}).`,
-        };
-      }
-
-      const inAppRev = (inTask.metadata?.approvalPackageRevision as number) ?? null;
-      const exAppRev = (exTask.metadata?.approvalPackageRevision as number) ?? null;
-      if (inAppRev !== exAppRev) {
-        return {
-          isIdenticalReplay: false,
-          hasConflict: true,
-          conflictingTaskId: inTask.task_id,
-          conflictReason: `Task '${inTask.task_id}' is bound to approvalPackageRevision ${exAppRev}, incoming references ${inAppRev}.`,
         };
       }
     }

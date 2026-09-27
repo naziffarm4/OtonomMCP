@@ -63,6 +63,7 @@ import {
   TaskDecompositionInvalidGraphError,
   TaskDecompositionInvalidScopeError,
   TaskDecompositionConflictError,
+  TaskDecompositionImmutableStateConflictError,
   TaskDecompositionOutOfScopeError,
   TaskDecompositionValidationError,
   McpServer,
@@ -368,7 +369,12 @@ describe('Phase 12 Task Decomposition & Ingestion Boundary (TASK-P12-01)', () =>
       approvalPackageRevision: 1,
     });
 
-    const expectedId0 = 'TASK-P1-TASK-INGESTION-FOUNDATION-STEP-01-SCHEMA-VALIDATION';
+    const expectedId0 = decompositionEngine.generateDeterministicTaskId(
+      'FEAT-TASK-INGESTION-FOUNDATION',
+      0,
+      'Schema Validation',
+      approvedPackage.projectId
+    );
     assert.equal(res1.tasksCreated[0].task_id, expectedId0);
   });
 
@@ -702,10 +708,17 @@ describe('Phase 12 Task Decomposition & Ingestion Boundary (TASK-P12-01)', () =>
   });
 
   it('T23: Incompatible existing task in SpecStore produces TaskDecompositionConflictError', async () => {
+    const expectedTaskId = decompositionEngine.generateDeterministicTaskId(
+      'FEAT-TASK-INGESTION-FOUNDATION',
+      0,
+      'Schema Validation',
+      approvedPackage.projectId
+    );
+
     // Save an existing task with different parent_feature_id
     await specStore.saveTasks([
       {
-        task_id: 'TASK-P1-TASK-INGESTION-FOUNDATION-STEP-01-SCHEMA-VALIDATION',
+        task_id: expectedTaskId,
         parent_feature_id: 'FEAT-DIFFERENT-PARENT',
         title: 'Conflicting task',
         description: 'desc',
@@ -932,5 +945,430 @@ describe('Phase 12 Task Decomposition & Ingestion Boundary (TASK-P12-01)', () =>
     assert.equal(parsedPayload.tasksCreated.length, 2);
 
     await server.stop();
+  });
+
+  // ==========================================================================
+  // SECTION 6: P12-02 DETERMINISTIC TASK IDENTITY & SCOPE MAPPING
+  // ==========================================================================
+
+  it('T31: Deterministic logical task ID across runs without approvalRevision dependency', async () => {
+    const res1 = await decompositionEngine.decomposePlan({
+      directorSessionId: activeSessionId,
+      contextFingerprint,
+      approvalPackageId: 'pkg-p12-test',
+      approvalPackageRevision: 1,
+    });
+
+    const taskId0 = res1.tasksCreated[0].task_id;
+    // Must NOT contain P1 or P2 approval revision in task identity
+    assert.ok(!taskId0.includes('-P1-'), 'Task ID must not encode approval package revision');
+    assert.match(taskId0, /^TASK-[A-Z0-9-]+-STEP-01-[A-Z0-9-]+-[A-F0-9]{6}$/);
+
+    // Same logical input must produce the exact identical task ID
+    const generatedId = decompositionEngine.generateDeterministicTaskId(
+      res1.tasksCreated[0].parent_feature_id,
+      0,
+      'Schema Validation',
+      approvedPackage.projectId
+    );
+    assert.equal(taskId0, generatedId);
+  });
+
+  it('T32: Approval package revision change does not change logical task IDs', async () => {
+    // Generate task ID under approval revision 1
+    const idRev1 = decompositionEngine.generateDeterministicTaskId(
+      'FEAT-TASK-INGESTION-FOUNDATION',
+      0,
+      'Schema Validation',
+      'TestProject'
+    );
+
+    // Generate task ID under another revision context with identical semantics
+    const idRev2 = decompositionEngine.generateDeterministicTaskId(
+      'FEAT-TASK-INGESTION-FOUNDATION',
+      0,
+      'Schema Validation',
+      'TestProject'
+    );
+
+    assert.equal(idRev1, idRev2);
+  });
+
+  it('T33: Distinct semantic tasks produce different deterministic IDs', async () => {
+    const id1 = decompositionEngine.generateDeterministicTaskId(
+      'FEAT-CORE',
+      0,
+      'Schema Validation',
+      'TestProject'
+    );
+    const id2 = decompositionEngine.generateDeterministicTaskId(
+      'FEAT-CORE',
+      1,
+      'DAG Assertions',
+      'TestProject'
+    );
+
+    assert.notEqual(id1, id2);
+  });
+
+  it('T34: Feature isolation: tasks with same slug under different features produce different IDs', async () => {
+    const idFeatA = decompositionEngine.generateDeterministicTaskId(
+      'FEAT-AUTH',
+      0,
+      'Validation',
+      'TestProject'
+    );
+    const idFeatB = decompositionEngine.generateDeterministicTaskId(
+      'FEAT-STORAGE',
+      0,
+      'Validation',
+      'TestProject'
+    );
+
+    assert.notEqual(idFeatA, idFeatB);
+  });
+
+  it('T35: Project isolation: same feature and slug under different projects produce different IDs', async () => {
+    const idProjA = decompositionEngine.generateDeterministicTaskId(
+      'FEAT-AUTH',
+      0,
+      'Validation',
+      'ProjectAlpha'
+    );
+    const idProjB = decompositionEngine.generateDeterministicTaskId(
+      'FEAT-AUTH',
+      0,
+      'Validation',
+      'ProjectBeta'
+    );
+
+    assert.notEqual(idProjA, idProjB);
+  });
+
+  it('T36: Existing ACCEPTED task cannot be silently replaced or overwritten', async () => {
+    const res = await decompositionEngine.decomposePlan({
+      directorSessionId: activeSessionId,
+      contextFingerprint,
+      approvalPackageId: 'pkg-p12-test',
+      approvalPackageRevision: 1,
+    });
+    const createdTask = res.tasksCreated[0];
+
+    // Mark task as ACCEPTED in SpecStore
+    const acceptedTask = { ...createdTask, status: 'ACCEPTED' as const };
+    await specStore.saveTasks([acceptedTask, res.tasksCreated[1]]);
+
+    // Attempting to decompose with a modified definition for the ACCEPTED task must throw
+    await assert.rejects(
+      decompositionEngine.decomposePlan({
+        directorSessionId: activeSessionId,
+        contextFingerprint,
+        approvalPackageId: 'pkg-p12-test',
+        approvalPackageRevision: 1,
+        candidateTasks: [
+          {
+            taskId: createdTask.task_id,
+            parentFeatureId: createdTask.parent_feature_id,
+            title: 'Modified Title for Accepted Task',
+            description: 'Attempting silent rewrite',
+            traceabilitySources: ['REQ:REQ-001'],
+          },
+          {
+            taskId: res.tasksCreated[1].task_id,
+            parentFeatureId: res.tasksCreated[1].parent_feature_id,
+            title: res.tasksCreated[1].title,
+            description: res.tasksCreated[1].description,
+            dependencies: [createdTask.task_id],
+            traceabilitySources: ['REQ:REQ-001'],
+          },
+        ],
+      }),
+      TaskDecompositionImmutableStateConflictError
+    );
+  });
+
+  it('T37: Existing IN_PROGRESS task cannot be silently replaced or overwritten', async () => {
+    const res = await decompositionEngine.decomposePlan({
+      directorSessionId: activeSessionId,
+      contextFingerprint,
+      approvalPackageId: 'pkg-p12-test',
+      approvalPackageRevision: 1,
+    });
+    const createdTask = res.tasksCreated[0];
+
+    // Mark task as IN_PROGRESS in SpecStore
+    const inProgressTask = { ...createdTask, status: 'IN_PROGRESS' as const, started_at: new Date().toISOString() };
+    await specStore.saveTasks([inProgressTask, res.tasksCreated[1]]);
+
+    await assert.rejects(
+      decompositionEngine.decomposePlan({
+        directorSessionId: activeSessionId,
+        contextFingerprint,
+        approvalPackageId: 'pkg-p12-test',
+        approvalPackageRevision: 1,
+        candidateTasks: [
+          {
+            taskId: createdTask.task_id,
+            parentFeatureId: createdTask.parent_feature_id,
+            title: 'Rewritten In-Progress Title',
+            description: 'Attempting rewrite while execution active',
+            traceabilitySources: ['REQ:REQ-001'],
+          },
+          {
+            taskId: res.tasksCreated[1].task_id,
+            parentFeatureId: res.tasksCreated[1].parent_feature_id,
+            title: res.tasksCreated[1].title,
+            description: res.tasksCreated[1].description,
+            dependencies: [createdTask.task_id],
+            traceabilitySources: ['REQ:REQ-001'],
+          },
+        ],
+      }),
+      TaskDecompositionImmutableStateConflictError
+    );
+  });
+
+  it('T38: Material semantic change for an existing task triggers TaskDecompositionConflictError', async () => {
+    const res = await decompositionEngine.decomposePlan({
+      directorSessionId: activeSessionId,
+      contextFingerprint,
+      approvalPackageId: 'pkg-p12-test',
+      approvalPackageRevision: 1,
+    });
+    const existingTask = res.tasksCreated[0];
+
+    await assert.rejects(
+      decompositionEngine.decomposePlan({
+        directorSessionId: activeSessionId,
+        contextFingerprint,
+        approvalPackageId: 'pkg-p12-test',
+        approvalPackageRevision: 1,
+        candidateTasks: [
+          {
+            taskId: existingTask.task_id,
+            parentFeatureId: existingTask.parent_feature_id,
+            title: 'Materially Divergent Title',
+            description: 'Materially divergent description',
+            traceabilitySources: ['REQ:REQ-001'],
+          },
+          {
+            taskId: res.tasksCreated[1].task_id,
+            parentFeatureId: res.tasksCreated[1].parent_feature_id,
+            title: res.tasksCreated[1].title,
+            description: res.tasksCreated[1].description,
+            dependencies: [existingTask.task_id],
+            traceabilitySources: ['REQ:REQ-001'],
+          },
+        ],
+      }),
+      TaskDecompositionConflictError
+    );
+  });
+
+  it('T39: Scope security: Windows drive-letter paths (C:) are strictly rejected', async () => {
+    await assert.rejects(
+      decompositionEngine.decomposePlan({
+        directorSessionId: activeSessionId,
+        contextFingerprint,
+        approvalPackageId: 'pkg-p12-test',
+        approvalPackageRevision: 1,
+        candidateTasks: [
+          {
+            taskId: 'TASK-WIN-DRIVE',
+            parentFeatureId: 'FEAT-TASK-INGESTION-FOUNDATION',
+            title: 'Drive path task',
+            description: 'desc',
+            traceabilitySources: ['REQ:REQ-001'],
+            scope: {
+              targetFiles: ['C:/Windows/System32/drivers/etc/hosts'],
+            },
+          },
+        ],
+      }),
+      TaskDecompositionInvalidScopeError
+    );
+  });
+
+  it('T40: Scope security: UNC paths (\\\\ or //) are strictly rejected', async () => {
+    await assert.rejects(
+      decompositionEngine.decomposePlan({
+        directorSessionId: activeSessionId,
+        contextFingerprint,
+        approvalPackageId: 'pkg-p12-test',
+        approvalPackageRevision: 1,
+        candidateTasks: [
+          {
+            taskId: 'TASK-UNC-BACKSLASH',
+            parentFeatureId: 'FEAT-TASK-INGESTION-FOUNDATION',
+            title: 'UNC task',
+            description: 'desc',
+            traceabilitySources: ['REQ:REQ-001'],
+            scope: {
+              analysisScope: ['\\\\server\\share\\repo'],
+            },
+          },
+        ],
+      }),
+      TaskDecompositionInvalidScopeError
+    );
+
+    await assert.rejects(
+      decompositionEngine.decomposePlan({
+        directorSessionId: activeSessionId,
+        contextFingerprint,
+        approvalPackageId: 'pkg-p12-test',
+        approvalPackageRevision: 1,
+        candidateTasks: [
+          {
+            taskId: 'TASK-UNC-SLASH',
+            parentFeatureId: 'FEAT-TASK-INGESTION-FOUNDATION',
+            title: 'UNC slash task',
+            description: 'desc',
+            traceabilitySources: ['REQ:REQ-001'],
+            scope: {
+              implementationScope: ['//network-server/shared-dir'],
+            },
+          },
+        ],
+      }),
+      TaskDecompositionInvalidScopeError
+    );
+  });
+
+  it('T41: Scope security: Null-byte paths are strictly rejected', async () => {
+    await assert.rejects(
+      decompositionEngine.decomposePlan({
+        directorSessionId: activeSessionId,
+        contextFingerprint,
+        approvalPackageId: 'pkg-p12-test',
+        approvalPackageRevision: 1,
+        candidateTasks: [
+          {
+            taskId: 'TASK-NULL-BYTE',
+            parentFeatureId: 'FEAT-TASK-INGESTION-FOUNDATION',
+            title: 'Null byte task',
+            description: 'desc',
+            traceabilitySources: ['REQ:REQ-001'],
+            scope: {
+              targetFiles: ['packages/core/src/index.ts\0.exe'],
+            },
+          },
+        ],
+      }),
+      TaskDecompositionInvalidScopeError
+    );
+  });
+
+  it('T42: Scope protection: scope targeting explicitly excluded scope in approved plan is rejected', async () => {
+    // Create an approved package with explicit excludedScope
+    const planWithExcluded: ProposedDevelopmentPlan = {
+      objectives: ['Establish task ingestion'],
+      proposedScope: ['Core ingestion'],
+      proposedFeatureGroups: [
+        {
+          name: 'Task Ingestion Foundation',
+          description: 'Core ingestion modules',
+          targetCapabilities: ['Schema Validation'],
+        },
+      ],
+      dependencies: [],
+      constraints: [],
+      knownRisks: [],
+      unresolvedIssues: [],
+      excludedScope: ['packages/legacy', 'legacy.ts'],
+      suggestedImplementationOrder: ['Schema Validation'],
+    };
+
+    const pkgWithExcluded = approvalEngine.buildPackage(
+      {
+        projectId: approvedPackage.projectId,
+        projectName: 'TestProject',
+        apparentPurpose: { summary: 'P12 test', classification: 'APPLICATION', evidence: [] },
+        targetUsers: ['Devs'],
+        technologyStack: { primaryLanguages: ['TypeScript'] },
+        architectureSummary: { pattern: 'Modular' },
+        existingCapabilities: [],
+        confirmedRequirements: [],
+        clarifiedRequirements: [],
+        unresolvedUnknowns: [],
+        unresolvedContradictions: [],
+        currentImplementationState: { state: 'Initial' },
+        constraints: [],
+        assumptions: [],
+        nonGoals: ['Legacy modules'],
+        proposedDevelopmentScope: ['Task ingestion'],
+        evidenceReferences: [],
+        sourceDiscoveryReference: 'ref-1',
+        generatedAt: new Date().toISOString(),
+      },
+      planWithExcluded,
+      { packageId: 'pkg-excluded-test' }
+    );
+
+    const approvedWithExcluded = approvalEngine.approvePackage(pkgWithExcluded, {
+      packageId: 'pkg-excluded-test',
+      revision: 1,
+      actor: 'ProductOwner',
+      actorRole: 'PRODUCT_OWNER',
+      intent: 'EXPLICIT_APPROVAL',
+      comment: 'Approved with exclusions',
+    });
+    await approvalStore.savePackage(approvedWithExcluded);
+
+    await assert.rejects(
+      decompositionEngine.decomposePlan({
+        directorSessionId: activeSessionId,
+        contextFingerprint,
+        approvalPackageId: 'pkg-excluded-test',
+        approvalPackageRevision: 1,
+        candidateTasks: [
+          {
+            taskId: 'TASK-INTO-EXCLUDED',
+            parentFeatureId: 'FEAT-TASK-INGESTION-FOUNDATION',
+            title: 'Excluded scope task',
+            description: 'Touches excluded legacy module',
+            traceabilitySources: ['REQ:REQ-001'],
+            scope: {
+              implementationScope: ['packages/legacy/old-util.ts'],
+            },
+          },
+        ],
+      }),
+      TaskDecompositionOutOfScopeError
+    );
+  });
+
+  it('T43: Scope separation: analysisScope, implementationScope, and targetFiles remain distinct', async () => {
+    const res = await decompositionEngine.decomposePlan({
+      directorSessionId: activeSessionId,
+      contextFingerprint,
+      approvalPackageId: 'pkg-p12-test',
+      approvalPackageRevision: 1,
+      candidateTasks: [
+        {
+          taskId: 'TASK-TRIPLE-SCOPE',
+          parentFeatureId: 'FEAT-TASK-INGESTION-FOUNDATION',
+          title: 'Distinct scopes',
+          description: 'Preserves 3 scope fields',
+          traceabilitySources: ['REQ:REQ-001'],
+          scope: {
+            analysisScope: ['packages/core/src'],
+            implementationScope: ['packages/core/src/task-decomposition'],
+            targetFiles: ['packages/core/src/task-decomposition/index.ts'],
+          },
+        },
+      ],
+    });
+
+    const task = res.tasksCreated[0];
+    const scope = (task.metadata?.scope as any) || {};
+
+    assert.deepEqual(scope.analysisScope, ['packages/core/src']);
+    assert.deepEqual(scope.implementationScope, ['packages/core/src/task-decomposition']);
+    assert.deepEqual(scope.targetFiles, ['packages/core/src/task-decomposition/index.ts']);
+
+    // Proves scopes are not collapsed or merged
+    assert.notDeepEqual(scope.analysisScope, scope.implementationScope);
+    assert.notDeepEqual(scope.implementationScope, scope.targetFiles);
   });
 });

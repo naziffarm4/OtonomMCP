@@ -88,8 +88,14 @@ export class TaskDecompositionDuplicateTaskError extends TaskDecompositionError 
 }
 
 export class TaskDecompositionConflictError extends TaskDecompositionError {
+  constructor(message: string, details?: AidmErrorDetails, code = 'ERR_TASK_DECOMPOSITION_TASK_CONFLICT') {
+    super(message, code, details);
+  }
+}
+
+export class TaskDecompositionImmutableStateConflictError extends TaskDecompositionConflictError {
   constructor(message: string, details?: AidmErrorDetails) {
-    super(message, 'ERR_TASK_DECOMPOSITION_TASK_CONFLICT', details);
+    super(message, details, 'ERR_TASK_DECOMPOSITION_IMMUTABLE_STATE_CONFLICT');
   }
 }
 

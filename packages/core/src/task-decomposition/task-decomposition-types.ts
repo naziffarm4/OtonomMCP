@@ -20,7 +20,7 @@ import { z } from 'zod';
 import type { TaskDefinition, TaskHierarchyLevel, TaskPriority } from '../task-engine/task-types.js';
 import type { RiskLevel } from '../risk.js';
 
-export const TASK_DECOMPOSITION_PROTOCOL_VERSION = 'P12-01';
+export const TASK_DECOMPOSITION_PROTOCOL_VERSION = 'P12-02';
 export const TASK_DECOMPOSITION_SCHEMA_VERSION = 1;
 
 // ============================================================================
