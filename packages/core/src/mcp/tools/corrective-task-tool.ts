@@ -1,8 +1,8 @@
 /**
- * Governed Corrective Task Lineage MCP Tool (Phase 13 TASK-P13-03)
+ * Governed Corrective Task Lineage MCP Tool (Phase 13 TASK-P13-03, TASK-P13-04)
  *
  * Exposes the Governed Corrective Task Lineage & DAG Augmentation boundary as an authoritative,
- * secure MCP tool: `aidm.task.createCorrective`.
+ * secure MCP tool: `aidm.task.replan` (and backward-compatible alias `aidm.task.createCorrective`).
  *
  * HARD ARCHITECTURAL INVARIANTS:
  * 1. GOVERNED BOUNDARY ONLY: Never invokes Antigravity or dispatches execution.
@@ -26,9 +26,11 @@ import {
 import {
   CorrectiveTaskError,
   CorrectiveTaskSecurityViolationError,
+  CorrectiveTaskBindingMismatchError,
 } from '../../recovery/corrective-task-errors.js';
 import { assertNoForbiddenEvidenceFields } from '../../evidence/system-execution-evidence.js';
 
+export const AIDM_TASK_REPLAN_TOOL_NAME = 'aidm.task.replan';
 export const AIDM_TASK_CREATE_CORRECTIVE_TOOL_NAME = 'aidm.task.createCorrective';
 
 const FORBIDDEN_MCP_CORRECTIVE_CLAIMS = [
@@ -44,7 +46,7 @@ const FORBIDDEN_MCP_CORRECTIVE_CLAIMS = [
 ];
 
 export const correctiveTaskToolDefinition: McpToolDefinition = {
-  name: AIDM_TASK_CREATE_CORRECTIVE_TOOL_NAME,
+  name: AIDM_TASK_REPLAN_TOOL_NAME,
   description:
     'Creates a governed corrective task with explicit lineage to a failed task following a verified execution failure and REPLAN policy decision. Augments the DAG safely without executing tasks.',
   inputSchema: {
@@ -58,6 +60,14 @@ export const correctiveTaskToolDefinition: McpToolDefinition = {
       expectedProjectId: {
         type: 'string',
         description: 'Optional canonical project identifier for cross-project safety check.',
+      },
+      projectId: {
+        type: 'string',
+        description: 'Optional canonical project identifier alias.',
+      },
+      taskId: {
+        type: 'string',
+        description: 'Optional task identifier asserting target task.',
       },
       evidence: {
         type: 'object',
@@ -92,6 +102,7 @@ export const correctiveTaskToolDefinition: McpToolDefinition = {
 };
 
 export function createCorrectiveTaskTool(options: {
+  toolName?: string;
   correctiveService?: CorrectiveTaskService;
   serviceOptions?: CorrectiveTaskServiceOptions;
   defaultDelegate?: McpOrchestratorDelegate;
@@ -99,8 +110,13 @@ export function createCorrectiveTaskTool(options: {
   definition: McpToolDefinition;
   handler: McpToolHandler;
 } {
+  const toolName = options.toolName ?? AIDM_TASK_REPLAN_TOOL_NAME;
+
   return {
-    definition: correctiveTaskToolDefinition,
+    definition: {
+      ...correctiveTaskToolDefinition,
+      name: toolName,
+    },
     handler: async (rawArgs: Readonly<Record<string, unknown>>, context: McpRequestContext) => {
       try {
         if (!rawArgs || typeof rawArgs !== 'object') {
@@ -120,6 +136,26 @@ export function createCorrectiveTaskTool(options: {
         // Check inside evidence as well
         if (rawArgs.evidence && typeof rawArgs.evidence === 'object') {
           assertNoForbiddenEvidenceFields(rawArgs.evidence);
+
+          const ev = rawArgs.evidence as Record<string, unknown>;
+          if (typeof rawArgs.taskId === 'string' && rawArgs.taskId.length > 0 && ev.taskId && ev.taskId !== rawArgs.taskId) {
+            throw new CorrectiveTaskBindingMismatchError(
+              `Task ID mismatch: evidence targets '${ev.taskId}', but input specifies '${rawArgs.taskId}'`,
+              { evidenceTaskId: ev.taskId, inputTaskId: rawArgs.taskId }
+            );
+          }
+          if (typeof rawArgs.requestId === 'string' && rawArgs.requestId.length > 0 && ev.requestId && ev.requestId !== rawArgs.requestId) {
+            throw new CorrectiveTaskBindingMismatchError(
+              `Request ID mismatch: evidence references '${ev.requestId}', but input specifies '${rawArgs.requestId}'`,
+              { evidenceRequestId: ev.requestId, inputRequestId: rawArgs.requestId }
+            );
+          }
+          if (typeof rawArgs.evidenceId === 'string' && rawArgs.evidenceId.length > 0 && ev.evidenceId && ev.evidenceId !== rawArgs.evidenceId) {
+            throw new CorrectiveTaskBindingMismatchError(
+              `Evidence ID mismatch: evidence ID is '${ev.evidenceId}', but input specifies '${rawArgs.evidenceId}'`,
+              { evidenceId: ev.evidenceId, inputEvidenceId: rawArgs.evidenceId }
+            );
+          }
         }
 
         const parsed = CreateCorrectiveTaskInputZodSchema.safeParse(rawArgs);
@@ -134,6 +170,10 @@ export function createCorrectiveTaskTool(options: {
         const resolvedRoot =
           parsed.data.workspaceRoot ?? delegate?.projectRoot ?? process.cwd();
 
+        const resolvedExpectedProject =
+          parsed.data.expectedProjectId ??
+          (typeof rawArgs.projectId === 'string' ? rawArgs.projectId : undefined);
+
         const service =
           options.correctiveService ??
           new CorrectiveTaskService({
@@ -143,10 +183,14 @@ export function createCorrectiveTaskTool(options: {
             historyManager: delegate?.historyManager,
             approvalStore: delegate?.approvalStore,
             directorSessionStore: delegate?.directorSessionStore,
+            expectedProjectId: resolvedExpectedProject,
             ...options.serviceOptions,
           });
 
-        const outcome = await service.createCorrectiveTask(parsed.data);
+        const outcome = await service.createCorrectiveTask({
+          ...parsed.data,
+          expectedProjectId: resolvedExpectedProject,
+        });
 
         return {
           content: [
@@ -164,12 +208,12 @@ export function createCorrectiveTaskTool(options: {
               {
                 type: 'text',
                 text: JSON.stringify(
-                  {
+                  sanitizeMcpPayload({
                     success: false,
                     code: err.code,
                     message: err.message,
                     details: err.details,
-                  },
+                  }),
                   null,
                   2
                 ),
@@ -184,12 +228,12 @@ export function createCorrectiveTaskTool(options: {
               {
                 type: 'text',
                 text: JSON.stringify(
-                  {
+                  sanitizeMcpPayload({
                     success: false,
                     code: err.code,
                     message: err.message,
                     details: err.details,
-                  },
+                  }),
                   null,
                   2
                 ),
@@ -204,11 +248,11 @@ export function createCorrectiveTaskTool(options: {
             {
               type: 'text',
               text: JSON.stringify(
-                {
+                sanitizeMcpPayload({
                   success: false,
                   code: 'ERR_CORRECTIVE_TASK_FAILED',
                   message,
-                },
+                }),
                 null,
                 2
               ),
@@ -221,13 +265,25 @@ export function createCorrectiveTaskTool(options: {
   };
 }
 
+export const createTaskReplanTool = createCorrectiveTaskTool;
+
 export function registerCorrectiveTaskTools(
   server: McpServer,
   options: { correctiveService?: CorrectiveTaskService } = {}
 ): void {
-  const { definition, handler } = createCorrectiveTaskTool({
+  // Register primary required tool: aidm.task.replan
+  const primary = createCorrectiveTaskTool({
+    toolName: AIDM_TASK_REPLAN_TOOL_NAME,
     correctiveService: options.correctiveService,
     defaultDelegate: server.delegate,
   });
-  server.registerTool(definition, handler);
+  server.registerTool(primary.definition, primary.handler);
+
+  // Register backward-compatible alias: aidm.task.createCorrective
+  const alias = createCorrectiveTaskTool({
+    toolName: AIDM_TASK_CREATE_CORRECTIVE_TOOL_NAME,
+    correctiveService: options.correctiveService,
+    defaultDelegate: server.delegate,
+  });
+  server.registerTool(alias.definition, alias.handler);
 }

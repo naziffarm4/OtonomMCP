@@ -1,8 +1,8 @@
 /**
- * Task Retry Authorization MCP Tool (Phase 13 TASK-P13-02)
+ * Task Retry Authorization MCP Tool (Phase 13 TASK-P13-02, TASK-P13-04)
  *
  * Exposes the Bounded Task Retry Authorization & State Transition Bridge as an authoritative,
- * secure MCP tool: `aidm.task.authorizeRetry`.
+ * secure MCP tool: `aidm.task.retry` (and backward-compatible alias `aidm.task.authorizeRetry`).
  *
  * HARD ARCHITECTURAL INVARIANTS:
  * 1. AUTHORIZATION & TRANSITION BOUNDARY ONLY: Never invokes Antigravity or dispatches execution.
@@ -28,9 +28,11 @@ import {
 import {
   RetryAuthorizationError,
   RetrySecurityViolationError,
+  RetryBindingMismatchError,
 } from '../../recovery/retry-authorization-errors.js';
 import { assertNoForbiddenEvidenceFields } from '../../evidence/system-execution-evidence.js';
 
+export const AIDM_TASK_RETRY_TOOL_NAME = 'aidm.task.retry';
 export const AIDM_TASK_AUTHORIZE_RETRY_TOOL_NAME = 'aidm.task.authorizeRetry';
 
 const FORBIDDEN_MCP_RETRY_CLAIMS = [
@@ -45,7 +47,7 @@ const FORBIDDEN_MCP_RETRY_CLAIMS = [
 ];
 
 export const retryAuthorizeToolDefinition: McpToolDefinition = {
-  name: AIDM_TASK_AUTHORIZE_RETRY_TOOL_NAME,
+  name: AIDM_TASK_RETRY_TOOL_NAME,
   description:
     'Authorizes and performs bounded task retry state transition following a verified execution failure and RETRY policy decision. Does NOT execute tasks.',
   inputSchema: {
@@ -59,6 +61,14 @@ export const retryAuthorizeToolDefinition: McpToolDefinition = {
       projectId: {
         type: 'string',
         description: 'Optional canonical project identifier for cross-project safety check.',
+      },
+      expectedProjectId: {
+        type: 'string',
+        description: 'Optional canonical project identifier alias.',
+      },
+      taskId: {
+        type: 'string',
+        description: 'Optional task identifier asserting target task.',
       },
       evidence: {
         type: 'object',
@@ -91,6 +101,7 @@ export const retryAuthorizeToolDefinition: McpToolDefinition = {
 };
 
 export function createRetryAuthorizeTool(options: {
+  toolName?: string;
   retryService?: RetryAuthorizationService;
   serviceOptions?: RetryAuthorizationServiceOptions;
   defaultDelegate?: McpOrchestratorDelegate;
@@ -98,8 +109,13 @@ export function createRetryAuthorizeTool(options: {
   definition: McpToolDefinition;
   handler: McpToolHandler;
 } {
+  const toolName = options.toolName ?? AIDM_TASK_RETRY_TOOL_NAME;
+
   return {
-    definition: retryAuthorizeToolDefinition,
+    definition: {
+      ...retryAuthorizeToolDefinition,
+      name: toolName,
+    },
     handler: async (rawArgs: Readonly<Record<string, unknown>>, context: McpRequestContext) => {
       try {
         if (!rawArgs || typeof rawArgs !== 'object') {
@@ -119,6 +135,26 @@ export function createRetryAuthorizeTool(options: {
         // Check inside evidence as well
         if (rawArgs.evidence && typeof rawArgs.evidence === 'object') {
           assertNoForbiddenEvidenceFields(rawArgs.evidence);
+
+          const ev = rawArgs.evidence as Record<string, unknown>;
+          if (typeof rawArgs.taskId === 'string' && rawArgs.taskId.length > 0 && ev.taskId && ev.taskId !== rawArgs.taskId) {
+            throw new RetryBindingMismatchError(
+              `Task ID mismatch: evidence targets '${ev.taskId}', but input specifies '${rawArgs.taskId}'`,
+              { evidenceTaskId: ev.taskId, inputTaskId: rawArgs.taskId }
+            );
+          }
+          if (typeof rawArgs.requestId === 'string' && rawArgs.requestId.length > 0 && ev.requestId && ev.requestId !== rawArgs.requestId) {
+            throw new RetryBindingMismatchError(
+              `Request ID mismatch: evidence references '${ev.requestId}', but input specifies '${rawArgs.requestId}'`,
+              { evidenceRequestId: ev.requestId, inputRequestId: rawArgs.requestId }
+            );
+          }
+          if (typeof rawArgs.evidenceId === 'string' && rawArgs.evidenceId.length > 0 && ev.evidenceId && ev.evidenceId !== rawArgs.evidenceId) {
+            throw new RetryBindingMismatchError(
+              `Evidence ID mismatch: evidence ID is '${ev.evidenceId}', but input specifies '${rawArgs.evidenceId}'`,
+              { evidenceId: ev.evidenceId, inputEvidenceId: rawArgs.evidenceId }
+            );
+          }
         }
 
         const parsed = RetryAuthorizationInputZodSchema.safeParse(rawArgs);
@@ -133,6 +169,10 @@ export function createRetryAuthorizeTool(options: {
         const resolvedRoot =
           parsed.data.workspaceRoot ?? delegate?.projectRoot ?? process.cwd();
 
+        const resolvedExpectedProject =
+          parsed.data.expectedProjectId ??
+          (typeof rawArgs.projectId === 'string' ? rawArgs.projectId : undefined);
+
         const service =
           options.retryService ??
           new RetryAuthorizationService({
@@ -142,10 +182,14 @@ export function createRetryAuthorizeTool(options: {
             historyManager: delegate?.historyManager,
             approvalStore: delegate?.approvalStore,
             directorSessionStore: delegate?.directorSessionStore,
+            expectedProjectId: resolvedExpectedProject,
             ...options.serviceOptions,
           });
 
-        const outcome = await service.authorizeRetry(parsed.data);
+        const outcome = await service.authorizeRetry({
+          ...parsed.data,
+          expectedProjectId: resolvedExpectedProject,
+        });
 
         return {
           content: [
@@ -163,12 +207,12 @@ export function createRetryAuthorizeTool(options: {
               {
                 type: 'text',
                 text: JSON.stringify(
-                  {
+                  sanitizeMcpPayload({
                     success: false,
                     code: err.code,
                     message: err.message,
                     details: err.details,
-                  },
+                  }),
                   null,
                   2
                 ),
@@ -183,12 +227,12 @@ export function createRetryAuthorizeTool(options: {
               {
                 type: 'text',
                 text: JSON.stringify(
-                  {
+                  sanitizeMcpPayload({
                     success: false,
                     code: err.code,
                     message: err.message,
                     details: err.details,
-                  },
+                  }),
                   null,
                   2
                 ),
@@ -203,11 +247,11 @@ export function createRetryAuthorizeTool(options: {
             {
               type: 'text',
               text: JSON.stringify(
-                {
+                sanitizeMcpPayload({
                   success: false,
                   code: 'ERR_RETRY_AUTHORIZATION_FAILED',
                   message,
-                },
+                }),
                 null,
                 2
               ),
@@ -220,13 +264,25 @@ export function createRetryAuthorizeTool(options: {
   };
 }
 
+export const createTaskRetryTool = createRetryAuthorizeTool;
+
 export function registerRetryAuthorizeTools(
   server: McpServer,
   options: { retryService?: RetryAuthorizationService } = {}
 ): void {
-  const { definition, handler } = createRetryAuthorizeTool({
+  // Register primary required tool: aidm.task.retry
+  const primary = createRetryAuthorizeTool({
+    toolName: AIDM_TASK_RETRY_TOOL_NAME,
     retryService: options.retryService,
     defaultDelegate: server.delegate,
   });
-  server.registerTool(definition, handler);
+  server.registerTool(primary.definition, primary.handler);
+
+  // Register backward-compatible alias: aidm.task.authorizeRetry
+  const alias = createRetryAuthorizeTool({
+    toolName: AIDM_TASK_AUTHORIZE_RETRY_TOOL_NAME,
+    retryService: options.retryService,
+    defaultDelegate: server.delegate,
+  });
+  server.registerTool(alias.definition, alias.handler);
 }

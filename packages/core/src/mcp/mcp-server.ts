@@ -66,6 +66,7 @@ import { registerPhase11ContinuationTools } from './tools/phase11-continuation-t
 import { registerTaskDecompositionTools } from './tools/task-decomposition-tools.js';
 import { registerRetryAuthorizeTools } from './tools/retry-authorize-tool.js';
 import { registerCorrectiveTaskTools } from './tools/corrective-task-tool.js';
+import { registerRecoveryEvaluateTools } from './tools/recovery-evaluate-tool.js';
 import { registerExecutorContextTools } from './tools/executor-context-tool.js';
 
 
@@ -173,13 +174,18 @@ export class McpServer {
       registerTaskDecompositionTools(this);
     }
 
+    // Register Phase 13 Recovery Evaluation boundary tools if enabled
+    if (config.recoveryTools || config.recoveryEvaluateTools) {
+      registerRecoveryEvaluateTools(this);
+    }
+
     // Register Phase 13 Task Retry Authorization boundary tools if enabled
-    if (config.retryAuthorizeTools) {
+    if (config.retryAuthorizeTools || config.recoveryTools) {
       registerRetryAuthorizeTools(this);
     }
 
     // Register Phase 13 Corrective Task Lineage boundary tools if enabled
-    if (config.correctiveTaskTools) {
+    if (config.correctiveTaskTools || config.recoveryTools) {
       registerCorrectiveTaskTools(this);
     }
 

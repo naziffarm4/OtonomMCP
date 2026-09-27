@@ -253,5 +253,7 @@ export interface McpServerConfig {
   readonly retryAuthorizeTools?: boolean;
   readonly correctiveTaskTools?: boolean;
   readonly executorContextTools?: boolean;
+  readonly recoveryTools?: boolean;
+  readonly recoveryEvaluateTools?: boolean;
 }
 
