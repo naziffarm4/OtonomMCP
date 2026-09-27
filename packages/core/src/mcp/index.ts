@@ -35,4 +35,5 @@ export * from './tools/execution-integrate-tool.js';
 export * from './tools/phase11-continuation-tool.js';
 export * from './tools/task-decomposition-tools.js';
 export * from './tools/retry-authorize-tool.js';
+export * from './tools/corrective-task-tool.js';
 

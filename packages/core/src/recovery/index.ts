@@ -12,3 +12,6 @@ export * from './recovery-policy-engine.js';
 export * from './retry-authorization-types.js';
 export * from './retry-authorization-errors.js';
 export * from './retry-authorization-service.js';
+export * from './corrective-task-types.js';
+export * from './corrective-task-errors.js';
+export * from './corrective-task-service.js';

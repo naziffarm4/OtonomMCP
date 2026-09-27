@@ -251,5 +251,6 @@ export interface McpServerConfig {
   readonly phase11ContinuationTools?: boolean;
   readonly taskDecompositionTools?: boolean;
   readonly retryAuthorizeTools?: boolean;
+  readonly correctiveTaskTools?: boolean;
 }
 
