@@ -59,7 +59,9 @@ import {
   type VerificationDecision,
   VERIFICATION_DECISIONS,
   isVerificationDecision,
+  computeDeterministicEvidenceId,
 } from '../evidence/system-execution-evidence.js';
+import { SystemExecutionEvidenceStore } from '../storage/evidence-store.js';
 import {
   ExecutionIntegrationError,
   ExecutionIntegrationValidationError,
@@ -86,11 +88,13 @@ export interface ExecutionIntegrationServiceOptions {
   readonly durableStateManager?: DurableStateManager;
   readonly specStore?: SpecStore;
   readonly historyManager?: HistoryManager;
+  readonly evidenceStore?: SystemExecutionEvidenceStore;
   readonly dagEngine?: TaskDagEngine;
   readonly lock?: ExecutionIntegrationLock;
   readonly lockOptions?: ExecutionIntegrationLockOptions;
   readonly expectedProjectId?: string;
   readonly baseDir?: string;
+  readonly strictEvidenceIdCheck?: boolean;
 }
 
 export interface ExpectedExecutionBinding {
@@ -101,19 +105,24 @@ export interface ExpectedExecutionBinding {
   readonly understandingRevision?: number;
   readonly approvalPackageRevision?: number;
   readonly requestId?: string;
+  readonly expectedBaseCommit?: string;
+  readonly expectedHeadCommit?: string;
 }
 
 export interface IntegrateOptions {
   readonly expectedBinding?: ExpectedExecutionBinding;
+  readonly strictEvidenceIdCheck?: boolean;
 }
 
 export class ExecutionStateIntegrator {
   readonly durableStateManager: DurableStateManager;
   readonly specStore?: SpecStore;
   readonly historyManager?: HistoryManager;
+  readonly evidenceStore?: SystemExecutionEvidenceStore;
   readonly dagEngine: TaskDagEngine;
   readonly lock: ExecutionIntegrationLock;
   readonly expectedProjectId?: string;
+  readonly strictEvidenceIdCheck?: boolean;
 
   constructor(options: ExecutionIntegrationServiceOptions = {}) {
     const baseDir = options.baseDir ?? process.cwd();
@@ -121,6 +130,8 @@ export class ExecutionStateIntegrator {
       options.durableStateManager ?? new DurableStateManager({ baseDir });
     this.specStore = options.specStore;
     this.historyManager = options.historyManager;
+    this.evidenceStore =
+      options.evidenceStore ?? (options.baseDir ? new SystemExecutionEvidenceStore({ baseDir }) : undefined);
     this.dagEngine = options.dagEngine ?? new TaskDagEngine();
     this.lock =
       options.lock ??
@@ -129,6 +140,7 @@ export class ExecutionStateIntegrator {
         ...options.lockOptions,
       });
     this.expectedProjectId = options.expectedProjectId;
+    this.strictEvidenceIdCheck = options.strictEvidenceIdCheck;
   }
 
   /**
@@ -228,6 +240,32 @@ export class ExecutionStateIntegrator {
       (expectedBinding as { projectId?: string }).projectId = this.expectedProjectId;
     }
 
+    // Strict evidenceId deterministic hash verification if enabled
+    const shouldCheckEvidenceId = options?.strictEvidenceIdCheck ?? this.strictEvidenceIdCheck ?? false;
+    if (shouldCheckEvidenceId) {
+      const summaryText =
+        (evidence.metadata?.evaluationSummary as string | undefined) ??
+        (evidence.metadata?.summary as string | undefined) ??
+        '';
+      const expectedEvidenceId = computeDeterministicEvidenceId({
+        requestId: evidence.requestId,
+        projectId: evidence.projectId,
+        taskId: evidence.taskId,
+        taskRevision: evidence.taskRevision,
+        contextFingerprint: evidence.contextFingerprint,
+        headCommit: evidence.repositoryState?.headCommit ?? '',
+        verificationDecision: evidence.verificationDecision,
+        checkSummary: summaryText,
+      });
+
+      if (evidence.evidenceId !== expectedEvidenceId) {
+        throw new ExecutionIntegrationSecurityViolationError(
+          `Evidence ID hash mismatch: expected '${expectedEvidenceId}', found '${evidence.evidenceId}'. SystemExecutionEvidence may be tampered, forged, or unverified.`,
+          { expectedEvidenceId, actualEvidenceId: evidence.evidenceId }
+        );
+      }
+    }
+
     // Validate execution binding if expected fields are provided
     this.validateBinding(evidence, expectedBinding);
 
@@ -300,6 +338,20 @@ export class ExecutionStateIntegrator {
       throw new ExecutionIntegrationBindingMismatchError(
         `Request ID mismatch: evidence specifies requestId '${evidence.requestId}', but expected '${expected.requestId}'`,
         { expected: expected.requestId, actual: evidence.requestId, field: 'requestId' }
+      );
+    }
+
+    if (expected.expectedBaseCommit !== undefined && evidence.repositoryState.baseCommit !== expected.expectedBaseCommit) {
+      throw new ExecutionIntegrationBindingMismatchError(
+        `Git base commit mismatch: evidence base commit '${evidence.repositoryState.baseCommit}' !== expected '${expected.expectedBaseCommit}'`,
+        { expected: expected.expectedBaseCommit, actual: evidence.repositoryState.baseCommit, field: 'baseCommit' }
+      );
+    }
+
+    if (expected.expectedHeadCommit !== undefined && evidence.repositoryState.headCommit !== expected.expectedHeadCommit) {
+      throw new ExecutionIntegrationBindingMismatchError(
+        `Git head commit mismatch: evidence head commit '${evidence.repositoryState.headCommit}' !== expected '${expected.expectedHeadCommit}'`,
+        { expected: expected.expectedHeadCommit, actual: evidence.repositoryState.headCommit, field: 'headCommit' }
       );
     }
   }
@@ -417,6 +469,14 @@ export class ExecutionStateIntegrator {
             throw new ExecutionIntegrationStaleResultError(
               `Task revision mismatch: verified evidence specifies revision ${taskRevision}, but authoritative task revision in SpecStore is ${authoritativeRevision}. Cannot integrate stale result.`,
               { taskId, resultTaskRevision: taskRevision, authoritativeRevision }
+            );
+          }
+
+          const taskProjId = (authoritativeTask as any).project_id ?? authoritativeTask.metadata?.projectId;
+          if (taskProjId && taskProjId !== projectId) {
+            throw new ExecutionIntegrationBindingMismatchError(
+              `Project ID mismatch: evidence targets project '${projectId}', but task '${taskId}' in SpecStore belongs to project '${taskProjId}'`,
+              { expected: taskProjId, actual: projectId, field: 'projectId' }
             );
           }
         }
@@ -652,6 +712,15 @@ export class ExecutionStateIntegrator {
         await this.specStore.saveTasks(updatedSpecTasks);
       } catch {
         // SpecStore update failure is non-fatal to DurableState integration
+      }
+    }
+
+    // 9. Persist verified evidence in SystemExecutionEvidenceStore if available
+    if (this.evidenceStore) {
+      try {
+        await this.evidenceStore.saveEvidence(evidence);
+      } catch {
+        // Evidence store persistence failure is non-fatal to completed integration
       }
     }
 

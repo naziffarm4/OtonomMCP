@@ -21,6 +21,7 @@ import { z } from 'zod';
 import {
   SystemEvidenceSecurityViolationError,
   SystemEvidenceValidationError,
+  SystemEvidenceBindingMismatchError,
 } from '../director/director-errors.js';
 import { FORBIDDEN_VERIFICATION_FIELDS } from '../executor-bridge/raw-executor-outcome.js';
 import {
@@ -324,4 +325,119 @@ export function computeDeterministicEvidenceId(input: ComputeEvidenceIdInput): s
   const hash = crypto.createHash('sha256').update(canonical, 'utf8').digest('hex');
   const sanitizedReq = input.requestId.replace(/^req_/, '').slice(0, 16);
   return `evi_${sanitizedReq}_${hash.slice(0, 16)}`;
+}
+
+/**
+ * Computes the expected deterministic evidenceId for a SystemExecutionEvidence record.
+ */
+export function computeExpectedEvidenceId(evidence: SystemExecutionEvidence): string {
+  return computeDeterministicEvidenceId({
+    requestId: evidence.requestId,
+    projectId: evidence.projectId,
+    taskId: evidence.taskId,
+    taskRevision: evidence.taskRevision,
+    contextFingerprint: evidence.contextFingerprint,
+    headCommit: evidence.repositoryState?.headCommit ?? '',
+    verificationDecision: evidence.verificationDecision,
+    checkSummary: (evidence.metadata?.evaluationSummary as string | undefined) ?? '',
+  });
+}
+
+/**
+ * Checks whether the evidenceId on a SystemExecutionEvidence matches its deterministic hash.
+ */
+export function verifyEvidenceIdIntegrity(evidence: SystemExecutionEvidence): boolean {
+  if (!evidence || typeof evidence !== 'object') return false;
+  return evidence.evidenceId === computeExpectedEvidenceId(evidence);
+}
+
+export interface EvidenceProvenanceBindingExpectations {
+  readonly projectId?: string;
+  readonly taskId?: string;
+  readonly taskRevision?: number;
+  readonly requestId?: string;
+  readonly contextFingerprint?: string;
+  readonly understandingRevision?: number;
+  readonly approvalPackageRevision?: number;
+  readonly expectedBaseCommit?: string;
+  readonly expectedHeadCommit?: string;
+}
+
+/**
+ * Asserts full provenance and binding integrity of a SystemExecutionEvidence record.
+ * Throws SystemEvidenceSecurityViolationError or SystemEvidenceBindingMismatchError on violation.
+ */
+export function assertValidEvidenceProvenance(
+  evidence: SystemExecutionEvidence,
+  expected?: EvidenceProvenanceBindingExpectations,
+  options?: { strictHashCheck?: boolean }
+): void {
+  assertNoForbiddenEvidenceFields(evidence);
+
+  if (options?.strictHashCheck !== false) {
+    const expectedId = computeExpectedEvidenceId(evidence);
+    if (evidence.evidenceId !== expectedId) {
+      throw new SystemEvidenceSecurityViolationError(
+        `Evidence ID hash mismatch: expected '${expectedId}', found '${evidence.evidenceId}'. SystemExecutionEvidence may be tampered, forged, or unverified.`,
+        { expectedEvidenceId: expectedId, actualEvidenceId: evidence.evidenceId }
+      );
+    }
+  }
+
+  if (expected) {
+    if (expected.projectId !== undefined && evidence.projectId !== expected.projectId) {
+      throw new SystemEvidenceBindingMismatchError(
+        `Project ID mismatch: evidence targets '${evidence.projectId}', but expected '${expected.projectId}'`,
+        { expected: expected.projectId, actual: evidence.projectId, field: 'projectId' }
+      );
+    }
+    if (expected.taskId !== undefined && evidence.taskId !== expected.taskId) {
+      throw new SystemEvidenceBindingMismatchError(
+        `Task ID mismatch: evidence targets '${evidence.taskId}', but expected '${expected.taskId}'`,
+        { expected: expected.taskId, actual: evidence.taskId, field: 'taskId' }
+      );
+    }
+    if (expected.taskRevision !== undefined && evidence.taskRevision !== expected.taskRevision) {
+      throw new SystemEvidenceBindingMismatchError(
+        `Task revision mismatch: evidence specifies revision ${evidence.taskRevision}, but expected ${expected.taskRevision}`,
+        { expected: expected.taskRevision, actual: evidence.taskRevision, field: 'taskRevision' }
+      );
+    }
+    if (expected.requestId !== undefined && evidence.requestId !== expected.requestId) {
+      throw new SystemEvidenceBindingMismatchError(
+        `Request ID mismatch: evidence specifies requestId '${evidence.requestId}', but expected '${expected.requestId}'`,
+        { expected: expected.requestId, actual: evidence.requestId, field: 'requestId' }
+      );
+    }
+    if (expected.contextFingerprint !== undefined && evidence.contextFingerprint !== expected.contextFingerprint) {
+      throw new SystemEvidenceBindingMismatchError(
+        `Context fingerprint mismatch: evidence specifies '${evidence.contextFingerprint}', but expected '${expected.contextFingerprint}'`,
+        { expected: expected.contextFingerprint, actual: evidence.contextFingerprint, field: 'contextFingerprint' }
+      );
+    }
+    if (expected.understandingRevision !== undefined && evidence.understandingRevision !== expected.understandingRevision) {
+      throw new SystemEvidenceBindingMismatchError(
+        `Understanding revision mismatch: evidence specifies revision ${evidence.understandingRevision}, but expected ${expected.understandingRevision}`,
+        { expected: expected.understandingRevision, actual: evidence.understandingRevision, field: 'understandingRevision' }
+      );
+    }
+    if (expected.approvalPackageRevision !== undefined && evidence.approvalPackageRevision !== expected.approvalPackageRevision) {
+      throw new SystemEvidenceBindingMismatchError(
+        `Approval package revision mismatch: evidence specifies revision ${evidence.approvalPackageRevision}, but expected ${expected.approvalPackageRevision}`,
+        { expected: expected.approvalPackageRevision, actual: evidence.approvalPackageRevision, field: 'approvalPackageRevision' }
+      );
+    }
+    if (expected.expectedBaseCommit !== undefined && evidence.repositoryState.baseCommit !== expected.expectedBaseCommit) {
+      throw new SystemEvidenceBindingMismatchError(
+        `Git base commit mismatch: evidence base commit '${evidence.repositoryState.baseCommit}' !== expected '${expected.expectedBaseCommit}'`,
+        { expected: expected.expectedBaseCommit, actual: evidence.repositoryState.baseCommit, field: 'baseCommit' }
+      );
+    }
+    if (expected.expectedHeadCommit !== undefined && evidence.repositoryState.headCommit !== expected.expectedHeadCommit) {
+      throw new SystemEvidenceBindingMismatchError(
+        `Git head commit mismatch: evidence head commit '${evidence.repositoryState.headCommit}' !== expected '${expected.expectedHeadCommit}'`,
+        { expected: expected.expectedHeadCommit, actual: evidence.repositoryState.headCommit, field: 'headCommit' }
+      );
+    }
+  }
 }

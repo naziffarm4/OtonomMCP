@@ -4,3 +4,4 @@ export * from './durable-state.js';
 export * from './runtime-state.js';
 export * from './history-manager.js';
 export * from './spec-store.js';
+export * from './evidence-store.js';

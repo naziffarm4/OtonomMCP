@@ -26,6 +26,7 @@ import type {
 } from './process-executor-port.js';
 import { NodeProcessExecutor } from './process-executor-port.js';
 import type { HistoryManager } from '../storage/history-manager.js';
+import type { SystemExecutionEvidenceStore } from '../storage/evidence-store.js';
 import { Actor } from '../actors.js';
 import type {
   ExecutionRequest,
@@ -37,6 +38,7 @@ import {
 import {
   type SystemExecutionEvidence,
   type VerificationCheck,
+  type VerificationCheckStatus,
   type ChangedFileEvidence,
   type RepositoryStateEvidence,
   type VerificationDecision,
@@ -75,6 +77,8 @@ export interface SystemEvidenceCollectorOptions {
   readonly throwOnSecurityViolation?: boolean;
   /** Strict file scope enforcement (fails if unexpected files found) */
   readonly strictFileScope?: boolean;
+  /** Optional durable evidence store to persist verified evidence automatically */
+  readonly evidenceStore?: SystemExecutionEvidenceStore;
 }
 
 export interface BindingValidationResult {
@@ -91,15 +95,18 @@ export class SystemEvidenceCollector {
   private readonly gitPort: GitPort;
   private readonly processExecutor: ProcessExecutorPort;
   private readonly historyManager?: HistoryManager;
+  private readonly evidenceStore?: SystemExecutionEvidenceStore;
 
   constructor(dependencies: {
     gitPort?: GitPort;
     processExecutor?: ProcessExecutorPort;
     historyManager?: HistoryManager;
+    evidenceStore?: SystemExecutionEvidenceStore;
   } = {}) {
     this.gitPort = dependencies.gitPort ?? new DefaultGitPort();
     this.processExecutor = dependencies.processExecutor ?? new NodeProcessExecutor();
     this.historyManager = dependencies.historyManager;
+    this.evidenceStore = dependencies.evidenceStore;
   }
 
   /**
@@ -267,6 +274,26 @@ export class SystemEvidenceCollector {
       headCommit,
       isClean,
     });
+
+    // Check Git baseline match if expected base commit is specified
+    if (request.expectedRepositoryState?.baseCommit) {
+      const expectedBase = request.expectedRepositoryState.baseCommit;
+      if (headCommit !== expectedBase && baseCommit !== expectedBase) {
+        verificationChecks.push({
+          checkId: 'CHECK_GIT_BASELINE',
+          type: 'GIT',
+          status: 'FAIL',
+          evidence: `Git baseline mismatch: expected base commit '${expectedBase}', but repository HEAD is '${headCommit}'`,
+        });
+      } else {
+        verificationChecks.push({
+          checkId: 'CHECK_GIT_BASELINE',
+          type: 'GIT',
+          status: 'PASS',
+          evidence: `Repository state verified matching expected base commit '${expectedBase}'`,
+        });
+      }
+    }
 
     // 4. Independent Changed Files Collection & Path Safety Enforcement
     const changedFiles: ChangedFileEvidence[] = [];
@@ -476,15 +503,26 @@ export class SystemEvidenceCollector {
           { cwd: cmdCwd }
         );
 
+        const isMissingBinary =
+          res.exitCode === 127 ||
+          (Boolean(res.stderr) && res.stderr.includes('is not recognized as an internal or external command'));
         const passed = res.exitCode === 0;
+        const checkStatus: VerificationCheckStatus = passed
+          ? 'PASS'
+          : isMissingBinary
+          ? 'BLOCK'
+          : 'FAIL';
+
         verificationChecks.push({
           checkId: `CHECK_${cmdSpec.id}`,
           type: cmdSpec.type,
-          status: passed ? 'PASS' : 'FAIL',
+          status: checkStatus,
           command: cmdSpec.command,
           durationMs: res.durationMs,
           evidence: passed
             ? `Command '${cmdSpec.command}' exited 0 in ${res.durationMs}ms`
+            : isMissingBinary
+            ? `Verification command failed due to missing tool binary: ${(res.stderr || res.stdout).slice(0, 300)}`
             : `Command '${cmdSpec.command}' failed with exit code ${res.exitCode}. stderr: ${(res.stderr || res.stdout).slice(0, 300)}`,
           details: { exitCode: res.exitCode, stdoutSnippet: res.stdout.slice(0, 500) },
         });
@@ -575,9 +613,16 @@ export class SystemEvidenceCollector {
       verifiedAt,
       metadata: Object.freeze({
         summary: evalResult.summary,
+        evaluationSummary: evalResult.summary,
         untrustedExecutorClaims: rawOutcome.unverifiedAgentClaims,
       }),
     });
+
+    // 12. Persist evidence if evidenceStore is configured
+    const storeToUse = options.evidenceStore ?? this.evidenceStore;
+    if (storeToUse) {
+      await storeToUse.saveEvidence(evidence);
+    }
 
     return evidence;
   }
