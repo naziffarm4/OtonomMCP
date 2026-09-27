@@ -34,23 +34,38 @@ export const TaskDefinitionZodSchema = z.preprocess((val) => {
     const raw = val as Record<string, unknown>;
     const rawHierarchy = raw.hierarchy_level ?? raw.hierarchyLevel ?? raw.level ?? 'TASK';
     const rawParent = raw.parent_feature_id ?? raw.parentFeatureId;
-    const resolvedParent = (rawHierarchy === 'EPIC' && (!rawParent || String(rawParent).trim() === ''))
+    const resolvedParent = (!rawParent || String(rawParent).trim() === '')
       ? 'ROOT'
       : rawParent;
+
+    const rawTitle = raw.title;
+    const rawDescription = raw.description ?? rawTitle;
+
+    let rawStatus = raw.status ?? 'READY';
+    if (rawStatus === 'PENDING') {
+      rawStatus = 'READY';
+    }
+
+    let rawRisk = raw.risk_level ?? raw.riskLevel ?? 'SAFE';
+    if (rawRisk === 'MEDIUM') {
+      rawRisk = 'CAUTION';
+    } else if (rawRisk === 'LOW') {
+      rawRisk = 'SAFE';
+    }
 
     return {
       task_id: raw.task_id ?? raw.taskId,
       parent_feature_id: resolvedParent,
-      title: raw.title,
-      description: raw.description,
+      title: rawTitle,
+      description: rawDescription,
       traceability_sources: raw.traceability_sources ?? raw.traceabilitySources,
       dependencies: raw.dependencies ?? [],
       acceptance_criteria: raw.acceptance_criteria ?? raw.acceptanceCriteria ?? [],
-      status: raw.status ?? 'READY',
+      status: rawStatus,
       attempt: raw.attempt ?? 0,
       max_attempts: raw.max_attempts ?? raw.maxAttempts ?? 3,
       priority: raw.priority ?? 'MEDIUM',
-      risk_level: raw.risk_level ?? raw.riskLevel ?? 'SAFE',
+      risk_level: rawRisk,
       created_at: raw.created_at ?? raw.createdAt ?? new Date().toISOString(),
       started_at: raw.started_at !== undefined ? raw.started_at : (raw.startedAt ?? null),
       completed_at: raw.completed_at !== undefined ? raw.completed_at : (raw.completedAt ?? null),
