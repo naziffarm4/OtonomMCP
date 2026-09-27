@@ -40,6 +40,20 @@ import {
   ExecutorContextValidationError,
 } from './executor-context-errors.js';
 import { RiskLevel } from '../risk.js';
+import {
+  type AntigravityProcessRunner,
+  type AntigravityProcessResult,
+  NodeAntigravityProcessRunner,
+  FakeAntigravityProcessRunner,
+  resolveAntigravityExecutable,
+  type AntigravityResolutionResult,
+} from './antigravity-process-runner.js';
+import {
+  type ExecutorCompatibility,
+  type CompatibilityCheckOptions,
+  AntigravityCompatibilityChecker,
+  DEFAULT_ANTIGRAVITY_PROTOCOL,
+} from './antigravity-compatibility.js';
 
 // ============================================================================
 // 1. ANTIGRAVITY TRANSLATION & CONFIGURATION TYPES
@@ -89,12 +103,14 @@ export type AntigravityRequestInvoker = (
 export interface AntigravityAdapterConfig {
   /** Unique executor ID (defaults to 'executor:antigravity') */
   executorId?: string;
-  /** File path to the Antigravity CLI binary `agy` */
+  /** File path to the Antigravity CLI binary `agy` (or command name) */
   binaryPath?: string;
   /** Custom invoker for testing or custom execution dispatch (Phase 3 instruction) */
   invoker?: AntigravityInvoker;
   /** Custom invoker for testing or custom execution dispatch (Phase 10 ExecutionRequest) */
   requestInvoker?: AntigravityRequestInvoker;
+  /** Custom process runner for executing CLI processes (defaults to NodeAntigravityProcessRunner) */
+  processRunner?: AntigravityProcessRunner;
   /** Enforce AIDM security and policy boundary before dispatch (default: true) */
   enforceSafetyBoundary?: boolean;
   /** Override reported CLI version */
@@ -107,10 +123,126 @@ export interface AntigravityAdapterConfig {
   autoResolveContext?: boolean;
   /** Validate context package disk freshness before execution (default: true) */
   validateContextFreshness?: boolean;
+  /** Skip compatibility probe before dispatching (default: false) */
+  skipCompatibilityProbe?: boolean;
+}
+
+export interface ParsedExecutorOutput {
+  readonly safe: boolean;
+  readonly reason: string | null;
+  readonly agentClaims: readonly string[];
+  readonly modifiedFiles: readonly string[];
+  readonly metadata?: Readonly<Record<string, unknown>>;
+}
+
+/**
+ * Safely parses stdout from an Antigravity CLI process execution.
+ * Distinguishes safe output from corrupted / malformed output.
+ */
+export function parseExecutorProcessOutput(
+  stdout: string,
+  request: ExecutionRequest
+): ParsedExecutorOutput {
+  // Check for binary garbage or null bytes
+  if (stdout.includes('\0')) {
+    return {
+      safe: false,
+      reason: 'Process output contains null bytes or binary corruption',
+      agentClaims: Object.freeze([]),
+      modifiedFiles: Object.freeze([]),
+    };
+  }
+
+  const trimmed = stdout.trim();
+  if (!trimmed) {
+    return {
+      safe: true,
+      reason: null,
+      agentClaims: Object.freeze(['Task implementation executed without textual claims']),
+      modifiedFiles: Object.freeze([...request.instruction.targetFiles]),
+    };
+  }
+
+  let discoveredClaims: string[] = [];
+  let discoveredFiles: string[] = [];
+  let discoveredMetadata: Record<string, unknown> | undefined;
+
+  let parsedSingle = false;
+  if (trimmed.startsWith('{') && trimmed.endsWith('}') && !trimmed.includes('\n')) {
+    try {
+      const parsed = JSON.parse(trimmed);
+      parsedSingle = true;
+      if (Array.isArray(parsed.agent_claims)) discoveredClaims.push(...parsed.agent_claims);
+      if (Array.isArray(parsed.unverifiedAgentClaims)) discoveredClaims.push(...parsed.unverifiedAgentClaims);
+      if (Array.isArray(parsed.unverified_changed_files)) discoveredFiles.push(...parsed.unverified_changed_files);
+      if (Array.isArray(parsed.unverifiedModifiedFiles)) discoveredFiles.push(...parsed.unverifiedModifiedFiles);
+      if (parsed.metadata && typeof parsed.metadata === 'object') discoveredMetadata = parsed.metadata;
+    } catch (err) {
+      return {
+        safe: false,
+        reason: `Process output starts with '{' but contains malformed JSON: ${err instanceof Error ? err.message : String(err)}`,
+        agentClaims: Object.freeze([]),
+        modifiedFiles: Object.freeze([]),
+      };
+    }
+  }
+
+  if (!parsedSingle) {
+
+    const lines = trimmed.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+    let hadMalformedJsonLine = false;
+    let malformedError = '';
+
+    for (const line of lines) {
+      if (line.startsWith('{') && line.endsWith('}')) {
+        try {
+          const parsed = JSON.parse(line);
+          if (Array.isArray(parsed.agent_claims)) discoveredClaims.push(...parsed.agent_claims);
+          if (Array.isArray(parsed.unverifiedAgentClaims)) discoveredClaims.push(...parsed.unverifiedAgentClaims);
+          if (Array.isArray(parsed.unverified_changed_files)) discoveredFiles.push(...parsed.unverified_changed_files);
+          if (Array.isArray(parsed.unverifiedModifiedFiles)) discoveredFiles.push(...parsed.unverifiedModifiedFiles);
+          if (parsed.metadata && typeof parsed.metadata === 'object') {
+            discoveredMetadata = { ...discoveredMetadata, ...parsed.metadata };
+          }
+        } catch (err) {
+          hadMalformedJsonLine = true;
+          malformedError = err instanceof Error ? err.message : String(err);
+        }
+      } else if (line.startsWith('{') && !line.endsWith('}')) {
+        hadMalformedJsonLine = true;
+        malformedError = 'Truncated JSON frame detected in output stream';
+      }
+    }
+
+    if (hadMalformedJsonLine) {
+      return {
+        safe: false,
+        reason: `Process output contained malformed stream-json frame: ${malformedError}`,
+        agentClaims: Object.freeze([]),
+        modifiedFiles: Object.freeze([]),
+      };
+    }
+  }
+
+  const finalClaims = discoveredClaims.length > 0
+    ? Object.freeze([...new Set(discoveredClaims)])
+    : Object.freeze(['Task implementation executed']);
+
+  const finalFiles = discoveredFiles.length > 0
+    ? Object.freeze([...new Set(discoveredFiles)])
+    : Object.freeze([...request.instruction.targetFiles]);
+
+  return {
+    safe: true,
+    reason: null,
+    agentClaims: finalClaims,
+    modifiedFiles: finalFiles,
+    metadata: discoveredMetadata ? Object.freeze(discoveredMetadata) : undefined,
+  };
 }
 
 // ============================================================================
-// 2. ANTIGRAVITY ADAPTER IMPLEMENTATION (Phase 3 + Phase 10 TASK-P10-03)
+// 2. ANTIGRAVITY ADAPTER IMPLEMENTATION (Phase 3 + Phase 10 TASK-P10-03 + Phase 14 TASK-P14-01)
 // ============================================================================
 
 export class AntigravityAdapter implements ExecutorPort, ExecutionRequestExecutorPort {
@@ -118,10 +250,14 @@ export class AntigravityAdapter implements ExecutorPort, ExecutionRequestExecuto
   readonly provider = 'antigravity';
   readonly supportedOperations: readonly string[];
   readonly binaryPath: string;
+  readonly configuredBinaryPath?: string;
   readonly workspaceRoot?: string;
   readonly contextService?: ExecutorContextService;
   readonly autoResolveContext: boolean;
   readonly validateContextFreshness: boolean;
+  readonly processRunner: AntigravityProcessRunner;
+  readonly compatibilityChecker: AntigravityCompatibilityChecker;
+  readonly skipCompatibilityProbe: boolean;
 
   private readonly invoker?: AntigravityInvoker;
   private readonly requestInvoker?: AntigravityRequestInvoker;
@@ -130,9 +266,7 @@ export class AntigravityAdapter implements ExecutorPort, ExecutionRequestExecuto
 
   constructor(config: AntigravityAdapterConfig = {}) {
     this.executorId = config.executorId ?? 'executor:antigravity';
-    this.binaryPath =
-      config.binaryPath ??
-      (process.env.ANTIGRAVITY_BIN_PATH || '/home/codespace/.local/bin/agy');
+    this.configuredBinaryPath = config.binaryPath;
     this.invoker = config.invoker;
     this.requestInvoker = config.requestInvoker;
     this.enforceSafetyBoundary = config.enforceSafetyBoundary ?? true;
@@ -141,6 +275,16 @@ export class AntigravityAdapter implements ExecutorPort, ExecutionRequestExecuto
     this.contextService = config.contextService;
     this.autoResolveContext = config.autoResolveContext ?? (this.contextService !== undefined);
     this.validateContextFreshness = config.validateContextFreshness ?? true;
+    this.processRunner = config.processRunner ?? new NodeAntigravityProcessRunner();
+    this.compatibilityChecker = new AntigravityCompatibilityChecker(this.processRunner);
+    this.skipCompatibilityProbe = config.skipCompatibilityProbe ?? false;
+
+    // Portable executable resolution: resolve explicit path, env, or PATH
+    const resolution = resolveAntigravityExecutable({
+      configuredBinaryPath: config.binaryPath,
+      cwd: config.workspaceRoot,
+    });
+    this.binaryPath = resolution.executablePath ?? (config.binaryPath || 'agy');
 
     // All standard AIDM executor operations supported by the Antigravity adapter boundary
     this.supportedOperations = Object.freeze([
@@ -514,14 +658,179 @@ export class AntigravityAdapter implements ExecutorPort, ExecutionRequestExecuto
         };
         rawResult = await this.invoker(payload, fakeInstruction);
       } else {
-        // Safe default boundary fallback (e.g. simulated execution when no process is spawned)
-        rawResult = {
-          exit_code: 0,
-          stdout: `[Antigravity CLI Simulated Output] Completed execution of ${validatedRequest.requestId}`,
-          stderr: null,
-          agent_claims: ['Task implementation attempted'],
-          unverified_changed_files: [...validatedRequest.instruction.targetFiles],
-        };
+        // ====================================================================
+        // REAL PROCESS EXECUTION BOUNDARY (Phase 14 TASK-P14-01)
+        // ====================================================================
+
+        // 1. Resolve executable
+        const resolution = resolveAntigravityExecutable({
+          configuredBinaryPath: this.configuredBinaryPath ?? this.binaryPath,
+          cwd: payload.workingDirectory,
+        });
+
+        if (!resolution.found || !resolution.executablePath) {
+          if (timeoutTimer) clearTimeout(timeoutTimer);
+          if (options.signal) options.signal.removeEventListener('abort', onCallerAbort);
+
+          const completedAt = new Date().toISOString();
+          return createErrorRawOutcome({
+            request: validatedRequest,
+            executorIdentity: this.executorIdentity,
+            startedAt,
+            completedAt,
+            durationMs: Date.now() - startTimeMs,
+            error: {
+              code: 'ERR_EXECUTOR_NOT_FOUND',
+              message: resolution.reason ?? `Antigravity CLI executable not found`,
+              details: { resolution },
+            },
+          });
+        }
+
+        // 2. Compatibility probe (unless skipped or fake process runner)
+        if (!this.skipCompatibilityProbe && !(this.processRunner instanceof FakeAntigravityProcessRunner)) {
+          const compat = await this.compatibilityChecker.checkCompatibility(resolution, {
+            cwd: payload.workingDirectory,
+            timeoutMs: 5_000,
+            signal: options.signal,
+          });
+
+          if (!compat.compatible) {
+            if (timeoutTimer) clearTimeout(timeoutTimer);
+            if (options.signal) options.signal.removeEventListener('abort', onCallerAbort);
+
+            const completedAt = new Date().toISOString();
+            return createErrorRawOutcome({
+              request: validatedRequest,
+              executorIdentity: this.executorIdentity,
+              startedAt,
+              completedAt,
+              durationMs: Date.now() - startTimeMs,
+              error: {
+                code: 'ERR_EXECUTOR_INCOMPATIBLE',
+                message: compat.reason ?? 'Antigravity CLI is incompatible with execution contract',
+                details: { compatibility: compat },
+              },
+            });
+          }
+        }
+
+        // 3. Prepare stream-json stdin protocol payload
+        const stdinInput = JSON.stringify({
+          prompt: payload.structuredPrompt,
+          correlationId: payload.correlationId,
+          conversationId: payload.conversationId,
+          metadata: payload.metadata,
+        }) + '\n';
+
+        // 4. Launch real OS process via processRunner
+        const procResult = await this.processRunner.run({
+          executable: resolution.executablePath,
+          args: payload.args,
+          cwd: payload.workingDirectory,
+          stdinInput,
+          timeoutMs,
+          signal: abortController.signal,
+        });
+
+        if (timeoutTimer) clearTimeout(timeoutTimer);
+        if (options.signal) options.signal.removeEventListener('abort', onCallerAbort);
+
+        const completedAt = procResult.completedAt;
+        const durationMs = procResult.durationMs;
+
+        // Condition 1 & 2: Process could not start / spawn error
+        if (procResult.spawnError) {
+          const errCode = (procResult.spawnError as any).code === 'ENOENT'
+            ? 'ERR_EXECUTOR_NOT_FOUND'
+            : 'ERR_EXECUTOR_SPAWN_FAILED';
+          return createErrorRawOutcome({
+            request: validatedRequest,
+            executorIdentity: this.executorIdentity,
+            startedAt,
+            completedAt,
+            durationMs,
+            error: {
+              code: errCode,
+              message: `Process could not start: ${procResult.spawnError.message}`,
+              details: procResult.spawnError,
+            },
+          });
+        }
+
+        // Condition 4: Timeout
+        if (procResult.timedOut || didTimeout) {
+          return createTimeoutRawOutcome({
+            request: validatedRequest,
+            executorIdentity: this.executorIdentity,
+            startedAt,
+            completedAt,
+            durationMs,
+            stderr: procResult.stderr || `Execution timed out after ${timeoutMs}ms`,
+          });
+        }
+
+        // Cancellation
+        if (procResult.cancelled || abortController.signal.aborted || options.signal?.aborted) {
+          return createCancelledRawOutcome({
+            request: validatedRequest,
+            executorIdentity: this.executorIdentity,
+            startedAt,
+            completedAt,
+            durationMs,
+            reason: procResult.stderr || 'Execution was cancelled by caller signal',
+          });
+        }
+
+        // Condition 3: Process started and exited non-zero
+        if (procResult.exitCode !== 0) {
+          return createFailureRawOutcome({
+            request: validatedRequest,
+            executorIdentity: this.executorIdentity,
+            startedAt,
+            completedAt,
+            durationMs,
+            exitCode: procResult.exitCode ?? 1,
+            signal: procResult.signal,
+            stdout: procResult.stdout,
+            stderr: procResult.stderr || `Process exited with code ${procResult.exitCode}`,
+            unverifiedAgentClaims: [],
+            unverifiedModifiedFiles: [],
+          });
+        }
+
+        // Condition 5 & 6: Process exited successfully, parse output safely
+        const parsed = parseExecutorProcessOutput(procResult.stdout, validatedRequest);
+        if (!parsed.safe) {
+          return createErrorRawOutcome({
+            request: validatedRequest,
+            executorIdentity: this.executorIdentity,
+            startedAt,
+            completedAt,
+            durationMs,
+            error: {
+              code: 'ERR_EXECUTOR_MALFORMED_OUTPUT',
+              message: parsed.reason
+                ? `Process output could not be interpreted safely: ${parsed.reason}`
+                : 'Process output could not be interpreted safely',
+              details: { stdoutSnippet: procResult.stdout.substring(0, 500) },
+            },
+          });
+        }
+
+        return createSuccessRawOutcome({
+          request: validatedRequest,
+          executorIdentity: this.executorIdentity,
+          startedAt,
+          completedAt,
+          durationMs,
+          exitCode: 0,
+          stdout: procResult.stdout,
+          stderr: procResult.stderr || null,
+          unverifiedAgentClaims: parsed.agentClaims,
+          unverifiedModifiedFiles: parsed.modifiedFiles,
+          executorMetadata: parsed.metadata,
+        });
       }
 
       if (timeoutTimer) clearTimeout(timeoutTimer);
@@ -608,6 +917,7 @@ export class AntigravityAdapter implements ExecutorPort, ExecutionRequestExecuto
           [...validatedRequest.instruction.targetFiles],
         executorMetadata: rawOutput.metadata ?? rawOutput.executorMetadata,
       });
+
     } catch (err: unknown) {
       if (timeoutTimer) clearTimeout(timeoutTimer);
       if (options.signal) options.signal.removeEventListener('abort', onCallerAbort);
@@ -812,6 +1122,19 @@ export class AntigravityAdapter implements ExecutorPort, ExecutionRequestExecuto
   }
 
   /**
+   * Probes environment to verify Antigravity CLI binary presence, accessibility, and compatibility.
+   */
+  async checkCompatibility(options?: CompatibilityCheckOptions): Promise<ExecutorCompatibility> {
+    return this.compatibilityChecker.checkCompatibility(
+      this.configuredBinaryPath ?? this.binaryPath,
+      {
+        ...options,
+        cwd: this.workspaceRoot,
+      }
+    );
+  }
+
+  /**
    * Probes environment to verify Antigravity CLI binary presence and accessibility.
    */
   async checkAvailability(): Promise<ExecutorAvailability> {
@@ -824,19 +1147,26 @@ export class AntigravityAdapter implements ExecutorPort, ExecutionRequestExecuto
         });
       }
 
-      // Check if binary file exists
-      if (!fs.existsSync(this.binaryPath)) {
+      if (this.processRunner instanceof FakeAntigravityProcessRunner) {
         return Object.freeze({
-          available: false,
-          version: null,
-          reason: `Antigravity CLI binary not found at "${this.binaryPath}"`,
+          available: true,
+          version: this.configuredVersion ?? '1.2.8',
+          reason: null,
         });
       }
 
-      // Binary is present
+      const compatibility = await this.checkCompatibility();
+      if (!compatibility.compatible) {
+        return Object.freeze({
+          available: false,
+          version: compatibility.version ?? this.configuredVersion ?? null,
+          reason: compatibility.reason ?? 'Antigravity CLI is not available or compatible',
+        });
+      }
+
       return Object.freeze({
         available: true,
-        version: this.configuredVersion ?? '1.2.8',
+        version: this.configuredVersion ?? compatibility.version ?? '1.2.8',
         reason: null,
       });
     } catch (err) {
@@ -953,19 +1283,52 @@ export class AntigravityAdapter implements ExecutorPort, ExecutionRequestExecuto
     if (this.invoker) {
       outcome = await this.invoker(translatedPayload, validatedInstruction);
     } else {
-      outcome = Object.freeze({
-        executor_id: this.executorId,
-        command: `${this.binaryPath} ${translatedPayload.args.join(' ')}`,
-        exit_code: null,
-        signal: null,
-        stdout: null,
-        stderr: 'External invocation hook is not configured for this boundary adapter instance',
-        raw_payload: null,
-        agent_claims: [],
-        unverified_changed_files: null,
-        timing: null,
+      const resolution = resolveAntigravityExecutable({
+        configuredBinaryPath: this.configuredBinaryPath ?? this.binaryPath,
+        cwd: translatedPayload.workingDirectory,
       });
+
+      if (!resolution.found || !resolution.executablePath) {
+        outcome = Object.freeze({
+          executor_id: this.executorId,
+          command: `${this.binaryPath} ${translatedPayload.args.join(' ')}`,
+          exit_code: null,
+          signal: null,
+          stdout: null,
+          stderr: resolution.reason ?? 'Antigravity CLI binary not found',
+          raw_payload: null,
+          agent_claims: [],
+          unverified_changed_files: null,
+          timing: null,
+        });
+      } else {
+        const procResult = await this.processRunner.run({
+          executable: resolution.executablePath,
+          args: translatedPayload.args,
+          cwd: translatedPayload.workingDirectory,
+          stdinInput: JSON.stringify({ prompt: translatedPayload.structuredPrompt }) + '\n',
+          timeoutMs: 60_000,
+        });
+
+        outcome = Object.freeze({
+          executor_id: this.executorId,
+          command: `${resolution.executablePath} ${translatedPayload.args.join(' ')}`,
+          exit_code: procResult.exitCode,
+          signal: procResult.signal,
+          stdout: procResult.stdout,
+          stderr: procResult.stderr,
+          raw_payload: null,
+          agent_claims: [],
+          unverified_changed_files: null,
+          timing: {
+            started_at: procResult.startedAt,
+            completed_at: procResult.completedAt,
+            duration_ms: procResult.durationMs,
+          },
+        });
+      }
     }
+
 
     return this.normalize(outcome, validatedInstruction);
   }

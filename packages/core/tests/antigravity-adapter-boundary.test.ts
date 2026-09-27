@@ -28,6 +28,7 @@ import {
   type ExecutorPort,
   type ExecutionRequestExecutorPort,
   AntigravityAdapter,
+  FakeAntigravityProcessRunner,
   type AntigravityTranslatedPayload,
   type RawExecutorOutcome,
   RawExecutorOutcomeZodSchema,
@@ -361,6 +362,7 @@ describe('Phase 10 TASK-P10-03: Antigravity Executor Adapter Boundary', () => {
       workspaceRoot: tempDir,
       binaryPath: 'agy',
       version: '1.2.8',
+      processRunner: new FakeAntigravityProcessRunner(),
     });
   });
 
