@@ -33,7 +33,12 @@ import {
 } from '../errors/executor-error.js';
 import { ExecutorPreconditionError } from '../director/director-errors.js';
 import { ExecutorContextService } from './executor-context-service.js';
-import { ExecutorContextStaleError } from './executor-context-errors.js';
+import {
+  ExecutorContextError,
+  ExecutorContextStaleError,
+  ExecutorContextSourceUnavailableError,
+  ExecutorContextValidationError,
+} from './executor-context-errors.js';
 import { RiskLevel } from '../risk.js';
 
 // ============================================================================
@@ -399,9 +404,25 @@ export class AntigravityAdapter implements ExecutorPort, ExecutionRequestExecuto
           ...validatedRequest,
           contextPackage: autoPkg,
         });
-      } catch {
-        // Fall back gracefully if context cannot be built from available stores
+      } catch (err) {
+        if (validatedRequest.operationType === 'IMPLEMENT_TASK') {
+          if (err instanceof ExecutorContextError) {
+            throw err;
+          }
+          throw new ExecutorContextSourceUnavailableError(
+            `Failed to construct authoritative context package for IMPLEMENT_TASK: ${err instanceof Error ? err.message : String(err)}`,
+            { error: err instanceof Error ? err.message : String(err), taskId: validatedRequest.taskId }
+          );
+        }
       }
+    }
+
+    // 1.5.1 Fail-closed: IMPLEMENT_TASK requires an authoritative context package
+    if (validatedRequest.operationType === 'IMPLEMENT_TASK' && !validatedRequest.contextPackage) {
+      throw new ExecutorContextSourceUnavailableError(
+        'Authoritative ExecutorContextPackage is required for IMPLEMENT_TASK execution, but none was provided or constructed',
+        { requestId: validatedRequest.requestId, taskId: validatedRequest.taskId }
+      );
     }
 
     // 1.6 Freshness validation if contextPackage is present
@@ -416,6 +437,12 @@ export class AntigravityAdapter implements ExecutorPort, ExecutionRequestExecuto
       if (freshness.isStale) {
         throw new ExecutorContextStaleError(
           freshness.message ?? 'Context package is stale',
+          freshness.details
+        );
+      }
+      if (!freshness.isValid) {
+        throw new ExecutorContextValidationError(
+          freshness.message ?? 'Context package validation failed',
           freshness.details
         );
       }

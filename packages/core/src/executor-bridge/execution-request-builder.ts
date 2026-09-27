@@ -37,7 +37,19 @@ import type { HistoryManager } from '../storage/history-manager.js';
 import type { ContextEngine } from '../context-engine/context-engine.js';
 import type { ProjectDiscoveryEngine } from '../discovery/discovery-engine.js';
 import { ExecutorContextService } from './executor-context-service.js';
-import type { ExecutorContextPackage } from './executor-context-types.js';
+import {
+  type ExecutorContextPackage,
+  ExecutorContextPackageZodSchema,
+  computeDeterministicContextPackageId,
+} from './executor-context-types.js';
+import {
+  ExecutorContextError,
+  ExecutorContextValidationError,
+  ExecutorContextSourceUnavailableError,
+  ExecutorContextStaleError,
+  ExecutorContextBindingMismatchError,
+  ExecutorContextIntegrityError,
+} from './executor-context-errors.js';
 import { ExecutionAuthorizer } from '../director/execution-authorizer.js';
 import {
   type ExecutionIntentValidationResult,
@@ -78,6 +90,7 @@ import {
   ExecutionRequestIntentMismatchError,
   ExecutionRequestLimitsInvalidError,
   ExecutionRequestTaskRevisionMismatchError,
+  type ExecutionRequestHashingPayload,
 } from './execution-request-types.js';
 
 export interface ExecutionRequestBuilderOptions {
@@ -115,7 +128,7 @@ export function canonicalStringify(val: unknown): string {
   }
   if (typeof val === 'object') {
     const obj = val as Record<string, unknown>;
-    const sortedKeys = Object.keys(obj).sort();
+    const sortedKeys = Object.keys(obj).filter((k) => obj[k] !== undefined).sort();
     const entries = sortedKeys.map(
       (k) => `${JSON.stringify(k)}:${canonicalStringify(obj[k])}`
     );
@@ -127,23 +140,13 @@ export function canonicalStringify(val: unknown): string {
 /**
  * Computes a deterministic, collision-resistant requestId from authoritative payload fields.
  * Format: req-<sha256-hex(32)>
+ *
+ * DETERMINISTIC INVARIANT:
+ * Breaks the circular dependency (requestId <-> contextPackage) by requiring the authoritative
+ * context package identity to be computed first (independent of requestId).
+ * The contextPackageId is then bound into the ExecutionRequest hashing payload.
  */
-export function computeDeterministicRequestId(payload: {
-  readonly approvalPackageRevision: number;
-  readonly contextFingerprint: string;
-  readonly directorDecisionId: string;
-  readonly directorSessionId: string;
-  readonly executionLimits: ExecutionLimits;
-  readonly expectedRepositoryState: ExpectedRepositoryState;
-  readonly instruction: ExecutionInstruction;
-  readonly operationType: string;
-  readonly projectId: string;
-  readonly protocolVersion: string;
-  readonly schemaVersion: number;
-  readonly taskId: string;
-  readonly taskRevision: number;
-  readonly understandingRevision: number;
-}): string {
+export function computeDeterministicRequestId(payload: ExecutionRequestHashingPayload): string {
   const canonicalJson = canonicalStringify(payload);
   const hash = crypto.createHash('sha256').update(canonicalJson, 'utf8').digest('hex');
   return `req-${hash.substring(0, 32)}`;
@@ -753,8 +756,121 @@ export class ExecutionRequestBuilder {
     // 6. Execution Limits (Strict bounds & defaults)
     const canonicalLimits = this.canonicalizeExecutionLimits(input.executionLimits);
 
-    // 7. Compute Deterministic requestId
-    const hashingPayload = {
+    // 7. Resolve and Verify Authoritative ExecutorContextPackage
+    // Construction sequence: Context identity is resolved BEFORE requestId is computed.
+    // This allows requestId to incorporate contextPackage.packageId deterministically,
+    // binding context authority into the request integrity chain without circular hashing.
+    let contextPackage: ExecutorContextPackage | undefined = input.contextPackage;
+
+    if (contextPackage) {
+      // Validate caller-supplied context package structure
+      const cpParseResult = ExecutorContextPackageZodSchema.safeParse(contextPackage);
+      if (!cpParseResult.success) {
+        throw new ExecutorContextValidationError(
+          `Supplied contextPackage schema validation failed: ${cpParseResult.error.issues[0]?.message ?? 'invalid schema'}`,
+          { issues: cpParseResult.error.issues }
+        );
+      }
+
+      // Verify authoritative bindings against verified intent
+      if (contextPackage.projectId !== verifiedIntent.projectId) {
+        throw new ExecutorContextBindingMismatchError(
+          `contextPackage projectId '${contextPackage.projectId}' does not match verified intent projectId '${verifiedIntent.projectId}'`,
+          { packageProjectId: contextPackage.projectId, intentProjectId: verifiedIntent.projectId }
+        );
+      }
+      if (contextPackage.taskId !== verifiedIntent.taskId) {
+        throw new ExecutorContextBindingMismatchError(
+          `contextPackage taskId '${contextPackage.taskId}' does not match verified intent taskId '${verifiedIntent.taskId}'`,
+          { packageTaskId: contextPackage.taskId, intentTaskId: verifiedIntent.taskId }
+        );
+      }
+      if (contextPackage.taskRevision !== verifiedIntent.taskRevision) {
+        throw new ExecutorContextBindingMismatchError(
+          `contextPackage taskRevision ${contextPackage.taskRevision} does not match verified intent taskRevision ${verifiedIntent.taskRevision}`,
+          { packageTaskRevision: contextPackage.taskRevision, intentTaskRevision: verifiedIntent.taskRevision }
+        );
+      }
+      if (contextPackage.contextFingerprint !== verifiedIntent.contextFingerprint) {
+        throw new ExecutorContextBindingMismatchError(
+          `contextPackage contextFingerprint '${contextPackage.contextFingerprint}' does not match verified intent contextFingerprint '${verifiedIntent.contextFingerprint}'`,
+          { packageFingerprint: contextPackage.contextFingerprint, intentFingerprint: verifiedIntent.contextFingerprint }
+        );
+      }
+
+      // Verify internal hash integrity
+      const { packageId: expectedPkgId, contentHash: expectedContentHash } =
+        computeDeterministicContextPackageId({
+          projectId: contextPackage.projectId,
+          taskId: contextPackage.taskId,
+          taskRevision: contextPackage.taskRevision,
+          contextFingerprint: contextPackage.contextFingerprint,
+          taskContext: contextPackage.taskContext,
+          specContext: contextPackage.specContext,
+          codeContext: contextPackage.codeContext,
+          projectBaseline: contextPackage.projectBaseline,
+          recoveryContext: contextPackage.recoveryContext,
+        });
+
+      if (contextPackage.packageId !== expectedPkgId || contextPackage.contentHash !== expectedContentHash) {
+        throw new ExecutorContextIntegrityError(
+          `contextPackage contentHash or packageId integrity check failed. Expected packageId '${expectedPkgId}', found '${contextPackage.packageId}'. Context may be forged.`,
+          { expectedPackageId: expectedPkgId, actualPackageId: contextPackage.packageId }
+        );
+      }
+
+      // Revalidate freshness against authoritative AIDM state if contextService is available
+      if (this.contextService) {
+        const freshness = await this.contextService.validateContextPackage(contextPackage);
+        if (freshness.isStale) {
+          throw new ExecutorContextStaleError(
+            freshness.message ?? 'Supplied context package is stale',
+            freshness.details
+          );
+        }
+        if (!freshness.isValid) {
+          throw new ExecutorContextValidationError(
+            freshness.message ?? 'Supplied context package validation failed',
+            freshness.details
+          );
+        }
+      }
+    } else if (input.autoPackageContext ?? this.autoPackageContext) {
+      try {
+        contextPackage = await this.contextService.buildContextPackage({
+          taskId: verifiedIntent.taskId,
+          taskRevision: verifiedIntent.taskRevision,
+          projectId: verifiedIntent.projectId,
+          directorSessionId: verifiedIntent.directorSessionId,
+          contextFingerprint: verifiedIntent.contextFingerprint,
+          targetFiles: canonicalInstruction.targetFiles,
+          analysisScope: canonicalInstruction.analysisScope,
+          implementationScope: canonicalInstruction.implementationScope,
+          workingDirectory: targetDir,
+        });
+      } catch (err) {
+        if (verifiedIntent.operationType === 'IMPLEMENT_TASK') {
+          if (err instanceof ExecutorContextError) {
+            throw err;
+          }
+          throw new ExecutorContextSourceUnavailableError(
+            `Failed to construct authoritative context package for IMPLEMENT_TASK: ${err instanceof Error ? err.message : String(err)}`,
+            { error: err instanceof Error ? err.message : String(err), taskId: verifiedIntent.taskId }
+          );
+        }
+      }
+    }
+
+    // Fail closed: for IMPLEMENT_TASK, authoritative contextPackage is strictly required
+    if (verifiedIntent.operationType === 'IMPLEMENT_TASK' && !contextPackage) {
+      throw new ExecutorContextSourceUnavailableError(
+        'Authoritative ExecutorContextPackage is required for IMPLEMENT_TASK execution, but could not be resolved or constructed',
+        { taskId: verifiedIntent.taskId, projectId: verifiedIntent.projectId }
+      );
+    }
+
+    // 8. Compute Deterministic requestId incorporating contextPackageId
+    const hashingPayload: ExecutionRequestHashingPayload = {
       approvalPackageRevision: verifiedIntent.approvalPackageRevision,
       contextFingerprint: verifiedIntent.contextFingerprint,
       directorDecisionId: verifiedIntent.directorDecisionId,
@@ -769,29 +885,17 @@ export class ExecutionRequestBuilder {
       taskId: verifiedIntent.taskId,
       taskRevision: verifiedIntent.taskRevision,
       understandingRevision: verifiedIntent.understandingRevision,
+      ...(contextPackage ? { contextPackageId: contextPackage.packageId } : {}),
     };
 
     const requestId = computeDeterministicRequestId(hashingPayload);
 
-    // 7.5 Resolve Authoritative ExecutorContextPackage
-    let contextPackage: ExecutorContextPackage | undefined = input.contextPackage;
-    if (!contextPackage && (input.autoPackageContext ?? this.autoPackageContext)) {
-      try {
-        contextPackage = await this.contextService.buildContextPackage({
-          taskId: verifiedIntent.taskId,
-          taskRevision: verifiedIntent.taskRevision,
-          projectId: verifiedIntent.projectId,
-          requestId,
-          directorSessionId: verifiedIntent.directorSessionId,
-          contextFingerprint: verifiedIntent.contextFingerprint,
-          targetFiles: canonicalInstruction.targetFiles,
-          analysisScope: canonicalInstruction.analysisScope,
-          implementationScope: canonicalInstruction.implementationScope,
-          workingDirectory: targetDir,
-        });
-      } catch {
-        // Gracefully fallback if optional stores or test mocks do not provide full dependencies
-      }
+    // Bind requestId to contextPackage if not set
+    if (contextPackage && !contextPackage.requestId) {
+      contextPackage = Object.freeze({
+        ...contextPackage,
+        requestId,
+      });
     }
 
     if (contextPackage && this.contextService && targetDir) {
@@ -804,7 +908,7 @@ export class ExecutionRequestBuilder {
       }
     }
 
-    // 8. Formulate Complete ExecutionRequest Contract
+    // 9. Formulate Complete ExecutionRequest Contract
     const request: ExecutionRequest = Object.freeze({
       requestId,
       projectId: verifiedIntent.projectId,
@@ -827,7 +931,7 @@ export class ExecutionRequestBuilder {
       contextPackage,
     });
 
-    // 9. Validate against Zod schema
+    // 10. Validate against Zod schema
     const validatedRequest = ExecutionRequestZodSchema.parse(request) as ExecutionRequest;
     return Object.freeze(validatedRequest);
   }
@@ -865,8 +969,67 @@ export class ExecutionRequestBuilder {
       };
     }
 
+    // 1.5 Verify contextPackage schema, binding, and hash integrity if present
+    if (req.contextPackage) {
+      const cpResult = ExecutorContextPackageZodSchema.safeParse(req.contextPackage);
+      if (!cpResult.success) {
+        return {
+          isValid: false,
+          code: 'VALIDATION_ERROR',
+          message: `contextPackage schema validation failed: ${cpResult.error.issues[0]?.message ?? 'invalid context package'}`,
+          details: { issues: cpResult.error.issues },
+        };
+      }
+
+      const cp = cpResult.data as unknown as ExecutorContextPackage;
+      if (
+        cp.projectId !== req.projectId ||
+        cp.taskId !== req.taskId ||
+        cp.taskRevision !== req.taskRevision ||
+        cp.contextFingerprint !== req.contextFingerprint
+      ) {
+        return {
+          isValid: false,
+          code: 'VALIDATION_ERROR',
+          message: 'contextPackage bindings do not match ExecutionRequest identity',
+          details: {
+            packageProjectId: cp.projectId,
+            requestProjectId: req.projectId,
+            packageTaskId: cp.taskId,
+            requestTaskId: req.taskId,
+            packageTaskRevision: cp.taskRevision,
+            requestTaskRevision: req.taskRevision,
+            packageFingerprint: cp.contextFingerprint,
+            requestFingerprint: req.contextFingerprint,
+          },
+        };
+      }
+
+      const { packageId: expectedPkgId, contentHash: expectedContentHash } =
+        computeDeterministicContextPackageId({
+          projectId: cp.projectId,
+          taskId: cp.taskId,
+          taskRevision: cp.taskRevision,
+          contextFingerprint: cp.contextFingerprint,
+          taskContext: cp.taskContext,
+          specContext: cp.specContext,
+          codeContext: cp.codeContext,
+          projectBaseline: cp.projectBaseline,
+          recoveryContext: cp.recoveryContext,
+        });
+
+      if (cp.packageId !== expectedPkgId || cp.contentHash !== expectedContentHash) {
+        return {
+          isValid: false,
+          code: 'VALIDATION_ERROR',
+          message: `contextPackage contentHash or packageId integrity check failed. Expected '${expectedPkgId}', found '${cp.packageId}'.`,
+          details: { expectedPackageId: expectedPkgId, actualPackageId: cp.packageId },
+        };
+      }
+    }
+
     // 2. Verify deterministic hash integrity
-    const hashingPayload = {
+    const hashingPayload: ExecutionRequestHashingPayload = {
       approvalPackageRevision: req.approvalPackageRevision,
       contextFingerprint: req.contextFingerprint,
       directorDecisionId: req.directorDecisionId,
@@ -881,6 +1044,7 @@ export class ExecutionRequestBuilder {
       taskId: req.taskId,
       taskRevision: req.taskRevision,
       understandingRevision: req.understandingRevision,
+      ...(req.contextPackage ? { contextPackageId: req.contextPackage.packageId } : {}),
     };
 
     const expectedRequestId = computeDeterministicRequestId(hashingPayload);

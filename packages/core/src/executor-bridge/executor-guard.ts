@@ -34,6 +34,11 @@ import {
   ExecutorSecurityViolationError,
   ExecutionRequestValidationError,
 } from '../director/director-errors.js';
+import {
+  ExecutorContextValidationError,
+  ExecutorContextBindingMismatchError,
+  ExecutorContextIntegrityError,
+} from './executor-context-errors.js';
 
 // Shell metacharacters that must NEVER appear in request parameters or targetFiles
 // Notice: we check for characters like ; & | ` $ > < \0 \r \n
@@ -162,6 +167,7 @@ export class ExecutorGuard {
         taskId: req.taskId,
         taskRevision: req.taskRevision,
         understandingRevision: req.understandingRevision,
+        ...(req.contextPackage ? { contextPackageId: req.contextPackage.packageId } : {}),
       });
 
       if (req.requestId !== expectedId) {
@@ -176,7 +182,7 @@ export class ExecutorGuard {
     if (req.contextPackage) {
       const cpResult = ExecutorContextPackageZodSchema.safeParse(req.contextPackage);
       if (!cpResult.success) {
-        throw new ExecutorPreconditionError(
+        throw new ExecutorContextValidationError(
           `ExecutionRequest.contextPackage schema validation failed: ${cpResult.error.issues[0]?.message ?? 'invalid context package'}`,
           { code: 'ERR_CONTEXT_PACKAGE_INVALID', issues: cpResult.error.issues }
         );
@@ -184,25 +190,25 @@ export class ExecutorGuard {
 
       const cp = cpResult.data;
       if (cp.projectId !== req.projectId) {
-        throw new ExecutorPreconditionError(
+        throw new ExecutorContextBindingMismatchError(
           `contextPackage projectId '${cp.projectId}' does not match ExecutionRequest projectId '${req.projectId}'`,
           { code: 'ERR_CONTEXT_PACKAGE_BINDING_MISMATCH', packageProjectId: cp.projectId, requestProjectId: req.projectId }
         );
       }
       if (cp.taskId !== req.taskId) {
-        throw new ExecutorPreconditionError(
+        throw new ExecutorContextBindingMismatchError(
           `contextPackage taskId '${cp.taskId}' does not match ExecutionRequest taskId '${req.taskId}'`,
           { code: 'ERR_CONTEXT_PACKAGE_BINDING_MISMATCH', packageTaskId: cp.taskId, requestTaskId: req.taskId }
         );
       }
       if (cp.taskRevision !== req.taskRevision) {
-        throw new ExecutorPreconditionError(
+        throw new ExecutorContextBindingMismatchError(
           `contextPackage taskRevision ${cp.taskRevision} does not match ExecutionRequest taskRevision ${req.taskRevision}`,
           { code: 'ERR_CONTEXT_PACKAGE_BINDING_MISMATCH', packageTaskRevision: cp.taskRevision, requestTaskRevision: req.taskRevision }
         );
       }
       if (cp.contextFingerprint !== req.contextFingerprint) {
-        throw new ExecutorPreconditionError(
+        throw new ExecutorContextBindingMismatchError(
           `contextPackage contextFingerprint '${cp.contextFingerprint}' does not match ExecutionRequest contextFingerprint '${req.contextFingerprint}'`,
           { code: 'ERR_CONTEXT_PACKAGE_BINDING_MISMATCH', packageFingerprint: cp.contextFingerprint, requestFingerprint: req.contextFingerprint }
         );
@@ -224,7 +230,7 @@ export class ExecutorGuard {
           });
 
         if (cp.packageId !== expectedPackageId || cp.contentHash !== expectedContentHash) {
-          throw new ExecutorPreconditionError(
+          throw new ExecutorContextIntegrityError(
             `contextPackage contentHash or packageId integrity check failed. Expected packageId '${expectedPackageId}', found '${cp.packageId}'. Context may be forged.`,
             { code: 'ERR_CONTEXT_PACKAGE_FORGERY_DETECTED', expectedPackageId, actualPackageId: cp.packageId }
           );

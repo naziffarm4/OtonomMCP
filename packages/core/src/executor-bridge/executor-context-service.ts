@@ -683,8 +683,33 @@ export class ExecutorContextService {
     const workingDir = path.resolve(pkg.projectBaseline.projectRoot);
     let isStale = false;
     const staleFiles: string[] = [];
+    const staleReasons: string[] = [];
 
-    // Check target file hashes on disk
+    // 1. Package Internal Hash Integrity Check
+    const { packageId: expectedPkgId, contentHash: expectedContentHash } =
+      computeDeterministicContextPackageId({
+        projectId: pkg.projectId,
+        taskId: pkg.taskId,
+        taskRevision: pkg.taskRevision,
+        contextFingerprint: pkg.contextFingerprint,
+        taskContext: pkg.taskContext,
+        specContext: pkg.specContext,
+        codeContext: pkg.codeContext,
+        projectBaseline: pkg.projectBaseline,
+        recoveryContext: pkg.recoveryContext,
+      });
+
+    if (pkg.packageId !== expectedPkgId || pkg.contentHash !== expectedContentHash) {
+      return {
+        isValid: false,
+        packageId: pkg.packageId,
+        isStale: true,
+        message: `Context package internal hash integrity failed. Expected packageId '${expectedPkgId}', found '${pkg.packageId}'. Context may be forged.`,
+        details: { expectedPackageId: expectedPkgId, actualPackageId: pkg.packageId },
+      };
+    }
+
+    // 2. Check target file hashes on disk
     for (const fileStruct of pkg.codeContext.targetFileStructures) {
       if (fileStruct.sha256 === 'NEW_FILE') {
         continue;
@@ -707,12 +732,92 @@ export class ExecutorContextService {
       }
     }
 
+    // 3. Authoritative SpecStore Revalidation (Task revision, Requirements, Decisions)
+    if (this.specStore) {
+      try {
+        const tasks = await this.specStore.loadTasks().catch(() => [] as TaskDefinition[]);
+        const currentTask = tasks.find((t) => t.task_id === pkg.taskId);
+        if (currentTask) {
+          const authoritativeTaskRevision = (currentTask.metadata?.revision as number | undefined) ?? 1;
+          if (authoritativeTaskRevision !== pkg.taskRevision) {
+            isStale = true;
+            staleReasons.push(
+              `Task revision in SpecStore changed: expected ${pkg.taskRevision}, found ${authoritativeTaskRevision}`
+            );
+          }
+        }
+
+        if (pkg.specContext.requirements.length > 0 || pkg.specContext.decisions.length > 0) {
+          const [allReqs, allDecs] = await Promise.all([
+            this.specStore.loadRequirements().catch(() => [] as Requirement[]),
+            this.specStore.loadDecisions().catch(() => [] as Decision[]),
+          ]);
+
+          for (const pkgReq of pkg.specContext.requirements) {
+            const currentReq = allReqs.find((r) => r.id === pkgReq.id);
+            if (!currentReq) {
+              isStale = true;
+              staleReasons.push(`Requirement '${pkgReq.id}' no longer present in SpecStore`);
+            } else if (
+              currentReq.title !== pkgReq.title ||
+              currentReq.description !== pkgReq.description ||
+              currentReq.authority !== pkgReq.authority
+            ) {
+              isStale = true;
+              staleReasons.push(`Requirement '${pkgReq.id}' in SpecStore has been modified`);
+            }
+          }
+
+          for (const pkgDec of pkg.specContext.decisions) {
+            const currentDec = allDecs.find((d) => d.id === pkgDec.id);
+            if (!currentDec) {
+              isStale = true;
+              staleReasons.push(`Decision '${pkgDec.id}' no longer present in SpecStore`);
+            } else if (
+              currentDec.title !== pkgDec.title ||
+              currentDec.description !== pkgDec.description ||
+              currentDec.status !== pkgDec.status ||
+              currentDec.rationale !== pkgDec.rationale
+            ) {
+              isStale = true;
+              staleReasons.push(`Decision '${pkgDec.id}' in SpecStore has been modified`);
+            }
+          }
+        }
+      } catch (err) {
+        // Non-blocking SpecStore inspection error
+      }
+    }
+
+    // 4. Authoritative Git Baseline Revalidation
+    if (this.gitPort) {
+      try {
+        const gitState = await this.gitPort.inspectState(workingDir);
+        const currentHead = gitState.head_sha ?? gitState.headSha;
+        if (
+          currentHead &&
+          pkg.projectBaseline.repositoryState.baseCommit !== '0000000000000000000000000000000000000000' &&
+          currentHead !== pkg.projectBaseline.repositoryState.baseCommit
+        ) {
+          isStale = true;
+          staleReasons.push(
+            `Git HEAD commit changed: expected ${pkg.projectBaseline.repositoryState.baseCommit}, found ${currentHead}`
+          );
+        }
+      } catch {
+        // Non-blocking git inspection error
+      }
+    }
+
+    const allStaleItems = [...staleFiles, ...staleReasons];
+    const finalStale = isStale || allStaleItems.length > 0;
+
     return {
       isValid: true,
       packageId: pkg.packageId,
-      isStale,
-      message: isStale ? `Context is stale: ${staleFiles.join(', ')}` : 'Context is fresh and valid',
-      details: { staleFiles },
+      isStale: finalStale,
+      message: finalStale ? `Context is stale: ${allStaleItems.join(', ')}` : 'Context is fresh and valid',
+      details: { staleFiles, staleReasons: allStaleItems },
     };
   }
 

@@ -27,6 +27,10 @@ import {
   ExecutorContextPackageZodSchema,
   ExecutorContextValidationError,
   ExecutorContextStaleError,
+  ExecutorContextBindingMismatchError,
+  ExecutorContextIntegrityError,
+  ExecutorContextSourceUnavailableError,
+  computeDeterministicContextPackageId,
   ExecutorGuard,
   ExecutorPreconditionError,
   SpecStore,
@@ -673,7 +677,10 @@ describe('Authoritative Executor Context Pipeline', () => {
       protocolVersion: 'P10-02',
       schemaVersion: 1,
     };
-    const requestId = computeDeterministicRequestId(mockPayload);
+    const requestId = computeDeterministicRequestId({
+      ...mockPayload,
+      contextPackageId: pkg.packageId,
+    });
     const mockRequest: any = {
       ...mockPayload,
       requestId,
@@ -973,7 +980,10 @@ describe('Authoritative Executor Context Pipeline', () => {
     };
     const validRequest: any = {
       ...validPayload,
-      requestId: computeDeterministicRequestId(validPayload),
+      requestId: computeDeterministicRequestId({
+        ...validPayload,
+        contextPackageId: forgedPkg.packageId,
+      }),
       contextPackage: forgedPkg,
     };
 
@@ -1167,5 +1177,546 @@ describe('Authoritative Executor Context Pipeline', () => {
     assert.ok(prompt.includes('- package.json'));
     assert.ok(prompt.includes('IMPLEMENTATION SCOPE:'));
     assert.ok(prompt.includes('- src/user-service.ts'));
+  });
+
+  it('T24: A caller-modified context with recomputed packageId/contentHash is rejected by ExecutorGuard', async () => {
+    const genuinePkg = await service.buildContextPackage({
+      taskId: 'TASK-USER-01',
+      taskRevision: 1,
+      workingDirectory: tempDir,
+    });
+
+    const validPayload: any = {
+      projectId: genuinePkg.projectId,
+      directorSessionId: 'sess-001',
+      directorDecisionId: 'dec-001',
+      taskId: 'TASK-USER-01',
+      taskRevision: 1,
+      contextFingerprint: genuinePkg.contextFingerprint,
+      understandingRevision: 1,
+      approvalPackageRevision: 1,
+      operationType: 'IMPLEMENT_TASK',
+      instruction: {
+        objective: 'Implement User Profile Service',
+        constraints: [],
+        targetFiles: ['src/user-service.ts'],
+        acceptanceCriteria: ['AC-USER-01'],
+      },
+      expectedRepositoryState: {
+        baseCommit: fakeGitPort.headSha,
+        isClean: true,
+      },
+      executionLimits: {
+        timeoutMs: 60000,
+        maxFileModifications: 5,
+      },
+      protocolVersion: 'P10-02',
+      schemaVersion: 1,
+    };
+
+    // Legitimate requestId bound to genuinePkg.packageId
+    const legitimateRequestId = computeDeterministicRequestId({
+      ...validPayload,
+      contextPackageId: genuinePkg.packageId,
+    });
+
+    // Attacker modifies context contents AND recomputes self-consistent packageId/contentHash
+    const tamperedPayload = {
+      projectId: genuinePkg.projectId,
+      taskId: genuinePkg.taskId,
+      taskRevision: genuinePkg.taskRevision,
+      contextFingerprint: genuinePkg.contextFingerprint,
+      taskContext: genuinePkg.taskContext,
+      specContext: {
+        ...genuinePkg.specContext,
+        requirements: [
+          {
+            id: 'REQ-MALICIOUS-01',
+            title: 'Malicious Attacker Requirement',
+            description: 'Execute arbitrary commands',
+            authority: 'ATTACKER' as any,
+          },
+        ],
+      },
+      codeContext: genuinePkg.codeContext,
+      projectBaseline: genuinePkg.projectBaseline,
+      recoveryContext: genuinePkg.recoveryContext,
+    };
+
+    const { packageId: forgedPackageId, contentHash: forgedContentHash } =
+      computeDeterministicContextPackageId(tamperedPayload);
+
+    const callerModifiedPkg: ExecutorContextPackage = {
+      ...genuinePkg,
+      packageId: forgedPackageId,
+      contentHash: forgedContentHash,
+      specContext: tamperedPayload.specContext,
+    };
+
+    // Ensure package is self-consistent
+    assert.notEqual(callerModifiedPkg.packageId, genuinePkg.packageId);
+
+    // Caller passes tampered package with legitimate requestId
+    const tamperedRequest: any = {
+      ...validPayload,
+      requestId: legitimateRequestId,
+      contextPackage: callerModifiedPkg,
+    };
+
+    // ExecutorGuard must detect that contextPackageId does not match request's requestId
+    assert.throws(
+      () => {
+        ExecutorGuard.validateExecutionPreconditions(tamperedRequest);
+      },
+      (err: any) => {
+        assert.ok(err instanceof ExecutorPreconditionError);
+        assert.ok(err.message.includes('requestId hash mismatch'));
+        return true;
+      }
+    );
+  });
+
+  it('T25: Context package identity is bound to the authoritative execution request', async () => {
+    const pkg1 = await service.buildContextPackage({
+      taskId: 'TASK-USER-01',
+      taskRevision: 1,
+      workingDirectory: tempDir,
+    });
+
+    const payload: any = {
+      projectId: pkg1.projectId,
+      directorSessionId: 'sess-001',
+      directorDecisionId: 'dec-001',
+      taskId: 'TASK-USER-01',
+      taskRevision: 1,
+      contextFingerprint: pkg1.contextFingerprint,
+      understandingRevision: 1,
+      approvalPackageRevision: 1,
+      operationType: 'IMPLEMENT_TASK',
+      instruction: {
+        objective: 'Implement User Profile Service',
+        constraints: [],
+        targetFiles: ['src/user-service.ts'],
+        acceptanceCriteria: ['AC-USER-01'],
+      },
+      expectedRepositoryState: {
+        baseCommit: fakeGitPort.headSha,
+        isClean: true,
+      },
+      executionLimits: {
+        timeoutMs: 60000,
+        maxFileModifications: 5,
+      },
+      protocolVersion: 'P10-02',
+      schemaVersion: 1,
+    };
+
+    const reqId1 = computeDeterministicRequestId({
+      ...payload,
+      contextPackageId: pkg1.packageId,
+    });
+
+    const reqIdWithoutContext = computeDeterministicRequestId(payload);
+
+    // Request ID with contextPackageId must differ from request ID without it
+    assert.notEqual(reqId1, reqIdWithoutContext);
+
+    // ContextPackage is strictly verified against requestId
+    const validReq: any = {
+      ...payload,
+      requestId: reqId1,
+      contextPackage: pkg1,
+    };
+    const validated = ExecutorGuard.validateExecutionPreconditions(validReq);
+    assert.equal(validated.requestId, reqId1);
+  });
+
+  it('T26: Changing authoritative context causes execution request to produce a new deterministic identity', async () => {
+    const pkg1 = await service.buildContextPackage({
+      taskId: 'TASK-USER-01',
+      projectId: 'test-project',
+      taskRevision: 1,
+      workingDirectory: tempDir,
+    });
+
+    // Update specStore with a modified requirement
+    await specStore.saveRequirements([
+      {
+        id: 'REQ-AUTH-01',
+        title: 'User Profile Contract V2 - Enhanced',
+        description: 'The user profile must contain strictly typed id, username, email, and audit fields.',
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      },
+    ]);
+
+    const pkg2 = await service.buildContextPackage({
+      taskId: 'TASK-USER-01',
+      projectId: 'test-project',
+      taskRevision: 1,
+      workingDirectory: tempDir,
+    });
+
+    assert.notEqual(pkg1.packageId, pkg2.packageId);
+    assert.notEqual(pkg1.contentHash, pkg2.contentHash);
+
+    const payload: any = {
+      projectId: 'test-project',
+      directorSessionId: 'sess-001',
+      directorDecisionId: 'dec-001',
+      taskId: 'TASK-USER-01',
+      taskRevision: 1,
+      contextFingerprint: pkg1.contextFingerprint,
+      understandingRevision: 1,
+      approvalPackageRevision: 1,
+      operationType: 'IMPLEMENT_TASK',
+      instruction: {
+        objective: 'Implement User Profile Service',
+        constraints: [],
+        targetFiles: ['src/user-service.ts'],
+        acceptanceCriteria: ['AC-USER-01'],
+      },
+      expectedRepositoryState: {
+        baseCommit: fakeGitPort.headSha,
+        isClean: true,
+      },
+      executionLimits: {
+        timeoutMs: 60000,
+        maxFileModifications: 5,
+      },
+      protocolVersion: 'P10-02',
+      schemaVersion: 1,
+    };
+
+    const reqId1 = computeDeterministicRequestId({ ...payload, contextPackageId: pkg1.packageId });
+    const reqId2 = computeDeterministicRequestId({ ...payload, contextPackageId: pkg2.packageId });
+
+    assert.notEqual(reqId1, reqId2);
+  });
+
+  it('T27: A changed authoritative requirement/decision cannot silently reuse old context package', async () => {
+    const originalPkg = await service.buildContextPackage({
+      taskId: 'TASK-USER-01',
+      taskRevision: 1,
+      workingDirectory: tempDir,
+    });
+
+    // Verify package is originally fresh
+    const initialCheck = await service.validateContextPackage(originalPkg);
+    assert.equal(initialCheck.isValid, true);
+    assert.equal(initialCheck.isStale, false);
+
+    // Modify authoritative requirement in SpecStore
+    await specStore.saveRequirements([
+      {
+        id: 'REQ-AUTH-01',
+        title: 'MODIFIED Requirement Title',
+        description: 'Changed description requiring MFA verification',
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      },
+    ]);
+
+    // Validation must immediately detect the authoritative state change
+    const updatedCheck = await service.validateContextPackage(originalPkg);
+    assert.equal(updatedCheck.isValid, true);
+    assert.equal(updatedCheck.isStale, true);
+    assert.ok(updatedCheck.message?.includes('modified'));
+
+    // Adapter dispatch using the stale context must fail-closed
+    const adapter = new AntigravityAdapter({
+      workspaceRoot: tempDir,
+      contextService: service,
+      validateContextFreshness: true,
+    });
+
+    const staleRequest: any = {
+      projectId: originalPkg.projectId,
+      directorSessionId: 'sess-001',
+      directorDecisionId: 'dec-001',
+      taskId: 'TASK-USER-01',
+      taskRevision: 1,
+      contextFingerprint: originalPkg.contextFingerprint,
+      understandingRevision: 1,
+      approvalPackageRevision: 1,
+      operationType: 'IMPLEMENT_TASK',
+      instruction: {
+        objective: 'Implement User Profile Service',
+        constraints: [],
+        targetFiles: ['src/user-service.ts'],
+        acceptanceCriteria: ['AC-USER-01'],
+      },
+      expectedRepositoryState: {
+        baseCommit: fakeGitPort.headSha,
+        isClean: true,
+      },
+      executionLimits: {
+        timeoutMs: 60000,
+        maxFileModifications: 5,
+      },
+      protocolVersion: 'P10-02',
+      schemaVersion: 1,
+      requestId: computeDeterministicRequestId({
+        projectId: originalPkg.projectId,
+        directorSessionId: 'sess-001',
+        directorDecisionId: 'dec-001',
+        taskId: 'TASK-USER-01',
+        taskRevision: 1,
+        contextFingerprint: originalPkg.contextFingerprint,
+        understandingRevision: 1,
+        approvalPackageRevision: 1,
+        operationType: 'IMPLEMENT_TASK',
+        instruction: {
+          objective: 'Implement User Profile Service',
+          constraints: [],
+          targetFiles: ['src/user-service.ts'],
+          acceptanceCriteria: ['AC-USER-01'],
+        },
+        expectedRepositoryState: {
+          baseCommit: fakeGitPort.headSha,
+          isClean: true,
+        },
+        executionLimits: {
+          timeoutMs: 60000,
+          maxFileModifications: 5,
+        },
+        protocolVersion: 'P10-02',
+        schemaVersion: 1,
+        contextPackageId: originalPkg.packageId,
+      }),
+      contextPackage: originalPkg,
+    };
+
+    await assert.rejects(
+      async () => {
+        await adapter.executeExecutionRequest(staleRequest);
+      },
+      (err: any) => {
+        assert.ok(err instanceof ExecutorContextStaleError);
+        assert.ok(err.message.includes('modified') || err.message.includes('stale'));
+        return true;
+      }
+    );
+  });
+
+  it('T28: Context construction failure prevents executor dispatch and does not invoke Antigravity', async () => {
+    let invokerCalls = 0;
+    const failingService = new ExecutorContextService({ workspaceRoot: tempDir });
+    // Force buildContextPackage to throw
+    failingService.buildContextPackage = async () => {
+      throw new Error('Database connection to SpecStore lost');
+    };
+
+    const adapter = new AntigravityAdapter({
+      workspaceRoot: tempDir,
+      contextService: failingService,
+      autoResolveContext: true,
+      requestInvoker: async () => {
+        invokerCalls++;
+        return { exitCode: 0, stdout: 'should not run' };
+      },
+    });
+
+    const requestWithoutContext: any = {
+      projectId: 'test-project',
+      directorSessionId: 'sess-001',
+      directorDecisionId: 'dec-001',
+      taskId: 'TASK-USER-01',
+      taskRevision: 1,
+      contextFingerprint: 'ctx-fp-fail',
+      understandingRevision: 1,
+      approvalPackageRevision: 1,
+      operationType: 'IMPLEMENT_TASK',
+      instruction: {
+        objective: 'Implement User Profile Service',
+        constraints: [],
+        targetFiles: ['src/user-service.ts'],
+        acceptanceCriteria: ['AC-USER-01'],
+      },
+      expectedRepositoryState: {
+        baseCommit: fakeGitPort.headSha,
+        isClean: true,
+      },
+      executionLimits: {
+        timeoutMs: 60000,
+        maxFileModifications: 5,
+      },
+      protocolVersion: 'P10-02',
+      schemaVersion: 1,
+      requestId: computeDeterministicRequestId({
+        projectId: 'test-project',
+        directorSessionId: 'sess-001',
+        directorDecisionId: 'dec-001',
+        taskId: 'TASK-USER-01',
+        taskRevision: 1,
+        contextFingerprint: 'ctx-fp-fail',
+        understandingRevision: 1,
+        approvalPackageRevision: 1,
+        operationType: 'IMPLEMENT_TASK',
+        instruction: {
+          objective: 'Implement User Profile Service',
+          constraints: [],
+          targetFiles: ['src/user-service.ts'],
+          acceptanceCriteria: ['AC-USER-01'],
+        },
+        expectedRepositoryState: {
+          baseCommit: fakeGitPort.headSha,
+          isClean: true,
+        },
+        executionLimits: {
+          timeoutMs: 60000,
+          maxFileModifications: 5,
+        },
+        protocolVersion: 'P10-02',
+        schemaVersion: 1,
+      }),
+    };
+
+    await assert.rejects(
+      async () => {
+        await adapter.executeExecutionRequest(requestWithoutContext);
+      },
+      (err: any) => {
+        assert.ok(err instanceof ExecutorContextSourceUnavailableError);
+        return true;
+      }
+    );
+
+    assert.equal(invokerCalls, 0, 'Antigravity must never be invoked when context construction fails');
+  });
+
+  it('T29: Context construction failure does not silently produce an ExecutionRequest without context (Fail Closed)', async () => {
+    const failingService = new ExecutorContextService({ workspaceRoot: tempDir });
+    failingService.buildContextPackage = async () => {
+      throw new Error('Authoritative SpecStore unavailable');
+    };
+
+    const testBuilder = new ExecutionRequestBuilder({
+      workspaceRoot: tempDir,
+      gitPort: fakeGitPort,
+      specStore,
+      contextService: failingService,
+      autoPackageContext: true,
+      authorizer: {
+        validateExecutionIntent: async () => ({
+          isValid: true,
+          code: 'VALID',
+          message: 'Authorized',
+          intent: {
+            intentId: 'intent-fail-closed-01',
+            projectId: 'test-project',
+            directorSessionId: 'sess-001',
+            directorDecisionId: 'dec-001',
+            taskId: 'TASK-USER-01',
+            taskRevision: 1,
+            contextFingerprint: 'ctx-fp-123',
+            understandingRevision: 1,
+            approvalPackageRevision: 1,
+            operationType: 'IMPLEMENT_TASK',
+            protocolVersion: 'P9-03',
+            schemaVersion: 1,
+            createdAt: new Date().toISOString(),
+          } as any,
+        }),
+      } as any,
+    });
+
+    await assert.rejects(
+      async () => {
+        await testBuilder.buildExecutionRequest({
+          intent: {
+            intentId: 'intent-fail-closed-01',
+            projectId: 'test-project',
+            directorSessionId: 'sess-001',
+            directorDecisionId: 'dec-001',
+            taskId: 'TASK-USER-01',
+            taskRevision: 1,
+            contextFingerprint: 'ctx-fp-123',
+            understandingRevision: 1,
+            approvalPackageRevision: 1,
+            operationType: 'IMPLEMENT_TASK',
+            protocolVersion: 'P9-03',
+            schemaVersion: 1,
+            createdAt: new Date().toISOString(),
+          } as any,
+        });
+      },
+      (err: any) => {
+        assert.ok(err instanceof ExecutorContextSourceUnavailableError);
+        return true;
+      }
+    );
+  });
+
+  it('T30: Antigravity is never invoked when required context validation fails', async () => {
+    let invokerCalled = false;
+    const pkg = await service.buildContextPackage({
+      taskId: 'TASK-USER-01',
+      projectId: 'test-project',
+      workingDirectory: tempDir,
+    });
+
+    const adapter = new AntigravityAdapter({
+      workspaceRoot: tempDir,
+      contextService: service,
+      validateContextFreshness: true,
+      requestInvoker: async () => {
+        invokerCalled = true;
+        return { exitCode: 0, stdout: 'invoked' };
+      },
+    });
+
+    const validPayload: any = {
+      projectId: 'test-project',
+      directorSessionId: 'sess-001',
+      directorDecisionId: 'dec-001',
+      taskId: 'TASK-USER-01',
+      taskRevision: 1,
+      contextFingerprint: pkg.contextFingerprint,
+      understandingRevision: 1,
+      approvalPackageRevision: 1,
+      operationType: 'IMPLEMENT_TASK',
+      instruction: {
+        objective: 'Implement User Profile Service',
+        constraints: [],
+        targetFiles: ['src/user-service.ts'],
+        acceptanceCriteria: ['AC-USER-01'],
+      },
+      expectedRepositoryState: {
+        baseCommit: fakeGitPort.headSha,
+        isClean: true,
+      },
+      executionLimits: {
+        timeoutMs: 60000,
+        maxFileModifications: 5,
+      },
+      protocolVersion: 'P10-02',
+      schemaVersion: 1,
+    };
+
+    const request: any = {
+      ...validPayload,
+      requestId: computeDeterministicRequestId({
+        ...validPayload,
+        contextPackageId: pkg.packageId,
+      }),
+      contextPackage: pkg,
+    };
+
+    // Stale the target file
+    const targetFile = path.join(tempDir, 'src', 'user-service.ts');
+    fs.writeFileSync(targetFile, '// Stale file mutation');
+
+    await assert.rejects(
+      async () => {
+        await adapter.executeExecutionRequest(request);
+      },
+      (err: any) => {
+        assert.ok(err instanceof ExecutorContextStaleError);
+        return true;
+      }
+    );
+
+    assert.equal(invokerCalled, false, 'Invoker must not be called when context is stale');
   });
 });

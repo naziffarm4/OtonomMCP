@@ -131,6 +131,25 @@ export interface ExecutionRequest {
   readonly contextPackage?: ExecutorContextPackage;
 }
 
+export interface ExecutionRequestHashingPayload {
+  readonly approvalPackageRevision: number;
+  readonly contextFingerprint: string;
+  readonly directorDecisionId: string;
+  readonly directorSessionId: string;
+  readonly executionLimits: ExecutionLimits;
+  readonly expectedRepositoryState: ExpectedRepositoryState;
+  readonly instruction: ExecutionInstruction;
+  readonly operationType: string;
+  readonly projectId: string;
+  readonly protocolVersion: string;
+  readonly schemaVersion: number;
+  readonly taskId: string;
+  readonly taskRevision: number;
+  readonly understandingRevision: number;
+  readonly contextPackageId?: string;
+}
+
+
 // ============================================================================
 // 3. BUILD INPUT CONTRACT
 // ============================================================================

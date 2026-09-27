@@ -4,11 +4,12 @@
  * Typed error hierarchy for the authoritative context-to-executor pipeline.
  */
 
-import { AidmError } from '../errors/aidm-error.js';
+import { ExecutorPreconditionError } from '../director/director-errors.js';
 
-export class ExecutorContextError extends AidmError {
+export class ExecutorContextError extends ExecutorPreconditionError {
   constructor(message: string, code = 'ERR_EXECUTOR_CONTEXT', details?: Record<string, unknown>) {
-    super(message, code, details);
+    super(message, { code, ...details });
+    (this as any).code = code;
     this.name = 'ExecutorContextError';
   }
 }
@@ -40,3 +41,22 @@ export class ExecutorContextBudgetExceededError extends ExecutorContextError {
     this.name = 'ExecutorContextBudgetExceededError';
   }
 }
+
+export class ExecutorContextBindingMismatchError extends ExecutorContextError {
+  constructor(message: string, details?: Record<string, unknown>) {
+    super(message, 'ERR_CONTEXT_PACKAGE_BINDING_MISMATCH', details);
+    this.name = 'ExecutorContextBindingMismatchError';
+  }
+}
+
+export class ExecutorContextIntegrityError extends ExecutorContextError {
+  constructor(message: string, details?: Record<string, unknown>) {
+    super(
+      message,
+      (details?.code as string | undefined) ?? 'ERR_CONTEXT_PACKAGE_INTEGRITY_FAILED',
+      details
+    );
+    this.name = 'ExecutorContextIntegrityError';
+  }
+}
+
