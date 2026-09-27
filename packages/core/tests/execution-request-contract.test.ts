@@ -1699,7 +1699,7 @@ describe('Deterministic Execution Request Contract (Phase 10 TASK-P10-02)', () =
     assert.deepStrictEqual(pkgAfter, pkgBefore);
   });
 
-  it('T57: AntigravityAdapter translates ExecutionRequest with Adaptive Targeted Analysis policy in prompt', async () => {
+  it('T57: AntigravityAdapter translates ExecutionRequest without obsolete analysis policy (autonomous workflow)', async () => {
     const request = await builder.buildExecutionRequest({
       intent: sampleIntent,
       instruction: {
@@ -1714,53 +1714,51 @@ describe('Deterministic Execution Request Contract (Phase 10 TASK-P10-02)', () =
 
     assert.ok(payload.structuredPrompt, 'Structured prompt must be generated');
 
-    // 1. Policy header
+    // 1. Obsolete policy header must NOT be present
     assert.ok(
-      payload.structuredPrompt.includes('ADAPTIVE TARGETED ANALYSIS POLICY:'),
-      'Must contain Adaptive Targeted Analysis Policy header'
+      !payload.structuredPrompt.includes('ADAPTIVE TARGETED ANALYSIS POLICY:'),
+      'Must NOT contain obsolete Adaptive Targeted Analysis Policy header'
     );
 
-    // 2. Targeted analysis
+    // 2. No sequential file reading restriction
     assert.ok(
-      payload.structuredPrompt.includes('Targeted Analysis') &&
-      payload.structuredPrompt.includes('Do not read entire files sequentially'),
-      'Must instruct targeted symbol/local behavior analysis rather than sequential file reading'
+      !payload.structuredPrompt.includes('Do not read entire files sequentially'),
+      'Must NOT instruct or restrict how the executor reads files'
     );
 
-    // 3. Dependency & flow tracing
+    // 3. No dependency & flow tracing commands
     assert.ok(
-      payload.structuredPrompt.includes('Dependency & Flow Tracing') &&
-      payload.structuredPrompt.includes('callers/callees') &&
-      payload.structuredPrompt.includes('data/state flow'),
-      'Must instruct dependency and data/state flow tracing'
+      !payload.structuredPrompt.includes('Dependency & Flow Tracing') &&
+      !payload.structuredPrompt.includes('Follow callers/callees'),
+      'Must NOT dictate executor tracing workflow'
     );
 
-    // 4. Context reuse
+    // 4. No context reuse reasoning commands
     assert.ok(
-      payload.structuredPrompt.includes('Context Reuse') &&
-      payload.structuredPrompt.includes('reuse the finding without re-reading'),
-      'Must instruct context reuse without re-reading previously analyzed code'
+      !payload.structuredPrompt.includes('Context Reuse') &&
+      !payload.structuredPrompt.includes('reuse the finding without re-reading'),
+      'Must NOT dictate executor memory or reuse reasoning'
     );
 
-    // 5. Cycle protection
+    // 5. No cycle protection or loop detection error requirements
     assert.ok(
-      payload.structuredPrompt.includes('Cycle Protection') &&
-      payload.structuredPrompt.includes('ANALYSIS_LOOP_DETECTED'),
-      'Must instruct cycle protection and loop detection'
+      !payload.structuredPrompt.includes('ANALYSIS_LOOP_DETECTED'),
+      'Must NOT inject ANALYSIS_LOOP_DETECTED into prompt'
     );
 
-    // 6. Sufficient-context stop
+    // 6. No sufficient-context stop commands
     assert.ok(
-      payload.structuredPrompt.includes('Sufficient-Context Stop') &&
-      payload.structuredPrompt.includes('STOP reading and implement'),
-      'Must instruct stopping analysis once sufficient context exists'
+      !payload.structuredPrompt.includes('Sufficient-Context Stop') &&
+      !payload.structuredPrompt.includes('STOP reading and implement'),
+      'Must NOT inject reasoning stop instructions'
     );
 
-    // 7. Correctness over premature token optimization
+    // 7. No replacement reasoning workflow
     assert.ok(
-      payload.structuredPrompt.includes('Correctness Over Minimization') &&
-      payload.structuredPrompt.includes('Do not skip necessary analysis'),
-      'Must instruct prioritizing correctness over token minimization'
+      !payload.structuredPrompt.includes('Correctness Over Minimization') &&
+      !payload.structuredPrompt.includes('First analyze') &&
+      !payload.structuredPrompt.includes('Then inspect'),
+      'Must NOT inject any replacement reasoning script'
     );
   });
 
@@ -2172,19 +2170,16 @@ describe('Deterministic Execution Request Contract (Phase 10 TASK-P10-02)', () =
       const targetIdx = prompt.indexOf('TARGET FILES:');
       const analysisIdx = prompt.indexOf('ANALYSIS SCOPE:');
       const implIdx = prompt.indexOf('IMPLEMENTATION SCOPE:');
-      const policyIdx = prompt.indexOf('ADAPTIVE TARGETED ANALYSIS POLICY:');
 
       assert.ok(targetIdx !== -1);
       assert.ok(analysisIdx !== -1);
       assert.ok(implIdx !== -1);
-      assert.ok(policyIdx !== -1);
 
       assert.ok(targetIdx < analysisIdx);
       assert.ok(analysisIdx < implIdx);
-      assert.ok(implIdx < policyIdx);
     });
 
-    it('D11: Existing adaptive targeted analysis policy remains present', async () => {
+    it('D11: Obsolete adaptive targeted analysis policy is removed and not injected', async () => {
       const req = await builder.buildExecutionRequest({
         intent: sampleIntent,
         instruction: {
@@ -2196,9 +2191,10 @@ describe('Deterministic Execution Request Contract (Phase 10 TASK-P10-02)', () =
       });
 
       const translated = adapter.translateExecutionRequest(req);
-      assert.ok(translated.structuredPrompt.includes('ADAPTIVE TARGETED ANALYSIS POLICY:'));
-      assert.ok(translated.structuredPrompt.includes('1. Targeted Analysis:'));
-      assert.ok(translated.structuredPrompt.includes('5. Sufficient-Context Stop:'));
+      assert.ok(!translated.structuredPrompt.includes('ADAPTIVE TARGETED ANALYSIS POLICY:'));
+      assert.ok(!translated.structuredPrompt.includes('1. Targeted Analysis:'));
+      assert.ok(!translated.structuredPrompt.includes('5. Sufficient-Context Stop:'));
+      assert.ok(!translated.structuredPrompt.includes('ANALYSIS_LOOP_DETECTED'));
     });
 
     it('D12: Existing safety boundary behavior remains unchanged (no bypass flags)', async () => {

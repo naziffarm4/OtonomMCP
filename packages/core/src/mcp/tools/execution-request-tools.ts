@@ -145,6 +145,11 @@ export function createExecutionRequestBuildTool(
         workspaceRoot,
         gitPort: delegate?.gitPort,
         specStore: delegate?.specStore,
+        contextEngine: delegate?.contextEngine,
+        contextService: delegate?.contextService,
+        approvalStore: delegate?.approvalStore,
+        discoveryEngine: delegate?.discoveryEngine,
+        dagEngine: delegate?.dagEngine,
         delegate,
       });
 

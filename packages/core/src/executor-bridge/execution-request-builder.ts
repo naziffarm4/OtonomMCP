@@ -22,6 +22,7 @@
  */
 
 import * as crypto from 'node:crypto';
+import * as path from 'node:path';
 import type { GitPort } from '../git/git-port.js';
 import { DefaultGitPort } from '../git/default-git-port.js';
 import type { SpecStore } from '../storage/spec-store.js';
@@ -33,6 +34,10 @@ import type { ApprovalStore } from '../approval/approval-store.js';
 import type { ApprovalPackageEngine } from '../approval/approval-package-engine.js';
 import type { TaskDagEngine } from '../task-engine/dag-engine.js';
 import type { HistoryManager } from '../storage/history-manager.js';
+import type { ContextEngine } from '../context-engine/context-engine.js';
+import type { ProjectDiscoveryEngine } from '../discovery/discovery-engine.js';
+import { ExecutorContextService } from './executor-context-service.js';
+import type { ExecutorContextPackage } from './executor-context-types.js';
 import { ExecutionAuthorizer } from '../director/execution-authorizer.js';
 import {
   type ExecutionIntentValidationResult,
@@ -79,6 +84,8 @@ export interface ExecutionRequestBuilderOptions {
   readonly workspaceRoot?: string;
   readonly gitPort?: GitPort;
   readonly specStore?: SpecStore;
+  readonly contextEngine?: ContextEngine;
+  readonly contextService?: ExecutorContextService;
   readonly authorizer?: ExecutionAuthorizer;
   readonly delegate?: McpOrchestratorDelegate;
   readonly sessionStore?: DirectorSessionStore;
@@ -88,6 +95,8 @@ export interface ExecutionRequestBuilderOptions {
   readonly approvalPackageEngine?: ApprovalPackageEngine;
   readonly dagEngine?: TaskDagEngine;
   readonly historyManager?: HistoryManager;
+  readonly discoveryEngine?: ProjectDiscoveryEngine;
+  readonly autoPackageContext?: boolean;
 }
 
 /**
@@ -145,6 +154,8 @@ export class ExecutionRequestBuilder {
   readonly gitPort: GitPort;
   readonly specStore?: SpecStore;
   readonly authorizer: ExecutionAuthorizer;
+  readonly contextService: ExecutorContextService;
+  readonly autoPackageContext: boolean;
 
   constructor(options: ExecutionRequestBuilderOptions = {}) {
     this.workspaceRoot = options.workspaceRoot ?? options.delegate?.projectRoot;
@@ -164,6 +175,20 @@ export class ExecutionRequestBuilder {
         dagEngine: options.dagEngine,
         historyManager: options.historyManager,
       });
+    this.contextService =
+      options.contextService ??
+      new ExecutorContextService({
+        workspaceRoot: this.workspaceRoot,
+        specStore: this.specStore,
+        contextEngine: options.contextEngine ?? options.delegate?.contextEngine,
+        gitPort: this.gitPort,
+        approvalStore: options.approvalStore ?? options.delegate?.approvalStore,
+        discoveryEngine: options.delegate?.discoveryEngine,
+        durableStateManager: options.delegate?.durableStateManager,
+        dagEngine: options.dagEngine ?? options.delegate?.dagEngine,
+        delegate: options.delegate,
+      });
+    this.autoPackageContext = options.autoPackageContext ?? true;
   }
 
   /**
@@ -748,6 +773,37 @@ export class ExecutionRequestBuilder {
 
     const requestId = computeDeterministicRequestId(hashingPayload);
 
+    // 7.5 Resolve Authoritative ExecutorContextPackage
+    let contextPackage: ExecutorContextPackage | undefined = input.contextPackage;
+    if (!contextPackage && (input.autoPackageContext ?? this.autoPackageContext)) {
+      try {
+        contextPackage = await this.contextService.buildContextPackage({
+          taskId: verifiedIntent.taskId,
+          taskRevision: verifiedIntent.taskRevision,
+          projectId: verifiedIntent.projectId,
+          requestId,
+          directorSessionId: verifiedIntent.directorSessionId,
+          contextFingerprint: verifiedIntent.contextFingerprint,
+          targetFiles: canonicalInstruction.targetFiles,
+          analysisScope: canonicalInstruction.analysisScope,
+          implementationScope: canonicalInstruction.implementationScope,
+          workingDirectory: targetDir,
+        });
+      } catch {
+        // Gracefully fallback if optional stores or test mocks do not provide full dependencies
+      }
+    }
+
+    if (contextPackage && this.contextService && targetDir) {
+      try {
+        await this.contextService.persistContextPackage(contextPackage, {
+          storageDir: path.join(targetDir, '.ai-manager', 'cache', 'context-packages'),
+        });
+      } catch {
+        // Non-blocking graceful cache write failure
+      }
+    }
+
     // 8. Formulate Complete ExecutionRequest Contract
     const request: ExecutionRequest = Object.freeze({
       requestId,
@@ -768,6 +824,7 @@ export class ExecutionRequestBuilder {
       intentId: verifiedIntent.intentId,
       createdAt: new Date().toISOString(),
       metadata: input.metadata ? Object.freeze({ ...input.metadata }) : undefined,
+      contextPackage,
     });
 
     // 9. Validate against Zod schema

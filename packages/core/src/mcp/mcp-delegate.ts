@@ -28,6 +28,7 @@ import { DirectorSessionStore } from '../director/director-session-store.js';
 import { DirectorDecisionStore } from '../director/director-decision-store.js';
 import { ProjectDiscoveryEngine } from '../discovery/discovery-engine.js';
 import type { ExecutorPort } from '../executor-bridge/executor-port.js';
+import type { ExecutorContextService } from '../executor-bridge/executor-context-service.js';
 
 // ============================================================================
 // 1. STATUS CONTRACTS
@@ -132,6 +133,11 @@ export interface McpOrchestratorDelegate {
    * Authoritative ExecutorPort instance (Phase 10 executor adapter boundary).
    */
   readonly executorPort?: ExecutorPort;
+
+  /**
+   * Authoritative ExecutorContextService instance.
+   */
+  readonly contextService?: ExecutorContextService;
 
   /**
    * Query system-verified evidence through the orchestrator.

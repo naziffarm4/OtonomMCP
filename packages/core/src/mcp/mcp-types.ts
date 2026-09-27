@@ -252,5 +252,6 @@ export interface McpServerConfig {
   readonly taskDecompositionTools?: boolean;
   readonly retryAuthorizeTools?: boolean;
   readonly correctiveTaskTools?: boolean;
+  readonly executorContextTools?: boolean;
 }
 

@@ -32,6 +32,8 @@ import {
   AdapterTranslationError,
 } from '../errors/executor-error.js';
 import { ExecutorPreconditionError } from '../director/director-errors.js';
+import { ExecutorContextService } from './executor-context-service.js';
+import { ExecutorContextStaleError } from './executor-context-errors.js';
 import { RiskLevel } from '../risk.js';
 
 // ============================================================================
@@ -94,6 +96,12 @@ export interface AntigravityAdapterConfig {
   version?: string | null;
   /** Default workspace root directory */
   workspaceRoot?: string;
+  /** Authoritative ExecutorContextService instance */
+  contextService?: ExecutorContextService;
+  /** Auto-resolve context package if omitted from ExecutionRequest (default: true if contextService provided) */
+  autoResolveContext?: boolean;
+  /** Validate context package disk freshness before execution (default: true) */
+  validateContextFreshness?: boolean;
 }
 
 // ============================================================================
@@ -106,6 +114,9 @@ export class AntigravityAdapter implements ExecutorPort, ExecutionRequestExecuto
   readonly supportedOperations: readonly string[];
   readonly binaryPath: string;
   readonly workspaceRoot?: string;
+  readonly contextService?: ExecutorContextService;
+  readonly autoResolveContext: boolean;
+  readonly validateContextFreshness: boolean;
 
   private readonly invoker?: AntigravityInvoker;
   private readonly requestInvoker?: AntigravityRequestInvoker;
@@ -122,6 +133,9 @@ export class AntigravityAdapter implements ExecutorPort, ExecutionRequestExecuto
     this.enforceSafetyBoundary = config.enforceSafetyBoundary ?? true;
     this.configuredVersion = config.version;
     this.workspaceRoot = config.workspaceRoot;
+    this.contextService = config.contextService;
+    this.autoResolveContext = config.autoResolveContext ?? (this.contextService !== undefined);
+    this.validateContextFreshness = config.validateContextFreshness ?? true;
 
     // All standard AIDM executor operations supported by the Antigravity adapter boundary
     this.supportedOperations = Object.freeze([
@@ -231,16 +245,98 @@ export class AntigravityAdapter implements ExecutorPort, ExecutionRequestExecuto
           ? request.instruction.implementationScope.map((s) => `- ${s}`)
           : ['(None specified — repository modifications are not permitted)']
         : ['(Not specified — existing targetFiles behavior applies)']),
-      '',
-      'ADAPTIVE TARGETED ANALYSIS POLICY:',
-      '1. Targeted Analysis: Focus on relevant symbols and local behavior first. Do not read entire files sequentially.',
-      '2. Dependency & Flow Tracing: Follow callers/callees and data/state flow only when required to understand the behavior.',
-      '3. Context Reuse: If a symbol, contract, or behavior was already analyzed in this task, reuse the finding without re-reading.',
-      '4. Cycle Protection: Stop traversal if an analysis cycle is detected. If blocked by contradictions, report ANALYSIS_LOOP_DETECTED.',
-      '5. Sufficient-Context Stop: Once task requirements, relevant symbols, contracts, and side-effects are understood, STOP reading and implement.',
-      '6. Correctness Over Minimization: Do not skip necessary analysis, but avoid redundant or exploratory reading.',
       '=========================================',
     ];
+
+    if (request.contextPackage) {
+      const cp = request.contextPackage;
+      promptLines.push(
+        '',
+        '=== AUTHORITATIVE EXECUTOR CONTEXT PACKAGE ===',
+        `Package ID: ${cp.packageId}`,
+        `Content Hash: ${cp.contentHash}`,
+        `Context Fingerprint: ${cp.contextFingerprint}`
+      );
+
+      if (cp.projectBaseline.technologyStack.runtime || cp.projectBaseline.technologyStack.languages?.length) {
+        promptLines.push(
+          '',
+          'TECHNOLOGY STACK & ENVIRONMENT:',
+          `- Runtime: ${cp.projectBaseline.technologyStack.runtime ?? 'Unknown'}`,
+          `- Package Manager: ${cp.projectBaseline.technologyStack.packageManager ?? 'Unknown'}`,
+          `- Languages: ${(cp.projectBaseline.technologyStack.languages ?? []).join(', ') || 'N/A'}`,
+          `- Frameworks: ${(cp.projectBaseline.technologyStack.frameworks ?? []).join(', ') || 'N/A'}`
+        );
+      }
+
+      if (cp.specContext.requirements.length > 0) {
+        promptLines.push(
+          '',
+          'GOVERNING REQUIREMENTS (AUTHORITATIVE):',
+          ...cp.specContext.requirements.map(
+            (r) => `- [${r.id}] ${r.title}: ${r.description}`
+          )
+        );
+      }
+
+      if (cp.specContext.decisions.length > 0) {
+        promptLines.push(
+          '',
+          'GOVERNING ARCHITECTURAL DECISIONS (AUTHORITATIVE):',
+          ...cp.specContext.decisions.map(
+            (d) => `- [${d.id}] ${d.title}${d.rationale ? ` (Rationale: ${d.rationale})` : ''}`
+          )
+        );
+      }
+
+      if (cp.codeContext.targetFileStructures.length > 0) {
+        promptLines.push(
+          '',
+          'TARGET FILE STRUCTURAL CONTRACTS & INTERFACES (L1 AST):',
+          ...cp.codeContext.targetFileStructures.flatMap((fs) => {
+            const lines = [`File: ${fs.path} (${fs.layer}, hash: ${fs.sha256.substring(0, 12)}...)`];
+            if (fs.interfaces && fs.interfaces.length > 0) {
+              lines.push('  Interfaces:');
+              for (const iface of fs.interfaces.slice(0, 10)) {
+                lines.push(`    ${iface.replace(/\n/g, '\n    ')}`);
+              }
+            }
+            if (fs.typeDefinitions && fs.typeDefinitions.length > 0) {
+              lines.push('  Types:');
+              for (const t of fs.typeDefinitions.slice(0, 10)) {
+                lines.push(`    ${t.replace(/\n/g, '\n    ')}`);
+              }
+            }
+            if (fs.signatures && fs.signatures.length > 0) {
+              lines.push('  Signatures:');
+              for (const sig of fs.signatures.slice(0, 10)) {
+                lines.push(`    ${sig}`);
+              }
+            }
+            if (fs.exports && fs.exports.length > 0) {
+              lines.push(`  Exports: ${fs.exports.slice(0, 10).join(', ')}`);
+            }
+            return lines;
+          })
+        );
+      }
+
+      if (cp.recoveryContext) {
+        promptLines.push(
+          '',
+          'RECOVERY & LINEAGE CONTEXT:',
+          `- Attempt: ${cp.recoveryContext.attempt}/${cp.recoveryContext.maxAttempts}`,
+          `- Is Retry: ${cp.recoveryContext.isRetry}`,
+          ...(cp.recoveryContext.parentTaskId ? [`- Parent Task: ${cp.recoveryContext.parentTaskId}`] : []),
+          ...(cp.recoveryContext.priorFailureDiagnosis?.reason
+            ? [`- Prior Failure Reason: ${cp.recoveryContext.priorFailureDiagnosis.reason}`]
+            : []),
+          ...(cp.recoveryContext.priorFailureDiagnosis?.prescribedAction
+            ? [`- Prescribed Recovery Action: ${cp.recoveryContext.priorFailureDiagnosis.prescribedAction}`]
+            : [])
+        );
+      }
+    }
 
     const structuredPrompt = promptLines.join('\n');
 
@@ -261,6 +357,7 @@ export class AntigravityAdapter implements ExecutorPort, ExecutionRequestExecuto
         projectId: request.projectId,
         operationType: request.operationType,
         contextFingerprint: request.contextFingerprint,
+        contextPackageId: request.contextPackage?.packageId,
       }),
     });
   }
@@ -288,11 +385,41 @@ export class AntigravityAdapter implements ExecutorPort, ExecutionRequestExecuto
     const startTimeMs = Date.now();
 
     // 1. Validate all preconditions, schema, paths, shell injection, limits, and hash integrity
-    const validatedRequest = ExecutorGuard.validateExecutionPreconditions(request, {
+    let validatedRequest = ExecutorGuard.validateExecutionPreconditions(request, {
       supportedOperations: this.supportedOperations,
       workingDirectory:
         (request.metadata?.workingDirectory as string | undefined) ?? this.workspaceRoot,
     });
+
+    // 1.5 Auto-resolve context package if omitted and service is configured
+    if (!validatedRequest.contextPackage && this.contextService && this.autoResolveContext) {
+      try {
+        const autoPkg = await this.contextService.packageContextForExecutionRequest(validatedRequest);
+        validatedRequest = Object.freeze({
+          ...validatedRequest,
+          contextPackage: autoPkg,
+        });
+      } catch {
+        // Fall back gracefully if context cannot be built from available stores
+      }
+    }
+
+    // 1.6 Freshness validation if contextPackage is present
+    if (validatedRequest.contextPackage && this.validateContextFreshness) {
+      const validator =
+        this.contextService ??
+        new ExecutorContextService({
+          workspaceRoot:
+            (validatedRequest.metadata?.workingDirectory as string | undefined) ?? this.workspaceRoot,
+        });
+      const freshness = await validator.validateContextPackage(validatedRequest.contextPackage);
+      if (freshness.isStale) {
+        throw new ExecutorContextStaleError(
+          freshness.message ?? 'Context package is stale',
+          freshness.details
+        );
+      }
+    }
 
     // 2. Check if caller signal is already aborted
     if (options.signal?.aborted) {
@@ -570,23 +697,20 @@ export class AntigravityAdapter implements ExecutorPort, ExecutionRequestExecuto
         '',
         'RELEVANT CONTEXT:',
         `- Context Hash: ${instruction.relevant_context.context_hash ?? 'N/A'}`,
-        `- Target Files: ${
-          instruction.relevant_context.target_files &&
+        `- Target Files: ${instruction.relevant_context.target_files &&
           instruction.relevant_context.target_files.length > 0
-            ? instruction.relevant_context.target_files.join(', ')
-            : 'N/A'
+          ? instruction.relevant_context.target_files.join(', ')
+          : 'N/A'
         }`,
-        `- Architectural Decisions: ${
-          instruction.relevant_context.decisions &&
+        `- Architectural Decisions: ${instruction.relevant_context.decisions &&
           instruction.relevant_context.decisions.length > 0
-            ? instruction.relevant_context.decisions.join(', ')
-            : 'N/A'
+          ? instruction.relevant_context.decisions.join(', ')
+          : 'N/A'
         }`,
-        `- Requirements: ${
-          instruction.relevant_context.requirements &&
+        `- Requirements: ${instruction.relevant_context.requirements &&
           instruction.relevant_context.requirements.length > 0
-            ? instruction.relevant_context.requirements.join(', ')
-            : 'N/A'
+          ? instruction.relevant_context.requirements.join(', ')
+          : 'N/A'
         }`,
       ];
 
@@ -634,8 +758,7 @@ export class AntigravityAdapter implements ExecutorPort, ExecutionRequestExecuto
         throw err;
       }
       throw new AdapterTranslationError(
-        `Failed to translate executor instruction to Antigravity representation: ${
-          err instanceof Error ? err.message : String(err)
+        `Failed to translate executor instruction to Antigravity representation: ${err instanceof Error ? err.message : String(err)
         }`,
         {
           adapterName: 'AntigravityAdapter',
@@ -728,16 +851,16 @@ export class AntigravityAdapter implements ExecutorPort, ExecutionRequestExecuto
       if (!isAuthorized || criticalBlocked || pathTraversal) {
         const suggestedAction =
           criticalBlocked ||
-          policyDecision.state === PolicyAuthorizationState.HUMAN_REQUIRED ||
-          validatedInstruction.risk_level === RiskLevel.CRITICAL
+            policyDecision.state === PolicyAuthorizationState.HUMAN_REQUIRED ||
+            validatedInstruction.risk_level === RiskLevel.CRITICAL
             ? 'REQUIRE_HUMAN'
             : 'BLOCK';
 
         const reasonMessage = pathTraversal
           ? `Working directory contains path traversal: ${validatedInstruction.working_directory}`
           : criticalBlocked
-          ? `Operation with CRITICAL risk classification requires verified human authorization (Actor: USER) with a valid decision token.`
-          : `Execution blocked by policy boundary: instruction authorization state is ${policyDecision.state} (reason: ${policyDecision.reason || 'No authorization'}). Protected operation cannot proceed without explicit AUTHORIZED policy decision.`;
+            ? `Operation with CRITICAL risk classification requires verified human authorization (Actor: USER) with a valid decision token.`
+            : `Execution blocked by policy boundary: instruction authorization state is ${policyDecision.state} (reason: ${policyDecision.reason || 'No authorization'}). Protected operation cannot proceed without explicit AUTHORIZED policy decision.`;
 
         return Object.freeze({
           success: false,

@@ -36,6 +36,10 @@ import {
   ExecutionRequestLimitsInvalidError,
   ExecutionRequestTaskRevisionMismatchError,
 } from '../director/director-errors.js';
+import {
+  type ExecutorContextPackage,
+  ExecutorContextPackageZodSchema,
+} from './executor-context-types.js';
 
 
 // ============================================================================
@@ -123,6 +127,8 @@ export interface ExecutionRequest {
   readonly createdAt?: string;
   /** Optional sanitized metadata */
   readonly metadata?: Readonly<Record<string, unknown>>;
+  /** Authoritative packaged executor context */
+  readonly contextPackage?: ExecutorContextPackage;
 }
 
 // ============================================================================
@@ -165,6 +171,8 @@ export interface BuildExecutionRequestInput {
   readonly operationType?: ExecutionOperationType;
   readonly protocolVersion?: string;
   readonly schemaVersion?: number;
+  readonly autoPackageContext?: boolean;
+  readonly contextPackage?: ExecutorContextPackage;
 }
 
 export interface ExecutionRequestValidationResult {
@@ -238,6 +246,7 @@ export const ExecutionRequestZodSchema = z.object({
   intentId: z.string().optional(),
   createdAt: z.string().optional(),
   metadata: z.record(z.string(), z.unknown()).optional(),
+  contextPackage: ExecutorContextPackageZodSchema.optional(),
 });
 
 export const BuildExecutionRequestInputZodSchema = z.object({
@@ -272,6 +281,8 @@ export const BuildExecutionRequestInputZodSchema = z.object({
   operationType: ExecutionOperationTypeZodSchema.optional(),
   protocolVersion: z.string().optional(),
   schemaVersion: z.number().optional(),
+  autoPackageContext: z.boolean().optional(),
+  contextPackage: ExecutorContextPackageZodSchema.optional(),
 });
 
 // Re-export error classes for convenience
