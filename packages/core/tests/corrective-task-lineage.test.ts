@@ -79,6 +79,7 @@ import {
   ApprovalPackageEngine,
   InitialProjectUnderstandingBuilder,
   DirectorSessionStore,
+  DirectorDecisionStore,
   TaskDagEngine,
   ExecutionAuthorizer,
   CorrectiveTaskValidationError,
@@ -255,9 +256,13 @@ describe('P13-03: Corrective Task Lineage & Governed DAG Augmentation', () => {
 
   beforeEach(async () => {
     tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'aidm-p13-03-test-'));
+    await fs.promises.writeFile(
+      path.join(tempDir, 'package.json'),
+      JSON.stringify({ name: projectId, version: '1.0.0' })
+    );
     historyManager = new HistoryManager({ baseDir: tempDir });
     specStore = new SpecStore({ baseDir: tempDir });
-    durableManager = new DurableStateManager({ baseDir: tempDir });
+    durableManager = new DurableStateManager({ baseDir: tempDir, projectId });
     approvalStore = new ApprovalStore({ baseDir: tempDir, historyManager });
     sessionStore = new DirectorSessionStore({ baseDir: tempDir, historyManager });
     dagEngine = new TaskDagEngine();
@@ -320,7 +325,8 @@ describe('P13-03: Corrective Task Lineage & Governed DAG Augmentation', () => {
     const persisted = tasks.find((t) => t.task_id === outcome.correctiveTaskId);
     assert.ok(persisted);
     assert.equal(persisted.status, TaskStatus.READY);
-    assert.equal(persisted.dependencies.includes(sourceTaskId), true);
+    assert.equal(persisted.dependencies.includes(sourceTaskId), false);
+    assert.deepEqual(persisted.dependencies, []);
   });
 
   // T02 — RETRY rejected
@@ -652,13 +658,23 @@ describe('P13-03: Corrective Task Lineage & Governed DAG Augmentation', () => {
   // T22 — duplicate DAG edge not created
   it('T22 — duplicate DAG edge not created', async () => {
     const evidence = createValidEvidence();
-    await correctiveService.createCorrectiveTask({ evidence });
-    await correctiveService.createCorrectiveTask({ evidence });
+    await correctiveService.createCorrectiveTask({
+      evidence,
+      proposal: {
+        additionalDependencies: ['FEAT-P13'],
+      },
+    });
+    await correctiveService.createCorrectiveTask({
+      evidence,
+      proposal: {
+        additionalDependencies: ['FEAT-P13'],
+      },
+    });
 
     const tasks = await specStore.loadTasks();
     const correctiveTask = tasks.find((t) => t.task_id.startsWith('TASK-CORRECTIVE'));
     assert.ok(correctiveTask);
-    const occurrences = correctiveTask.dependencies.filter((d) => d === sourceTaskId);
+    const occurrences = correctiveTask.dependencies.filter((d) => d === 'FEAT-P13');
     assert.equal(occurrences.length, 1);
   });
 
@@ -776,12 +792,71 @@ describe('P13-03: Corrective Task Lineage & Governed DAG Augmentation', () => {
 
   // T30 — dependency validation
   it('T30 — dependency validation', async () => {
-    const evidence = createValidEvidence();
+    // Add prerequisite task
+    const prereqTask: TaskDefinition = {
+      task_id: 'TASK-PREREQ-01',
+      parent_feature_id: 'FEAT-P13',
+      title: 'Prerequisite task',
+      description: 'Prerequisite that was accepted',
+      traceability_sources: ['REQ:P13-03'],
+      dependencies: [],
+      acceptance_criteria: ['AC-PREREQ-1'],
+      status: TaskStatus.ACCEPTED,
+      attempt: 1,
+      max_attempts: 1,
+      priority: TaskPriority.HIGH,
+      risk_level: RiskLevel.SAFE,
+      created_at: new Date().toISOString(),
+      started_at: null,
+      completed_at: new Date().toISOString(),
+      hierarchy_level: 'TASK',
+      metadata: { revision: 1 },
+    };
+
+    const sourceTaskIdWithPrereq = 'TASK-SRC-WITH-PREREQ';
+    const sourceWithPrereq = createBaseSourceTask({
+      task_id: sourceTaskIdWithPrereq,
+      dependencies: ['TASK-PREREQ-01'],
+    });
+
+    const parentFeature: TaskDefinition = {
+      task_id: 'FEAT-P13',
+      parent_feature_id: 'ROOT',
+      title: 'P13 Failure Recovery Feature',
+      description: 'Feature parent node',
+      traceability_sources: ['REQ:P13-FEATURE'],
+      dependencies: [],
+      acceptance_criteria: ['AC-FEAT-P13'],
+      status: TaskStatus.READY,
+      attempt: 0,
+      max_attempts: 1,
+      priority: TaskPriority.HIGH,
+      risk_level: RiskLevel.SAFE,
+      created_at: new Date().toISOString(),
+      started_at: null,
+      completed_at: null,
+      hierarchy_level: 'FEATURE',
+      metadata: { revision: 1 },
+    };
+
+    const existingTasks = await specStore.loadTasks();
+    await specStore.saveTasks([...existingTasks, prereqTask, sourceWithPrereq]);
+
+    const evidence = createValidEvidence({
+      evidenceId: 'ev_test_t30',
+      taskId: sourceTaskIdWithPrereq,
+    });
     const outcome = await correctiveService.createCorrectiveTask({ evidence });
 
     const tasks = await specStore.loadTasks();
+    const corrective = tasks.find((t) => t.task_id === outcome.correctiveTaskId);
+    assert.ok(corrective);
+    // Corrective task inherits prerequisite, does NOT depend on failed sourceTaskId
+    assert.equal(corrective.dependencies.includes('TASK-PREREQ-01'), true);
+    assert.equal(corrective.dependencies.includes(sourceTaskIdWithPrereq), false);
+
     const topo = dagEngine.topologicalSort(tasks);
-    assert.ok(topo.indexOf(sourceTaskId) < topo.indexOf(outcome.correctiveTaskId));
+    assert.ok(topo.indexOf('TASK-PREREQ-01') < topo.indexOf(outcome.correctiveTaskId));
   });
 
   // T31 — missing dependency rejected
@@ -951,11 +1026,307 @@ describe('P13-03: Corrective Task Lineage & Governed DAG Augmentation', () => {
     const tasks = await specStore.loadTasks();
     const corrective = tasks.find((t) => t.task_id === outcome.correctiveTaskId);
     assert.ok(corrective);
-    assert.equal(corrective.dependencies[0], sourceTaskId);
+    // Corrective task does NOT depend on failed sourceTaskId
+    assert.equal(corrective.dependencies.includes(sourceTaskId), false);
 
-    // Source task is REJECTED, not ACCEPTED, so corrective task's prerequisite is unmet
-    const dependents = dagEngine.getDependents(tasks, sourceTaskId);
-    assert.ok(dependents.includes(outcome.correctiveTaskId));
+    // Topological order succeeds
+    const topo = dagEngine.topologicalSort(tasks);
+    assert.ok(topo.includes(outcome.correctiveTaskId));
+  });
+
+  // T44b — legitimate prerequisites check: ExecutionAuthorizer validates corrective task when prerequisites are ACCEPTED
+  it('T44b — legitimate prerequisites check: ExecutionAuthorizer validates corrective task when prerequisites are ACCEPTED', async () => {
+    const prereqTask: TaskDefinition = {
+      task_id: 'TASK-PREREQ-OK',
+      parent_feature_id: 'FEAT-P13',
+      title: 'Prerequisite task',
+      description: 'Prerequisite that was accepted',
+      traceability_sources: ['REQ:P13-03'],
+      dependencies: [],
+      acceptance_criteria: ['AC-PREREQ-OK'],
+      status: TaskStatus.ACCEPTED,
+      attempt: 1,
+      max_attempts: 1,
+      priority: TaskPriority.HIGH,
+      risk_level: RiskLevel.SAFE,
+      created_at: new Date().toISOString(),
+      started_at: null,
+      completed_at: new Date().toISOString(),
+      hierarchy_level: 'TASK',
+      metadata: { revision: 1 },
+    };
+
+    const sourceTaskIdT44b = 'TASK-SRC-T44B';
+    const sourceWithPrereq = createBaseSourceTask({
+      task_id: sourceTaskIdT44b,
+      dependencies: ['TASK-PREREQ-OK'],
+    });
+
+    const parentFeature: TaskDefinition = {
+      task_id: 'FEAT-P13',
+      parent_feature_id: 'ROOT',
+      title: 'P13 Failure Recovery Feature',
+      description: 'Feature parent node',
+      traceability_sources: ['REQ:P13-FEATURE'],
+      dependencies: [],
+      acceptance_criteria: ['AC-FEAT-P13'],
+      status: TaskStatus.READY,
+      attempt: 0,
+      max_attempts: 1,
+      priority: TaskPriority.HIGH,
+      risk_level: RiskLevel.SAFE,
+      created_at: new Date().toISOString(),
+      started_at: null,
+      completed_at: null,
+      hierarchy_level: 'FEATURE',
+      metadata: { revision: 1 },
+    };
+
+    const currentTasks = await specStore.loadTasks();
+    await specStore.saveTasks([...currentTasks, prereqTask, sourceWithPrereq]);
+
+    const evidence = createValidEvidence({
+      evidenceId: 'ev_test_t44b',
+      taskId: sourceTaskIdT44b,
+    });
+    const outcome = await correctiveService.createCorrectiveTask({ evidence });
+
+    // Set up Director session, snapshot, and decision for corrective execution authorization
+    const sessionId = 'dir-sess-t44b';
+    const decisionId = 'dir-dec-t44b';
+    await sessionStore.saveSession({
+      directorSessionId: sessionId,
+      projectId,
+      projectRoot: tempDir,
+      protocolVersion: 'P9-01',
+      actor: 'DIRECTOR',
+      status: 'ACTIVE',
+      createdAt: new Date().toISOString(),
+      lastActivityAt: new Date().toISOString(),
+      schemaVersion: 1,
+      hasImplementationAuthority: false,
+      understandingRevision: 1,
+      metadata: {},
+    });
+
+    await sessionStore.saveSnapshot({
+      directorSessionId: sessionId,
+      projectId,
+      projectRoot: tempDir,
+      syncStatus: 'SUCCESS',
+      logicalFingerprint: 'fp_ctx_100',
+      priorFingerprint: null,
+      isComplete: true,
+      unavailableSections: [],
+      staleSections: [],
+      synchronizedAt: new Date().toISOString(),
+      schemaVersion: 1,
+      protocolVersion: 'P9-02',
+      sections: {
+        projectIdentity: { isAvailable: true, isStale: false, content: {} },
+        purpose: { isAvailable: true, isStale: false, content: {} },
+        technologyStack: { isAvailable: true, isStale: false, content: {} },
+        architecture: { isAvailable: true, isStale: false, content: {} },
+        taskGraph: { isAvailable: true, isStale: false, content: {} },
+        approvalState: { isAvailable: true, isStale: false, content: {} },
+        implementationState: { isAvailable: true, isStale: false, content: {} },
+      },
+    });
+
+    const activePkg = await approvalStore.getActivePackage();
+    assert.ok(activePkg);
+
+    const decisionStore = new DirectorDecisionStore({ sessionStore, historyManager });
+    await decisionStore.saveDecision({
+      decisionId,
+      directorSessionId: sessionId,
+      projectId,
+      protocolVersion: 'P9-03',
+      schemaVersion: 1,
+      actor: 'DIRECTOR',
+      decisionType: 'IMPLEMENT_TASK',
+      rationale: 'Execute corrective task',
+      basedOnContextFingerprint: 'fp_ctx_100',
+      basedOnApprovalRevision: activePkg.revision,
+      basedOnUnderstandingRevision: 1,
+      createdAt: new Date().toISOString(),
+      metadata: {},
+      hasImplementationAuthority: false,
+    });
+
+    const authorizer = new ExecutionAuthorizer({
+      workspaceRoot: tempDir,
+      sessionStore,
+      decisionStore,
+      approvalStore,
+      specStore,
+      dagEngine,
+      historyManager,
+    });
+
+    // Authorize execution of corrective task
+    const authResult = await authorizer.validateExecutionIntent({
+      directorSessionId: sessionId,
+      directorDecisionId: decisionId,
+      projectId,
+      taskId: outcome.correctiveTaskId,
+      taskRevision: 1,
+      contextFingerprint: 'fp_ctx_100',
+      understandingRevision: 1,
+      approvalPackageRevision: activePkg.revision,
+    });
+
+    assert.equal(authResult.isValid, true);
+    assert.equal(authResult.code, 'VALID');
+    assert.ok(authResult.intent);
+    assert.equal(authResult.intent.taskId, outcome.correctiveTaskId);
+  });
+
+  // T44c — unmet legitimate prerequisite blocks corrective execution authorization
+  it('T44c — unmet legitimate prerequisite blocks corrective execution authorization', async () => {
+    const unmetPrereqTask: TaskDefinition = {
+      task_id: 'TASK-PREREQ-UNMET',
+      parent_feature_id: 'FEAT-P13',
+      title: 'Prerequisite task not yet accepted',
+      description: 'Prerequisite still in ready state',
+      traceability_sources: ['REQ:P13-03'],
+      dependencies: [],
+      acceptance_criteria: ['AC-PREREQ-UNMET'],
+      status: TaskStatus.READY, // NOT ACCEPTED
+      attempt: 0,
+      max_attempts: 1,
+      priority: TaskPriority.HIGH,
+      risk_level: RiskLevel.SAFE,
+      created_at: new Date().toISOString(),
+      started_at: null,
+      completed_at: null,
+      hierarchy_level: 'TASK',
+      metadata: { revision: 1 },
+    };
+
+    const sourceTaskIdT44c = 'TASK-SRC-T44C';
+    const sourceWithUnmetPrereq = createBaseSourceTask({
+      task_id: sourceTaskIdT44c,
+      dependencies: ['TASK-PREREQ-UNMET'],
+    });
+
+    const parentFeature: TaskDefinition = {
+      task_id: 'FEAT-P13',
+      parent_feature_id: 'ROOT',
+      title: 'P13 Failure Recovery Feature',
+      description: 'Feature parent node',
+      traceability_sources: ['REQ:P13-FEATURE'],
+      dependencies: [],
+      acceptance_criteria: ['AC-FEAT-P13'],
+      status: TaskStatus.READY,
+      attempt: 0,
+      max_attempts: 1,
+      priority: TaskPriority.HIGH,
+      risk_level: RiskLevel.SAFE,
+      created_at: new Date().toISOString(),
+      started_at: null,
+      completed_at: null,
+      hierarchy_level: 'FEATURE',
+      metadata: { revision: 1 },
+    };
+
+    const currentTasks = await specStore.loadTasks();
+    await specStore.saveTasks([...currentTasks, unmetPrereqTask, sourceWithUnmetPrereq]);
+
+    const evidence = createValidEvidence({
+      evidenceId: 'ev_test_t44c',
+      taskId: sourceTaskIdT44c,
+    });
+    const outcome = await correctiveService.createCorrectiveTask({ evidence });
+
+    const sessionId = 'dir-sess-t44c';
+    const decisionId = 'dir-dec-t44c';
+    await sessionStore.saveSession({
+      directorSessionId: sessionId,
+      projectId,
+      projectRoot: tempDir,
+      protocolVersion: 'P9-01',
+      actor: 'DIRECTOR',
+      status: 'ACTIVE',
+      createdAt: new Date().toISOString(),
+      lastActivityAt: new Date().toISOString(),
+      schemaVersion: 1,
+      hasImplementationAuthority: false,
+      understandingRevision: 1,
+      metadata: {},
+    });
+
+    await sessionStore.saveSnapshot({
+      directorSessionId: sessionId,
+      projectId,
+      projectRoot: tempDir,
+      syncStatus: 'SUCCESS',
+      logicalFingerprint: 'fp_ctx_100',
+      priorFingerprint: null,
+      isComplete: true,
+      unavailableSections: [],
+      staleSections: [],
+      synchronizedAt: new Date().toISOString(),
+      schemaVersion: 1,
+      protocolVersion: 'P9-02',
+      sections: {
+        projectIdentity: { isAvailable: true, isStale: false, content: {} },
+        purpose: { isAvailable: true, isStale: false, content: {} },
+        technologyStack: { isAvailable: true, isStale: false, content: {} },
+        architecture: { isAvailable: true, isStale: false, content: {} },
+        taskGraph: { isAvailable: true, isStale: false, content: {} },
+        approvalState: { isAvailable: true, isStale: false, content: {} },
+        implementationState: { isAvailable: true, isStale: false, content: {} },
+      },
+    });
+
+    const activePkg = await approvalStore.getActivePackage();
+    assert.ok(activePkg);
+
+    const decisionStore = new DirectorDecisionStore({ sessionStore, historyManager });
+    await decisionStore.saveDecision({
+      decisionId,
+      directorSessionId: sessionId,
+      projectId,
+      protocolVersion: 'P9-03',
+      schemaVersion: 1,
+      actor: 'DIRECTOR',
+      decisionType: 'IMPLEMENT_TASK',
+      rationale: 'Execute corrective task',
+      basedOnContextFingerprint: 'fp_ctx_100',
+      basedOnApprovalRevision: activePkg.revision,
+      basedOnUnderstandingRevision: 1,
+      createdAt: new Date().toISOString(),
+      metadata: {},
+      hasImplementationAuthority: false,
+    });
+
+    const authorizer = new ExecutionAuthorizer({
+      workspaceRoot: tempDir,
+      sessionStore,
+      decisionStore,
+      approvalStore,
+      specStore,
+      dagEngine,
+      historyManager,
+    });
+
+    const authResult = await authorizer.validateExecutionIntent({
+      directorSessionId: sessionId,
+      directorDecisionId: decisionId,
+      projectId,
+      taskId: outcome.correctiveTaskId,
+      taskRevision: 1,
+      contextFingerprint: 'fp_ctx_100',
+      understandingRevision: 1,
+      approvalPackageRevision: activePkg.revision,
+    });
+
+    // Blocked by TASK-PREREQ-UNMET, NOT by sourceTaskId
+    assert.equal(authResult.isValid, false);
+    assert.equal(authResult.code, 'TASK_STATE_INVALID');
+    assert.ok(authResult.message.includes('TASK-PREREQ-UNMET'));
+    assert.ok(!authResult.message.includes(sourceTaskIdT44c));
   });
 
   // T45 — Director proposal cannot bypass governance

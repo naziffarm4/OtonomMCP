@@ -622,16 +622,15 @@ export class CorrectiveTaskService {
       createdAt: now,
     };
 
-    // Dependencies: corrective task must depend on prerequisite tasks of source task,
+    // Dependencies: corrective task must inherit the legitimate prerequisite tasks of the source task,
     // plus optionally any additional dependencies supplied in the proposal.
-    // Notice: The corrective task replaces the execution path of the source task;
-    // to maintain a valid DAG without circularity, it depends on sourceTask.dependencies,
-    // and can also depend on the sourceTask itself if modeled as sequential predecessor.
-    // In our architecture, the corrective task depends on sourceTask.task_id
-    // (original task failed -> corrective task runs after original task failure).
+    // ARCHITECTURAL RULE: The source task itself failed and remains REJECTED. Under ExecutionAuthorizer
+    // rules, all dependencies must be ACCEPTED for a task to be authorized. Therefore, the failed source
+    // task itself MUST NOT be a blocking execution dependency. Lineage to the failed source task is
+    // preserved explicitly and immutably in metadata.lineage.
     const correctiveDependencies = Array.from(
       new Set([
-        sourceTask.task_id,
+        ...sourceTask.dependencies,
         ...(proposal?.additionalDependencies ?? []),
       ])
     ).sort();
