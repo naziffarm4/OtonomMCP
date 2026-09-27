@@ -113,6 +113,10 @@
     "./director": {
       "types": "./dist/director/index.d.ts",
       "import": "./dist/director/index.js"
+    },
+    "./task-decomposition": {
+      "types": "./dist/task-decomposition/index.d.ts",
+      "import": "./dist/task-decomposition/index.js"
     }
   },
   "bin": {

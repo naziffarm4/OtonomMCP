@@ -63,6 +63,7 @@ import { registerExecutionRequestTools } from './tools/execution-request-tools.j
 import { registerExecutorTools } from './tools/executor-tools.js';
 import { registerEvidenceVerifyTools } from './tools/evidence-verify-tool.js';
 import { registerPhase11ContinuationTools } from './tools/phase11-continuation-tool.js';
+import { registerTaskDecompositionTools } from './tools/task-decomposition-tools.js';
 
 
 export class McpServer {
@@ -162,6 +163,11 @@ export class McpServer {
     // Register Phase 11 Controlled Continuation boundary tools if enabled
     if (config.phase11ContinuationTools) {
       registerPhase11ContinuationTools(this);
+    }
+
+    // Register Phase 12 Task Decomposition boundary tools if enabled
+    if (config.taskDecompositionTools) {
+      registerTaskDecompositionTools(this);
     }
   }
 
