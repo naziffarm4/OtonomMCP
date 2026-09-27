@@ -304,7 +304,14 @@ export class NodeAntigravityProcessRunner implements AntigravityProcessRunner {
 
       let child: child_process.ChildProcess;
       try {
-        child = child_process.spawn(options.executable, [...options.args], {
+        const spawnArgs = options.args.filter((arg) => {
+          if (arg === '--print' && options.args.includes('--input-format')) {
+            return false;
+          }
+          return true;
+        });
+
+        child = child_process.spawn(options.executable, spawnArgs, {
           cwd: options.cwd,
           env: childEnv,
           windowsHide: true,

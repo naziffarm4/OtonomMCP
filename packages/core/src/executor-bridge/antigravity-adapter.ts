@@ -201,6 +201,15 @@ export function parseExecutorProcessOutput(
           if (Array.isArray(parsed.unverifiedAgentClaims)) discoveredClaims.push(...parsed.unverifiedAgentClaims);
           if (Array.isArray(parsed.unverified_changed_files)) discoveredFiles.push(...parsed.unverified_changed_files);
           if (Array.isArray(parsed.unverifiedModifiedFiles)) discoveredFiles.push(...parsed.unverifiedModifiedFiles);
+          if (parsed.event === 'result' && parsed.result && typeof parsed.result === 'object') {
+            const resObj = parsed.result as Record<string, unknown>;
+            if (typeof resObj.response === 'string' && resObj.response.trim().length > 0) {
+              discoveredClaims.push(resObj.response.trim());
+            }
+            if (typeof resObj.conversation_id === 'string') {
+              discoveredMetadata = { ...discoveredMetadata, conversationId: resObj.conversation_id };
+            }
+          }
           if (parsed.metadata && typeof parsed.metadata === 'object') {
             discoveredMetadata = { ...discoveredMetadata, ...parsed.metadata };
           }
@@ -715,8 +724,12 @@ export class AntigravityAdapter implements ExecutorPort, ExecutionRequestExecuto
           }
         }
 
-        // 3. Prepare stream-json stdin protocol payload
+        // 3. Prepare stream-json stdin protocol payload conforming to agy CLI schema
         const stdinInput = JSON.stringify({
+          event: 'user',
+          message: {
+            content: payload.structuredPrompt,
+          },
           prompt: payload.structuredPrompt,
           correlationId: payload.correlationId,
           conversationId: payload.conversationId,
