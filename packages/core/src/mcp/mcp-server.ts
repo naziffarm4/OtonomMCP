@@ -52,6 +52,7 @@ import { createHealthTool } from './tools/health-tool.js';
 import {
   registerDirectorReadTools,
   registerDiscoveryTools,
+  registerCompletenessTools,
 } from './tools/director-read-tools.js';
 import { registerClarificationTools } from './tools/clarification-tools.js';
 import { registerApprovalTools } from './tools/approval-tools.js';
@@ -117,6 +118,11 @@ export class McpServer {
     // Register Director project discovery tool if enabled
     if (config.discoveryTools) {
       registerDiscoveryTools(this);
+    }
+
+    // Register Specification completeness evaluation tool if enabled
+    if (config.completenessTools) {
+      registerCompletenessTools(this);
     }
 
     // Register Director clarification protocol tools if enabled

@@ -29,6 +29,8 @@ import { DirectorDecisionStore } from '../director/director-decision-store.js';
 import { ProjectDiscoveryEngine } from '../discovery/discovery-engine.js';
 import { AdaptiveDiscoveryEngine } from '../discovery/adaptive-discovery-engine.js';
 import { AdaptiveDiscoveryStore } from '../discovery/adaptive-discovery-store.js';
+import { CompletenessGateEngine } from '../discovery/completeness-gate-engine.js';
+import { CompletenessGateStore } from '../discovery/completeness-gate-store.js';
 import type { ExecutorPort } from '../executor-bridge/executor-port.js';
 import type { ExecutorContextService } from '../executor-bridge/executor-context-service.js';
 
@@ -132,6 +134,8 @@ export interface McpOrchestratorDelegate {
   readonly discoveryEngine?: ProjectDiscoveryEngine;
   readonly adaptiveDiscoveryEngine?: AdaptiveDiscoveryEngine;
   readonly adaptiveDiscoveryStore?: AdaptiveDiscoveryStore;
+  readonly completenessGateEngine?: CompletenessGateEngine;
+  readonly completenessGateStore?: CompletenessGateStore;
 
   /**
    * Authoritative ExecutorPort instance (Phase 10 executor adapter boundary).
@@ -181,6 +185,8 @@ export interface DefaultMcpOrchestratorDelegateOptions {
   readonly discoveryEngine?: ProjectDiscoveryEngine;
   readonly adaptiveDiscoveryEngine?: AdaptiveDiscoveryEngine;
   readonly adaptiveDiscoveryStore?: AdaptiveDiscoveryStore;
+  readonly completenessGateEngine?: CompletenessGateEngine;
+  readonly completenessGateStore?: CompletenessGateStore;
   readonly evidenceProvider?: (
     params: {
       taskId?: string;
@@ -211,6 +217,8 @@ export class DefaultMcpOrchestratorDelegate implements McpOrchestratorDelegate {
   readonly discoveryEngine?: ProjectDiscoveryEngine;
   readonly adaptiveDiscoveryEngine?: AdaptiveDiscoveryEngine;
   readonly adaptiveDiscoveryStore?: AdaptiveDiscoveryStore;
+  readonly completenessGateEngine?: CompletenessGateEngine;
+  readonly completenessGateStore?: CompletenessGateStore;
   private readonly evidenceProvider?: (
     params: {
       taskId?: string;
@@ -295,6 +303,25 @@ export class DefaultMcpOrchestratorDelegate implements McpOrchestratorDelegate {
             durableStateManager: this.durableStateManager,
             discoveryStore: this.adaptiveDiscoveryStore,
             existingDiscoveryEngine: this.discoveryEngine,
+          })
+        : undefined);
+    this.completenessGateStore =
+      options.completenessGateStore ??
+      (this.projectRoot
+        ? new CompletenessGateStore({
+            baseDir: this.projectRoot,
+            historyManager: this.historyManager,
+          })
+        : undefined);
+    this.completenessGateEngine =
+      options.completenessGateEngine ??
+      (this.projectRoot
+        ? new CompletenessGateEngine({
+            workspaceRoot: this.projectRoot,
+            discoveryStore: this.adaptiveDiscoveryStore,
+            completenessStore: this.completenessGateStore,
+            historyManager: this.historyManager,
+            specStore: this.specStore,
           })
         : undefined);
     this.evidenceProvider = options.evidenceProvider;

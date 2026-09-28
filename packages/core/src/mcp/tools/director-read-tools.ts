@@ -69,6 +69,11 @@ import {
   createProjectDiscoverTool,
   projectDiscoverToolDefinition,
 } from './project-discover-tool.js';
+import {
+  AIDM_SPECIFICATION_COMPLETENESS_TOOL_NAME,
+  createSpecificationCompletenessTool,
+  specificationCompletenessToolDefinition,
+} from './specification-completeness-tool.js';
 
 export {
   AIDM_PROJECT_STATUS_TOOL_NAME,
@@ -83,6 +88,9 @@ export {
   AIDM_PROJECT_DISCOVER_TOOL_NAME,
   createProjectDiscoverTool,
   projectDiscoverToolDefinition,
+  AIDM_SPECIFICATION_COMPLETENESS_TOOL_NAME,
+  createSpecificationCompletenessTool,
+  specificationCompletenessToolDefinition,
 };
 
 export const DIRECTOR_READ_TOOL_NAMES = [
@@ -133,10 +141,18 @@ export function registerDirectorReadTools(server: McpServer): void {
 }
 
 /**
- * Registers the project discovery tool (P8-03) onto an McpServer instance.
+ * Registers the project discovery tool onto an McpServer instance.
  */
 export function registerDiscoveryTools(server: McpServer): void {
-  const tool = createProjectDiscoverTool(server.delegate);
-  server.registerTool(tool.definition, tool.handler);
+  const discoverTool = createProjectDiscoverTool(server.delegate);
+  server.registerTool(discoverTool.definition, discoverTool.handler);
+}
+
+/**
+ * Registers the specification completeness tool onto an McpServer instance.
+ */
+export function registerCompletenessTools(server: McpServer): void {
+  const completenessTool = createSpecificationCompletenessTool(server.delegate);
+  server.registerTool(completenessTool.definition, completenessTool.handler);
 }
 

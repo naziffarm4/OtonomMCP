@@ -239,6 +239,7 @@ export interface McpServerConfig {
   readonly correlationGenerator?: () => string;
   readonly directorTools?: boolean;
   readonly discoveryTools?: boolean;
+  readonly completenessTools?: boolean;
   readonly clarificationTools?: boolean;
   readonly approvalTools?: boolean;
   readonly directorSessionTools?: boolean;
