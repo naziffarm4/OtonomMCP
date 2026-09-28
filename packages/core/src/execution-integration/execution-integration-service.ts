@@ -279,7 +279,15 @@ export class ExecutionStateIntegrator {
           { evidenceId: evidence.evidenceId }
         );
       }
-      const persisted = await this.evidenceStore.loadEvidence(evidence.evidenceId);
+      let persisted: SystemExecutionEvidence | null;
+      try {
+        persisted = await this.evidenceStore.loadEvidence(evidence.evidenceId);
+      } catch (err: any) {
+        throw new ExecutionIntegrationPersistenceError(
+          `Failed to load authoritative evidence from evidenceStore: ${err.message}`,
+          { evidenceId: evidence.evidenceId, cause: err }
+        );
+      }
       if (!persisted) {
         throw new ExecutionIntegrationSecurityViolationError(
           `Evidence '${evidence.evidenceId}' has no authoritative persisted record in SystemExecutionEvidenceStore. Unpersisted or caller-fabricated evidence cannot become authoritative.`,

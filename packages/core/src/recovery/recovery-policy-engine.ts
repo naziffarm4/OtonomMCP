@@ -172,6 +172,7 @@ export class RecoveryPolicyEngine {
 
     switch (primaryCategory) {
       case FailureCategory.SECURITY_VIOLATION:
+      case FailureCategory.SECURITY_FAILURE:
         decision = RecoveryStrategy.ABORT;
         humanRequired = true;
         reasonCodes.push('SECURITY_VIOLATION_DETECTED', 'FAIL_CLOSED_ABORT');
@@ -186,10 +187,15 @@ export class RecoveryPolicyEngine {
         break;
 
       case FailureCategory.INFRASTRUCTURE_FAILURE:
+      case FailureCategory.INFRASTRUCTURE_BLOCK:
+      case FailureCategory.EXECUTOR_START_FAILURE:
+      case FailureCategory.EXECUTOR_PROTOCOL_FAILURE:
+      case FailureCategory.EXECUTOR_CANCELLED:
+      case FailureCategory.EXECUTOR_OUTPUT_FAILURE:
         decision = RecoveryStrategy.BLOCK_ON_HUMAN;
         humanRequired = true;
-        reasonCodes.push('INFRASTRUCTURE_FAILURE', 'UNABLE_TO_VERIFY');
-        justification = `Verification infrastructure failure encountered: ${diagnosis.summary}. Environment requires human inspection.`;
+        reasonCodes.push(primaryCategory, 'HUMAN_INTERVENTION_REQUIRED');
+        justification = `Non-retryable execution failure encountered [${primaryCategory}]: ${diagnosis.summary}. Environment or configuration requires human inspection.`;
         break;
 
       case FailureCategory.SCOPE_VIOLATION:
@@ -207,7 +213,10 @@ export class RecoveryPolicyEngine {
       case FailureCategory.LINT_FAILURE:
       case FailureCategory.ACCEPTANCE_CRITERIA_FAILURE:
       case FailureCategory.EXECUTOR_FAILURE:
+      case FailureCategory.EXECUTOR_EXIT_FAILURE:
+      case FailureCategory.VERIFICATION_FAILURE:
       case FailureCategory.TIMEOUT:
+      case FailureCategory.EXECUTOR_TIMEOUT:
         if (hasRemainingAttempts) {
           decision = RecoveryStrategy.RETRY;
           retryAllowed = true;

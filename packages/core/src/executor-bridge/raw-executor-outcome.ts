@@ -32,6 +32,29 @@ export const RAW_EXECUTOR_STATUSES: readonly RawExecutorStatus[] = Object.freeze
   'ERROR',
 ]);
 
+// ============================================================================
+// 1b. EXECUTION FAILURE CATEGORIES (Phase 14 TASK-P14-04)
+// ============================================================================
+
+export const ExecutionFailureCategory = {
+  EXECUTOR_START_FAILURE: 'EXECUTOR_START_FAILURE',
+  EXECUTOR_PROTOCOL_FAILURE: 'EXECUTOR_PROTOCOL_FAILURE',
+  EXECUTOR_TIMEOUT: 'EXECUTOR_TIMEOUT',
+  EXECUTOR_CANCELLED: 'EXECUTOR_CANCELLED',
+  EXECUTOR_EXIT_FAILURE: 'EXECUTOR_EXIT_FAILURE',
+  EXECUTOR_OUTPUT_FAILURE: 'EXECUTOR_OUTPUT_FAILURE',
+  VERIFICATION_FAILURE: 'VERIFICATION_FAILURE',
+  INFRASTRUCTURE_BLOCK: 'INFRASTRUCTURE_BLOCK',
+  SECURITY_FAILURE: 'SECURITY_FAILURE',
+} as const;
+
+export type ExecutionFailureCategory = (typeof ExecutionFailureCategory)[keyof typeof ExecutionFailureCategory];
+export const EXECUTION_FAILURE_CATEGORIES = Object.values(ExecutionFailureCategory) as readonly ExecutionFailureCategory[];
+
+export function isExecutionFailureCategory(value: unknown): value is ExecutionFailureCategory {
+  return typeof value === 'string' && (EXECUTION_FAILURE_CATEGORIES as readonly string[]).includes(value as any);
+}
+
 export interface RawExecutorIdentity {
   readonly provider: string;
   readonly name: string;
@@ -55,6 +78,8 @@ export interface RawExecutorOutcome {
   readonly executorIdentity: RawExecutorIdentity;
   /** Bounded execution status */
   readonly status: RawExecutorStatus;
+  /** Bounded failure category if execution failed (Phase 14 P14-04) */
+  readonly failureCategory?: ExecutionFailureCategory | string;
   /** Process exit code (null if aborted or non-process execution) */
   readonly exitCode: number | null;
   /** OS signal if process was terminated (e.g. SIGTERM, SIGKILL) */
@@ -160,6 +185,7 @@ export const RawExecutorOutcomeZodSchema = z
     requestId: z.string().regex(/^req-[a-f0-9]{24,64}$/, 'requestId must match req-<sha256-hex>'),
     executorIdentity: RawExecutorIdentityZodSchema,
     status: z.enum(['SUCCESS', 'FAILURE', 'TIMEOUT', 'CANCELLED', 'ERROR']),
+    failureCategory: z.string().optional(),
     exitCode: z.number().int().nullable(),
     signal: z.string().nullable(),
     stdout: z.string().nullable(),
@@ -238,6 +264,7 @@ export function createSuccessRawOutcome(params: {
   stdout?: string | null;
   stderr?: string | null;
   exitCode?: number | null;
+  failureCategory?: ExecutionFailureCategory | string;
   unverifiedAgentClaims?: readonly string[];
   unverifiedModifiedFiles?: readonly string[];
   executorMetadata?: Record<string, unknown>;
@@ -250,6 +277,7 @@ export function createSuccessRawOutcome(params: {
     requestId: params.request.requestId,
     executorIdentity: Object.freeze({ ...params.executorIdentity }),
     status: 'SUCCESS',
+    failureCategory: params.failureCategory,
     exitCode: params.exitCode !== undefined ? params.exitCode : 0,
     signal: null,
     stdout: params.stdout ?? '',
@@ -291,6 +319,7 @@ export function createFailureRawOutcome(params: {
   signal?: string | null;
   stdout?: string | null;
   stderr?: string | null;
+  failureCategory?: ExecutionFailureCategory | string;
   error?: { code: string; message: string; details?: unknown };
   unverifiedAgentClaims?: readonly string[];
   unverifiedModifiedFiles?: readonly string[];
@@ -304,6 +333,7 @@ export function createFailureRawOutcome(params: {
     requestId: params.request.requestId,
     executorIdentity: Object.freeze({ ...params.executorIdentity }),
     status: 'FAILURE',
+    failureCategory: params.failureCategory ?? ExecutionFailureCategory.EXECUTOR_EXIT_FAILURE,
     exitCode: params.exitCode !== undefined ? params.exitCode : 1,
     signal: params.signal ?? null,
     stdout: params.stdout ?? null,
@@ -352,6 +382,7 @@ export function createTimeoutRawOutcome(params: {
   durationMs: number;
   stdout?: string | null;
   stderr?: string | null;
+  failureCategory?: ExecutionFailureCategory | string;
   executorMetadata?: Record<string, unknown>;
 }): RawExecutorOutcome {
   const binding = extractRequestBinding(params.request);
@@ -360,6 +391,7 @@ export function createTimeoutRawOutcome(params: {
     requestId: params.request.requestId,
     executorIdentity: Object.freeze({ ...params.executorIdentity }),
     status: 'TIMEOUT',
+    failureCategory: params.failureCategory ?? ExecutionFailureCategory.EXECUTOR_TIMEOUT,
     exitCode: null,
     signal: 'SIGKILL',
     stdout: params.stdout ?? null,
@@ -404,6 +436,7 @@ export function createCancelledRawOutcome(params: {
   stdout?: string | null;
   stderr?: string | null;
   reason?: string;
+  failureCategory?: ExecutionFailureCategory | string;
   executorMetadata?: Record<string, unknown>;
 }): RawExecutorOutcome {
   const binding = extractRequestBinding(params.request);
@@ -412,6 +445,7 @@ export function createCancelledRawOutcome(params: {
     requestId: params.request.requestId,
     executorIdentity: Object.freeze({ ...params.executorIdentity }),
     status: 'CANCELLED',
+    failureCategory: params.failureCategory ?? ExecutionFailureCategory.EXECUTOR_CANCELLED,
     exitCode: null,
     signal: 'SIGTERM',
     stdout: params.stdout ?? null,
@@ -455,6 +489,7 @@ export function createErrorRawOutcome(params: {
   error: { code: string; message: string; details?: unknown };
   stdout?: string | null;
   stderr?: string | null;
+  failureCategory?: ExecutionFailureCategory | string;
   executorMetadata?: Record<string, unknown>;
 }): RawExecutorOutcome {
   const binding = extractRequestBinding(params.request);
@@ -463,6 +498,7 @@ export function createErrorRawOutcome(params: {
     requestId: params.request.requestId,
     executorIdentity: Object.freeze({ ...params.executorIdentity }),
     status: 'ERROR',
+    failureCategory: params.failureCategory ?? ExecutionFailureCategory.EXECUTOR_START_FAILURE,
     exitCode: null,
     signal: null,
     stdout: params.stdout ?? null,

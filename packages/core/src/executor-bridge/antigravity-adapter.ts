@@ -18,6 +18,7 @@ import type {
 import {
   type RawExecutorOutcome,
   type RawExecutorIdentity,
+  ExecutionFailureCategory,
   assertNotVerifiedEvidence,
   createSuccessRawOutcome,
   createFailureRawOutcome,
@@ -688,6 +689,7 @@ export class AntigravityAdapter implements ExecutorPort, ExecutionRequestExecuto
             startedAt,
             completedAt,
             durationMs: Date.now() - startTimeMs,
+            failureCategory: ExecutionFailureCategory.EXECUTOR_START_FAILURE,
             error: {
               code: 'ERR_EXECUTOR_NOT_FOUND',
               message: resolution.reason ?? `Antigravity CLI executable not found`,
@@ -715,6 +717,7 @@ export class AntigravityAdapter implements ExecutorPort, ExecutionRequestExecuto
               startedAt,
               completedAt,
               durationMs: Date.now() - startTimeMs,
+              failureCategory: ExecutionFailureCategory.EXECUTOR_PROTOCOL_FAILURE,
               error: {
                 code: 'ERR_EXECUTOR_INCOMPATIBLE',
                 message: compat.reason ?? 'Antigravity CLI is incompatible with execution contract',
@@ -763,6 +766,7 @@ export class AntigravityAdapter implements ExecutorPort, ExecutionRequestExecuto
             startedAt,
             completedAt,
             durationMs,
+            failureCategory: ExecutionFailureCategory.EXECUTOR_START_FAILURE,
             error: {
               code: errCode,
               message: `Process could not start: ${procResult.spawnError.message}`,
@@ -779,6 +783,7 @@ export class AntigravityAdapter implements ExecutorPort, ExecutionRequestExecuto
             startedAt,
             completedAt,
             durationMs,
+            failureCategory: ExecutionFailureCategory.EXECUTOR_TIMEOUT,
             stderr: procResult.stderr || `Execution timed out after ${timeoutMs}ms`,
           });
         }
@@ -791,6 +796,7 @@ export class AntigravityAdapter implements ExecutorPort, ExecutionRequestExecuto
             startedAt,
             completedAt,
             durationMs,
+            failureCategory: ExecutionFailureCategory.EXECUTOR_CANCELLED,
             reason: procResult.stderr || 'Execution was cancelled by caller signal',
           });
         }
@@ -807,6 +813,7 @@ export class AntigravityAdapter implements ExecutorPort, ExecutionRequestExecuto
             signal: procResult.signal,
             stdout: procResult.stdout,
             stderr: procResult.stderr || `Process exited with code ${procResult.exitCode}`,
+            failureCategory: ExecutionFailureCategory.EXECUTOR_EXIT_FAILURE,
             unverifiedAgentClaims: [],
             unverifiedModifiedFiles: [],
           });
@@ -815,14 +822,18 @@ export class AntigravityAdapter implements ExecutorPort, ExecutionRequestExecuto
         // Condition 5 & 6: Process exited successfully, parse output safely
         const parsed = parseExecutorProcessOutput(procResult.stdout, validatedRequest);
         if (!parsed.safe) {
+          const isOutputFailure = parsed.reason?.includes('null bytes') || parsed.reason?.includes('binary');
           return createErrorRawOutcome({
             request: validatedRequest,
             executorIdentity: this.executorIdentity,
             startedAt,
             completedAt,
             durationMs,
+            failureCategory: isOutputFailure
+              ? ExecutionFailureCategory.EXECUTOR_OUTPUT_FAILURE
+              : ExecutionFailureCategory.EXECUTOR_PROTOCOL_FAILURE,
             error: {
-              code: 'ERR_EXECUTOR_MALFORMED_OUTPUT',
+              code: isOutputFailure ? 'ERR_EXECUTOR_OUTPUT_FAILURE' : 'ERR_EXECUTOR_MALFORMED_OUTPUT',
               message: parsed.reason
                 ? `Process output could not be interpreted safely: ${parsed.reason}`
                 : 'Process output could not be interpreted safely',
@@ -860,6 +871,7 @@ export class AntigravityAdapter implements ExecutorPort, ExecutionRequestExecuto
           startedAt,
           completedAt,
           durationMs,
+          failureCategory: ExecutionFailureCategory.EXECUTOR_TIMEOUT,
         });
       }
 
@@ -871,6 +883,7 @@ export class AntigravityAdapter implements ExecutorPort, ExecutionRequestExecuto
           startedAt,
           completedAt,
           durationMs,
+          failureCategory: ExecutionFailureCategory.EXECUTOR_CANCELLED,
           reason: 'Execution was cancelled by caller signal',
         });
       }
@@ -905,6 +918,7 @@ export class AntigravityAdapter implements ExecutorPort, ExecutionRequestExecuto
           signal: rawOutput.signal ?? null,
           stdout: rawOutput.stdout ?? null,
           stderr: rawOutput.stderr ?? `Process exited with code ${exitCode}`,
+          failureCategory: ExecutionFailureCategory.EXECUTOR_EXIT_FAILURE,
           unverifiedAgentClaims:
             rawOutput.agent_claims ?? rawOutput.unverifiedAgentClaims ?? [],
           unverifiedModifiedFiles:
@@ -945,6 +959,7 @@ export class AntigravityAdapter implements ExecutorPort, ExecutionRequestExecuto
           startedAt,
           completedAt,
           durationMs,
+          failureCategory: ExecutionFailureCategory.EXECUTOR_TIMEOUT,
           stderr: err instanceof Error ? err.message : 'Execution timed out',
         });
       }
@@ -956,6 +971,7 @@ export class AntigravityAdapter implements ExecutorPort, ExecutionRequestExecuto
           startedAt,
           completedAt,
           durationMs,
+          failureCategory: ExecutionFailureCategory.EXECUTOR_CANCELLED,
           reason: err instanceof Error ? err.message : 'Execution cancelled',
         });
       }
@@ -966,6 +982,7 @@ export class AntigravityAdapter implements ExecutorPort, ExecutionRequestExecuto
         startedAt,
         completedAt,
         durationMs,
+        failureCategory: ExecutionFailureCategory.EXECUTOR_START_FAILURE,
         error: {
           code: 'ERR_EXECUTOR_INVOCATION',
           message: err instanceof Error ? err.message : String(err),

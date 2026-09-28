@@ -33,6 +33,8 @@ import type {
 } from '../executor-bridge/execution-request-types.js';
 import {
   type RawExecutorOutcome,
+  ExecutionFailureCategory,
+  isExecutionFailureCategory,
   assertNotVerifiedEvidence,
 } from '../executor-bridge/raw-executor-outcome.js';
 import {
@@ -42,6 +44,7 @@ import {
   type ChangedFileEvidence,
   type RepositoryStateEvidence,
   type VerificationDecision,
+  type ExecutorOutcomeReference,
   isSafeRelativePath,
   assertSafeEvidencePath,
   assertNoForbiddenEvidenceFields,
@@ -53,6 +56,7 @@ import {
   SystemEvidenceSecurityViolationError,
   SystemEvidenceInfrastructureError,
 } from '../director/director-errors.js';
+import { sanitizeEvidenceSecrets, sanitizeEvidenceDetails } from '../errors/evidence-error.js';
 
 // ============================================================================
 // 1. PIPELINE OPTIONS CONTRACT
@@ -278,7 +282,7 @@ export class SystemEvidenceCollector {
     // Check Git baseline match if expected base commit is specified
     if (request.expectedRepositoryState?.baseCommit) {
       const expectedBase = request.expectedRepositoryState.baseCommit;
-      if (headCommit !== expectedBase && baseCommit !== expectedBase) {
+      if (headCommit !== expectedBase) {
         verificationChecks.push({
           checkId: 'CHECK_GIT_BASELINE',
           type: 'GIT',
@@ -539,6 +543,7 @@ export class SystemEvidenceCollector {
       }
     }
 
+
     // 7. Objective Acceptance Criteria Evaluation
     const evalResult = ExecutionQaBridge.evaluate({
       request,
@@ -553,6 +558,24 @@ export class SystemEvidenceCollector {
 
     const verificationDecision: VerificationDecision = evalResult.decision;
 
+    const gitBaselineMismatch = Boolean(
+      request.expectedRepositoryState?.baseCommit &&
+      headCommit !== request.expectedRepositoryState.baseCommit
+    );
+
+    let failureCategory: ExecutionFailureCategory | undefined;
+    if (verificationDecision !== 'ACCEPT') {
+      failureCategory = this.determineFailureCategory({
+        rawOutcome,
+        bindingValid: bindingResult.valid,
+        gitBaselineMismatch,
+        unsafePathsFound: unsafePathsFound.length > 0,
+        unexpectedFiles: unexpectedFiles.length > 0,
+        verificationChecks,
+        verificationDecision,
+      });
+    }
+
     // 8. Deterministic Evidence Identifier
     const evidenceId = computeDeterministicEvidenceId({
       requestId: request.requestId,
@@ -566,10 +589,16 @@ export class SystemEvidenceCollector {
     });
 
     // 9. Non-authoritative Executor Reference
-    const executorOutcomeReference = Object.freeze({
+    const executorOutcomeReference: ExecutorOutcomeReference = Object.freeze({
       status: rawOutcome.status,
       exitCode: rawOutcome.exitCode,
       durationMs: rawOutcome.durationMs,
+      timedOut: rawOutcome.timedOut,
+      cancelled: rawOutcome.cancelled,
+      signal: rawOutcome.signal,
+      failureCategory,
+      errorCode: rawOutcome.error?.code ?? null,
+      errorMessage: rawOutcome.error?.message ? sanitizeEvidenceSecrets(rawOutcome.error.message) : null,
     });
 
     // 10. Record verification audit event if HistoryManager is configured
@@ -584,6 +613,7 @@ export class SystemEvidenceCollector {
             requestId: request.requestId,
             projectId: request.projectId,
             verificationDecision,
+            failureCategory,
             criteriaCount: evalResult.criteriaResults.length,
             checksCount: verificationChecks.length,
             changedFilesCount: changedFiles.length,
@@ -593,6 +623,12 @@ export class SystemEvidenceCollector {
         // Logging failure must not alter verification decision
       }
     }
+
+    const sanitizedDiagnostics = sanitizeEvidenceSecrets(
+      rawOutcome.error?.message ||
+      rawOutcome.stderr ||
+      evalResult.summary
+    );
 
     // 11. Return immutable SystemExecutionEvidence
     const evidence: SystemExecutionEvidence = Object.freeze({
@@ -611,9 +647,20 @@ export class SystemEvidenceCollector {
       executorOutcomeReference,
       verificationDecision,
       verifiedAt,
+      failureCategory,
+      executionIntentBinding: Object.freeze({
+        directorSessionId: request.directorSessionId,
+        directorDecisionId: request.directorDecisionId,
+      }),
       metadata: Object.freeze({
         summary: evalResult.summary,
         evaluationSummary: evalResult.summary,
+        failureCategory,
+        executionIntentBinding: {
+          directorSessionId: request.directorSessionId,
+          directorDecisionId: request.directorDecisionId,
+        },
+        diagnostics: sanitizedDiagnostics,
         untrustedExecutorClaims: rawOutcome.unverifiedAgentClaims,
       }),
     });
@@ -625,5 +672,76 @@ export class SystemEvidenceCollector {
     }
 
     return evidence;
+  }
+
+  /**
+   * Derives deterministic failure category for rejected or blocked verification results (P14-04).
+   */
+  private determineFailureCategory(params: {
+    rawOutcome: RawExecutorOutcome;
+    bindingValid: boolean;
+    gitBaselineMismatch: boolean;
+    unsafePathsFound: boolean;
+    unexpectedFiles: boolean;
+    verificationChecks: readonly VerificationCheck[];
+    verificationDecision: VerificationDecision;
+  }): ExecutionFailureCategory {
+    // 1. Security failure has highest priority
+    if (
+      !params.bindingValid ||
+      params.gitBaselineMismatch ||
+      params.unsafePathsFound ||
+      params.unexpectedFiles
+    ) {
+      return ExecutionFailureCategory.SECURITY_FAILURE;
+    }
+
+    // 2. Infrastructure block
+    if (
+      params.verificationDecision === 'BLOCK' ||
+      params.verificationChecks.some((c) => c.status === 'BLOCK')
+    ) {
+      return ExecutionFailureCategory.INFRASTRUCTURE_BLOCK;
+    }
+
+    // 3. Explicit raw outcome failure category if specified
+    if (params.rawOutcome.failureCategory && isExecutionFailureCategory(params.rawOutcome.failureCategory)) {
+      return params.rawOutcome.failureCategory;
+    }
+
+    // 4. Trace from raw executor status/error
+    const status = params.rawOutcome.status;
+    const errorCode = params.rawOutcome.error?.code;
+
+    if (errorCode === 'ERR_EXECUTOR_NOT_FOUND' || errorCode === 'ERR_EXECUTOR_SPAWN_FAILED') {
+      return ExecutionFailureCategory.EXECUTOR_START_FAILURE;
+    }
+
+    if (errorCode === 'ERR_EXECUTOR_INCOMPATIBLE' || errorCode === 'ERR_EXECUTOR_PROTOCOL_FAILURE') {
+      return ExecutionFailureCategory.EXECUTOR_PROTOCOL_FAILURE;
+    }
+
+    if (errorCode === 'ERR_EXECUTOR_OUTPUT_FAILURE') {
+      return ExecutionFailureCategory.EXECUTOR_OUTPUT_FAILURE;
+    }
+
+    if (params.rawOutcome.timedOut || status === 'TIMEOUT' || errorCode === 'ERR_EXECUTOR_TIMEOUT') {
+      return ExecutionFailureCategory.EXECUTOR_TIMEOUT;
+    }
+
+    if (params.rawOutcome.cancelled || status === 'CANCELLED' || errorCode === 'ERR_EXECUTOR_CANCELLED') {
+      return ExecutionFailureCategory.EXECUTOR_CANCELLED;
+    }
+
+    if (status === 'FAILURE' || (params.rawOutcome.exitCode !== null && params.rawOutcome.exitCode !== 0)) {
+      return ExecutionFailureCategory.EXECUTOR_EXIT_FAILURE;
+    }
+
+    if (status === 'ERROR') {
+      return ExecutionFailureCategory.EXECUTOR_START_FAILURE;
+    }
+
+    // 5. Default when executor finished SUCCESS but verification rejected result
+    return ExecutionFailureCategory.VERIFICATION_FAILURE;
   }
 }

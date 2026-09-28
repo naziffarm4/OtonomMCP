@@ -29,17 +29,26 @@ import {
 // Deterministic Precedence Rank (lower number = higher priority)
 export const FAILURE_CATEGORY_PRECEDENCE: Record<FailureCategory, number> = Object.freeze({
   [FailureCategory.SECURITY_VIOLATION]: 1,
+  [FailureCategory.SECURITY_FAILURE]: 1,
   [FailureCategory.STALE_BINDING]: 2,
   [FailureCategory.SCOPE_VIOLATION]: 3,
   [FailureCategory.INFRASTRUCTURE_FAILURE]: 4,
-  [FailureCategory.TIMEOUT]: 5,
-  [FailureCategory.BUILD_FAILURE]: 6,
-  [FailureCategory.TYPECHECK_FAILURE]: 7,
-  [FailureCategory.TEST_FAILURE]: 8,
-  [FailureCategory.LINT_FAILURE]: 9,
-  [FailureCategory.ACCEPTANCE_CRITERIA_FAILURE]: 10,
-  [FailureCategory.EXECUTOR_FAILURE]: 11,
-  [FailureCategory.UNKNOWN]: 12,
+  [FailureCategory.INFRASTRUCTURE_BLOCK]: 4,
+  [FailureCategory.EXECUTOR_START_FAILURE]: 5,
+  [FailureCategory.EXECUTOR_PROTOCOL_FAILURE]: 6,
+  [FailureCategory.EXECUTOR_CANCELLED]: 7,
+  [FailureCategory.EXECUTOR_OUTPUT_FAILURE]: 8,
+  [FailureCategory.TIMEOUT]: 9,
+  [FailureCategory.EXECUTOR_TIMEOUT]: 9,
+  [FailureCategory.BUILD_FAILURE]: 10,
+  [FailureCategory.TYPECHECK_FAILURE]: 11,
+  [FailureCategory.TEST_FAILURE]: 12,
+  [FailureCategory.LINT_FAILURE]: 13,
+  [FailureCategory.ACCEPTANCE_CRITERIA_FAILURE]: 14,
+  [FailureCategory.VERIFICATION_FAILURE]: 15,
+  [FailureCategory.EXECUTOR_EXIT_FAILURE]: 16,
+  [FailureCategory.EXECUTOR_FAILURE]: 16,
+  [FailureCategory.UNKNOWN]: 17,
 });
 
 export class FailureDiagnosisEngine {
@@ -68,25 +77,53 @@ export class FailureDiagnosisEngine {
 
     // 3. Inspect Executor Outcome Reference
     if (evidence.executorOutcomeReference) {
-      const outcomeStatus = (evidence.executorOutcomeReference.status || '').toUpperCase();
-      if (outcomeStatus === 'TIMEOUT') {
+      const outcomeRef = evidence.executorOutcomeReference;
+      const outcomeStatus = (outcomeRef.status || '').toUpperCase();
+      const rawCategory = outcomeRef.failureCategory;
+
+      if (rawCategory && (rawCategory as string) in FailureCategory) {
+        const cat = rawCategory as FailureCategory;
+        const severity =
+          cat === FailureCategory.SECURITY_FAILURE
+            ? FailureSeverity.FATAL
+            : cat === FailureCategory.EXECUTOR_START_FAILURE ||
+              cat === FailureCategory.EXECUTOR_PROTOCOL_FAILURE ||
+              cat === FailureCategory.EXECUTOR_CANCELLED ||
+              cat === FailureCategory.EXECUTOR_OUTPUT_FAILURE ||
+              cat === FailureCategory.INFRASTRUCTURE_BLOCK
+            ? FailureSeverity.CRITICAL
+            : FailureSeverity.RETRYABLE;
+
+        issues.push({
+          category: cat,
+          severity,
+          message: outcomeRef.errorMessage || `Executor operation reported ${cat}`,
+          details: { exitCode: outcomeRef.exitCode, signal: outcomeRef.signal, failureCategory: cat },
+        });
+      } else if (outcomeStatus === 'TIMEOUT' || outcomeRef.timedOut) {
         issues.push({
           category: FailureCategory.TIMEOUT,
           severity: FailureSeverity.RETRYABLE,
           message: 'Executor operation timed out during execution',
-          details: { exitCode: evidence.executorOutcomeReference.exitCode },
+          details: { exitCode: outcomeRef.exitCode },
+        });
+      } else if (outcomeRef.cancelled || outcomeStatus === 'CANCELLED') {
+        issues.push({
+          category: FailureCategory.EXECUTOR_CANCELLED,
+          severity: FailureSeverity.CRITICAL,
+          message: 'Executor operation was cancelled',
+          details: { exitCode: outcomeRef.exitCode, signal: outcomeRef.signal },
         });
       } else if (
         outcomeStatus === 'FAILURE' ||
-        outcomeStatus === 'ERROR' ||
-        outcomeStatus === 'CANCELLED'
+        outcomeStatus === 'ERROR'
       ) {
         // If not already covered by specific test/build/check failure, note executor failure
         issues.push({
           category: FailureCategory.EXECUTOR_FAILURE,
           severity: FailureSeverity.RETRYABLE,
-          message: `Executor finished with status ${outcomeStatus}`,
-          details: { exitCode: evidence.executorOutcomeReference.exitCode },
+          message: outcomeRef.errorMessage || `Executor finished with status ${outcomeStatus}`,
+          details: { exitCode: outcomeRef.exitCode },
         });
       }
     }
@@ -97,13 +134,30 @@ export class FailureDiagnosisEngine {
         (evidence.metadata?.summary as string) ??
         `Verification decision was ${evidence.verificationDecision} without detailed check failures`;
 
-      const category = evidence.verificationDecision === 'BLOCK'
-        ? FailureCategory.INFRASTRUCTURE_FAILURE
-        : FailureCategory.UNKNOWN;
+      let category: FailureCategory;
+      if (evidence.failureCategory && (evidence.failureCategory as string) in FailureCategory) {
+        category = evidence.failureCategory as FailureCategory;
+      } else {
+        category = evidence.verificationDecision === 'BLOCK'
+          ? FailureCategory.INFRASTRUCTURE_FAILURE
+          : FailureCategory.UNKNOWN;
+      }
+
+      const severity =
+        category === FailureCategory.SECURITY_FAILURE
+          ? FailureSeverity.FATAL
+          : evidence.verificationDecision === 'BLOCK' ||
+            category === FailureCategory.EXECUTOR_START_FAILURE ||
+            category === FailureCategory.EXECUTOR_PROTOCOL_FAILURE ||
+            category === FailureCategory.EXECUTOR_CANCELLED ||
+            category === FailureCategory.EXECUTOR_OUTPUT_FAILURE ||
+            category === FailureCategory.INFRASTRUCTURE_BLOCK
+          ? FailureSeverity.CRITICAL
+          : FailureSeverity.RETRYABLE;
 
       issues.push({
         category,
-        severity: evidence.verificationDecision === 'BLOCK' ? FailureSeverity.CRITICAL : FailureSeverity.RETRYABLE,
+        severity,
         message: blockingReason,
       });
     }
@@ -147,7 +201,20 @@ export class FailureDiagnosisEngine {
 
     switch (primaryCategory) {
       case FailureCategory.SECURITY_VIOLATION:
+      case FailureCategory.SECURITY_FAILURE:
       case FailureCategory.STALE_BINDING:
+        requiresHuman = true;
+        isRetryable = false;
+        isReplannable = false;
+        break;
+
+      case FailureCategory.INFRASTRUCTURE_FAILURE:
+      case FailureCategory.INFRASTRUCTURE_BLOCK:
+      case FailureCategory.EXECUTOR_START_FAILURE:
+      case FailureCategory.EXECUTOR_PROTOCOL_FAILURE:
+      case FailureCategory.EXECUTOR_CANCELLED:
+      case FailureCategory.EXECUTOR_OUTPUT_FAILURE:
+        // Operational/environment/executor defect; non-retryable autonomously, requires human
         requiresHuman = true;
         isRetryable = false;
         isReplannable = false;
@@ -160,20 +227,16 @@ export class FailureDiagnosisEngine {
         isRetryable = false;
         break;
 
-      case FailureCategory.INFRASTRUCTURE_FAILURE:
-        // Environment/tooling problem; human review/fix needed
-        requiresHuman = true;
-        isRetryable = false;
-        isReplannable = false;
-        break;
-
       case FailureCategory.BUILD_FAILURE:
       case FailureCategory.TYPECHECK_FAILURE:
       case FailureCategory.TEST_FAILURE:
       case FailureCategory.LINT_FAILURE:
       case FailureCategory.ACCEPTANCE_CRITERIA_FAILURE:
       case FailureCategory.EXECUTOR_FAILURE:
+      case FailureCategory.EXECUTOR_EXIT_FAILURE:
+      case FailureCategory.VERIFICATION_FAILURE:
       case FailureCategory.TIMEOUT:
+      case FailureCategory.EXECUTOR_TIMEOUT:
         // Standard code-level defects are retryable by the implementation agent
         isRetryable = true;
         isReplannable = true;
@@ -212,6 +275,31 @@ export class FailureDiagnosisEngine {
     const typeUpper = (check.type || '').toUpperCase();
     const idUpper = (check.checkId || '').toUpperCase();
     const evidenceLower = (check.evidence || '').toLowerCase();
+
+    // 0. Executor execution check
+    if (typeUpper === 'EXECUTOR' || idUpper.includes('EXECUTOR')) {
+      const cat = (check.details as any)?.failureCategory;
+      if (cat && (cat as string) in FailureCategory) {
+        const failureCat = cat as FailureCategory;
+        const severity =
+          failureCat === FailureCategory.SECURITY_FAILURE
+            ? FailureSeverity.FATAL
+            : failureCat === FailureCategory.EXECUTOR_START_FAILURE ||
+              failureCat === FailureCategory.EXECUTOR_PROTOCOL_FAILURE ||
+              failureCat === FailureCategory.EXECUTOR_CANCELLED ||
+              failureCat === FailureCategory.EXECUTOR_OUTPUT_FAILURE ||
+              failureCat === FailureCategory.INFRASTRUCTURE_BLOCK
+            ? FailureSeverity.CRITICAL
+            : FailureSeverity.RETRYABLE;
+        return {
+          checkId: check.checkId,
+          category: failureCat,
+          severity,
+          message: check.evidence || `Executor failed with category ${cat}`,
+          details: check.details,
+        };
+      }
+    }
 
     // 1. Security / Path safety
     if (typeUpper === 'SECURITY' || idUpper.includes('PATH_SAFETY') || idUpper.includes('SECURITY')) {

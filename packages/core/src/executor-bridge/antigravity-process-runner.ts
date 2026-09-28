@@ -297,6 +297,7 @@ export class NodeAntigravityProcessRunner implements AntigravityProcessRunner {
       let didCancel = false;
       let spawnError: Error | null = null;
       let timeoutTimer: NodeJS.Timeout | null = null;
+      let killFallbackTimer: NodeJS.Timeout | null = null;
       let settled = false;
 
       const childEnv = options.env ? { ...process.env, ...options.env } : { ...process.env };
@@ -346,15 +347,17 @@ export class NodeAntigravityProcessRunner implements AntigravityProcessRunner {
         } catch {
           // ignore
         }
-        setTimeout(() => {
+        if (killFallbackTimer) clearTimeout(killFallbackTimer);
+        killFallbackTimer = setTimeout(() => {
           try {
-            if (!child.killed) {
+            if (!settled && child.exitCode === null && child.signalCode === null) {
               child.kill('SIGKILL');
             }
           } catch {
             // ignore
           }
-        }, 1000).unref();
+        }, 1000);
+        killFallbackTimer.unref();
       };
 
       if (options.signal) {
@@ -370,15 +373,17 @@ export class NodeAntigravityProcessRunner implements AntigravityProcessRunner {
           } catch {
             // ignore
           }
-          setTimeout(() => {
+          if (killFallbackTimer) clearTimeout(killFallbackTimer);
+          killFallbackTimer = setTimeout(() => {
             try {
-              if (!child.killed) {
+              if (!settled && child.exitCode === null && child.signalCode === null) {
                 child.kill('SIGKILL');
               }
             } catch {
               // ignore
             }
-          }, 1000).unref();
+          }, 1000);
+          killFallbackTimer.unref();
         }, options.timeoutMs);
       }
 
@@ -419,7 +424,18 @@ export class NodeAntigravityProcessRunner implements AntigravityProcessRunner {
         settled = true;
 
         if (timeoutTimer) clearTimeout(timeoutTimer);
+        if (killFallbackTimer) clearTimeout(killFallbackTimer);
         if (options.signal) options.signal.removeEventListener('abort', onCallerAbort);
+
+        try {
+          child.stdin?.destroy();
+        } catch {
+          // ignore
+        }
+        child.stdout?.removeAllListeners();
+        child.stderr?.removeAllListeners();
+        child.stdin?.removeAllListeners();
+        child.removeAllListeners();
 
         const endHr = process.hrtime.bigint();
         const durationMs = Math.max(0, Math.round(Number(endHr - startHr) / 1_000_000));

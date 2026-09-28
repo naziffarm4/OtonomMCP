@@ -23,7 +23,11 @@ import {
   SystemEvidenceValidationError,
   SystemEvidenceBindingMismatchError,
 } from '../director/director-errors.js';
-import { FORBIDDEN_VERIFICATION_FIELDS } from '../executor-bridge/raw-executor-outcome.js';
+import {
+  FORBIDDEN_VERIFICATION_FIELDS,
+  ExecutionFailureCategory,
+  type ExecutionFailureCategory as ExecutionFailureCategoryType,
+} from '../executor-bridge/raw-executor-outcome.js';
 import {
   SHELL_INJECTION_PATTERN,
   WINDOWS_DRIVE_PATTERN,
@@ -31,7 +35,8 @@ import {
 } from '../executor-bridge/executor-guard.js';
 
 // Re-export for convenience where needed without re-declaring
-export { FORBIDDEN_VERIFICATION_FIELDS };
+export { FORBIDDEN_VERIFICATION_FIELDS, ExecutionFailureCategory };
+export type { ExecutionFailureCategoryType };
 
 // ============================================================================
 // 1. VERIFICATION DECISION & CHECK TAXONOMY
@@ -171,6 +176,12 @@ export interface ExecutorOutcomeReference {
   readonly status: string;
   readonly exitCode?: number | null;
   readonly durationMs?: number;
+  readonly timedOut?: boolean;
+  readonly cancelled?: boolean;
+  readonly signal?: string | null;
+  readonly failureCategory?: string;
+  readonly errorCode?: string | null;
+  readonly errorMessage?: string | null;
 }
 
 // ============================================================================
@@ -211,6 +222,13 @@ export interface SystemExecutionEvidence {
   readonly verificationDecision: VerificationDecision;
   /** ISO 8601 timestamp of verification completion */
   readonly verifiedAt: string;
+  /** Preserved underlying failure category when verificationDecision is REJECT or BLOCK (Phase 14 P14-04) */
+  readonly failureCategory?: string;
+  /** Preserved execution intent binding */
+  readonly executionIntentBinding?: {
+    readonly directorSessionId?: string;
+    readonly directorDecisionId?: string;
+  };
   /** Optional sanitized metadata */
   readonly metadata?: Readonly<Record<string, unknown>>;
 }
@@ -257,6 +275,12 @@ export const ExecutorOutcomeReferenceZodSchema = z.object({
   status: z.string().min(1),
   exitCode: z.number().nullable().optional(),
   durationMs: z.number().nonnegative().optional(),
+  timedOut: z.boolean().optional(),
+  cancelled: z.boolean().optional(),
+  signal: z.string().nullable().optional(),
+  failureCategory: z.string().optional(),
+  errorCode: z.string().nullable().optional(),
+  errorMessage: z.string().nullable().optional(),
 });
 
 export const SystemExecutionEvidenceZodSchema = z
@@ -276,6 +300,13 @@ export const SystemExecutionEvidenceZodSchema = z
     executorOutcomeReference: ExecutorOutcomeReferenceZodSchema,
     verificationDecision: z.enum(['ACCEPT', 'REJECT', 'BLOCK']),
     verifiedAt: z.string().min(1),
+    failureCategory: z.string().optional(),
+    executionIntentBinding: z
+      .object({
+        directorSessionId: z.string().optional(),
+        directorDecisionId: z.string().optional(),
+      })
+      .optional(),
     metadata: z.record(z.string(), z.unknown()).optional(),
   })
   .superRefine((val, ctx) => {
