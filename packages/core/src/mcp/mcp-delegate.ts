@@ -27,6 +27,8 @@ import { ApprovalStore } from '../approval/approval-store.js';
 import { DirectorSessionStore } from '../director/director-session-store.js';
 import { DirectorDecisionStore } from '../director/director-decision-store.js';
 import { ProjectDiscoveryEngine } from '../discovery/discovery-engine.js';
+import { AdaptiveDiscoveryEngine } from '../discovery/adaptive-discovery-engine.js';
+import { AdaptiveDiscoveryStore } from '../discovery/adaptive-discovery-store.js';
 import type { ExecutorPort } from '../executor-bridge/executor-port.js';
 import type { ExecutorContextService } from '../executor-bridge/executor-context-service.js';
 
@@ -128,6 +130,8 @@ export interface McpOrchestratorDelegate {
    * Authoritative ProjectDiscoveryEngine instance.
    */
   readonly discoveryEngine?: ProjectDiscoveryEngine;
+  readonly adaptiveDiscoveryEngine?: AdaptiveDiscoveryEngine;
+  readonly adaptiveDiscoveryStore?: AdaptiveDiscoveryStore;
 
   /**
    * Authoritative ExecutorPort instance (Phase 10 executor adapter boundary).
@@ -175,6 +179,8 @@ export interface DefaultMcpOrchestratorDelegateOptions {
   readonly directorSessionStore?: DirectorSessionStore;
   readonly directorDecisionStore?: DirectorDecisionStore;
   readonly discoveryEngine?: ProjectDiscoveryEngine;
+  readonly adaptiveDiscoveryEngine?: AdaptiveDiscoveryEngine;
+  readonly adaptiveDiscoveryStore?: AdaptiveDiscoveryStore;
   readonly evidenceProvider?: (
     params: {
       taskId?: string;
@@ -203,6 +209,8 @@ export class DefaultMcpOrchestratorDelegate implements McpOrchestratorDelegate {
   readonly directorSessionStore?: DirectorSessionStore;
   readonly directorDecisionStore?: DirectorDecisionStore;
   readonly discoveryEngine?: ProjectDiscoveryEngine;
+  readonly adaptiveDiscoveryEngine?: AdaptiveDiscoveryEngine;
+  readonly adaptiveDiscoveryStore?: AdaptiveDiscoveryStore;
   private readonly evidenceProvider?: (
     params: {
       taskId?: string;
@@ -269,6 +277,26 @@ export class DefaultMcpOrchestratorDelegate implements McpOrchestratorDelegate {
           })
         : undefined);
     this.discoveryEngine = options.discoveryEngine;
+    this.adaptiveDiscoveryStore =
+      options.adaptiveDiscoveryStore ??
+      (this.projectRoot
+        ? new AdaptiveDiscoveryStore({
+            baseDir: this.projectRoot,
+            historyManager: this.historyManager,
+          })
+        : undefined);
+    this.adaptiveDiscoveryEngine =
+      options.adaptiveDiscoveryEngine ??
+      (this.projectRoot
+        ? new AdaptiveDiscoveryEngine({
+            workspaceRoot: this.projectRoot,
+            specStore: this.specStore,
+            historyManager: this.historyManager,
+            durableStateManager: this.durableStateManager,
+            discoveryStore: this.adaptiveDiscoveryStore,
+            existingDiscoveryEngine: this.discoveryEngine,
+          })
+        : undefined);
     this.evidenceProvider = options.evidenceProvider;
   }
 

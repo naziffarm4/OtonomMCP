@@ -1,14 +1,16 @@
 /**
- * aidm.project.discover MCP Read-Only Tool (Phase 8 TASK-P8-03)
+ * aidm.project.discover MCP Tool (Phase 8 TASK-P8-03, Phase 15 TASK-P15-01)
  *
- * Exposes bounded, structured project discovery through the Director MCP boundary.
- * Produces a typed ProjectDiscoveryReport without mutating project state, files, Git, or tasks.
+ * Exposes structured project discovery through the Director MCP boundary:
+ * 1. Existing codebase inspection via ProjectDiscoveryEngine.
+ * 2. Adaptive project initiation discovery via AdaptiveDiscoveryEngine (when rawPrompt/prompt provided).
  *
  * ARCHITECTURAL INVARIANTS:
  * 1. Strictly read-only: does not modify state, filesystem, or git.
  * 2. Reuses authoritative components from McpOrchestratorDelegate.
  * 3. Never promotes AGENT_CLAIM to SYSTEM_VERIFIED_EVIDENCE.
  * 4. Output sanitized via sanitizeMcpPayload.
+ * 5. Does NOT approve project, create execution intent, or invoke Antigravity.
  */
 
 import { z } from 'zod';
@@ -17,11 +19,17 @@ import type { McpOrchestratorDelegate } from '../mcp-delegate.js';
 import { sanitizeMcpPayload } from '../mcp-errors.js';
 import { ProjectDiscoveryEngine } from '../../discovery/discovery-engine.js';
 import { ProjectDiscoveryReport } from '../../discovery/discovery-types.js';
+import { AdaptiveDiscoveryEngine } from '../../discovery/adaptive-discovery-engine.js';
 
 export const AIDM_PROJECT_DISCOVER_TOOL_NAME = 'aidm.project.discover';
 
 const discoverInputSchema = z.object({
   workspaceRoot: z.string().optional(),
+  projectId: z.string().optional(),
+  prompt: z.string().optional(),
+  rawPrompt: z.string().optional(),
+  resolvedAnswers: z.record(z.string(), z.string()).optional(),
+  decidedHumanDecisions: z.record(z.string(), z.string()).optional(),
   allowContextRefresh: z.boolean().optional(),
   maxFileScan: z.number().int().positive().optional(),
   maxDocBytes: z.number().int().positive().optional(),
@@ -33,13 +41,33 @@ export type DiscoverInput = z.infer<typeof discoverInputSchema>;
 export const projectDiscoverToolDefinition: McpToolDefinition = {
   name: AIDM_PROJECT_DISCOVER_TOOL_NAME,
   description:
-    'Inspects an existing project codebase in a strictly read-only, bounded manner and produces a comprehensive ProjectDiscoveryReport detailing identity, purpose, technology stack, architecture, entrypoints, commands, feature inventory, authoritative AIDM state, facts, observations, inferences, unknowns, contradictions, and clarification candidates for P8-04.',
+    'Inspects an existing project codebase or performs adaptive project discovery for project initiation, producing a structured, typed discovery report or revision detailing identity, purpose, technology stack, architecture, entrypoints, commands, functional/non-functional requirements, human decisions, and prioritized questions.',
   inputSchema: {
     type: 'object',
     properties: {
       workspaceRoot: {
         type: 'string',
         description: 'Optional path to the project workspace root. Defaults to configured delegate project root or current working directory.',
+      },
+      projectId: {
+        type: 'string',
+        description: 'Optional canonical project identifier.',
+      },
+      prompt: {
+        type: 'string',
+        description: 'Optional Product Owner initial project description or natural language intent for adaptive discovery.',
+      },
+      rawPrompt: {
+        type: 'string',
+        description: 'Alias for prompt: natural language intent for adaptive discovery.',
+      },
+      resolvedAnswers: {
+        type: 'object',
+        description: 'Optional dictionary of resolved question answers for progressive discovery refinement.',
+      },
+      decidedHumanDecisions: {
+        type: 'object',
+        description: 'Optional dictionary of decided human decision points for progressive discovery refinement.',
       },
       allowContextRefresh: {
         type: 'boolean',
@@ -71,12 +99,49 @@ export function createProjectDiscoverTool(
       const activeDelegate = context.delegate ?? defaultDelegate;
       const resolvedRoot = parsed.workspaceRoot ?? activeDelegate?.projectRoot ?? process.cwd();
 
-      const engine = new ProjectDiscoveryEngine({
-        workspaceRoot: resolvedRoot,
-        delegate: activeDelegate,
-        maxFileScan: parsed.maxFileScan,
-        maxDocBytes: parsed.maxDocBytes,
-      });
+      const naturalPrompt = (parsed.rawPrompt ?? parsed.prompt ?? '').trim();
+
+      // If natural prompt or explicit progressive answers are provided, invoke AdaptiveDiscoveryEngine
+      if (naturalPrompt.length > 0 || parsed.resolvedAnswers || parsed.decidedHumanDecisions) {
+        const adaptiveEngine =
+          activeDelegate?.adaptiveDiscoveryEngine ??
+          new AdaptiveDiscoveryEngine({
+            workspaceRoot: resolvedRoot,
+            specStore: activeDelegate?.specStore,
+            historyManager: activeDelegate?.historyManager,
+            durableStateManager: activeDelegate?.durableStateManager,
+            discoveryStore: activeDelegate?.adaptiveDiscoveryStore,
+            existingDiscoveryEngine: activeDelegate?.discoveryEngine,
+          });
+
+        const revision = await adaptiveEngine.discover({
+          projectId: parsed.projectId,
+          workspaceRoot: resolvedRoot,
+          rawPrompt: naturalPrompt,
+          resolvedAnswers: parsed.resolvedAnswers,
+          decidedHumanDecisions: parsed.decidedHumanDecisions,
+        });
+
+        const sanitized = sanitizeMcpPayload(revision);
+        return {
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify(sanitized, null, 2),
+            },
+          ],
+        };
+      }
+
+      // Default: Phase 8 existing repository discovery engine
+      const engine =
+        activeDelegate?.discoveryEngine ??
+        new ProjectDiscoveryEngine({
+          workspaceRoot: resolvedRoot,
+          delegate: activeDelegate,
+          maxFileScan: parsed.maxFileScan,
+          maxDocBytes: parsed.maxDocBytes,
+        });
 
       const report: ProjectDiscoveryReport = await engine.discover({
         allowContextRefresh: parsed.allowContextRefresh,
