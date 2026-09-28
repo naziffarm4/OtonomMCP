@@ -27,3 +27,4 @@ export * from './director/index.js';
 export * from './execution-integration/index.js';
 export * from './task-decomposition/index.js';
 export type { GitState } from './git/index.js';
+export type { AcceptanceCriterion } from './qa-review/index.js';

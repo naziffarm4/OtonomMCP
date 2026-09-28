@@ -98,6 +98,14 @@ import {
   businessRulesDefineToolDefinition,
   businessRulesGetToolDefinition,
 } from './business-rules-tool.js';
+import {
+  AIDM_ACCEPTANCE_CRITERIA_DEFINE_TOOL_NAME,
+  AIDM_ACCEPTANCE_CRITERIA_GET_TOOL_NAME,
+  createAcceptanceCriteriaDefineTool,
+  createAcceptanceCriteriaGetTool,
+  acceptanceCriteriaDefineToolDefinition,
+  acceptanceCriteriaGetToolDefinition,
+} from './acceptance-criteria-tool.js';
 
 export {
   AIDM_PROJECT_STATUS_TOOL_NAME,
@@ -133,6 +141,12 @@ export {
   createBusinessRulesGetTool,
   businessRulesDefineToolDefinition,
   businessRulesGetToolDefinition,
+  AIDM_ACCEPTANCE_CRITERIA_DEFINE_TOOL_NAME,
+  AIDM_ACCEPTANCE_CRITERIA_GET_TOOL_NAME,
+  createAcceptanceCriteriaDefineTool,
+  createAcceptanceCriteriaGetTool,
+  acceptanceCriteriaDefineToolDefinition,
+  acceptanceCriteriaGetToolDefinition,
 };
 
 export const DIRECTOR_READ_TOOL_NAMES = [
@@ -224,6 +238,16 @@ export function registerArchitectureTechnologyTools(server: McpServer): void {
 export function registerBusinessRulesTools(server: McpServer): void {
   const defineTool = createBusinessRulesDefineTool(server.delegate);
   const getTool = createBusinessRulesGetTool(server.delegate);
+  server.registerTool(defineTool.definition, defineTool.handler);
+  server.registerTool(getTool.definition, getTool.handler);
+}
+
+/**
+ * Registers the acceptance criteria tools onto an McpServer instance.
+ */
+export function registerAcceptanceCriteriaTools(server: McpServer): void {
+  const defineTool = createAcceptanceCriteriaDefineTool(server.delegate);
+  const getTool = createAcceptanceCriteriaGetTool(server.delegate);
   server.registerTool(defineTool.definition, defineTool.handler);
   server.registerTool(getTool.definition, getTool.handler);
 }

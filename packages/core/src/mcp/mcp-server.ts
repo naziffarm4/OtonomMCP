@@ -56,6 +56,7 @@ import {
   registerRequirementsScopeTools,
   registerArchitectureTechnologyTools,
   registerBusinessRulesTools,
+  registerAcceptanceCriteriaTools,
 } from './tools/director-read-tools.js';
 import { registerClarificationTools } from './tools/clarification-tools.js';
 import { registerApprovalTools } from './tools/approval-tools.js';
@@ -141,6 +142,11 @@ export class McpServer {
     // Register Business Rules tools if enabled
     if (config.businessRulesTools) {
       registerBusinessRulesTools(this);
+    }
+
+    // Register Acceptance Criteria tools if enabled
+    if (config.acceptanceCriteriaTools) {
+      registerAcceptanceCriteriaTools(this);
     }
 
     // Register Director clarification protocol tools if enabled

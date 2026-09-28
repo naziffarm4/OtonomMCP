@@ -37,6 +37,8 @@ import { ArchitectureTechnologyEngine } from '../discovery/architecture-technolo
 import { ArchitectureTechnologyStore } from '../discovery/architecture-technology-store.js';
 import { BusinessRulesEngine } from '../discovery/business-rules-engine.js';
 import { BusinessRulesStore } from '../discovery/business-rules-store.js';
+import { AcceptanceCriteriaEngine } from '../discovery/acceptance-criteria-engine.js';
+import { AcceptanceCriteriaStore } from '../discovery/acceptance-criteria-store.js';
 import type { ExecutorPort } from '../executor-bridge/executor-port.js';
 import type { ExecutorContextService } from '../executor-bridge/executor-context-service.js';
 
@@ -148,6 +150,8 @@ export interface McpOrchestratorDelegate {
   readonly architectureTechnologyStore?: ArchitectureTechnologyStore;
   readonly businessRulesEngine?: BusinessRulesEngine;
   readonly businessRulesStore?: BusinessRulesStore;
+  readonly acceptanceCriteriaEngine?: AcceptanceCriteriaEngine;
+  readonly acceptanceCriteriaStore?: AcceptanceCriteriaStore;
 
   /**
    * Authoritative ExecutorPort instance (Phase 10 executor adapter boundary).
@@ -205,6 +209,8 @@ export interface DefaultMcpOrchestratorDelegateOptions {
   readonly architectureTechnologyStore?: ArchitectureTechnologyStore;
   readonly businessRulesEngine?: BusinessRulesEngine;
   readonly businessRulesStore?: BusinessRulesStore;
+  readonly acceptanceCriteriaEngine?: AcceptanceCriteriaEngine;
+  readonly acceptanceCriteriaStore?: AcceptanceCriteriaStore;
   readonly evidenceProvider?: (
     params: {
       taskId?: string;
@@ -243,6 +249,8 @@ export class DefaultMcpOrchestratorDelegate implements McpOrchestratorDelegate {
   readonly architectureTechnologyStore?: ArchitectureTechnologyStore;
   readonly businessRulesEngine?: BusinessRulesEngine;
   readonly businessRulesStore?: BusinessRulesStore;
+  readonly acceptanceCriteriaEngine?: AcceptanceCriteriaEngine;
+  readonly acceptanceCriteriaStore?: AcceptanceCriteriaStore;
   private readonly evidenceProvider?: (
     params: {
       taskId?: string;
@@ -407,6 +415,29 @@ export class DefaultMcpOrchestratorDelegate implements McpOrchestratorDelegate {
             requirementsStore: this.requirementsScopeStore,
             architectureStore: this.architectureTechnologyStore,
             businessRulesStore: this.businessRulesStore,
+            historyManager: this.historyManager,
+            specStore: this.specStore,
+          })
+        : undefined);
+    this.acceptanceCriteriaStore =
+      options.acceptanceCriteriaStore ??
+      (this.projectRoot
+        ? new AcceptanceCriteriaStore({
+            baseDir: this.projectRoot,
+            historyManager: this.historyManager,
+          })
+        : undefined);
+    this.acceptanceCriteriaEngine =
+      options.acceptanceCriteriaEngine ??
+      (this.projectRoot
+        ? new AcceptanceCriteriaEngine({
+            workspaceRoot: this.projectRoot,
+            discoveryStore: this.adaptiveDiscoveryStore,
+            completenessStore: this.completenessGateStore,
+            requirementsStore: this.requirementsScopeStore,
+            architectureStore: this.architectureTechnologyStore,
+            businessRulesStore: this.businessRulesStore,
+            acceptanceCriteriaStore: this.acceptanceCriteriaStore,
             historyManager: this.historyManager,
             specStore: this.specStore,
           })

@@ -243,6 +243,7 @@ export interface McpServerConfig {
   readonly requirementsScopeTools?: boolean;
   readonly architectureTools?: boolean;
   readonly businessRulesTools?: boolean;
+  readonly acceptanceCriteriaTools?: boolean;
   readonly clarificationTools?: boolean;
   readonly approvalTools?: boolean;
   readonly directorSessionTools?: boolean;

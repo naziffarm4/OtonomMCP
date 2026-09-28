@@ -21,3 +21,7 @@ export * from './business-rules-types.js';
 export * from './business-rules-errors.js';
 export * from './business-rules-store.js';
 export * from './business-rules-engine.js';
+export * from './acceptance-criteria-types.js';
+export * from './acceptance-criteria-errors.js';
+export * from './acceptance-criteria-store.js';
+export * from './acceptance-criteria-engine.js';
