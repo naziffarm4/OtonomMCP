@@ -13,3 +13,7 @@ export * from './requirements-scope-types.js';
 export * from './requirements-scope-errors.js';
 export * from './requirements-scope-store.js';
 export * from './requirements-scope-engine.js';
+export * from './architecture-technology-types.js';
+export * from './architecture-technology-errors.js';
+export * from './architecture-technology-store.js';
+export * from './architecture-technology-engine.js';

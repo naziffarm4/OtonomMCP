@@ -33,6 +33,8 @@ import { CompletenessGateEngine } from '../discovery/completeness-gate-engine.js
 import { CompletenessGateStore } from '../discovery/completeness-gate-store.js';
 import { RequirementsScopeEngine } from '../discovery/requirements-scope-engine.js';
 import { RequirementsScopeStore } from '../discovery/requirements-scope-store.js';
+import { ArchitectureTechnologyEngine } from '../discovery/architecture-technology-engine.js';
+import { ArchitectureTechnologyStore } from '../discovery/architecture-technology-store.js';
 import type { ExecutorPort } from '../executor-bridge/executor-port.js';
 import type { ExecutorContextService } from '../executor-bridge/executor-context-service.js';
 
@@ -140,6 +142,8 @@ export interface McpOrchestratorDelegate {
   readonly completenessGateStore?: CompletenessGateStore;
   readonly requirementsScopeEngine?: RequirementsScopeEngine;
   readonly requirementsScopeStore?: RequirementsScopeStore;
+  readonly architectureTechnologyEngine?: ArchitectureTechnologyEngine;
+  readonly architectureTechnologyStore?: ArchitectureTechnologyStore;
 
   /**
    * Authoritative ExecutorPort instance (Phase 10 executor adapter boundary).
@@ -193,6 +197,8 @@ export interface DefaultMcpOrchestratorDelegateOptions {
   readonly completenessGateStore?: CompletenessGateStore;
   readonly requirementsScopeEngine?: RequirementsScopeEngine;
   readonly requirementsScopeStore?: RequirementsScopeStore;
+  readonly architectureTechnologyEngine?: ArchitectureTechnologyEngine;
+  readonly architectureTechnologyStore?: ArchitectureTechnologyStore;
   readonly evidenceProvider?: (
     params: {
       taskId?: string;
@@ -227,6 +233,8 @@ export class DefaultMcpOrchestratorDelegate implements McpOrchestratorDelegate {
   readonly completenessGateStore?: CompletenessGateStore;
   readonly requirementsScopeEngine?: RequirementsScopeEngine;
   readonly requirementsScopeStore?: RequirementsScopeStore;
+  readonly architectureTechnologyEngine?: ArchitectureTechnologyEngine;
+  readonly architectureTechnologyStore?: ArchitectureTechnologyStore;
   private readonly evidenceProvider?: (
     params: {
       taskId?: string;
@@ -348,6 +356,27 @@ export class DefaultMcpOrchestratorDelegate implements McpOrchestratorDelegate {
             discoveryStore: this.adaptiveDiscoveryStore,
             completenessStore: this.completenessGateStore,
             requirementsStore: this.requirementsScopeStore,
+            historyManager: this.historyManager,
+            specStore: this.specStore,
+          })
+        : undefined);
+    this.architectureTechnologyStore =
+      options.architectureTechnologyStore ??
+      (this.projectRoot
+        ? new ArchitectureTechnologyStore({
+            baseDir: this.projectRoot,
+            historyManager: this.historyManager,
+          })
+        : undefined);
+    this.architectureTechnologyEngine =
+      options.architectureTechnologyEngine ??
+      (this.projectRoot
+        ? new ArchitectureTechnologyEngine({
+            workspaceRoot: this.projectRoot,
+            discoveryStore: this.adaptiveDiscoveryStore,
+            completenessStore: this.completenessGateStore,
+            requirementsStore: this.requirementsScopeStore,
+            architectureStore: this.architectureTechnologyStore,
             historyManager: this.historyManager,
             specStore: this.specStore,
           })

@@ -82,6 +82,14 @@ import {
   requirementsScopeDefineToolDefinition,
   requirementsScopeGetToolDefinition,
 } from './requirements-scope-tool.js';
+import {
+  AIDM_ARCHITECTURE_TECHNOLOGY_DEFINE_TOOL_NAME,
+  AIDM_ARCHITECTURE_TECHNOLOGY_GET_TOOL_NAME,
+  createArchitectureTechnologyDefineTool,
+  createArchitectureTechnologyGetTool,
+  architectureTechnologyDefineToolDefinition,
+  architectureTechnologyGetToolDefinition,
+} from './architecture-technology-tool.js';
 
 export {
   AIDM_PROJECT_STATUS_TOOL_NAME,
@@ -105,6 +113,12 @@ export {
   createRequirementsScopeGetTool,
   requirementsScopeDefineToolDefinition,
   requirementsScopeGetToolDefinition,
+  AIDM_ARCHITECTURE_TECHNOLOGY_DEFINE_TOOL_NAME,
+  AIDM_ARCHITECTURE_TECHNOLOGY_GET_TOOL_NAME,
+  createArchitectureTechnologyDefineTool,
+  createArchitectureTechnologyGetTool,
+  architectureTechnologyDefineToolDefinition,
+  architectureTechnologyGetToolDefinition,
 };
 
 export const DIRECTOR_READ_TOOL_NAMES = [
@@ -176,6 +190,16 @@ export function registerCompletenessTools(server: McpServer): void {
 export function registerRequirementsScopeTools(server: McpServer): void {
   const defineTool = createRequirementsScopeDefineTool(server.delegate);
   const getTool = createRequirementsScopeGetTool(server.delegate);
+  server.registerTool(defineTool.definition, defineTool.handler);
+  server.registerTool(getTool.definition, getTool.handler);
+}
+
+/**
+ * Registers the architecture & technology tools onto an McpServer instance.
+ */
+export function registerArchitectureTechnologyTools(server: McpServer): void {
+  const defineTool = createArchitectureTechnologyDefineTool(server.delegate);
+  const getTool = createArchitectureTechnologyGetTool(server.delegate);
   server.registerTool(defineTool.definition, defineTool.handler);
   server.registerTool(getTool.definition, getTool.handler);
 }
