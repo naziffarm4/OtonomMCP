@@ -226,6 +226,8 @@ export interface DefaultMcpOrchestratorDelegateOptions {
   readonly projectSpecEngine?: ProjectSpecEngine;
   readonly projectSpecStore?: ProjectSpecStore;
   readonly approvalPackageEngine?: ApprovalPackageEngine;
+  readonly executorPort?: ExecutorPort;
+  readonly contextService?: ExecutorContextService;
   readonly evidenceProvider?: (
     params: {
       taskId?: string;
@@ -271,6 +273,8 @@ export class DefaultMcpOrchestratorDelegate implements McpOrchestratorDelegate {
   readonly projectSpecEngine?: ProjectSpecEngine;
   readonly projectSpecStore?: ProjectSpecStore;
   readonly approvalPackageEngine?: ApprovalPackageEngine;
+  readonly executorPort?: ExecutorPort;
+  readonly contextService?: ExecutorContextService;
   private readonly evidenceProvider?: (
     params: {
       taskId?: string;
@@ -530,6 +534,8 @@ export class DefaultMcpOrchestratorDelegate implements McpOrchestratorDelegate {
           })
         : undefined);
     this.evidenceProvider = options.evidenceProvider;
+    this.executorPort = options.executorPort;
+    this.contextService = options.contextService;
   }
 
   async isHealthy(): Promise<boolean> {

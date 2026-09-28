@@ -75,6 +75,7 @@ import { registerRetryAuthorizeTools } from './tools/retry-authorize-tool.js';
 import { registerCorrectiveTaskTools } from './tools/corrective-task-tool.js';
 import { registerRecoveryEvaluateTools } from './tools/recovery-evaluate-tool.js';
 import { registerExecutorContextTools } from './tools/executor-context-tool.js';
+import { registerDirectorLoopTools } from './tools/director-loop-tools.js';
 
 
 export class McpServer {
@@ -234,6 +235,11 @@ export class McpServer {
     // Register Executor Context Package tools if enabled
     if (config.executorContextTools || config.executorTools) {
       registerExecutorContextTools(this);
+    }
+
+    // Register Director Loop tools if enabled
+    if (config.directorLoopTools) {
+      registerDirectorLoopTools(this);
     }
   }
 

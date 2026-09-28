@@ -39,4 +39,5 @@ export * from './tools/corrective-task-tool.js';
 export * from './tools/recovery-evaluate-tool.js';
 export * from './tools/executor-context-tool.js';
 export * from './tools/risk-human-decision-tool.js';
+export * from './tools/director-loop-tools.js';
 

@@ -262,5 +262,6 @@ export interface McpServerConfig {
   readonly executorContextTools?: boolean;
   readonly recoveryTools?: boolean;
   readonly recoveryEvaluateTools?: boolean;
+  readonly directorLoopTools?: boolean;
 }
 
