@@ -9,3 +9,7 @@ export * from './completeness-gate-types.js';
 export * from './completeness-gate-errors.js';
 export * from './completeness-gate-store.js';
 export * from './completeness-gate-engine.js';
+export * from './requirements-scope-types.js';
+export * from './requirements-scope-errors.js';
+export * from './requirements-scope-store.js';
+export * from './requirements-scope-engine.js';

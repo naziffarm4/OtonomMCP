@@ -31,6 +31,8 @@ import { AdaptiveDiscoveryEngine } from '../discovery/adaptive-discovery-engine.
 import { AdaptiveDiscoveryStore } from '../discovery/adaptive-discovery-store.js';
 import { CompletenessGateEngine } from '../discovery/completeness-gate-engine.js';
 import { CompletenessGateStore } from '../discovery/completeness-gate-store.js';
+import { RequirementsScopeEngine } from '../discovery/requirements-scope-engine.js';
+import { RequirementsScopeStore } from '../discovery/requirements-scope-store.js';
 import type { ExecutorPort } from '../executor-bridge/executor-port.js';
 import type { ExecutorContextService } from '../executor-bridge/executor-context-service.js';
 
@@ -136,6 +138,8 @@ export interface McpOrchestratorDelegate {
   readonly adaptiveDiscoveryStore?: AdaptiveDiscoveryStore;
   readonly completenessGateEngine?: CompletenessGateEngine;
   readonly completenessGateStore?: CompletenessGateStore;
+  readonly requirementsScopeEngine?: RequirementsScopeEngine;
+  readonly requirementsScopeStore?: RequirementsScopeStore;
 
   /**
    * Authoritative ExecutorPort instance (Phase 10 executor adapter boundary).
@@ -187,6 +191,8 @@ export interface DefaultMcpOrchestratorDelegateOptions {
   readonly adaptiveDiscoveryStore?: AdaptiveDiscoveryStore;
   readonly completenessGateEngine?: CompletenessGateEngine;
   readonly completenessGateStore?: CompletenessGateStore;
+  readonly requirementsScopeEngine?: RequirementsScopeEngine;
+  readonly requirementsScopeStore?: RequirementsScopeStore;
   readonly evidenceProvider?: (
     params: {
       taskId?: string;
@@ -219,6 +225,8 @@ export class DefaultMcpOrchestratorDelegate implements McpOrchestratorDelegate {
   readonly adaptiveDiscoveryStore?: AdaptiveDiscoveryStore;
   readonly completenessGateEngine?: CompletenessGateEngine;
   readonly completenessGateStore?: CompletenessGateStore;
+  readonly requirementsScopeEngine?: RequirementsScopeEngine;
+  readonly requirementsScopeStore?: RequirementsScopeStore;
   private readonly evidenceProvider?: (
     params: {
       taskId?: string;
@@ -320,6 +328,26 @@ export class DefaultMcpOrchestratorDelegate implements McpOrchestratorDelegate {
             workspaceRoot: this.projectRoot,
             discoveryStore: this.adaptiveDiscoveryStore,
             completenessStore: this.completenessGateStore,
+            historyManager: this.historyManager,
+            specStore: this.specStore,
+          })
+        : undefined);
+    this.requirementsScopeStore =
+      options.requirementsScopeStore ??
+      (this.projectRoot
+        ? new RequirementsScopeStore({
+            baseDir: this.projectRoot,
+            historyManager: this.historyManager,
+          })
+        : undefined);
+    this.requirementsScopeEngine =
+      options.requirementsScopeEngine ??
+      (this.projectRoot
+        ? new RequirementsScopeEngine({
+            workspaceRoot: this.projectRoot,
+            discoveryStore: this.adaptiveDiscoveryStore,
+            completenessStore: this.completenessGateStore,
+            requirementsStore: this.requirementsScopeStore,
             historyManager: this.historyManager,
             specStore: this.specStore,
           })

@@ -74,6 +74,14 @@ import {
   createSpecificationCompletenessTool,
   specificationCompletenessToolDefinition,
 } from './specification-completeness-tool.js';
+import {
+  AIDM_REQUIREMENTS_SCOPE_DEFINE_TOOL_NAME,
+  AIDM_REQUIREMENTS_SCOPE_GET_TOOL_NAME,
+  createRequirementsScopeDefineTool,
+  createRequirementsScopeGetTool,
+  requirementsScopeDefineToolDefinition,
+  requirementsScopeGetToolDefinition,
+} from './requirements-scope-tool.js';
 
 export {
   AIDM_PROJECT_STATUS_TOOL_NAME,
@@ -91,6 +99,12 @@ export {
   AIDM_SPECIFICATION_COMPLETENESS_TOOL_NAME,
   createSpecificationCompletenessTool,
   specificationCompletenessToolDefinition,
+  AIDM_REQUIREMENTS_SCOPE_DEFINE_TOOL_NAME,
+  AIDM_REQUIREMENTS_SCOPE_GET_TOOL_NAME,
+  createRequirementsScopeDefineTool,
+  createRequirementsScopeGetTool,
+  requirementsScopeDefineToolDefinition,
+  requirementsScopeGetToolDefinition,
 };
 
 export const DIRECTOR_READ_TOOL_NAMES = [
@@ -154,5 +168,15 @@ export function registerDiscoveryTools(server: McpServer): void {
 export function registerCompletenessTools(server: McpServer): void {
   const completenessTool = createSpecificationCompletenessTool(server.delegate);
   server.registerTool(completenessTool.definition, completenessTool.handler);
+}
+
+/**
+ * Registers the requirements & scope tools onto an McpServer instance.
+ */
+export function registerRequirementsScopeTools(server: McpServer): void {
+  const defineTool = createRequirementsScopeDefineTool(server.delegate);
+  const getTool = createRequirementsScopeGetTool(server.delegate);
+  server.registerTool(defineTool.definition, defineTool.handler);
+  server.registerTool(getTool.definition, getTool.handler);
 }
 

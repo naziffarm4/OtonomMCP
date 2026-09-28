@@ -53,6 +53,7 @@ import {
   registerDirectorReadTools,
   registerDiscoveryTools,
   registerCompletenessTools,
+  registerRequirementsScopeTools,
 } from './tools/director-read-tools.js';
 import { registerClarificationTools } from './tools/clarification-tools.js';
 import { registerApprovalTools } from './tools/approval-tools.js';
@@ -123,6 +124,11 @@ export class McpServer {
     // Register Specification completeness evaluation tool if enabled
     if (config.completenessTools) {
       registerCompletenessTools(this);
+    }
+
+    // Register Requirements & Scope tools if enabled
+    if (config.requirementsScopeTools) {
+      registerRequirementsScopeTools(this);
     }
 
     // Register Director clarification protocol tools if enabled
