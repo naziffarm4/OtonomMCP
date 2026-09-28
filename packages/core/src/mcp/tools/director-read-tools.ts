@@ -130,6 +130,14 @@ import {
   projectSpecStaleToolDefinition,
   registerProjectSpecTools,
 } from './project-spec-tool.js';
+import {
+  AIDM_APPROVAL_PACKAGE_GET_TOOL_NAME,
+  AIDM_APPROVAL_PACKAGE_READINESS_TOOL_NAME,
+  createApprovalPackageGetTool,
+  createApprovalPackageReadinessTool,
+  approvalPackageGetToolDefinition,
+  approvalPackageReadinessToolDefinition,
+} from './approval-tools.js';
 
 export {
   AIDM_PROJECT_STATUS_TOOL_NAME,
@@ -191,6 +199,12 @@ export {
   projectSpecGetToolDefinition,
   projectSpecStaleToolDefinition,
   registerProjectSpecTools,
+  AIDM_APPROVAL_PACKAGE_GET_TOOL_NAME,
+  AIDM_APPROVAL_PACKAGE_READINESS_TOOL_NAME,
+  createApprovalPackageGetTool,
+  createApprovalPackageReadinessTool,
+  approvalPackageGetToolDefinition,
+  approvalPackageReadinessToolDefinition,
 };
 
 export const DIRECTOR_READ_TOOL_NAMES = [

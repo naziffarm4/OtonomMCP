@@ -43,6 +43,7 @@ import { RiskHumanDecisionEngine } from '../discovery/risk-human-decision-engine
 import { RiskHumanDecisionStore } from '../discovery/risk-human-decision-store.js';
 import { ProjectSpecEngine } from '../discovery/project-spec-engine.js';
 import { ProjectSpecStore } from '../discovery/project-spec-store.js';
+import { ApprovalPackageEngine } from '../approval/approval-package-engine.js';
 import type { ExecutorPort } from '../executor-bridge/executor-port.js';
 import type { ExecutorContextService } from '../executor-bridge/executor-context-service.js';
 
@@ -160,6 +161,7 @@ export interface McpOrchestratorDelegate {
   readonly riskHumanDecisionStore?: RiskHumanDecisionStore;
   readonly projectSpecEngine?: ProjectSpecEngine;
   readonly projectSpecStore?: ProjectSpecStore;
+  readonly approvalPackageEngine?: ApprovalPackageEngine;
 
   /**
    * Authoritative ExecutorPort instance (Phase 10 executor adapter boundary).
@@ -223,6 +225,7 @@ export interface DefaultMcpOrchestratorDelegateOptions {
   readonly riskHumanDecisionStore?: RiskHumanDecisionStore;
   readonly projectSpecEngine?: ProjectSpecEngine;
   readonly projectSpecStore?: ProjectSpecStore;
+  readonly approvalPackageEngine?: ApprovalPackageEngine;
   readonly evidenceProvider?: (
     params: {
       taskId?: string;
@@ -267,6 +270,7 @@ export class DefaultMcpOrchestratorDelegate implements McpOrchestratorDelegate {
   readonly riskHumanDecisionStore?: RiskHumanDecisionStore;
   readonly projectSpecEngine?: ProjectSpecEngine;
   readonly projectSpecStore?: ProjectSpecStore;
+  readonly approvalPackageEngine?: ApprovalPackageEngine;
   private readonly evidenceProvider?: (
     params: {
       taskId?: string;
@@ -502,6 +506,25 @@ export class DefaultMcpOrchestratorDelegate implements McpOrchestratorDelegate {
             acceptanceCriteriaStore: this.acceptanceCriteriaStore,
             riskStore: this.riskHumanDecisionStore,
             specProjectionStore: this.projectSpecStore,
+            historyManager: this.historyManager,
+            specStore: this.specStore,
+          })
+        : undefined);
+    this.approvalPackageEngine =
+      options.approvalPackageEngine ??
+      (this.projectRoot
+        ? new ApprovalPackageEngine({
+            workspaceRoot: this.projectRoot,
+            discoveryStore: this.adaptiveDiscoveryStore,
+            requirementsStore: this.requirementsScopeStore,
+            architectureStore: this.architectureTechnologyStore,
+            businessRulesStore: this.businessRulesStore,
+            acceptanceCriteriaStore: this.acceptanceCriteriaStore,
+            riskStore: this.riskHumanDecisionStore,
+            specProjectionStore: this.projectSpecStore,
+            completenessStore: this.completenessGateStore,
+            completenessEngine: this.completenessGateEngine,
+            approvalStore: this.approvalStore,
             historyManager: this.historyManager,
             specStore: this.specStore,
           })

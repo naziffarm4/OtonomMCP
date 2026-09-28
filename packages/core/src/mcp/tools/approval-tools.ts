@@ -1,5 +1,5 @@
 /**
- * Project Approval Gate MCP Tools (Phase 8 TASK-P8-05)
+ * Project Approval Gate MCP Tools (Phase 8 TASK-P8-05 & Phase 15 Product Owner Approval)
  *
  * Exposes bounded, strictly typed approval gate operations through the MCP boundary:
  * 1. aidm.approval.package.create
@@ -14,13 +14,14 @@
  * 3. Does NOT replace global AIDM FSM.
  * 4. Human approval input is untrusted; strictly validated (only human/PO, only explicit intent).
  * 5. Strictly no shell execution, code evaluation, git mutations, or Antigravity invocations.
+ * 6. DIRECTOR / SYSTEM / EXECUTOR / ANTIGRAVITY cannot approve or impersonate approval.
  */
 
 import { z } from 'zod';
 import type { McpToolDefinition, McpToolHandler, McpRequestContext } from '../mcp-types.js';
 import type { McpOrchestratorDelegate } from '../mcp-delegate.js';
 import type { McpServer } from '../mcp-server.js';
-import { sanitizeMcpPayload, McpInvalidRequestError } from '../mcp-errors.js';
+import { sanitizeMcpPayload, McpInvalidRequestError, McpPolicyBlockedError } from '../mcp-errors.js';
 import { ProjectDiscoveryEngine } from '../../discovery/discovery-engine.js';
 import type { ProjectDiscoveryReport } from '../../discovery/discovery-types.js';
 import { ClarificationStore } from '../../clarification/clarification-store.js';
@@ -29,8 +30,15 @@ import { ApprovalPackageEngine } from '../../approval/approval-package-engine.js
 import { ApprovalStore } from '../../approval/approval-store.js';
 import {
   APPROVAL_ACTOR_ROLES,
+  FORBIDDEN_APPROVAL_ACTORS,
+  type ApprovalPackage,
   type ProjectApprovalPackage,
 } from '../../approval/approval-types.js';
+import {
+  ApprovalAuthorizationError,
+  ApprovalInvalidIntentError,
+  ApprovalProjectBindingMismatchError,
+} from '../../approval/approval-errors.js';
 
 // ============================================================================
 // TOOL NAMES
@@ -42,6 +50,27 @@ export const AIDM_APPROVAL_PACKAGE_READINESS_TOOL_NAME = 'aidm.approval.package.
 export const AIDM_APPROVAL_PACKAGE_APPROVE_TOOL_NAME = 'aidm.approval.package.approve';
 export const AIDM_APPROVAL_PACKAGE_REJECT_TOOL_NAME = 'aidm.approval.package.reject';
 
+function getApprovalEngine(
+  resolvedRoot: string,
+  delegate?: McpOrchestratorDelegate
+): ApprovalPackageEngine {
+  return new ApprovalPackageEngine({
+    workspaceRoot: resolvedRoot,
+    discoveryStore: delegate?.adaptiveDiscoveryStore,
+    requirementsStore: delegate?.requirementsScopeStore,
+    architectureStore: delegate?.architectureTechnologyStore,
+    businessRulesStore: delegate?.businessRulesStore,
+    acceptanceCriteriaStore: delegate?.acceptanceCriteriaStore,
+    riskStore: delegate?.riskHumanDecisionStore,
+    specProjectionStore: delegate?.projectSpecStore,
+    completenessStore: delegate?.completenessGateStore,
+    completenessEngine: delegate?.completenessGateEngine,
+    approvalStore: delegate?.approvalStore,
+    historyManager: delegate?.historyManager,
+    specStore: delegate?.specStore,
+  });
+}
+
 // ============================================================================
 // 1. CREATE PACKAGE TOOL
 // ============================================================================
@@ -52,12 +81,20 @@ const createPackageInputSchema = z.object({
   clarificationSessionId: z.string().optional(),
   metadata: z.record(z.string(), z.unknown()).optional(),
   discoveryReport: z.record(z.string(), z.unknown()).optional(),
+  packageId: z.string().optional(),
+  discoveryRevision: z.number().int().positive().optional(),
+  requirementsRevision: z.number().int().positive().optional(),
+  architectureRevision: z.number().int().positive().optional(),
+  businessRulesRevision: z.number().int().positive().optional(),
+  acceptanceCriteriaRevision: z.number().int().positive().optional(),
+  riskRevision: z.number().int().positive().optional(),
+  specRevision: z.number().int().positive().optional(),
 });
 
 export const approvalPackageCreateToolDefinition: McpToolDefinition = {
   name: AIDM_APPROVAL_PACKAGE_CREATE_TOOL_NAME,
   description:
-    'Assembles initial project understanding and proposed plan into an immutable, versioned approval package. Evaluates readiness for human approval.',
+    'Assembles authoritative project understanding, specifications, and plans into an immutable, revision-bound ApprovalPackage. Evaluates readiness for Product Owner approval.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -67,7 +104,11 @@ export const approvalPackageCreateToolDefinition: McpToolDefinition = {
       },
       projectId: {
         type: 'string',
-        description: 'Optional project identifier. Defaults to discovered project name.',
+        description: 'Project identifier to create approval package for.',
+      },
+      packageId: {
+        type: 'string',
+        description: 'Optional custom package ID.',
       },
       clarificationSessionId: {
         type: 'string',
@@ -80,6 +121,34 @@ export const approvalPackageCreateToolDefinition: McpToolDefinition = {
       discoveryReport: {
         type: 'object',
         description: 'Optional pre-computed ProjectDiscoveryReport to avoid re-parsing repository state.',
+      },
+      discoveryRevision: {
+        type: 'integer',
+        description: 'Optional specific discovery revision.',
+      },
+      requirementsRevision: {
+        type: 'integer',
+        description: 'Optional specific requirements revision.',
+      },
+      architectureRevision: {
+        type: 'integer',
+        description: 'Optional specific architecture revision.',
+      },
+      businessRulesRevision: {
+        type: 'integer',
+        description: 'Optional specific business rules revision.',
+      },
+      acceptanceCriteriaRevision: {
+        type: 'integer',
+        description: 'Optional specific acceptance criteria revision.',
+      },
+      riskRevision: {
+        type: 'integer',
+        description: 'Optional specific risk revision.',
+      },
+      specRevision: {
+        type: 'integer',
+        description: 'Optional specific PROJECT_SPEC revision.',
       },
     },
   },
@@ -94,8 +163,40 @@ export function createApprovalPackageCreateTool(
       const parsed = createPackageInputSchema.parse(args ?? {});
       const delegate = context.delegate ?? defaultDelegate;
       const resolvedRoot = parsed.workspaceRoot ?? delegate?.projectRoot ?? process.cwd();
+      const engine = getApprovalEngine(resolvedRoot, delegate);
 
-      // 1. Discover repository findings or consume pre-computed report
+      // Determine if P15 authoritative initiation state is available
+      const targetProjectId = parsed.projectId;
+      const hasAdaptiveDiscovery = targetProjectId
+        ? await engine.discoveryStore.loadRevision(targetProjectId).catch(() => null)
+        : null;
+
+      if (targetProjectId && hasAdaptiveDiscovery) {
+        // P15 Authoritative Initiation Flow
+        const pkg = await engine.createApprovalPackage({
+          projectId: targetProjectId,
+          packageId: parsed.packageId,
+          discoveryRevision: parsed.discoveryRevision,
+          requirementsRevision: parsed.requirementsRevision,
+          architectureRevision: parsed.architectureRevision,
+          businessRulesRevision: parsed.businessRulesRevision,
+          acceptanceCriteriaRevision: parsed.acceptanceCriteriaRevision,
+          riskRevision: parsed.riskRevision,
+          specRevision: parsed.specRevision,
+          provenanceCreatedBy: 'MCP_TOOL',
+        });
+
+        return {
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify(sanitizeMcpPayload(pkg), null, 2),
+            },
+          ],
+        };
+      }
+
+      // Legacy Phase 8 Flow (Fallback for existing Phase 8 tests)
       let discoveryReport: ProjectDiscoveryReport;
       if (parsed.discoveryReport) {
         discoveryReport = parsed.discoveryReport as unknown as ProjectDiscoveryReport;
@@ -107,26 +208,22 @@ export function createApprovalPackageCreateTool(
         discoveryReport = await discoveryEngine.discover();
       }
 
-      // 2. Load clarification session if specified or active
       const clarifStore =
         delegate?.clarificationStore ?? new ClarificationStore({ baseDir: resolvedRoot });
       const clarificationSession = parsed.clarificationSessionId
         ? await clarifStore.loadSession(parsed.clarificationSessionId)
         : await clarifStore.getActiveSession();
 
-      // 3. Build understanding
       const builder = new InitialProjectUnderstandingBuilder();
       const understanding = builder.build(discoveryReport, clarificationSession ?? undefined, {
         projectId: parsed.projectId,
       });
 
-      // 4. Build approval package
-      const engine = new ApprovalPackageEngine();
       const pkg = engine.buildPackage(understanding, undefined, {
+        packageId: parsed.packageId,
         clarificationSession: clarificationSession ?? undefined,
       });
 
-      // 5. Save package
       const approvalStore =
         delegate?.approvalStore ?? new ApprovalStore({ baseDir: resolvedRoot });
       await approvalStore.savePackage(pkg);
@@ -149,6 +246,7 @@ export function createApprovalPackageCreateTool(
 
 const getPackageInputSchema = z.object({
   workspaceRoot: z.string().optional(),
+  projectId: z.string().optional(),
   packageId: z.string().optional(),
   revision: z.number().int().positive().optional(),
 });
@@ -156,13 +254,17 @@ const getPackageInputSchema = z.object({
 export const approvalPackageGetToolDefinition: McpToolDefinition = {
   name: AIDM_APPROVAL_PACKAGE_GET_TOOL_NAME,
   description:
-    'Retrieves a project approval package by package ID and optional revision, or returns the currently active package if omitted.',
+    'Retrieves a project approval package by package ID, project ID, and optional revision. Inspects source revisions, fingerprints, and staleness.',
   inputSchema: {
     type: 'object',
     properties: {
       workspaceRoot: {
         type: 'string',
         description: 'Optional path to the project root.',
+      },
+      projectId: {
+        type: 'string',
+        description: 'Optional project identifier.',
       },
       packageId: {
         type: 'string',
@@ -189,14 +291,30 @@ export function createApprovalPackageGetTool(
       const approvalStore =
         delegate?.approvalStore ?? new ApprovalStore({ baseDir: resolvedRoot });
 
-      const pkg = parsed.packageId
-        ? await approvalStore.loadPackage(parsed.packageId, parsed.revision)
-        : await approvalStore.getActivePackage();
+      let pkg: ApprovalPackage | null = null;
+      if (parsed.packageId) {
+        pkg = await approvalStore.loadPackage(parsed.packageId, parsed.revision, parsed.projectId);
+      } else if (parsed.projectId) {
+        pkg = await approvalStore.getLatestPackage(parsed.projectId);
+      } else {
+        pkg = await approvalStore.getActivePackage();
+      }
 
       if (!pkg) {
         throw new McpInvalidRequestError(
-          `Approval package not found: ${parsed.packageId ?? 'no active package'}`
+          `Approval package not found: ${parsed.packageId ?? parsed.projectId ?? 'no active package'}`
         );
+      }
+
+      // Check staleness if package has source bindings
+      if (pkg.sourceBindings) {
+        const engine = getApprovalEngine(resolvedRoot, delegate);
+        const staleReport = await engine.checkStaleness(pkg);
+        pkg = {
+          ...pkg,
+          isStale: staleReport.isStale,
+          staleReport,
+        };
       }
 
       return {
@@ -217,6 +335,7 @@ export function createApprovalPackageGetTool(
 
 const readinessInputSchema = z.object({
   workspaceRoot: z.string().optional(),
+  projectId: z.string().optional(),
   packageId: z.string().optional(),
   revision: z.number().int().positive().optional(),
 });
@@ -224,13 +343,17 @@ const readinessInputSchema = z.object({
 export const approvalPackageReadinessToolDefinition: McpToolDefinition = {
   name: AIDM_APPROVAL_PACKAGE_READINESS_TOOL_NAME,
   description:
-    'Evaluates whether an approval package meets all 5 mandatory readiness conditions to be presented for human Product Owner approval.',
+    'Evaluates whether an approval package meets all conditions (Specification Completeness Gate COMPLETE, zero unresolved human decisions, non-stale authoritative sources, multi-layer integrity) to be presented for human Product Owner approval.',
   inputSchema: {
     type: 'object',
     properties: {
       workspaceRoot: {
         type: 'string',
         description: 'Optional path to the project root.',
+      },
+      projectId: {
+        type: 'string',
+        description: 'Optional project identifier.',
       },
       packageId: {
         type: 'string',
@@ -257,33 +380,45 @@ export function createApprovalPackageReadinessTool(
       const approvalStore =
         delegate?.approvalStore ?? new ApprovalStore({ baseDir: resolvedRoot });
 
-      const pkg = parsed.packageId
-        ? await approvalStore.loadPackage(parsed.packageId, parsed.revision)
-        : await approvalStore.getActivePackage();
+      let pkg: ApprovalPackage | null = null;
+      if (parsed.packageId) {
+        pkg = await approvalStore.loadPackage(parsed.packageId, parsed.revision, parsed.projectId);
+      } else if (parsed.projectId) {
+        pkg = await approvalStore.getLatestPackage(parsed.projectId);
+      } else {
+        pkg = await approvalStore.getActivePackage();
+      }
 
       if (!pkg) {
         throw new McpInvalidRequestError(
-          `Approval package not found: ${parsed.packageId ?? 'no active package'}`
+          `Approval package not found: ${parsed.packageId ?? parsed.projectId ?? 'no active package'}`
         );
       }
 
-      const engine = new ApprovalPackageEngine();
-      let clarifSession = undefined;
-      if (pkg.clarificationSessionReference) {
-        const clarifStore =
-          delegate?.clarificationStore ?? new ClarificationStore({ baseDir: resolvedRoot });
-        clarifSession = (await clarifStore.loadSession(pkg.clarificationSessionReference)) ?? undefined;
-      }
+      const engine = getApprovalEngine(resolvedRoot, delegate);
 
-      const readiness = engine.checkReadiness(
-        pkg.projectUnderstanding,
-        pkg.proposedDevelopmentPlan,
-        clarifSession
-      );
+      let readiness: any;
+      if (pkg.sourceBindings) {
+        readiness = await engine.checkReadinessAsync(pkg);
+      } else {
+        let clarifSession = undefined;
+        if (pkg.clarificationSessionReference) {
+          const clarifStore =
+            delegate?.clarificationStore ?? new ClarificationStore({ baseDir: resolvedRoot });
+          clarifSession = (await clarifStore.loadSession(pkg.clarificationSessionReference)) ?? undefined;
+        }
+
+        readiness = engine.checkReadiness(
+          pkg.projectUnderstanding!,
+          pkg.proposedDevelopmentPlan!,
+          clarifSession
+        );
+      }
 
       const result = {
         packageId: pkg.packageId,
         revision: pkg.revision,
+        projectId: pkg.projectId,
         currentStatus: pkg.status,
         readiness,
         isDevelopmentAuthorized: engine.isDevelopmentAuthorized(pkg),
@@ -307,24 +442,30 @@ export function createApprovalPackageReadinessTool(
 
 const approvePackageInputSchema = z.object({
   workspaceRoot: z.string().optional(),
+  projectId: z.string().optional(),
   packageId: z.string().min(1, 'packageId is required'),
   revision: z.number().int().positive('revision must be a positive integer'),
   actor: z.string().min(1, 'actor is required'),
-  actorRole: z.enum(APPROVAL_ACTOR_ROLES),
-  intent: z.literal('EXPLICIT_APPROVAL'),
+  actorRole: z.string().min(1, 'actorRole is required'),
+  intent: z.string().min(1, 'intent is required'),
   comment: z.string().optional(),
+  timestamp: z.string().optional(),
 });
 
 export const approvalPackageApproveToolDefinition: McpToolDefinition = {
   name: AIDM_APPROVAL_PACKAGE_APPROVE_TOOL_NAME,
   description:
-    'Submits explicit human Product Owner approval for a specific package revision. Validates actor authority, intent, and exact revision binding.',
+    'Submits explicit human Product Owner approval for a specific package revision. Validates actor authority (rejects DIRECTOR, SYSTEM, EXECUTOR), intent, exact revision binding, upstream integrity, and readiness.',
   inputSchema: {
     type: 'object',
     properties: {
       workspaceRoot: {
         type: 'string',
         description: 'Optional path to the project root.',
+      },
+      projectId: {
+        type: 'string',
+        description: 'Optional project identifier.',
       },
       packageId: {
         type: 'string',
@@ -340,17 +481,19 @@ export const approvalPackageApproveToolDefinition: McpToolDefinition = {
       },
       actorRole: {
         type: 'string',
-        enum: ['PRODUCT_OWNER', 'USER'],
         description: 'Authoritative human actor role. Must strictly be PRODUCT_OWNER or USER.',
       },
       intent: {
         type: 'string',
-        enum: ['EXPLICIT_APPROVAL'],
         description: "Approval intent. Must strictly be 'EXPLICIT_APPROVAL'.",
       },
       comment: {
         type: 'string',
         description: 'Optional approval comment or instruction from Product Owner.',
+      },
+      timestamp: {
+        type: 'string',
+        description: 'Optional ISO timestamp of approval.',
       },
     },
     required: ['packageId', 'revision', 'actor', 'actorRole', 'intent'],
@@ -367,22 +510,50 @@ export function createApprovalPackageApproveTool(
       const delegate = context.delegate ?? defaultDelegate;
       const resolvedRoot = parsed.workspaceRoot ?? delegate?.projectRoot ?? process.cwd();
 
+      // Authority policy enforcement: Reject forbidden actors early at the MCP boundary
+      const actorRoleNormalized = parsed.actorRole.trim();
+      const actorNormalized = parsed.actor.trim().toUpperCase();
+
+      for (const forbidden of FORBIDDEN_APPROVAL_ACTORS) {
+        if (actorNormalized === forbidden || actorNormalized.includes(forbidden)) {
+          throw new McpPolicyBlockedError(
+            `Unauthorized approval actor '${parsed.actor}'. Only human Product Owner (PRODUCT_OWNER / USER) may grant project approval. Forbidden actor '${forbidden}' rejected.`
+          );
+        }
+      }
+
+      if (actorRoleNormalized !== 'PRODUCT_OWNER' && actorRoleNormalized !== 'USER') {
+        throw new McpPolicyBlockedError(
+          `Invalid actorRole '${parsed.actorRole}'. Only PRODUCT_OWNER or USER may grant approval.`
+        );
+      }
+
+      if (parsed.intent !== 'EXPLICIT_APPROVAL') {
+        throw new McpInvalidRequestError(
+          `Invalid approval intent '${parsed.intent}'. Approval must be strictly 'EXPLICIT_APPROVAL'. Natural language signals are rejected.`
+        );
+      }
+
       const approvalStore =
         delegate?.approvalStore ?? new ApprovalStore({ baseDir: resolvedRoot });
 
-      const pkg = await approvalStore.loadPackage(parsed.packageId);
+      let pkg = await approvalStore.loadPackage(parsed.packageId, undefined, parsed.projectId);
+      if (!pkg) {
+        pkg = await approvalStore.loadPackage(parsed.packageId, parsed.revision, parsed.projectId);
+      }
       if (!pkg) {
         throw new McpInvalidRequestError(`Approval package not found: '${parsed.packageId}'`);
       }
 
-      const engine = new ApprovalPackageEngine();
+      const engine = getApprovalEngine(resolvedRoot, delegate);
       const approvedPkg = engine.approvePackage(pkg, {
         packageId: parsed.packageId,
         revision: parsed.revision,
         actor: parsed.actor,
-        actorRole: parsed.actorRole,
-        intent: parsed.intent,
+        actorRole: parsed.actorRole as any,
+        intent: parsed.intent as any,
         comment: parsed.comment,
+        timestamp: parsed.timestamp,
       });
 
       await approvalStore.savePackage(approvedPkg);
@@ -405,12 +576,14 @@ export function createApprovalPackageApproveTool(
 
 const rejectPackageInputSchema = z.object({
   workspaceRoot: z.string().optional(),
+  projectId: z.string().optional(),
   packageId: z.string().min(1, 'packageId is required'),
   revision: z.number().int().positive('revision must be a positive integer'),
   actor: z.string().min(1, 'actor is required'),
-  actorRole: z.enum(APPROVAL_ACTOR_ROLES),
-  intent: z.literal('EXPLICIT_REJECTION'),
+  actorRole: z.string().min(1, 'actorRole is required'),
+  intent: z.string().min(1, 'intent is required'),
   reason: z.string().optional(),
+  timestamp: z.string().optional(),
 });
 
 export const approvalPackageRejectToolDefinition: McpToolDefinition = {
@@ -423,6 +596,10 @@ export const approvalPackageRejectToolDefinition: McpToolDefinition = {
       workspaceRoot: {
         type: 'string',
         description: 'Optional path to the project root.',
+      },
+      projectId: {
+        type: 'string',
+        description: 'Optional project identifier.',
       },
       packageId: {
         type: 'string',
@@ -438,17 +615,19 @@ export const approvalPackageRejectToolDefinition: McpToolDefinition = {
       },
       actorRole: {
         type: 'string',
-        enum: ['PRODUCT_OWNER', 'USER'],
         description: 'Authoritative human actor role. Must strictly be PRODUCT_OWNER or USER.',
       },
       intent: {
         type: 'string',
-        enum: ['EXPLICIT_REJECTION'],
         description: "Rejection intent. Must strictly be 'EXPLICIT_REJECTION'.",
       },
       reason: {
         type: 'string',
         description: 'Optional rejection reason explaining why understanding/plan was rejected.',
+      },
+      timestamp: {
+        type: 'string',
+        description: 'Optional ISO timestamp of rejection.',
       },
     },
     required: ['packageId', 'revision', 'actor', 'actorRole', 'intent'],
@@ -465,22 +644,50 @@ export function createApprovalPackageRejectTool(
       const delegate = context.delegate ?? defaultDelegate;
       const resolvedRoot = parsed.workspaceRoot ?? delegate?.projectRoot ?? process.cwd();
 
+      // Authority policy enforcement: Reject forbidden actors early at the MCP boundary
+      const actorRoleNormalized = parsed.actorRole.trim();
+      const actorNormalized = parsed.actor.trim().toUpperCase();
+
+      for (const forbidden of FORBIDDEN_APPROVAL_ACTORS) {
+        if (actorNormalized === forbidden || actorNormalized.includes(forbidden)) {
+          throw new McpPolicyBlockedError(
+            `Unauthorized rejection actor '${parsed.actor}'. Only human Product Owner (PRODUCT_OWNER / USER) may reject a project approval package. Forbidden actor '${forbidden}' rejected.`
+          );
+        }
+      }
+
+      if (actorRoleNormalized !== 'PRODUCT_OWNER' && actorRoleNormalized !== 'USER') {
+        throw new McpPolicyBlockedError(
+          `Invalid actorRole '${parsed.actorRole}'. Only PRODUCT_OWNER or USER may reject an approval package.`
+        );
+      }
+
+      if (parsed.intent !== 'EXPLICIT_REJECTION') {
+        throw new McpInvalidRequestError(
+          `Invalid rejection intent '${parsed.intent}'. Rejection must be strictly 'EXPLICIT_REJECTION'.`
+        );
+      }
+
       const approvalStore =
         delegate?.approvalStore ?? new ApprovalStore({ baseDir: resolvedRoot });
 
-      const pkg = await approvalStore.loadPackage(parsed.packageId);
+      let pkg = await approvalStore.loadPackage(parsed.packageId, undefined, parsed.projectId);
+      if (!pkg) {
+        pkg = await approvalStore.loadPackage(parsed.packageId, parsed.revision, parsed.projectId);
+      }
       if (!pkg) {
         throw new McpInvalidRequestError(`Approval package not found: '${parsed.packageId}'`);
       }
 
-      const engine = new ApprovalPackageEngine();
+      const engine = getApprovalEngine(resolvedRoot, delegate);
       const rejectedPkg = engine.rejectPackage(pkg, {
         packageId: parsed.packageId,
         revision: parsed.revision,
         actor: parsed.actor,
-        actorRole: parsed.actorRole,
-        intent: parsed.intent,
+        actorRole: parsed.actorRole as any,
+        intent: parsed.intent as any,
         reason: parsed.reason,
+        timestamp: parsed.timestamp,
       });
 
       await approvalStore.savePackage(rejectedPkg);

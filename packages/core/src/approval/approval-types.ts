@@ -22,6 +22,7 @@
  */
 
 import { z } from 'zod';
+import * as crypto from 'node:crypto';
 import type {
   EvidenceReference,
   ProjectPurposeUnderstanding,
@@ -31,6 +32,10 @@ import type {
   DiscoveryUnknown,
   DiscoveryContradiction,
 } from '../discovery/discovery-types.js';
+import {
+  CompletenessGateResultZodSchema,
+  type CompletenessGateResult,
+} from '../discovery/completeness-gate-types.js';
 
 // ============================================================================
 // 1. UNDERSTANDING ITEM CLASSIFICATION & ORIGIN
@@ -121,9 +126,12 @@ export interface ProposedDevelopmentPlan {
 export const PROJECT_APPROVAL_STATUSES = [
   'NOT_READY',
   'READY_FOR_APPROVAL',
+  'PENDING',
   'APPROVED',
   'REJECTED',
   'SUPERSEDED',
+  'STALE',
+  'BLOCKED_ON_HUMAN',
 ] as const;
 
 export type ProjectApprovalStatus = (typeof PROJECT_APPROVAL_STATUSES)[number];
@@ -170,32 +178,117 @@ export interface ProjectRejectionRecord {
 }
 
 // ============================================================================
-// 5. PROJECT APPROVAL PACKAGE
+// 5. P15 AUTHORITATIVE SOURCE BINDINGS & AUDIT
 // ============================================================================
 
-export interface ProjectApprovalPackage {
-  readonly packageId: string;
-  readonly revision: number;
+export interface ApprovalSourceBindings {
   readonly projectId: string;
-  readonly projectUnderstanding: InitialProjectUnderstanding;
-  readonly proposedDevelopmentPlan: ProposedDevelopmentPlan;
-  readonly unresolvedItems: readonly UnderstandingItem[];
-  readonly assumptions: readonly UnderstandingItem[];
-  readonly evidenceReferences: readonly EvidenceReference[];
-  readonly clarificationSessionReference?: string;
-  readonly status: ProjectApprovalStatus;
-  readonly approvalRecord?: ProjectApprovalRecord;
-  readonly rejectionRecord?: ProjectRejectionRecord;
-  readonly createdAt: string;
-  readonly updatedAt: string;
+  readonly discoveryRevision: number;
+  readonly discoveryFingerprint: string;
+  readonly requirementsRevision: number;
+  readonly requirementsFingerprint: string;
+  readonly architectureRevision: number;
+  readonly architectureFingerprint: string;
+  readonly businessRulesRevision: number;
+  readonly businessRulesFingerprint: string;
+  readonly acceptanceCriteriaRevision: number;
+  readonly acceptanceCriteriaFingerprint: string;
+  readonly riskRevision: number;
+  readonly riskFingerprint: string;
+  readonly specRevision: number;
+  readonly specFingerprint: string;
+  readonly completenessFingerprint: string;
+  readonly completenessRevision?: number;
+}
+
+export interface ApprovalProvenance {
+  readonly createdBy: string;
+  readonly engineVersion: string;
+  readonly evaluatedAt: string;
+  readonly sourceStores: readonly string[];
+}
+
+export interface ApprovalHistoryEntry {
+  readonly eventType: string;
+  readonly actor: string;
+  readonly actorRole?: string;
+  readonly timestamp: string;
+  readonly status: string;
+  readonly revision: number;
+  readonly details?: Record<string, unknown>;
+}
+
+export interface ApprovalStaleReport {
+  readonly isStale: boolean;
+  readonly reasons: readonly string[];
+  readonly details: {
+    readonly discoveryStale: boolean;
+    readonly requirementsStale: boolean;
+    readonly architectureStale: boolean;
+    readonly businessRulesStale: boolean;
+    readonly acceptanceCriteriaStale: boolean;
+    readonly risksStale: boolean;
+    readonly specStale: boolean;
+    readonly completenessStale: boolean;
+    readonly humanDecisionsChanged: boolean;
+  };
 }
 
 // ============================================================================
-// 6. READINESS CHECK & INPUTS
+// 6. PROJECT APPROVAL PACKAGE (DURABLE & REVISIONED)
+// ============================================================================
+
+export interface ApprovalPackage {
+  readonly packageId: string;
+  readonly revision: number;
+  readonly approvalPackageRevision: number;
+  readonly projectId: string;
+  readonly projectUnderstanding: InitialProjectUnderstanding;
+  readonly proposedDevelopmentPlan: ProposedDevelopmentPlan;
+  readonly specRevision?: number;
+  readonly projectSpecRevision?: number;
+  readonly sourceBindings?: ApprovalSourceBindings;
+  readonly completenessResult?: CompletenessGateResult;
+  readonly unresolvedHumanDecisionPoints?: readonly unknown[];
+  readonly risksRequiringAttention?: readonly unknown[];
+  readonly status: ProjectApprovalStatus;
+  readonly approvalRecord?: ProjectApprovalRecord;
+  readonly rejectionRecord?: ProjectRejectionRecord;
+  readonly packageFingerprint?: string;
+  readonly provenance?: ApprovalProvenance;
+  readonly history?: readonly ApprovalHistoryEntry[];
+  readonly isStale?: boolean;
+  readonly staleReport?: ApprovalStaleReport;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+
+  // Backwards compatibility with Phase 8 / Task decomposition:
+  readonly unresolvedItems?: readonly UnderstandingItem[];
+  readonly assumptions?: readonly UnderstandingItem[];
+  readonly evidenceReferences?: readonly EvidenceReference[];
+  readonly clarificationSessionReference?: string;
+}
+
+export type ProjectApprovalPackage = ApprovalPackage;
+
+// ============================================================================
+// 7. READINESS CHECK & INPUTS
 // ============================================================================
 
 export interface ApprovalReadinessBlockingConditions {
   readonly discoveryMissing: boolean;
+  readonly requirementsMissing: boolean;
+  readonly architectureMissing: boolean;
+  readonly businessRulesMissing: boolean;
+  readonly acceptanceCriteriaMissing: boolean;
+  readonly risksMissing: boolean;
+  readonly specMissing: boolean;
+  readonly completenessGateMissing: boolean;
+  readonly completenessNotComplete: boolean;
+  readonly unresolvedHumanDecisions: boolean;
+  readonly isStale: boolean;
+  readonly integrityFailed: boolean;
+  readonly crossProjectMismatch: boolean;
   readonly unresolvedBlockingClarifications: boolean;
   readonly unresolvedBlockingContradictions: boolean;
   readonly understandingInvalid: boolean;
@@ -204,9 +297,12 @@ export interface ApprovalReadinessBlockingConditions {
 
 export interface ApprovalReadiness {
   readonly isReady: boolean;
-  readonly status: 'READY_FOR_APPROVAL' | 'NOT_READY';
+  readonly status: ProjectApprovalStatus;
   readonly reasons: readonly string[];
   readonly blockingConditions: ApprovalReadinessBlockingConditions;
+  readonly isStale?: boolean;
+  readonly sourceBindings?: ApprovalSourceBindings;
+  readonly packageFingerprint?: string;
 }
 
 export interface ProjectApprovalInput {
@@ -316,22 +412,137 @@ export const InitialProjectUnderstandingZodSchema = z.object({
   generatedAt: z.string().min(1),
 });
 
-export const ProjectApprovalPackageZodSchema = z.object({
+export const ApprovalSourceBindingsZodSchema = z.object({
+  projectId: z.string().min(1, 'projectId cannot be empty'),
+  discoveryRevision: z.number().int().positive('discoveryRevision must be a positive integer'),
+  discoveryFingerprint: z.string().min(1, 'discoveryFingerprint cannot be empty'),
+  requirementsRevision: z.number().int().positive('requirementsRevision must be a positive integer'),
+  requirementsFingerprint: z.string().min(1, 'requirementsFingerprint cannot be empty'),
+  architectureRevision: z.number().int().positive('architectureRevision must be a positive integer'),
+  architectureFingerprint: z.string().min(1, 'architectureFingerprint cannot be empty'),
+  businessRulesRevision: z.number().int().positive('businessRulesRevision must be a positive integer'),
+  businessRulesFingerprint: z.string().min(1, 'businessRulesFingerprint cannot be empty'),
+  acceptanceCriteriaRevision: z.number().int().positive('acceptanceCriteriaRevision must be a positive integer'),
+  acceptanceCriteriaFingerprint: z.string().min(1, 'acceptanceCriteriaFingerprint cannot be empty'),
+  riskRevision: z.number().int().positive('riskRevision must be a positive integer'),
+  riskFingerprint: z.string().min(1, 'riskFingerprint cannot be empty'),
+  specRevision: z.number().int().positive('specRevision must be a positive integer'),
+  specFingerprint: z.string().min(1, 'specFingerprint cannot be empty'),
+  completenessFingerprint: z.string().min(1, 'completenessFingerprint cannot be empty'),
+  completenessRevision: z.number().int().positive().optional(),
+});
+
+export const ApprovalProvenanceZodSchema = z.object({
+  createdBy: z.string().default('SYSTEM'),
+  engineVersion: z.string().default('P15-APPROVAL-1.0'),
+  evaluatedAt: z.string().min(1),
+  sourceStores: z.array(z.string()).default([]),
+});
+
+export const ApprovalHistoryEntryZodSchema = z.object({
+  eventType: z.string().min(1),
+  actor: z.string().min(1),
+  actorRole: z.string().optional(),
+  timestamp: z.string().min(1),
+  status: z.string().min(1),
+  revision: z.number().int().positive(),
+  details: z.record(z.string(), z.unknown()).optional(),
+});
+
+export const ApprovalStaleReportZodSchema = z.object({
+  isStale: z.boolean(),
+  reasons: z.array(z.string()).default([]),
+  details: z.object({
+    discoveryStale: z.boolean(),
+    requirementsStale: z.boolean(),
+    architectureStale: z.boolean(),
+    businessRulesStale: z.boolean(),
+    acceptanceCriteriaStale: z.boolean(),
+    risksStale: z.boolean(),
+    specStale: z.boolean(),
+    completenessStale: z.boolean(),
+    humanDecisionsChanged: z.boolean(),
+  }),
+});
+
+export const ApprovalPackageZodSchema = z.object({
   packageId: z.string().min(1),
   revision: z.number().int().positive(),
+  approvalPackageRevision: z.number().int().positive().optional(),
   projectId: z.string().min(1),
-  projectUnderstanding: InitialProjectUnderstandingZodSchema,
-  proposedDevelopmentPlan: ProposedDevelopmentPlanZodSchema,
-  unresolvedItems: z.array(UnderstandingItemZodSchema),
-  assumptions: z.array(UnderstandingItemZodSchema),
-  evidenceReferences: z.array(z.any()),
-  clarificationSessionReference: z.string().optional(),
+  specRevision: z.number().int().positive().optional(),
+  projectSpecRevision: z.number().int().positive().optional(),
+  sourceBindings: ApprovalSourceBindingsZodSchema.optional(),
+  completenessResult: CompletenessGateResultZodSchema.optional(),
+  unresolvedHumanDecisionPoints: z.array(z.any()).optional(),
+  risksRequiringAttention: z.array(z.any()).optional(),
   status: z.enum(PROJECT_APPROVAL_STATUSES),
   approvalRecord: ProjectApprovalRecordZodSchema.optional(),
   rejectionRecord: ProjectRejectionRecordZodSchema.optional(),
+  packageFingerprint: z.string().optional(),
+  provenance: ApprovalProvenanceZodSchema.optional(),
+  history: z.array(ApprovalHistoryEntryZodSchema).optional(),
+  isStale: z.boolean().optional(),
+  staleReport: ApprovalStaleReportZodSchema.optional(),
   createdAt: z.string().min(1),
   updatedAt: z.string().min(1),
+
+  // Legacy fields
+  projectUnderstanding: InitialProjectUnderstandingZodSchema.optional(),
+  proposedDevelopmentPlan: ProposedDevelopmentPlanZodSchema.optional(),
+  unresolvedItems: z.array(UnderstandingItemZodSchema).optional(),
+  assumptions: z.array(UnderstandingItemZodSchema).optional(),
+  evidenceReferences: z.array(z.any()).optional(),
+  clarificationSessionReference: z.string().optional(),
 });
+
+export const ProjectApprovalPackageZodSchema = ApprovalPackageZodSchema;
+
+/**
+ * Computes deterministic canonical SHA-256 fingerprint for an ApprovalPackage.
+ * Strictly excludes volatile metadata (timestamps, createdAt, updatedAt, history).
+ */
+export function computePackageFingerprint(pkg: {
+  projectId: string;
+  approvalPackageRevision?: number;
+  revision?: number;
+  specRevision?: number;
+  projectSpecRevision?: number;
+  sourceBindings?: ApprovalSourceBindings;
+  completenessResult?: CompletenessGateResult;
+  unresolvedHumanDecisionPoints?: readonly unknown[];
+  risksRequiringAttention?: readonly unknown[];
+}): string {
+  const canonicalData = {
+    projectId: pkg.projectId,
+    revision: pkg.approvalPackageRevision ?? pkg.revision ?? 1,
+    specRevision: pkg.specRevision ?? pkg.projectSpecRevision ?? 1,
+    sourceBindings: pkg.sourceBindings
+      ? {
+          discoveryRevision: pkg.sourceBindings.discoveryRevision,
+          discoveryFingerprint: pkg.sourceBindings.discoveryFingerprint,
+          requirementsRevision: pkg.sourceBindings.requirementsRevision,
+          requirementsFingerprint: pkg.sourceBindings.requirementsFingerprint,
+          architectureRevision: pkg.sourceBindings.architectureRevision,
+          architectureFingerprint: pkg.sourceBindings.architectureFingerprint,
+          businessRulesRevision: pkg.sourceBindings.businessRulesRevision,
+          businessRulesFingerprint: pkg.sourceBindings.businessRulesFingerprint,
+          acceptanceCriteriaRevision: pkg.sourceBindings.acceptanceCriteriaRevision,
+          acceptanceCriteriaFingerprint: pkg.sourceBindings.acceptanceCriteriaFingerprint,
+          riskRevision: pkg.sourceBindings.riskRevision,
+          riskFingerprint: pkg.sourceBindings.riskFingerprint,
+          specRevision: pkg.sourceBindings.specRevision,
+          specFingerprint: pkg.sourceBindings.specFingerprint,
+          completenessFingerprint: pkg.sourceBindings.completenessFingerprint,
+        }
+      : null,
+    completenessStatus: pkg.completenessResult?.status ?? null,
+    completenessFingerprint: pkg.completenessResult?.fingerprint ?? null,
+    unresolvedHumanDecisionPointsCount: (pkg.unresolvedHumanDecisionPoints ?? []).length,
+    risksRequiringAttentionCount: (pkg.risksRequiringAttention ?? []).length,
+  };
+  return crypto.createHash('sha256').update(JSON.stringify(canonicalData)).digest('hex');
+}
 
 export const ProjectApprovalInputZodSchema = z.object({
   packageId: z.string().min(1, 'packageId is required'),
