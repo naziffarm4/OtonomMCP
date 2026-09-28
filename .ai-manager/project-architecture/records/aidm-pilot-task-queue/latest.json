@@ -1,0 +1,583 @@
+{
+  "projectId": "aidm-pilot-task-queue",
+  "architectureRevision": 1,
+  "sourceRequirementsRevision": 1,
+  "sourceRequirementsFingerprint": "19b11005f16e68544709faf89a279befb86964cef61fe90d563dfe695d910711",
+  "sourceDiscoveryRevision": 1,
+  "sourceDiscoveryFingerprint": "cfbbc6183d4894941bc70ae98be927056742bc4d51898fbd237be422b333ca74",
+  "isStale": false,
+  "architecturalStyle": {
+    "style": "modular-monolith",
+    "applicationTopology": "modular application",
+    "subsystemBoundaries": [
+      "API & Communication Subsystem",
+      "Core Logic Subsystem",
+      "Persistence & Storage Subsystem"
+    ],
+    "serviceModuleBoundaries": [
+      "Domain Services",
+      "Integration Adapters",
+      "Storage Adapters"
+    ],
+    "clientServerBoundaries": [
+      "Client Application Layer",
+      "Server / Host Application Layer"
+    ],
+    "deploymentTopology": "single-node process",
+    "communicationModel": "synchronous RPC / in-process dispatch",
+    "status": "CONFIRMED"
+  },
+  "systemComponents": [
+    {
+      "componentId": "COMP-686B8C98",
+      "name": "Prioritized Component",
+      "responsibility": "Queue operations including enqueue, dequeue, peek, lease, release, and expireStale.",
+      "dependencies": [
+        "COMP-85C93D43"
+      ],
+      "exposedInterfaces": [
+        "IPrioritizedComponent"
+      ],
+      "owningBoundary": "Domain Services",
+      "sourceReferences": [
+        "FREQ-pilot-queue-ops"
+      ],
+      "status": "CONFIRMED"
+    },
+    {
+      "componentId": "COMP-753B17CA",
+      "name": "Deterministic Component",
+      "responsibility": "Deterministic JSON state serialization, deserialization, and schema validation of queue state snapshots.",
+      "dependencies": [
+        "COMP-85C93D43"
+      ],
+      "exposedInterfaces": [
+        "IDeterministicComponent"
+      ],
+      "owningBoundary": "Domain Services",
+      "sourceReferences": [
+        "FREQ-pilot-persistence"
+      ],
+      "status": "CONFIRMED"
+    },
+    {
+      "componentId": "COMP-7D854D8C",
+      "name": "Data Persistence Service",
+      "responsibility": "Manages entity persistence, state durability, and query access",
+      "dependencies": [],
+      "exposedInterfaces": [
+        "DataRepository"
+      ],
+      "owningBoundary": "Persistence & Storage Subsystem",
+      "sourceReferences": [
+        "ARCH-STORAGE-REQ"
+      ],
+      "status": "CONFIRMED"
+    },
+    {
+      "componentId": "COMP-84E28930",
+      "name": "Domain Component",
+      "responsibility": "Type definitions and schema validation for TaskItem, TaskPriority, QueueConfig, and TaskLease.",
+      "dependencies": [
+        "COMP-85C93D43"
+      ],
+      "exposedInterfaces": [
+        "IDomainComponent"
+      ],
+      "owningBoundary": "Domain Services",
+      "sourceReferences": [
+        "FREQ-pilot-models"
+      ],
+      "status": "CONFIRMED"
+    },
+    {
+      "componentId": "COMP-85C93D43",
+      "name": "Core Application Domain",
+      "responsibility": "Executes core workflows: Stale Task TTL Expiration (expireStale), State Serialization and Deserialization Round-trip with Schema Validation, Task Enqueue and Prioritized Dequeue",
+      "dependencies": [],
+      "exposedInterfaces": [
+        "CoreDomainService"
+      ],
+      "owningBoundary": "Core Logic Subsystem",
+      "sourceReferences": [
+        "FREQ-ee2271105461",
+        "FREQ-pilot-models",
+        "FREQ-pilot-persistence",
+        "FREQ-pilot-queue-ops"
+      ],
+      "status": "CONFIRMED"
+    },
+    {
+      "componentId": "COMP-A314068B",
+      "name": "Core Component",
+      "responsibility": "The pilot project is: aidm-pilot-task-queue\nPurpose:\nA reliable prioritized in-memory task queue engine supporting:\n- FIFO/priority scheduling\n- task leasing\n- TTL expiration\n- deterministic state snapshots\n- JSON serialization/deserialization\n\nThe eventual pilot is intended to be a small, real, independently versioned TypeScript project.",
+      "dependencies": [
+        "COMP-85C93D43"
+      ],
+      "exposedInterfaces": [
+        "ICoreComponent"
+      ],
+      "owningBoundary": "Domain Services",
+      "sourceReferences": [
+        "FREQ-ee2271105461"
+      ],
+      "status": "CONFIRMED"
+    },
+    {
+      "componentId": "COMP-A3AE9126",
+      "name": "External Integration Gateway",
+      "responsibility": "Manages integrations with: Consumable as an independent TypeScript module / library",
+      "dependencies": [
+        "COMP-85C93D43"
+      ],
+      "exposedInterfaces": [
+        "IntegrationGatewayService"
+      ],
+      "owningBoundary": "Integration Adapters",
+      "sourceReferences": [
+        "Consumable as an independent TypeScript module / library"
+      ],
+      "status": "CONFIRMED"
+    }
+  ],
+  "dataArchitecture": {
+    "persistenceStrategy": "Durable storage via In-memory data structures with deterministic JSON snapshot serialization/deserialization",
+    "primaryDataStore": "In-memory data structures with deterministic JSON snapshot serialization/deserialization",
+    "secondaryStores": [],
+    "caching": [],
+    "fileObjectStorage": [],
+    "dataOwnership": [
+      "Core Application Domain owns primary entities"
+    ],
+    "dataFlow": [
+      "Client -> API Gateway -> Domain Service -> Data Persistence Service"
+    ],
+    "retentionRequirements": [],
+    "consistencyRequirements": [
+      "Strong consistency for transactional data"
+    ],
+    "status": "CONFIRMED"
+  },
+  "apiCommunicationArchitecture": {
+    "httpRest": true,
+    "graphQl": false,
+    "webSocket": false,
+    "messageQueues": [],
+    "eventBus": [],
+    "rpc": [],
+    "ipc": [],
+    "internalApis": [
+      "In-process typed service interfaces"
+    ],
+    "externalApis": [
+      "Consumable as an independent TypeScript module / library"
+    ],
+    "status": "CONFIRMED"
+  },
+  "technologyStack": [
+    {
+      "category": "OTHER",
+      "name": "authentication",
+      "selectionStatus": "CONSTRAINED",
+      "source": "PROHIBITED_TECHNOLOGIES",
+      "affectedRequirements": [],
+      "rationale": "Explicitly prohibited by project discovery constraints"
+    },
+    {
+      "category": "OTHER",
+      "name": "authorization systems",
+      "selectionStatus": "CONSTRAINED",
+      "source": "PROHIBITED_TECHNOLOGIES",
+      "affectedRequirements": [],
+      "rationale": "Explicitly prohibited by project discovery constraints"
+    },
+    {
+      "category": "OTHER",
+      "name": "Cloud Hosted (AWS / GCP / Azure)",
+      "selectionStatus": "CANDIDATE",
+      "source": "HUMAN_DECISION_HDEC-6ef75679d70c",
+      "affectedRequirements": [
+        "architecture",
+        "operational requirements"
+      ],
+      "rationale": "Candidate option under Product Owner review (Deployment & Hosting Environment Model)"
+    },
+    {
+      "category": "OTHER",
+      "name": "cloud infrastructure",
+      "selectionStatus": "CONSTRAINED",
+      "source": "PROHIBITED_TECHNOLOGIES",
+      "affectedRequirements": [],
+      "rationale": "Explicitly prohibited by project discovery constraints"
+    },
+    {
+      "category": "OTHER",
+      "name": "clustering",
+      "selectionStatus": "CONSTRAINED",
+      "source": "PROHIBITED_TECHNOLOGIES",
+      "affectedRequirements": [],
+      "rationale": "Explicitly prohibited by project discovery constraints"
+    },
+    {
+      "category": "OTHER",
+      "name": "deployment infrastructure",
+      "selectionStatus": "CONSTRAINED",
+      "source": "PROHIBITED_TECHNOLOGIES",
+      "affectedRequirements": [],
+      "rationale": "Explicitly prohibited by project discovery constraints"
+    },
+    {
+      "category": "OTHER",
+      "name": "distributed consensus",
+      "selectionStatus": "CONSTRAINED",
+      "source": "PROHIBITED_TECHNOLOGIES",
+      "affectedRequirements": [],
+      "rationale": "Explicitly prohibited by project discovery constraints"
+    },
+    {
+      "category": "OTHER",
+      "name": "external databases",
+      "selectionStatus": "CONSTRAINED",
+      "source": "PROHIBITED_TECHNOLOGIES",
+      "affectedRequirements": [],
+      "rationale": "Explicitly prohibited by project discovery constraints"
+    },
+    {
+      "category": "OTHER",
+      "name": "frontend",
+      "selectionStatus": "CONSTRAINED",
+      "source": "PROHIBITED_TECHNOLOGIES",
+      "affectedRequirements": [],
+      "rationale": "Explicitly prohibited by project discovery constraints"
+    },
+    {
+      "category": "OTHER",
+      "name": "gRPC",
+      "selectionStatus": "CONSTRAINED",
+      "source": "PROHIBITED_TECHNOLOGIES",
+      "affectedRequirements": [],
+      "rationale": "Explicitly prohibited by project discovery constraints"
+    },
+    {
+      "category": "OTHER",
+      "name": "HTTP API",
+      "selectionStatus": "CONSTRAINED",
+      "source": "PROHIBITED_TECHNOLOGIES",
+      "affectedRequirements": [],
+      "rationale": "Explicitly prohibited by project discovery constraints"
+    },
+    {
+      "category": "OTHER",
+      "name": "Local / Self-Hosted Docker Container",
+      "selectionStatus": "CANDIDATE",
+      "source": "HUMAN_DECISION_HDEC-6ef75679d70c",
+      "affectedRequirements": [
+        "architecture",
+        "operational requirements"
+      ],
+      "rationale": "Candidate option under Product Owner review (Deployment & Hosting Environment Model)"
+    },
+    {
+      "category": "OTHER",
+      "name": "Redis",
+      "selectionStatus": "CONSTRAINED",
+      "source": "PROHIBITED_TECHNOLOGIES",
+      "affectedRequirements": [],
+      "rationale": "Explicitly prohibited by project discovery constraints"
+    },
+    {
+      "category": "OTHER",
+      "name": "REST API",
+      "selectionStatus": "CONSTRAINED",
+      "source": "PROHIBITED_TECHNOLOGIES",
+      "affectedRequirements": [],
+      "rationale": "Explicitly prohibited by project discovery constraints"
+    },
+    {
+      "category": "OTHER",
+      "name": "UI",
+      "selectionStatus": "CONSTRAINED",
+      "source": "PROHIBITED_TECHNOLOGIES",
+      "affectedRequirements": [],
+      "rationale": "Explicitly prohibited by project discovery constraints"
+    },
+    {
+      "category": "OTHER",
+      "name": "unnecessary framework dependencies",
+      "selectionStatus": "CONSTRAINED",
+      "source": "PROHIBITED_TECHNOLOGIES",
+      "affectedRequirements": [],
+      "rationale": "Explicitly prohibited by project discovery constraints"
+    },
+    {
+      "category": "PROGRAMMING_LANGUAGE",
+      "name": "TypeScript",
+      "selectionStatus": "REQUIRED",
+      "source": "CONSTRAINTS_AND_DISCOVERY",
+      "affectedRequirements": [],
+      "rationale": "Mandated by project technology constraints"
+    },
+    {
+      "category": "RUNTIME",
+      "name": "Node.js",
+      "selectionStatus": "REQUIRED",
+      "source": "CONSTRAINTS_AND_DISCOVERY",
+      "affectedRequirements": [],
+      "rationale": "Mandated by project technology constraints"
+    }
+  ],
+  "platformEnvironment": {
+    "targetOs": [],
+    "targetDevices": [],
+    "browserRequirements": [],
+    "mobileRequirements": [],
+    "desktopRequirements": [],
+    "serverEnvironment": [
+      "Node.js library / in-memory TypeScript module"
+    ],
+    "cloudOnPremRequirements": [],
+    "supportedRuntimeVersions": []
+  },
+  "securityArchitecture": {
+    "authenticationArchitecture": "No external network exposure, isolated in-memory execution, input schema validation",
+    "secretsHandling": [
+      "Environment variable and secrets store isolation",
+      "Zero hardcoded credentials"
+    ],
+    "encryptionRequirements": [],
+    "trustBoundaries": [
+      "Client to Server Boundary",
+      "Core Domain to External Gateway Boundary"
+    ],
+    "dataIsolation": [
+      "Project-isolated storage records and directory paths"
+    ],
+    "auditRequirements": [
+      "Append-only immutable event log via HistoryManager"
+    ],
+    "status": "CONFIRMED"
+  },
+  "integrations": [
+    {
+      "integrationId": "INT-B251C9D9",
+      "system": "Consumable as an independent TypeScript module / library",
+      "purpose": "Integration support for Consumable as an independent TypeScript module / library",
+      "direction": "BIDIRECTIONAL",
+      "dependency": "REQUIRED",
+      "status": "CONFIRMED",
+      "source": "IN_SCOPE_INTEGRATIONS",
+      "affectedRequirements": []
+    }
+  ],
+  "deploymentArchitecture": {
+    "environments": [
+      "development",
+      "production",
+      "staging",
+      "test"
+    ],
+    "development": "Local development environment with automated test suites",
+    "test": "CI automated test runner",
+    "scalingExpectations": [],
+    "operationalDependencies": [],
+    "status": "PENDING_DECISION"
+  },
+  "decisions": [
+    {
+      "decisionId": "ARCH-DEC-001",
+      "decisionArea": "STYLE",
+      "question": "What architectural style and subsystem topology will govern the system?",
+      "status": "DECIDED",
+      "selectedOption": "modular-monolith",
+      "candidateOptions": [
+        "client-server",
+        "microservices",
+        "modular-monolith",
+        "monolith"
+      ],
+      "rationale": "Derived from discovery architectural pattern",
+      "affectedRequirements": [
+        "FREQ-ee2271105461",
+        "FREQ-pilot-models",
+        "FREQ-pilot-persistence"
+      ],
+      "consequences": [
+        "Governs module boundaries, communication patterns, and deployment units"
+      ],
+      "dependencies": [],
+      "authority": "SYSTEM",
+      "revisionBinding": 1
+    },
+    {
+      "decisionId": "ARCH-DEC-002",
+      "decisionArea": "DATA",
+      "question": "What primary data storage technology and strategy should be selected?",
+      "status": "DECIDED",
+      "selectedOption": "In-memory data structures with deterministic JSON snapshot serialization/deserialization",
+      "candidateOptions": [
+        "In-memory data structures with deterministic JSON snapshot serialization/deserialization"
+      ],
+      "rationale": "Explicitly defined in project discovery expectations",
+      "affectedRequirements": [
+        "FREQ-ee2271105461",
+        "FREQ-pilot-models",
+        "FREQ-pilot-persistence"
+      ],
+      "consequences": [
+        "Determines data modeling, migration strategies, and persistence adapters"
+      ],
+      "dependencies": [
+        "ARCH-DEC-001"
+      ],
+      "authority": "SYSTEM",
+      "revisionBinding": 1
+    },
+    {
+      "decisionId": "ARCH-DEC-003",
+      "decisionArea": "API",
+      "question": "What communication protocol will expose external and internal interfaces?",
+      "status": "DECIDED",
+      "selectedOption": "REST",
+      "candidateOptions": [
+        "GraphQL",
+        "In-process typed RPC",
+        "REST",
+        "WebSocket"
+      ],
+      "rationale": "Derived from integrations and subsystem boundaries",
+      "affectedRequirements": [
+        "FREQ-ee2271105461",
+        "FREQ-pilot-models",
+        "FREQ-pilot-persistence"
+      ],
+      "consequences": [
+        "Determines client contracts, payload schemas, and serialization formats"
+      ],
+      "dependencies": [
+        "ARCH-DEC-001"
+      ],
+      "authority": "SYSTEM",
+      "revisionBinding": 1
+    },
+    {
+      "decisionId": "ARCH-DEC-004",
+      "decisionArea": "TECH_STACK",
+      "question": "What runtime and programming languages constrain this project?",
+      "status": "CONSTRAINED",
+      "selectedOption": "Node.js, Node.js, TypeScript, TypeScript",
+      "candidateOptions": [
+        "Node.js",
+        "Node.js",
+        "TypeScript",
+        "TypeScript"
+      ],
+      "rationale": "Mandated by project technology constraints",
+      "affectedRequirements": [
+        "FREQ-ee2271105461",
+        "FREQ-pilot-models",
+        "FREQ-pilot-persistence"
+      ],
+      "consequences": [
+        "Constrains toolchain, library ecosystem, and runtime execution"
+      ],
+      "dependencies": [],
+      "authority": "SYSTEM",
+      "revisionBinding": 1
+    }
+  ],
+  "pendingHumanDecisions": [
+    {
+      "decisionId": "HDEC-6ef75679d70c",
+      "question": "Deployment & Hosting Environment Model",
+      "whyItMatters": "Select the target deployment model for hosting the production system.",
+      "affectedRequirements": [
+        "architecture",
+        "operational requirements"
+      ],
+      "affectedArchitectureAreas": [
+        "architecture",
+        "operational requirements"
+      ],
+      "availableOptions": [
+        "Cloud Hosted (AWS / GCP / Azure)",
+        "Local / Self-Hosted Docker Container"
+      ],
+      "consequences": [],
+      "authority": "USER",
+      "status": "PENDING_DECISION"
+    }
+  ],
+  "requirementsTraceability": [
+    {
+      "requirementId": "FREQ-ee2271105461",
+      "requirementTitle": "Core Functionality",
+      "addressedByComponents": [
+        "COMP-85C93D43",
+        "COMP-A314068B"
+      ],
+      "addressedByDecisions": [
+        "ARCH-DEC-001",
+        "ARCH-DEC-002",
+        "ARCH-DEC-003",
+        "ARCH-DEC-004"
+      ],
+      "addressedByTechnologies": [
+        "Node.js",
+        "TypeScript"
+      ]
+    },
+    {
+      "requirementId": "FREQ-pilot-models",
+      "requirementTitle": "Domain Models & Schema Validation",
+      "addressedByComponents": [
+        "COMP-84E28930",
+        "COMP-85C93D43"
+      ],
+      "addressedByDecisions": [
+        "ARCH-DEC-001",
+        "ARCH-DEC-002",
+        "ARCH-DEC-003",
+        "ARCH-DEC-004"
+      ],
+      "addressedByTechnologies": [
+        "Node.js",
+        "TypeScript"
+      ]
+    },
+    {
+      "requirementId": "FREQ-pilot-persistence",
+      "requirementTitle": "Deterministic State Serialization & Snapshots",
+      "addressedByComponents": [
+        "COMP-753B17CA",
+        "COMP-85C93D43"
+      ],
+      "addressedByDecisions": [
+        "ARCH-DEC-001",
+        "ARCH-DEC-002",
+        "ARCH-DEC-003",
+        "ARCH-DEC-004"
+      ],
+      "addressedByTechnologies": [
+        "Node.js",
+        "TypeScript"
+      ]
+    },
+    {
+      "requirementId": "FREQ-pilot-queue-ops",
+      "requirementTitle": "Prioritized In-Memory Queue Operations",
+      "addressedByComponents": [
+        "COMP-686B8C98",
+        "COMP-85C93D43"
+      ],
+      "addressedByDecisions": [
+        "ARCH-DEC-001"
+      ],
+      "addressedByTechnologies": [
+        "Node.js",
+        "TypeScript"
+      ]
+    }
+  ],
+  "createdAt": "2026-09-28T21:34:09.208Z",
+  "fingerprint": "ed11c477b711435abb8aa35f72b5b38e26eb6c2adf75f3b18ff7d391d844256b"
+}

@@ -1,0 +1,1506 @@
+{
+  "projectId": "aidm-pilot-task-queue",
+  "acceptanceCriteriaRevision": 1,
+  "sourceRequirementsRevision": 1,
+  "sourceRequirementsFingerprint": "19b11005f16e68544709faf89a279befb86964cef61fe90d563dfe695d910711",
+  "sourceArchitectureRevision": 1,
+  "sourceArchitectureFingerprint": "ed11c477b711435abb8aa35f72b5b38e26eb6c2adf75f3b18ff7d391d844256b",
+  "sourceBusinessRulesRevision": 1,
+  "sourceBusinessRulesFingerprint": "5690f7771bbea4f3c7eea59236fe8dee2506983d703c761e26f6b9727eb14740",
+  "sourceDiscoveryRevision": 1,
+  "sourceDiscoveryFingerprint": "cfbbc6183d4894941bc70ae98be927056742bc4d51898fbd237be422b333ca74",
+  "isStale": false,
+  "criteria": [
+    {
+      "criterionId": "AC-02B7A5D7",
+      "title": "Deterministic State Serialization & Snapshots: Deserialization validates state against...: State Transition Enforcement",
+      "description": "Acceptance criterion verifying lifecycle state transitions for business rule 'Deterministic State Serialization & Snapshots: Deserialization validates state against...'.",
+      "criterionType": "STATE_TRANSITION",
+      "statement": "State transitions for entity governed by 'Deterministic State Serialization & Snapshots: Deserialization validates state against...' succeed when valid and are rejected when invalid or out-of-order.",
+      "priority": "HIGH",
+      "status": "DEFINED",
+      "sourceRequirements": [
+        "FREQ-pilot-persistence"
+      ],
+      "sourceBusinessRules": [
+        "BR-1AA5E76C"
+      ],
+      "sourceArchitectureDecisions": [],
+      "verificationMethod": "AUTOMATED_TEST",
+      "expectedResult": "Entity transitions only through approved states; illegal transitions are rejected without corruption.",
+      "dependencies": [],
+      "traceability": {
+        "criterionId": "AC-02B7A5D7",
+        "requirementIds": [
+          "FREQ-pilot-persistence"
+        ],
+        "businessRuleIds": [
+          "BR-1AA5E76C"
+        ],
+        "architectureDecisionIds": []
+      },
+      "metadata": {
+        "ruleCategory": "STATE_TRANSITION_RULE"
+      }
+    },
+    {
+      "criterionId": "AC-04DB1421",
+      "title": "Prioritized In-Memory Queue Operations: FIFO ordering strictly enforced within t...: Rule Enforcement",
+      "description": "Acceptance criterion ensuring business rule 'Prioritized In-Memory Queue Operations: FIFO ordering strictly enforced within t...' is observably satisfied.",
+      "criterionType": "BUSINESS_RULE",
+      "statement": "The product observably enforces business rule 'Prioritized In-Memory Queue Operations: FIFO ordering strictly enforced within t...': FIFO ordering strictly enforced within the same TaskPriority level",
+      "priority": "HIGH",
+      "status": "DEFINED",
+      "sourceRequirements": [
+        "FREQ-pilot-queue-ops"
+      ],
+      "sourceBusinessRules": [
+        "BR-8EC5648D"
+      ],
+      "sourceArchitectureDecisions": [],
+      "verificationMethod": "AUTOMATED_TEST",
+      "expectedResult": "Verification that FIFO ordering strictly enforced within the same TaskPriority level",
+      "dependencies": [],
+      "traceability": {
+        "criterionId": "AC-04DB1421",
+        "requirementIds": [
+          "FREQ-pilot-queue-ops"
+        ],
+        "businessRuleIds": [
+          "BR-8EC5648D"
+        ],
+        "architectureDecisionIds": []
+      },
+      "metadata": {
+        "ruleCategory": "DOMAIN_INVARIANT"
+      }
+    },
+    {
+      "criterionId": "AC-12865AA9",
+      "title": "Deterministic State Serialization & Snapshots: Functional Verification",
+      "description": "Authoritative acceptance criterion derived from functional requirement 'Deterministic State Serialization & Snapshots'.",
+      "criterionType": "FUNCTIONAL",
+      "statement": "When functionality 'Deterministic State Serialization & Snapshots' is invoked under normal conditions, the product executes: Deterministic JSON state serialization, deserialization, and schema validation of queue state snapshots..",
+      "priority": "HIGH",
+      "status": "DEFINED",
+      "sourceRequirements": [
+        "FREQ-pilot-persistence"
+      ],
+      "sourceBusinessRules": [],
+      "sourceArchitectureDecisions": [],
+      "verificationMethod": "STATIC_CHECK",
+      "expectedResult": "Observable execution succeeds without error and satisfies 'Deterministic State Serialization & Snapshots'.",
+      "dependencies": [],
+      "traceability": {
+        "criterionId": "AC-12865AA9",
+        "requirementIds": [
+          "FREQ-pilot-persistence"
+        ],
+        "businessRuleIds": [],
+        "architectureDecisionIds": []
+      },
+      "metadata": {}
+    },
+    {
+      "criterionId": "AC-1EF2ECBF",
+      "title": "Prioritized In-Memory Queue Operations: expireStale reclaims expired leases and...: Rule Enforcement",
+      "description": "Acceptance criterion ensuring business rule 'Prioritized In-Memory Queue Operations: expireStale reclaims expired leases and...' is observably satisfied.",
+      "criterionType": "BUSINESS_RULE",
+      "statement": "The product observably enforces business rule 'Prioritized In-Memory Queue Operations: expireStale reclaims expired leases and...': expireStale reclaims expired leases and evicts TTL-exceeded tasks",
+      "priority": "HIGH",
+      "status": "DEFINED",
+      "sourceRequirements": [
+        "FREQ-pilot-queue-ops"
+      ],
+      "sourceBusinessRules": [
+        "BR-6D931214"
+      ],
+      "sourceArchitectureDecisions": [],
+      "verificationMethod": "AUTOMATED_TEST",
+      "expectedResult": "Verification that expireStale reclaims expired leases and evicts TTL-exceeded tasks",
+      "dependencies": [],
+      "traceability": {
+        "criterionId": "AC-1EF2ECBF",
+        "requirementIds": [
+          "FREQ-pilot-queue-ops"
+        ],
+        "businessRuleIds": [
+          "BR-6D931214"
+        ],
+        "architectureDecisionIds": []
+      },
+      "metadata": {
+        "ruleCategory": "DOMAIN_INVARIANT"
+      }
+    },
+    {
+      "criterionId": "AC-2D582EF3",
+      "title": "Domain Models & Schema Validation: TaskPriority determines scheduling prefe...",
+      "description": "Acceptance criterion derived from requirement rule 'TaskPriority determines scheduling preference'.",
+      "criterionType": "FUNCTIONAL",
+      "statement": "The product enforces requirement condition: TaskPriority determines scheduling preference.",
+      "priority": "HIGH",
+      "status": "DEFINED",
+      "sourceRequirements": [
+        "FREQ-pilot-models"
+      ],
+      "sourceBusinessRules": [],
+      "sourceArchitectureDecisions": [],
+      "verificationMethod": "AUTOMATED_TEST",
+      "expectedResult": "Observable compliance with requirement rule 'TaskPriority determines scheduling preference'.",
+      "dependencies": [],
+      "traceability": {
+        "criterionId": "AC-2D582EF3",
+        "requirementIds": [
+          "FREQ-pilot-models"
+        ],
+        "businessRuleIds": [],
+        "architectureDecisionIds": []
+      },
+      "metadata": {}
+    },
+    {
+      "criterionId": "AC-3A10A2EB",
+      "title": "Deterministic State Serialization & Snapshots: JSON serialization must be strictly dete...",
+      "description": "Acceptance criterion derived from requirement rule 'JSON serialization must be strictly deterministic (reproducible ordering)'.",
+      "criterionType": "FUNCTIONAL",
+      "statement": "The product enforces requirement condition: JSON serialization must be strictly deterministic (reproducible ordering).",
+      "priority": "HIGH",
+      "status": "DEFINED",
+      "sourceRequirements": [
+        "FREQ-pilot-persistence"
+      ],
+      "sourceBusinessRules": [],
+      "sourceArchitectureDecisions": [],
+      "verificationMethod": "AUTOMATED_TEST",
+      "expectedResult": "Observable compliance with requirement rule 'JSON serialization must be strictly deterministic (reproducible ordering)'.",
+      "dependencies": [],
+      "traceability": {
+        "criterionId": "AC-3A10A2EB",
+        "requirementIds": [
+          "FREQ-pilot-persistence"
+        ],
+        "businessRuleIds": [],
+        "architectureDecisionIds": []
+      },
+      "metadata": {}
+    },
+    {
+      "criterionId": "AC-468E9E4A",
+      "title": "Integration Boundary: Consumable as an independent TypeScript module / library: Rule Enforcement",
+      "description": "Acceptance criterion ensuring business rule 'Integration Boundary: Consumable as an independent TypeScript module / library' is observably satisfied.",
+      "criterionType": "INTEGRATION",
+      "statement": "The product observably enforces business rule 'Integration Boundary: Consumable as an independent TypeScript module / library': System must interact with Consumable as an independent TypeScript module / library for purpose: Integration support for Consumable as an independent TypeScript module / library.",
+      "priority": "HIGH",
+      "status": "DEFINED",
+      "sourceRequirements": [],
+      "sourceBusinessRules": [
+        "BR-0AADFC23"
+      ],
+      "sourceArchitectureDecisions": [],
+      "verificationMethod": "INTEGRATION_TEST",
+      "expectedResult": "Integration contract verification with Consumable as an independent TypeScript module / library",
+      "dependencies": [],
+      "traceability": {
+        "criterionId": "AC-468E9E4A",
+        "requirementIds": [],
+        "businessRuleIds": [
+          "BR-0AADFC23"
+        ],
+        "architectureDecisionIds": []
+      },
+      "metadata": {
+        "ruleCategory": "INTEGRATION_RULE"
+      }
+    },
+    {
+      "criterionId": "AC-48388D96",
+      "title": "Deterministic State Serialization & Snapshots: Deserialization validates state against...",
+      "description": "Acceptance criterion derived from requirement rule 'Deserialization validates state against schema before restoring in-memory queue'.",
+      "criterionType": "VALIDATION",
+      "statement": "The product enforces requirement condition: Deserialization validates state against schema before restoring in-memory queue.",
+      "priority": "HIGH",
+      "status": "DEFINED",
+      "sourceRequirements": [
+        "FREQ-pilot-persistence"
+      ],
+      "sourceBusinessRules": [],
+      "sourceArchitectureDecisions": [],
+      "verificationMethod": "AUTOMATED_TEST",
+      "expectedResult": "Observable compliance with requirement rule 'Deserialization validates state against schema before restoring in-memory queue'.",
+      "dependencies": [],
+      "traceability": {
+        "criterionId": "AC-48388D96",
+        "requirementIds": [
+          "FREQ-pilot-persistence"
+        ],
+        "businessRuleIds": [],
+        "architectureDecisionIds": []
+      },
+      "metadata": {}
+    },
+    {
+      "criterionId": "AC-4FE45F80",
+      "title": "Prioritized In-Memory Queue Operations: Functional Verification",
+      "description": "Authoritative acceptance criterion derived from functional requirement 'Prioritized In-Memory Queue Operations'.",
+      "criterionType": "FUNCTIONAL",
+      "statement": "When functionality 'Prioritized In-Memory Queue Operations' is invoked under normal conditions, the product executes: Queue operations including enqueue, dequeue, peek, lease, release, and expireStale..",
+      "priority": "HIGH",
+      "status": "DEFINED",
+      "sourceRequirements": [
+        "FREQ-pilot-queue-ops"
+      ],
+      "sourceBusinessRules": [],
+      "sourceArchitectureDecisions": [],
+      "verificationMethod": "AUTOMATED_TEST",
+      "expectedResult": "Observable execution succeeds without error and satisfies 'Prioritized In-Memory Queue Operations'.",
+      "dependencies": [],
+      "traceability": {
+        "criterionId": "AC-4FE45F80",
+        "requirementIds": [
+          "FREQ-pilot-queue-ops"
+        ],
+        "businessRuleIds": [],
+        "architectureDecisionIds": []
+      },
+      "metadata": {}
+    },
+    {
+      "criterionId": "AC-53B3A007",
+      "title": "Prioritized In-Memory Queue Operations: Leased tasks are hidden from dequeue unt...",
+      "description": "Acceptance criterion derived from requirement rule 'Leased tasks are hidden from dequeue until released or expired'.",
+      "criterionType": "FUNCTIONAL",
+      "statement": "The product enforces requirement condition: Leased tasks are hidden from dequeue until released or expired.",
+      "priority": "HIGH",
+      "status": "DEFINED",
+      "sourceRequirements": [
+        "FREQ-pilot-queue-ops"
+      ],
+      "sourceBusinessRules": [],
+      "sourceArchitectureDecisions": [],
+      "verificationMethod": "AUTOMATED_TEST",
+      "expectedResult": "Observable compliance with requirement rule 'Leased tasks are hidden from dequeue until released or expired'.",
+      "dependencies": [],
+      "traceability": {
+        "criterionId": "AC-53B3A007",
+        "requirementIds": [
+          "FREQ-pilot-queue-ops"
+        ],
+        "businessRuleIds": [],
+        "architectureDecisionIds": []
+      },
+      "metadata": {}
+    },
+    {
+      "criterionId": "AC-581780C6",
+      "title": "SECURITY: Threshold Definition",
+      "description": "Acceptance criterion for non-functional requirement 'No external network exposure, isolated in-memory execution, input schema validation' pending authoritative threshold definition.",
+      "criterionType": "SECURITY",
+      "statement": "The measurable threshold for 'security' (No external network exposure, isolated in-memory execution, input schema validation) is pending Product Owner specification.",
+      "priority": "MEDIUM",
+      "status": "PENDING_DECISION",
+      "sourceRequirements": [
+        "NFR-SECURITY-1"
+      ],
+      "sourceBusinessRules": [],
+      "sourceArchitectureDecisions": [],
+      "verificationMethod": "SECURITY_TEST",
+      "expectedResult": "Authoritative threshold defined and accepted by Product Owner for No external network exposure, isolated in-memory execution, input schema validation.",
+      "dependencies": [],
+      "traceability": {
+        "criterionId": "AC-581780C6",
+        "requirementIds": [
+          "NFR-SECURITY-1"
+        ],
+        "businessRuleIds": [],
+        "architectureDecisionIds": []
+      },
+      "metadata": {
+        "nfrCategory": "security",
+        "rawNfr": "No external network exposure, isolated in-memory execution, input schema validation",
+        "unresolvedThreshold": true
+      }
+    },
+    {
+      "criterionId": "AC-61E8A83C",
+      "title": "Domain Models & Schema Validation: TaskLease tracks active leases with leas...: Rule Enforcement",
+      "description": "Acceptance criterion ensuring business rule 'Domain Models & Schema Validation: TaskLease tracks active leases with leas...' is observably satisfied.",
+      "criterionType": "VALIDATION",
+      "statement": "The product observably enforces business rule 'Domain Models & Schema Validation: TaskLease tracks active leases with leas...': TaskLease tracks active leases with leaseholder identity and expiration timestamp",
+      "priority": "HIGH",
+      "status": "DEFINED",
+      "sourceRequirements": [
+        "FREQ-pilot-models"
+      ],
+      "sourceBusinessRules": [
+        "BR-EF116AC0"
+      ],
+      "sourceArchitectureDecisions": [],
+      "verificationMethod": "AUTOMATED_TEST",
+      "expectedResult": "Verification that TaskLease tracks active leases with leaseholder identity and expiration timestamp",
+      "dependencies": [],
+      "traceability": {
+        "criterionId": "AC-61E8A83C",
+        "requirementIds": [
+          "FREQ-pilot-models"
+        ],
+        "businessRuleIds": [
+          "BR-EF116AC0"
+        ],
+        "architectureDecisionIds": []
+      },
+      "metadata": {
+        "ruleCategory": "TEMPORAL_RULE"
+      }
+    },
+    {
+      "criterionId": "AC-648A5520",
+      "title": "RELIABILITY: Threshold Definition",
+      "description": "Acceptance criterion for non-functional requirement 'Deterministic state machine transitions, zero task loss during valid lease/release lifecycle' pending authoritative threshold definition.",
+      "criterionType": "RELIABILITY",
+      "statement": "The measurable threshold for 'reliability' (Deterministic state machine transitions, zero task loss during valid lease/release lifecycle) is pending Product Owner specification.",
+      "priority": "MEDIUM",
+      "status": "PENDING_DECISION",
+      "sourceRequirements": [
+        "NFR-RELIABILITY-1"
+      ],
+      "sourceBusinessRules": [],
+      "sourceArchitectureDecisions": [],
+      "verificationMethod": "PERFORMANCE_TEST",
+      "expectedResult": "Authoritative threshold defined and accepted by Product Owner for Deterministic state machine transitions, zero task loss during valid lease/release lifecycle.",
+      "dependencies": [],
+      "traceability": {
+        "criterionId": "AC-648A5520",
+        "requirementIds": [
+          "NFR-RELIABILITY-1"
+        ],
+        "businessRuleIds": [],
+        "architectureDecisionIds": []
+      },
+      "metadata": {
+        "nfrCategory": "reliability",
+        "rawNfr": "Deterministic state machine transitions, zero task loss during valid lease/release lifecycle",
+        "unresolvedThreshold": true
+      }
+    },
+    {
+      "criterionId": "AC-69467FB6",
+      "title": "Operational Constraint: Pure in-memory engine, no exte: Rule Enforcement",
+      "description": "Acceptance criterion ensuring business rule 'Operational Constraint: Pure in-memory engine, no exte' is observably satisfied.",
+      "criterionType": "OPERATIONAL",
+      "statement": "The product observably enforces business rule 'Operational Constraint: Pure in-memory engine, no exte': Pure in-memory engine, no external network dependencies or external daemon connections",
+      "priority": "HIGH",
+      "status": "DEFINED",
+      "sourceRequirements": [],
+      "sourceBusinessRules": [
+        "BR-7F2F2E42"
+      ],
+      "sourceArchitectureDecisions": [],
+      "verificationMethod": "AUTOMATED_TEST",
+      "expectedResult": "System limit enforcement verification for Pure in-memory engine, no external network dependencies or external daemon connections",
+      "dependencies": [],
+      "traceability": {
+        "criterionId": "AC-69467FB6",
+        "requirementIds": [],
+        "businessRuleIds": [
+          "BR-7F2F2E42"
+        ],
+        "architectureDecisionIds": []
+      },
+      "metadata": {
+        "ruleCategory": "LIMIT_RULE"
+      }
+    },
+    {
+      "criterionId": "AC-6EF7B778",
+      "title": "USABILITY: Threshold Definition",
+      "description": "Acceptance criterion for non-functional requirement 'Idiomatic TypeScript API with strongly typed contracts and clear error handling' pending authoritative threshold definition.",
+      "criterionType": "USABILITY",
+      "statement": "The measurable threshold for 'usability' (Idiomatic TypeScript API with strongly typed contracts and clear error handling) is pending Product Owner specification.",
+      "priority": "MEDIUM",
+      "status": "PENDING_DECISION",
+      "sourceRequirements": [
+        "NFR-USABILITY-1"
+      ],
+      "sourceBusinessRules": [],
+      "sourceArchitectureDecisions": [],
+      "verificationMethod": "MANUAL_VERIFICATION",
+      "expectedResult": "Authoritative threshold defined and accepted by Product Owner for Idiomatic TypeScript API with strongly typed contracts and clear error handling.",
+      "dependencies": [],
+      "traceability": {
+        "criterionId": "AC-6EF7B778",
+        "requirementIds": [
+          "NFR-USABILITY-1"
+        ],
+        "businessRuleIds": [],
+        "architectureDecisionIds": []
+      },
+      "metadata": {
+        "nfrCategory": "usability",
+        "rawNfr": "Idiomatic TypeScript API with strongly typed contracts and clear error handling",
+        "unresolvedThreshold": true
+      }
+    },
+    {
+      "criterionId": "AC-83D957FA",
+      "title": "Domain Models & Schema Validation: QueueConfig specifies default lease dura...",
+      "description": "Acceptance criterion derived from requirement rule 'QueueConfig specifies default lease durations, TTL limits, and queue capacities'.",
+      "criterionType": "BUSINESS_RULE",
+      "statement": "The product enforces requirement condition: QueueConfig specifies default lease durations, TTL limits, and queue capacities.",
+      "priority": "HIGH",
+      "status": "DEFINED",
+      "sourceRequirements": [
+        "FREQ-pilot-models"
+      ],
+      "sourceBusinessRules": [],
+      "sourceArchitectureDecisions": [],
+      "verificationMethod": "AUTOMATED_TEST",
+      "expectedResult": "Observable compliance with requirement rule 'QueueConfig specifies default lease durations, TTL limits, and queue capacities'.",
+      "dependencies": [],
+      "traceability": {
+        "criterionId": "AC-83D957FA",
+        "requirementIds": [
+          "FREQ-pilot-models"
+        ],
+        "businessRuleIds": [],
+        "architectureDecisionIds": []
+      },
+      "metadata": {}
+    },
+    {
+      "criterionId": "AC-8D6F007F",
+      "title": "API: Boundary Verification",
+      "description": "Authoritative acceptance criterion ensuring product satisfies observable architectural boundary condition for 'What communication protocol will expose external and internal interfaces?'.",
+      "criterionType": "COMPATIBILITY",
+      "statement": "Observable architectural requirement for 'API': REST.",
+      "priority": "HIGH",
+      "status": "DEFINED",
+      "sourceRequirements": [
+        "FREQ-ee2271105461",
+        "FREQ-pilot-models",
+        "FREQ-pilot-persistence"
+      ],
+      "sourceBusinessRules": [],
+      "sourceArchitectureDecisions": [
+        "ARCH-DEC-003"
+      ],
+      "verificationMethod": "AUTOMATED_TEST",
+      "expectedResult": "Product operates at its boundary in conformance with architecture decision 'What communication protocol will expose external and internal interfaces?'.",
+      "dependencies": [],
+      "traceability": {
+        "criterionId": "AC-8D6F007F",
+        "requirementIds": [
+          "FREQ-ee2271105461",
+          "FREQ-pilot-models",
+          "FREQ-pilot-persistence"
+        ],
+        "businessRuleIds": [],
+        "architectureDecisionIds": [
+          "ARCH-DEC-003"
+        ]
+      },
+      "metadata": {
+        "decisionArea": "API"
+      }
+    },
+    {
+      "criterionId": "AC-93F0D40D",
+      "title": "Core Functionality Rule: State Transition Enforcement",
+      "description": "Acceptance criterion verifying lifecycle state transitions for business rule 'Core Functionality Rule'.",
+      "criterionType": "STATE_TRANSITION",
+      "statement": "State transitions for entity governed by 'Core Functionality Rule' succeed when valid and are rejected when invalid or out-of-order.",
+      "priority": "HIGH",
+      "status": "DEFINED",
+      "sourceRequirements": [
+        "FREQ-ee2271105461"
+      ],
+      "sourceBusinessRules": [
+        "BR-BB1EAB94"
+      ],
+      "sourceArchitectureDecisions": [],
+      "verificationMethod": "AUTOMATED_TEST",
+      "expectedResult": "Entity transitions only through approved states; illegal transitions are rejected without corruption.",
+      "dependencies": [],
+      "traceability": {
+        "criterionId": "AC-93F0D40D",
+        "requirementIds": [
+          "FREQ-ee2271105461"
+        ],
+        "businessRuleIds": [
+          "BR-BB1EAB94"
+        ],
+        "architectureDecisionIds": []
+      },
+      "metadata": {
+        "ruleCategory": "STATE_TRANSITION_RULE"
+      }
+    },
+    {
+      "criterionId": "AC-9DD1E791",
+      "title": "Domain Models & Schema Validation: Functional Verification",
+      "description": "Authoritative acceptance criterion derived from functional requirement 'Domain Models & Schema Validation'.",
+      "criterionType": "FUNCTIONAL",
+      "statement": "When functionality 'Domain Models & Schema Validation' is invoked under normal conditions, the product executes: Type definitions and schema validation for TaskItem, TaskPriority, QueueConfig, and TaskLease..",
+      "priority": "HIGH",
+      "status": "DEFINED",
+      "sourceRequirements": [
+        "FREQ-pilot-models"
+      ],
+      "sourceBusinessRules": [],
+      "sourceArchitectureDecisions": [],
+      "verificationMethod": "STATIC_CHECK",
+      "expectedResult": "Observable execution succeeds without error and satisfies 'Domain Models & Schema Validation'.",
+      "dependencies": [],
+      "traceability": {
+        "criterionId": "AC-9DD1E791",
+        "requirementIds": [
+          "FREQ-pilot-models"
+        ],
+        "businessRuleIds": [],
+        "architectureDecisionIds": []
+      },
+      "metadata": {}
+    },
+    {
+      "criterionId": "AC-9F2B307D",
+      "title": "PERFORMANCE: Threshold Definition",
+      "description": "Acceptance criterion for non-functional requirement 'High-throughput in-memory queue operations with low algorithmic complexity' pending authoritative threshold definition.",
+      "criterionType": "PERFORMANCE",
+      "statement": "The measurable threshold for 'performance' (High-throughput in-memory queue operations with low algorithmic complexity) is pending Product Owner specification.",
+      "priority": "MEDIUM",
+      "status": "PENDING_DECISION",
+      "sourceRequirements": [
+        "NFR-PERFORMANCE-1"
+      ],
+      "sourceBusinessRules": [],
+      "sourceArchitectureDecisions": [],
+      "verificationMethod": "PERFORMANCE_TEST",
+      "expectedResult": "Authoritative threshold defined and accepted by Product Owner for High-throughput in-memory queue operations with low algorithmic complexity.",
+      "dependencies": [],
+      "traceability": {
+        "criterionId": "AC-9F2B307D",
+        "requirementIds": [
+          "NFR-PERFORMANCE-1"
+        ],
+        "businessRuleIds": [],
+        "architectureDecisionIds": []
+      },
+      "metadata": {
+        "nfrCategory": "performance",
+        "rawNfr": "High-throughput in-memory queue operations with low algorithmic complexity",
+        "unresolvedThreshold": true
+      }
+    },
+    {
+      "criterionId": "AC-B7EB7991",
+      "title": "Prioritized In-Memory Queue Operations: Leased tasks are hidden from dequeue unt...: Rule Enforcement",
+      "description": "Acceptance criterion ensuring business rule 'Prioritized In-Memory Queue Operations: Leased tasks are hidden from dequeue unt...' is observably satisfied.",
+      "criterionType": "BUSINESS_RULE",
+      "statement": "The product observably enforces business rule 'Prioritized In-Memory Queue Operations: Leased tasks are hidden from dequeue unt...': Leased tasks are hidden from dequeue until released or expired",
+      "priority": "HIGH",
+      "status": "DEFINED",
+      "sourceRequirements": [
+        "FREQ-pilot-queue-ops"
+      ],
+      "sourceBusinessRules": [
+        "BR-8ED0B174"
+      ],
+      "sourceArchitectureDecisions": [],
+      "verificationMethod": "AUTOMATED_TEST",
+      "expectedResult": "Verification that Leased tasks are hidden from dequeue until released or expired",
+      "dependencies": [],
+      "traceability": {
+        "criterionId": "AC-B7EB7991",
+        "requirementIds": [
+          "FREQ-pilot-queue-ops"
+        ],
+        "businessRuleIds": [
+          "BR-8ED0B174"
+        ],
+        "architectureDecisionIds": []
+      },
+      "metadata": {
+        "ruleCategory": "DOMAIN_INVARIANT"
+      }
+    },
+    {
+      "criterionId": "AC-BDB9852B",
+      "title": "Operational Constraint: Modular separation of domain m: Rule Enforcement",
+      "description": "Acceptance criterion ensuring business rule 'Operational Constraint: Modular separation of domain m' is observably satisfied.",
+      "criterionType": "OPERATIONAL",
+      "statement": "The product observably enforces business rule 'Operational Constraint: Modular separation of domain m': Modular separation of domain models, queue engine, and serialization adapters",
+      "priority": "HIGH",
+      "status": "DEFINED",
+      "sourceRequirements": [],
+      "sourceBusinessRules": [
+        "BR-60D84BDD"
+      ],
+      "sourceArchitectureDecisions": [],
+      "verificationMethod": "AUTOMATED_TEST",
+      "expectedResult": "System limit enforcement verification for Modular separation of domain models, queue engine, and serialization adapters",
+      "dependencies": [],
+      "traceability": {
+        "criterionId": "AC-BDB9852B",
+        "requirementIds": [],
+        "businessRuleIds": [
+          "BR-60D84BDD"
+        ],
+        "architectureDecisionIds": []
+      },
+      "metadata": {
+        "ruleCategory": "LIMIT_RULE"
+      }
+    },
+    {
+      "criterionId": "AC-BECB912B",
+      "title": "Prioritized In-Memory Queue Operations: expireStale reclaims expired leases and...",
+      "description": "Acceptance criterion derived from requirement rule 'expireStale reclaims expired leases and evicts TTL-exceeded tasks'.",
+      "criterionType": "FUNCTIONAL",
+      "statement": "The product enforces requirement condition: expireStale reclaims expired leases and evicts TTL-exceeded tasks.",
+      "priority": "HIGH",
+      "status": "DEFINED",
+      "sourceRequirements": [
+        "FREQ-pilot-queue-ops"
+      ],
+      "sourceBusinessRules": [],
+      "sourceArchitectureDecisions": [],
+      "verificationMethod": "AUTOMATED_TEST",
+      "expectedResult": "Observable compliance with requirement rule 'expireStale reclaims expired leases and evicts TTL-exceeded tasks'.",
+      "dependencies": [],
+      "traceability": {
+        "criterionId": "AC-BECB912B",
+        "requirementIds": [
+          "FREQ-pilot-queue-ops"
+        ],
+        "businessRuleIds": [],
+        "architectureDecisionIds": []
+      },
+      "metadata": {}
+    },
+    {
+      "criterionId": "AC-C08D913B",
+      "title": "Core Functionality: Functional Verification",
+      "description": "Authoritative acceptance criterion derived from functional requirement 'Core Functionality'.",
+      "criterionType": "FUNCTIONAL",
+      "statement": "When functionality 'Core Functionality' is invoked under normal conditions, the product executes: The pilot project is: aidm-pilot-task-queue\nPurpose:\nA reliable prioritized in-memory task queue engine supporting:\n- FIFO/priority scheduling\n- task leasing\n- TTL expiration\n- deterministic state snapshots\n- JSON serialization/deserialization\n\nThe eventual pilot is intended to be a small, real, independently versioned TypeScript project..",
+      "priority": "HIGH",
+      "status": "DEFINED",
+      "sourceRequirements": [
+        "FREQ-ee2271105461"
+      ],
+      "sourceBusinessRules": [],
+      "sourceArchitectureDecisions": [],
+      "verificationMethod": "AUTOMATED_TEST",
+      "expectedResult": "Observable execution succeeds without error and satisfies 'Core Functionality'.",
+      "dependencies": [],
+      "traceability": {
+        "criterionId": "AC-C08D913B",
+        "requirementIds": [
+          "FREQ-ee2271105461"
+        ],
+        "businessRuleIds": [],
+        "architectureDecisionIds": []
+      },
+      "metadata": {}
+    },
+    {
+      "criterionId": "AC-C362C85F",
+      "title": "Deterministic State Serialization & Snapshots: JSON serialization must be strictly dete...: State Transition Enforcement",
+      "description": "Acceptance criterion verifying lifecycle state transitions for business rule 'Deterministic State Serialization & Snapshots: JSON serialization must be strictly dete...'.",
+      "criterionType": "STATE_TRANSITION",
+      "statement": "State transitions for entity governed by 'Deterministic State Serialization & Snapshots: JSON serialization must be strictly dete...' succeed when valid and are rejected when invalid or out-of-order.",
+      "priority": "HIGH",
+      "status": "DEFINED",
+      "sourceRequirements": [
+        "FREQ-pilot-persistence"
+      ],
+      "sourceBusinessRules": [
+        "BR-7D369ED7"
+      ],
+      "sourceArchitectureDecisions": [],
+      "verificationMethod": "AUTOMATED_TEST",
+      "expectedResult": "Entity transitions only through approved states; illegal transitions are rejected without corruption.",
+      "dependencies": [],
+      "traceability": {
+        "criterionId": "AC-C362C85F",
+        "requirementIds": [
+          "FREQ-pilot-persistence"
+        ],
+        "businessRuleIds": [
+          "BR-7D369ED7"
+        ],
+        "architectureDecisionIds": []
+      },
+      "metadata": {
+        "ruleCategory": "DOMAIN_INVARIANT"
+      }
+    },
+    {
+      "criterionId": "AC-C6F64D08",
+      "title": "MAINTAINABILITY: Threshold Definition",
+      "description": "Acceptance criterion for non-functional requirement 'Node.js standard LTS runtime compatibility' pending authoritative threshold definition.",
+      "criterionType": "OPERATIONAL",
+      "statement": "The measurable threshold for 'maintainability' (Node.js standard LTS runtime compatibility) is pending Product Owner specification.",
+      "priority": "MEDIUM",
+      "status": "PENDING_DECISION",
+      "sourceRequirements": [
+        "NFR-MAINTAINABILITY-1"
+      ],
+      "sourceBusinessRules": [],
+      "sourceArchitectureDecisions": [],
+      "verificationMethod": "MANUAL_VERIFICATION",
+      "expectedResult": "Authoritative threshold defined and accepted by Product Owner for Node.js standard LTS runtime compatibility.",
+      "dependencies": [],
+      "traceability": {
+        "criterionId": "AC-C6F64D08",
+        "requirementIds": [
+          "NFR-MAINTAINABILITY-1"
+        ],
+        "businessRuleIds": [],
+        "architectureDecisionIds": []
+      },
+      "metadata": {
+        "nfrCategory": "maintainability",
+        "rawNfr": "Node.js standard LTS runtime compatibility",
+        "unresolvedThreshold": true
+      }
+    },
+    {
+      "criterionId": "AC-C725C33A",
+      "title": "DATA: Boundary Verification",
+      "description": "Authoritative acceptance criterion ensuring product satisfies observable architectural boundary condition for 'What primary data storage technology and strategy should be selected?'.",
+      "criterionType": "DATA",
+      "statement": "Observable architectural requirement for 'DATA': In-memory data structures with deterministic JSON snapshot serialization/deserialization.",
+      "priority": "HIGH",
+      "status": "DEFINED",
+      "sourceRequirements": [
+        "FREQ-ee2271105461",
+        "FREQ-pilot-models",
+        "FREQ-pilot-persistence"
+      ],
+      "sourceBusinessRules": [],
+      "sourceArchitectureDecisions": [
+        "ARCH-DEC-002"
+      ],
+      "verificationMethod": "AUTOMATED_TEST",
+      "expectedResult": "Product operates at its boundary in conformance with architecture decision 'What primary data storage technology and strategy should be selected?'.",
+      "dependencies": [],
+      "traceability": {
+        "criterionId": "AC-C725C33A",
+        "requirementIds": [
+          "FREQ-ee2271105461",
+          "FREQ-pilot-models",
+          "FREQ-pilot-persistence"
+        ],
+        "businessRuleIds": [],
+        "architectureDecisionIds": [
+          "ARCH-DEC-002"
+        ]
+      },
+      "metadata": {
+        "decisionArea": "DATA"
+      }
+    },
+    {
+      "criterionId": "AC-DDA105B3",
+      "title": "SCALABILITY: Threshold Definition",
+      "description": "Acceptance criterion for non-functional requirement 'Bounded in-memory footprint suitable for embedded Node.js library usage' pending authoritative threshold definition.",
+      "criterionType": "PERFORMANCE",
+      "statement": "The measurable threshold for 'scalability' (Bounded in-memory footprint suitable for embedded Node.js library usage) is pending Product Owner specification.",
+      "priority": "MEDIUM",
+      "status": "PENDING_DECISION",
+      "sourceRequirements": [
+        "NFR-SCALABILITY-1"
+      ],
+      "sourceBusinessRules": [],
+      "sourceArchitectureDecisions": [],
+      "verificationMethod": "PERFORMANCE_TEST",
+      "expectedResult": "Authoritative threshold defined and accepted by Product Owner for Bounded in-memory footprint suitable for embedded Node.js library usage.",
+      "dependencies": [],
+      "traceability": {
+        "criterionId": "AC-DDA105B3",
+        "requirementIds": [
+          "NFR-SCALABILITY-1"
+        ],
+        "businessRuleIds": [],
+        "architectureDecisionIds": []
+      },
+      "metadata": {
+        "nfrCategory": "scalability",
+        "rawNfr": "Bounded in-memory footprint suitable for embedded Node.js library usage",
+        "unresolvedThreshold": true
+      }
+    },
+    {
+      "criterionId": "AC-E0788F7B",
+      "title": "Domain Models & Schema Validation: TaskLease tracks active leases with leas...",
+      "description": "Acceptance criterion derived from requirement rule 'TaskLease tracks active leases with leaseholder identity and expiration timestamp'.",
+      "criterionType": "DATA",
+      "statement": "The product enforces requirement condition: TaskLease tracks active leases with leaseholder identity and expiration timestamp.",
+      "priority": "HIGH",
+      "status": "DEFINED",
+      "sourceRequirements": [
+        "FREQ-pilot-models"
+      ],
+      "sourceBusinessRules": [],
+      "sourceArchitectureDecisions": [],
+      "verificationMethod": "AUTOMATED_TEST",
+      "expectedResult": "Observable compliance with requirement rule 'TaskLease tracks active leases with leaseholder identity and expiration timestamp'.",
+      "dependencies": [],
+      "traceability": {
+        "criterionId": "AC-E0788F7B",
+        "requirementIds": [
+          "FREQ-pilot-models"
+        ],
+        "businessRuleIds": [],
+        "architectureDecisionIds": []
+      },
+      "metadata": {}
+    },
+    {
+      "criterionId": "AC-E1E67B1D",
+      "title": "Pending Policy: Deployment & Hosting Environment Model: Rule Enforcement",
+      "description": "Acceptance criterion ensuring business rule 'Pending Policy: Deployment & Hosting Environment Model' is observably satisfied.",
+      "criterionType": "DEPLOYMENT",
+      "statement": "The product observably enforces business rule 'Pending Policy: Deployment & Hosting Environment Model': Domain behavior for Deployment & Hosting Environment Model is pending Product Owner decision. Available options: Cloud Hosted (AWS / GCP / Azure), Local / Self-Hosted Docker Container",
+      "priority": "HIGH",
+      "status": "PENDING_DECISION",
+      "sourceRequirements": [],
+      "sourceBusinessRules": [
+        "BR-82B98E12"
+      ],
+      "sourceArchitectureDecisions": [],
+      "verificationMethod": "DEPLOYMENT_CHECK",
+      "expectedResult": "Verification against selected policy once resolved",
+      "dependencies": [],
+      "traceability": {
+        "criterionId": "AC-E1E67B1D",
+        "requirementIds": [],
+        "businessRuleIds": [
+          "BR-82B98E12"
+        ],
+        "architectureDecisionIds": []
+      },
+      "metadata": {
+        "ruleCategory": "POLICY_RULE"
+      }
+    },
+    {
+      "criterionId": "AC-F01FDE76",
+      "title": "AVAILABILITY: Threshold Definition",
+      "description": "Acceptance criterion for non-functional requirement 'Always available synchronously within host process' pending authoritative threshold definition.",
+      "criterionType": "AVAILABILITY",
+      "statement": "The measurable threshold for 'availability' (Always available synchronously within host process) is pending Product Owner specification.",
+      "priority": "MEDIUM",
+      "status": "PENDING_DECISION",
+      "sourceRequirements": [
+        "NFR-AVAILABILITY-1"
+      ],
+      "sourceBusinessRules": [],
+      "sourceArchitectureDecisions": [],
+      "verificationMethod": "PERFORMANCE_TEST",
+      "expectedResult": "Authoritative threshold defined and accepted by Product Owner for Always available synchronously within host process.",
+      "dependencies": [],
+      "traceability": {
+        "criterionId": "AC-F01FDE76",
+        "requirementIds": [
+          "NFR-AVAILABILITY-1"
+        ],
+        "businessRuleIds": [],
+        "architectureDecisionIds": []
+      },
+      "metadata": {
+        "nfrCategory": "availability",
+        "rawNfr": "Always available synchronously within host process",
+        "unresolvedThreshold": true
+      }
+    },
+    {
+      "criterionId": "AC-F481AA96",
+      "title": "Prioritized In-Memory Queue Operations: FIFO ordering strictly enforced within t...",
+      "description": "Acceptance criterion derived from requirement rule 'FIFO ordering strictly enforced within the same TaskPriority level'.",
+      "criterionType": "FUNCTIONAL",
+      "statement": "The product enforces requirement condition: FIFO ordering strictly enforced within the same TaskPriority level.",
+      "priority": "HIGH",
+      "status": "DEFINED",
+      "sourceRequirements": [
+        "FREQ-pilot-queue-ops"
+      ],
+      "sourceBusinessRules": [],
+      "sourceArchitectureDecisions": [],
+      "verificationMethod": "AUTOMATED_TEST",
+      "expectedResult": "Observable compliance with requirement rule 'FIFO ordering strictly enforced within the same TaskPriority level'.",
+      "dependencies": [],
+      "traceability": {
+        "criterionId": "AC-F481AA96",
+        "requirementIds": [
+          "FREQ-pilot-queue-ops"
+        ],
+        "businessRuleIds": [],
+        "architectureDecisionIds": []
+      },
+      "metadata": {}
+    },
+    {
+      "criterionId": "AC-F84A79D9",
+      "title": "Domain Models & Schema Validation: QueueConfig specifies default lease dura...: Rule Enforcement",
+      "description": "Acceptance criterion ensuring business rule 'Domain Models & Schema Validation: QueueConfig specifies default lease dura...' is observably satisfied.",
+      "criterionType": "VALIDATION",
+      "statement": "The product observably enforces business rule 'Domain Models & Schema Validation: QueueConfig specifies default lease dura...': QueueConfig specifies default lease durations, TTL limits, and queue capacities",
+      "priority": "HIGH",
+      "status": "DEFINED",
+      "sourceRequirements": [
+        "FREQ-pilot-models"
+      ],
+      "sourceBusinessRules": [
+        "BR-68AA82F9"
+      ],
+      "sourceArchitectureDecisions": [],
+      "verificationMethod": "AUTOMATED_TEST",
+      "expectedResult": "Verification that QueueConfig specifies default lease durations, TTL limits, and queue capacities",
+      "dependencies": [],
+      "traceability": {
+        "criterionId": "AC-F84A79D9",
+        "requirementIds": [
+          "FREQ-pilot-models"
+        ],
+        "businessRuleIds": [
+          "BR-68AA82F9"
+        ],
+        "architectureDecisionIds": []
+      },
+      "metadata": {
+        "ruleCategory": "LIMIT_RULE"
+      }
+    },
+    {
+      "criterionId": "AC-FBB9194B",
+      "title": "Domain Models & Schema Validation: TaskPriority determines scheduling prefe...: Rule Enforcement",
+      "description": "Acceptance criterion ensuring business rule 'Domain Models & Schema Validation: TaskPriority determines scheduling prefe...' is observably satisfied.",
+      "criterionType": "VALIDATION",
+      "statement": "The product observably enforces business rule 'Domain Models & Schema Validation: TaskPriority determines scheduling prefe...': TaskPriority determines scheduling preference",
+      "priority": "HIGH",
+      "status": "DEFINED",
+      "sourceRequirements": [
+        "FREQ-pilot-models"
+      ],
+      "sourceBusinessRules": [
+        "BR-E5CFFCCF"
+      ],
+      "sourceArchitectureDecisions": [],
+      "verificationMethod": "AUTOMATED_TEST",
+      "expectedResult": "Verification that TaskPriority determines scheduling preference",
+      "dependencies": [],
+      "traceability": {
+        "criterionId": "AC-FBB9194B",
+        "requirementIds": [
+          "FREQ-pilot-models"
+        ],
+        "businessRuleIds": [
+          "BR-E5CFFCCF"
+        ],
+        "architectureDecisionIds": []
+      },
+      "metadata": {
+        "ruleCategory": "DOMAIN_INVARIANT"
+      }
+    }
+  ],
+  "coverage": {
+    "totalRequirements": 11,
+    "coveredRequirements": [
+      "FREQ-ee2271105461",
+      "FREQ-pilot-models",
+      "FREQ-pilot-persistence",
+      "FREQ-pilot-queue-ops",
+      "NFR-AVAILABILITY-1",
+      "NFR-MAINTAINABILITY-1",
+      "NFR-PERFORMANCE-1",
+      "NFR-RELIABILITY-1",
+      "NFR-SCALABILITY-1",
+      "NFR-SECURITY-1",
+      "NFR-USABILITY-1"
+    ],
+    "uncoveredRequirements": [],
+    "uncoveredRequirementsDetails": [],
+    "totalBusinessRules": 13,
+    "coveredBusinessRules": [
+      "BR-0AADFC23",
+      "BR-1AA5E76C",
+      "BR-60D84BDD",
+      "BR-68AA82F9",
+      "BR-6D931214",
+      "BR-7D369ED7",
+      "BR-7F2F2E42",
+      "BR-82B98E12",
+      "BR-8EC5648D",
+      "BR-8ED0B174",
+      "BR-BB1EAB94",
+      "BR-E5CFFCCF",
+      "BR-EF116AC0"
+    ],
+    "uncoveredBusinessRules": [],
+    "architectureDecisionsRequiringVerification": 2,
+    "architectureDecisionsVerified": [
+      "ARCH-DEC-002",
+      "ARCH-DEC-003"
+    ],
+    "criteriaCount": 34,
+    "pendingDecisionCount": 18
+  },
+  "pendingHumanDecisions": [
+    {
+      "decisionId": "ACD-02FC3527",
+      "question": "What is the authoritative measurable threshold for non-functional requirement 'usability': \"Idiomatic TypeScript API with strongly typed contracts and clear error handling\"?",
+      "whyItMatters": "A measurable threshold is required to verify requirement NFR-USABILITY-1 without manufacturing synthetic numbers.",
+      "affectedCriteria": [
+        "AC-6EF7B778"
+      ],
+      "affectedRequirements": [
+        "NFR-USABILITY-1"
+      ],
+      "availableOptions": [
+        "Define explicit numeric target threshold (e.g. latency, availability, uptime)",
+        "Designate requirement as qualitative review only",
+        "Exclude requirement from current project release"
+      ],
+      "consequences": [
+        "Engine will not invent performance/operational numbers; verification remains PENDING_DECISION until specified"
+      ],
+      "authority": "USER",
+      "status": "PENDING_DECISION"
+    },
+    {
+      "decisionId": "ACD-061E4B36",
+      "question": "Unresolved domain policy for Deployment & Hosting Environment Model: Select the target deployment model for hosting the production system.",
+      "whyItMatters": "Product Owner decision required before committing to scope: Deployment & Hosting Environment Model",
+      "affectedCriteria": [
+        "AC-E1E67B1D"
+      ],
+      "affectedRequirements": [],
+      "availableOptions": [
+        "Cloud Hosted (AWS / GCP / Azure)",
+        "Local / Self-Hosted Docker Container"
+      ],
+      "consequences": [
+        "Choosing an option defines the authoritative business policy for Deployment & Hosting Environment Model."
+      ],
+      "authority": "USER",
+      "status": "PENDING_DECISION"
+    },
+    {
+      "decisionId": "ACD-07F5F23A",
+      "question": "What is the authoritative measurable threshold for non-functional requirement 'availability': \"Always available synchronously within host process\"?",
+      "whyItMatters": "A measurable threshold is required to verify requirement NFR-AVAILABILITY-1 without manufacturing synthetic numbers.",
+      "affectedCriteria": [
+        "AC-F01FDE76"
+      ],
+      "affectedRequirements": [
+        "NFR-AVAILABILITY-1"
+      ],
+      "availableOptions": [
+        "Define explicit numeric target threshold (e.g. latency, availability, uptime)",
+        "Designate requirement as qualitative review only",
+        "Exclude requirement from current project release"
+      ],
+      "consequences": [
+        "Engine will not invent performance/operational numbers; verification remains PENDING_DECISION until specified"
+      ],
+      "authority": "USER",
+      "status": "PENDING_DECISION"
+    },
+    {
+      "decisionId": "ACD-27C86C3C",
+      "question": "Deployment & Hosting Environment Model",
+      "whyItMatters": "Select the target deployment model for hosting the production system.",
+      "affectedCriteria": [],
+      "affectedRequirements": [
+        "architecture",
+        "operational requirements"
+      ],
+      "availableOptions": [
+        "Cloud Hosted (AWS / GCP / Azure)",
+        "Local / Self-Hosted Docker Container"
+      ],
+      "consequences": [],
+      "authority": "USER",
+      "status": "PENDING_DECISION"
+    },
+    {
+      "decisionId": "ACD-3706FEB2",
+      "question": "What is the authoritative measurable threshold for non-functional requirement 'scalability': \"Bounded in-memory footprint suitable for embedded Node.js library usage\"?",
+      "whyItMatters": "A measurable threshold is required to verify requirement NFR-SCALABILITY-1 without manufacturing synthetic numbers.",
+      "affectedCriteria": [
+        "AC-DDA105B3"
+      ],
+      "affectedRequirements": [
+        "NFR-SCALABILITY-1"
+      ],
+      "availableOptions": [
+        "Define explicit numeric target threshold (e.g. latency, availability, uptime)",
+        "Designate requirement as qualitative review only",
+        "Exclude requirement from current project release"
+      ],
+      "consequences": [
+        "Engine will not invent performance/operational numbers; verification remains PENDING_DECISION until specified"
+      ],
+      "authority": "USER",
+      "status": "PENDING_DECISION"
+    },
+    {
+      "decisionId": "ACD-39F0C367",
+      "question": "What is the authoritative measurable threshold for non-functional requirement 'performance': \"High-throughput in-memory queue operations with low algorithmic complexity\"?",
+      "whyItMatters": "A measurable threshold is required to verify requirement NFR-PERFORMANCE-1 without manufacturing synthetic numbers.",
+      "affectedCriteria": [
+        "AC-9F2B307D"
+      ],
+      "affectedRequirements": [
+        "NFR-PERFORMANCE-1"
+      ],
+      "availableOptions": [
+        "Define explicit numeric target threshold (e.g. latency, availability, uptime)",
+        "Designate requirement as qualitative review only",
+        "Exclude requirement from current project release"
+      ],
+      "consequences": [
+        "Engine will not invent performance/operational numbers; verification remains PENDING_DECISION until specified"
+      ],
+      "authority": "USER",
+      "status": "PENDING_DECISION"
+    },
+    {
+      "decisionId": "ACD-5495674F",
+      "question": "How should business rule 'Pending Policy: Deployment & Hosting Environment Model' be resolved for acceptance?",
+      "whyItMatters": "Underlying business rule BR-82B98E12 has status PENDING_DECISION.",
+      "affectedCriteria": [
+        "AC-E1E67B1D"
+      ],
+      "affectedRequirements": [],
+      "availableOptions": [
+        "Confirm business rule policy and thresholds",
+        "Modify business rule to eliminate ambiguity",
+        "Exclude rule from current milestone"
+      ],
+      "consequences": [
+        "Acceptance criterion remains in PENDING_DECISION until resolved"
+      ],
+      "authority": "USER",
+      "status": "PENDING_DECISION"
+    },
+    {
+      "decisionId": "ACD-CFD34AAC",
+      "question": "What is the authoritative measurable threshold for non-functional requirement 'maintainability': \"Node.js standard LTS runtime compatibility\"?",
+      "whyItMatters": "A measurable threshold is required to verify requirement NFR-MAINTAINABILITY-1 without manufacturing synthetic numbers.",
+      "affectedCriteria": [
+        "AC-C6F64D08"
+      ],
+      "affectedRequirements": [
+        "NFR-MAINTAINABILITY-1"
+      ],
+      "availableOptions": [
+        "Define explicit numeric target threshold (e.g. latency, availability, uptime)",
+        "Designate requirement as qualitative review only",
+        "Exclude requirement from current project release"
+      ],
+      "consequences": [
+        "Engine will not invent performance/operational numbers; verification remains PENDING_DECISION until specified"
+      ],
+      "authority": "USER",
+      "status": "PENDING_DECISION"
+    },
+    {
+      "decisionId": "ACD-EC858820",
+      "question": "What is the authoritative measurable threshold for non-functional requirement 'reliability': \"Deterministic state machine transitions, zero task loss during valid lease/release lifecycle\"?",
+      "whyItMatters": "A measurable threshold is required to verify requirement NFR-RELIABILITY-1 without manufacturing synthetic numbers.",
+      "affectedCriteria": [
+        "AC-648A5520"
+      ],
+      "affectedRequirements": [
+        "NFR-RELIABILITY-1"
+      ],
+      "availableOptions": [
+        "Define explicit numeric target threshold (e.g. latency, availability, uptime)",
+        "Designate requirement as qualitative review only",
+        "Exclude requirement from current project release"
+      ],
+      "consequences": [
+        "Engine will not invent performance/operational numbers; verification remains PENDING_DECISION until specified"
+      ],
+      "authority": "USER",
+      "status": "PENDING_DECISION"
+    },
+    {
+      "decisionId": "ACD-EF157DF1",
+      "question": "What is the authoritative measurable threshold for non-functional requirement 'security': \"No external network exposure, isolated in-memory execution, input schema validation\"?",
+      "whyItMatters": "A measurable threshold is required to verify requirement NFR-SECURITY-1 without manufacturing synthetic numbers.",
+      "affectedCriteria": [
+        "AC-581780C6"
+      ],
+      "affectedRequirements": [
+        "NFR-SECURITY-1"
+      ],
+      "availableOptions": [
+        "Define explicit numeric target threshold (e.g. latency, availability, uptime)",
+        "Designate requirement as qualitative review only",
+        "Exclude requirement from current project release"
+      ],
+      "consequences": [
+        "Engine will not invent performance/operational numbers; verification remains PENDING_DECISION until specified"
+      ],
+      "authority": "USER",
+      "status": "PENDING_DECISION"
+    }
+  ],
+  "conflicts": [],
+  "requirementsTraceability": [
+    {
+      "requirementId": "FREQ-ee2271105461",
+      "requirementTitle": "Core Functionality",
+      "isCovered": true,
+      "criteriaIds": [
+        "AC-8D6F007F",
+        "AC-93F0D40D",
+        "AC-C08D913B",
+        "AC-C725C33A"
+      ]
+    },
+    {
+      "requirementId": "FREQ-pilot-models",
+      "requirementTitle": "Domain Models & Schema Validation",
+      "isCovered": true,
+      "criteriaIds": [
+        "AC-2D582EF3",
+        "AC-61E8A83C",
+        "AC-83D957FA",
+        "AC-8D6F007F",
+        "AC-9DD1E791",
+        "AC-C725C33A",
+        "AC-E0788F7B",
+        "AC-F84A79D9",
+        "AC-FBB9194B"
+      ]
+    },
+    {
+      "requirementId": "FREQ-pilot-persistence",
+      "requirementTitle": "Deterministic State Serialization & Snapshots",
+      "isCovered": true,
+      "criteriaIds": [
+        "AC-02B7A5D7",
+        "AC-12865AA9",
+        "AC-3A10A2EB",
+        "AC-48388D96",
+        "AC-8D6F007F",
+        "AC-C362C85F",
+        "AC-C725C33A"
+      ]
+    },
+    {
+      "requirementId": "FREQ-pilot-queue-ops",
+      "requirementTitle": "Prioritized In-Memory Queue Operations",
+      "isCovered": true,
+      "criteriaIds": [
+        "AC-04DB1421",
+        "AC-1EF2ECBF",
+        "AC-4FE45F80",
+        "AC-53B3A007",
+        "AC-B7EB7991",
+        "AC-BECB912B",
+        "AC-F481AA96"
+      ]
+    },
+    {
+      "requirementId": "NFR-AVAILABILITY-1",
+      "requirementTitle": "AVAILABILITY: Always available synchronously within host process",
+      "isCovered": true,
+      "criteriaIds": [
+        "AC-F01FDE76"
+      ]
+    },
+    {
+      "requirementId": "NFR-MAINTAINABILITY-1",
+      "requirementTitle": "MAINTAINABILITY: Node.js standard LTS runtime compatibility",
+      "isCovered": true,
+      "criteriaIds": [
+        "AC-C6F64D08"
+      ]
+    },
+    {
+      "requirementId": "NFR-PERFORMANCE-1",
+      "requirementTitle": "PERFORMANCE: High-throughput in-memory queue operations with low algorithmic complexity",
+      "isCovered": true,
+      "criteriaIds": [
+        "AC-9F2B307D"
+      ]
+    },
+    {
+      "requirementId": "NFR-RELIABILITY-1",
+      "requirementTitle": "RELIABILITY: Deterministic state machine transitions, zero task loss during valid lease/release lifecycle",
+      "isCovered": true,
+      "criteriaIds": [
+        "AC-648A5520"
+      ]
+    },
+    {
+      "requirementId": "NFR-SCALABILITY-1",
+      "requirementTitle": "SCALABILITY: Bounded in-memory footprint suitable for embedded Node.js library usage",
+      "isCovered": true,
+      "criteriaIds": [
+        "AC-DDA105B3"
+      ]
+    },
+    {
+      "requirementId": "NFR-SECURITY-1",
+      "requirementTitle": "SECURITY: No external network exposure, isolated in-memory execution, input schema validation",
+      "isCovered": true,
+      "criteriaIds": [
+        "AC-581780C6"
+      ]
+    },
+    {
+      "requirementId": "NFR-USABILITY-1",
+      "requirementTitle": "USABILITY: Idiomatic TypeScript API with strongly typed contracts and clear error handling",
+      "isCovered": true,
+      "criteriaIds": [
+        "AC-6EF7B778"
+      ]
+    }
+  ],
+  "businessRulesTraceability": [
+    {
+      "ruleId": "BR-0AADFC23",
+      "ruleTitle": "Integration Boundary: Consumable as an independent TypeScript module / library",
+      "isCovered": true,
+      "criteriaIds": [
+        "AC-468E9E4A"
+      ]
+    },
+    {
+      "ruleId": "BR-1AA5E76C",
+      "ruleTitle": "Deterministic State Serialization & Snapshots: Deserialization validates state against...",
+      "isCovered": true,
+      "criteriaIds": [
+        "AC-02B7A5D7"
+      ]
+    },
+    {
+      "ruleId": "BR-60D84BDD",
+      "ruleTitle": "Operational Constraint: Modular separation of domain m",
+      "isCovered": true,
+      "criteriaIds": [
+        "AC-BDB9852B"
+      ]
+    },
+    {
+      "ruleId": "BR-68AA82F9",
+      "ruleTitle": "Domain Models & Schema Validation: QueueConfig specifies default lease dura...",
+      "isCovered": true,
+      "criteriaIds": [
+        "AC-F84A79D9"
+      ]
+    },
+    {
+      "ruleId": "BR-6D931214",
+      "ruleTitle": "Prioritized In-Memory Queue Operations: expireStale reclaims expired leases and...",
+      "isCovered": true,
+      "criteriaIds": [
+        "AC-1EF2ECBF"
+      ]
+    },
+    {
+      "ruleId": "BR-7D369ED7",
+      "ruleTitle": "Deterministic State Serialization & Snapshots: JSON serialization must be strictly dete...",
+      "isCovered": true,
+      "criteriaIds": [
+        "AC-C362C85F"
+      ]
+    },
+    {
+      "ruleId": "BR-7F2F2E42",
+      "ruleTitle": "Operational Constraint: Pure in-memory engine, no exte",
+      "isCovered": true,
+      "criteriaIds": [
+        "AC-69467FB6"
+      ]
+    },
+    {
+      "ruleId": "BR-82B98E12",
+      "ruleTitle": "Pending Policy: Deployment & Hosting Environment Model",
+      "isCovered": true,
+      "criteriaIds": [
+        "AC-E1E67B1D"
+      ]
+    },
+    {
+      "ruleId": "BR-8EC5648D",
+      "ruleTitle": "Prioritized In-Memory Queue Operations: FIFO ordering strictly enforced within t...",
+      "isCovered": true,
+      "criteriaIds": [
+        "AC-04DB1421"
+      ]
+    },
+    {
+      "ruleId": "BR-8ED0B174",
+      "ruleTitle": "Prioritized In-Memory Queue Operations: Leased tasks are hidden from dequeue unt...",
+      "isCovered": true,
+      "criteriaIds": [
+        "AC-B7EB7991"
+      ]
+    },
+    {
+      "ruleId": "BR-BB1EAB94",
+      "ruleTitle": "Core Functionality Rule",
+      "isCovered": true,
+      "criteriaIds": [
+        "AC-93F0D40D"
+      ]
+    },
+    {
+      "ruleId": "BR-E5CFFCCF",
+      "ruleTitle": "Domain Models & Schema Validation: TaskPriority determines scheduling prefe...",
+      "isCovered": true,
+      "criteriaIds": [
+        "AC-FBB9194B"
+      ]
+    },
+    {
+      "ruleId": "BR-EF116AC0",
+      "ruleTitle": "Domain Models & Schema Validation: TaskLease tracks active leases with leas...",
+      "isCovered": true,
+      "criteriaIds": [
+        "AC-61E8A83C"
+      ]
+    }
+  ],
+  "architectureTraceability": [
+    {
+      "decisionId": "ARCH-DEC-001",
+      "decisionTitle": "STYLE: What architectural style and subsystem topology will govern the system?",
+      "requiresVerification": false,
+      "criteriaIds": []
+    },
+    {
+      "decisionId": "ARCH-DEC-002",
+      "decisionTitle": "DATA: What primary data storage technology and strategy should be selected?",
+      "requiresVerification": true,
+      "criteriaIds": [
+        "AC-C725C33A"
+      ]
+    },
+    {
+      "decisionId": "ARCH-DEC-003",
+      "decisionTitle": "API: What communication protocol will expose external and internal interfaces?",
+      "requiresVerification": true,
+      "criteriaIds": [
+        "AC-8D6F007F"
+      ]
+    },
+    {
+      "decisionId": "ARCH-DEC-004",
+      "decisionTitle": "TECH_STACK: What runtime and programming languages constrain this project?",
+      "requiresVerification": false,
+      "criteriaIds": []
+    }
+  ],
+  "createdAt": "2026-09-28T21:34:09.265Z",
+  "fingerprint": "81d63457b6c5bc2045b4d53ba30d582f51204813fed244541f0c296813a22af1"
+}

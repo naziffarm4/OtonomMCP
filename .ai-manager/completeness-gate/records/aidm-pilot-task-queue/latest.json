@@ -1,0 +1,245 @@
+{
+  "projectId": "aidm-pilot-task-queue",
+  "discoveryRevision": 1,
+  "discoveryFingerprint": "cfbbc6183d4894941bc70ae98be927056742bc4d51898fbd237be422b333ca74",
+  "status": "BLOCKED_ON_HUMAN",
+  "isEligibleForApproval": false,
+  "isStale": false,
+  "evaluatedAreas": [
+    {
+      "area": "PROJECT_PURPOSE",
+      "status": "COMPLETE",
+      "evidence": [
+        "Project identity specified: name='aidm-pilot-task-queue'",
+        "Purpose: A reliable prioritized in-memory task queue engine supporting FIFO/priority scheduling, task leasing, TTL expiration, deterministic state snapshots, and JSON serialization/deserialization.",
+        "Desired outcome: A small, real, independently versioned TypeScript project implementing a reliable in-memory task queue library with comprehensive automated test coverage."
+      ],
+      "missingInformation": [],
+      "blockingQuestions": [],
+      "humanDecisions": []
+    },
+    {
+      "area": "TARGET_USERS",
+      "status": "COMPLETE",
+      "evidence": [
+        "Target users/actors defined (2): End users, Developers and software systems requiring a prioritized in-memory task queue engine with leasing and snapshot determinism"
+      ],
+      "missingInformation": [],
+      "blockingQuestions": [],
+      "humanDecisions": []
+    },
+    {
+      "area": "PRODUCT_SCOPE",
+      "status": "COMPLETE",
+      "evidence": [
+        "In-scope items defined (4): Domain models: TaskItem, TaskPriority, QueueConfig, TaskLease, Queue operations: enqueue, dequeue, peek, lease, release, expireStale, Persistence representation: deterministic JSON state serialization, JSON deserialization, schema validation...",
+        "Explicit exclusions / out-of-scope recorded (14): external databases, Redis, distributed consensus, clustering, HTTP API, REST API, gRPC, UI, frontend, authentication, authorization systems, cloud infrastructure, deployment infrastructure, unnecessary framework dependencies",
+        "Primary workflows specified (4): Task Enqueue and Prioritized Dequeue, Task Leasing and Release Lifecycle, Stale Task TTL Expiration (expireStale), State Serialization and Deserialization Round-trip with Schema Validation"
+      ],
+      "missingInformation": [],
+      "blockingQuestions": [],
+      "humanDecisions": []
+    },
+    {
+      "area": "FUNCTIONAL_REQUIREMENTS",
+      "status": "COMPLETE",
+      "evidence": [
+        "Functional capabilities defined (4 requirements with behavioral specifications)"
+      ],
+      "missingInformation": [],
+      "blockingQuestions": [],
+      "humanDecisions": []
+    },
+    {
+      "area": "BUSINESS_RULES",
+      "status": "COMPLETE",
+      "evidence": [
+        "Business rules specified (12): FIFO ordering preserved within identical priority levels; Leased tasks cannot be dequeued by another worker until lease expires or is released; expireStale evicts tasks exceeding TTL or resets expired leases; State snapshot JSON serialization must be deterministic and schema-validated; TaskPriority determines scheduling preference; QueueConfig specifies default lease durations, TTL limits, and queue capacities; TaskLease tracks active leases with leaseholder identity and expiration timestamp; JSON serialization must be strictly deterministic (reproducible ordering); Deserialization validates state against schema before restoring in-memory queue; FIFO ordering strictly enforced within the same TaskPriority level; Leased tasks are hidden from dequeue until released or expired; expireStale reclaims expired leases and evicts TTL-exceeded tasks"
+      ],
+      "missingInformation": [],
+      "blockingQuestions": [],
+      "humanDecisions": []
+    },
+    {
+      "area": "NON_FUNCTIONAL_REQUIREMENTS",
+      "status": "COMPLETE",
+      "evidence": [
+        "Non-functional requirements defined (6 items across performance, reliability, usability)"
+      ],
+      "missingInformation": [],
+      "blockingQuestions": [],
+      "humanDecisions": []
+    },
+    {
+      "area": "TECHNOLOGY_CONSTRAINTS",
+      "status": "COMPLETE",
+      "evidence": [
+        "Platforms: Node.js library / in-memory TypeScript module",
+        "Required technologies: TypeScript, Node.js"
+      ],
+      "missingInformation": [],
+      "blockingQuestions": [],
+      "humanDecisions": []
+    },
+    {
+      "area": "ARCHITECTURE_REQUIREMENTS",
+      "status": "BLOCKED_ON_HUMAN",
+      "evidence": [
+        "Architecture requires Product Owner decision: Deployment & Hosting Environment Model"
+      ],
+      "missingInformation": [
+        "Deployment & Hosting Environment Model"
+      ],
+      "blockingQuestions": [],
+      "humanDecisions": []
+    },
+    {
+      "area": "DATA_PERSISTENCE",
+      "status": "COMPLETE",
+      "evidence": [
+        "Data persistence specified: In-memory data structures with deterministic JSON snapshot serialization/deserialization"
+      ],
+      "missingInformation": [],
+      "blockingQuestions": [],
+      "humanDecisions": []
+    },
+    {
+      "area": "EXTERNAL_INTEGRATIONS",
+      "status": "COMPLETE",
+      "evidence": [
+        "External integrations specified (1): Consumable as an independent TypeScript module / library"
+      ],
+      "missingInformation": [],
+      "blockingQuestions": [],
+      "humanDecisions": []
+    },
+    {
+      "area": "SECURITY_REQUIREMENTS",
+      "status": "COMPLETE",
+      "evidence": [
+        "Security requirements specified (1): No external network exposure, isolated in-memory execution, input schema validation"
+      ],
+      "missingInformation": [],
+      "blockingQuestions": [],
+      "humanDecisions": []
+    },
+    {
+      "area": "ACCEPTANCE_CRITERIA",
+      "status": "COMPLETE",
+      "evidence": [
+        "Measurable criteria defined (4): Automated test suite passing with zero regressions; Primary workflows demonstrable end-to-end; 100% automated test pass rate across unit and integration/E2E test suites; TypeScript compiler check passes with zero errors under strict mode",
+        "Definition of completion specified (4 items)"
+      ],
+      "missingInformation": [],
+      "blockingQuestions": [],
+      "humanDecisions": []
+    },
+    {
+      "area": "DEPLOYMENT_OPERATIONAL",
+      "status": "BLOCKED_ON_HUMAN",
+      "evidence": [
+        "Deployment model requires Product Owner decision: Deployment & Hosting Environment Model"
+      ],
+      "missingInformation": [
+        "Deployment & Hosting Environment Model"
+      ],
+      "blockingQuestions": [],
+      "humanDecisions": []
+    },
+    {
+      "area": "RISKS_DEPENDENCIES",
+      "status": "COMPLETE",
+      "evidence": [
+        "Risks evaluated (1 risks documented)",
+        "External dependencies identified (2): TypeScript, Node.js built-ins"
+      ],
+      "missingInformation": [],
+      "blockingQuestions": [],
+      "humanDecisions": []
+    },
+    {
+      "area": "HUMAN_DECISION_POINTS",
+      "status": "BLOCKED_ON_HUMAN",
+      "evidence": [
+        "Product Owner decision pending: 'Deployment & Hosting Environment Model' with options: [Cloud Hosted (AWS / GCP / Azure), Local / Self-Hosted Docker Container]"
+      ],
+      "missingInformation": [
+        "Deployment & Hosting Environment Model"
+      ],
+      "blockingQuestions": [],
+      "humanDecisions": []
+    }
+  ],
+  "blockingIssues": [
+    "[ARCHITECTURE_REQUIREMENTS] Blocked on Product Owner decision",
+    "[DEPLOYMENT_OPERATIONAL] Blocked on Product Owner decision",
+    "[HUMAN_DECISION_POINTS] Blocked on Product Owner decision"
+  ],
+  "missingInformation": [
+    "Deployment & Hosting Environment Model",
+    "Deployment & Hosting Environment Model",
+    "Deployment & Hosting Environment Model"
+  ],
+  "humanDecisions": [
+    {
+      "decisionId": "HDEC-6ef75679d70c",
+      "question": "Deployment & Hosting Environment Model",
+      "whyItMatters": "Select the target deployment model for hosting the production system.",
+      "affectedSpecificationAreas": [
+        "architecture",
+        "operational requirements"
+      ],
+      "availableOptions": [
+        "Cloud Hosted (AWS / GCP / Azure)",
+        "Local / Self-Hosted Docker Container"
+      ],
+      "consequenceOfEachOption": {
+        "Local / Self-Hosted Docker Container": "Simplifies initial validation and eliminates cloud billing dependencies during discovery."
+      },
+      "authority": "USER",
+      "status": "PENDING_DECISION"
+    }
+  ],
+  "blockingQuestions": [],
+  "nonBlockingQuestions": [
+    {
+      "id": "Q-NON_FUNCTIONAL_REQUIREMENTS-128799943658",
+      "question": "Are there specific external telemetry, metrics, or error tracking integrations required?",
+      "category": "NON_FUNCTIONAL_REQUIREMENTS",
+      "whyItMatters": "Can be configured as an integration without blocking core domain development.",
+      "whatItAffects": [
+        "operational telemetry"
+      ],
+      "classification": "NON_BLOCKING",
+      "requiredDecision": "Select optional telemetry provider or defer",
+      "dependentSection": "nonFunctionalRequirements",
+      "impact": "Informational for monitoring; does not prevent core business logic construction.",
+      "options": [
+        "OpenTelemetry / Prometheus",
+        "Sentry",
+        "Standard Console / File Logs only"
+      ],
+      "status": "OPEN"
+    },
+    {
+      "id": "Q-PROJECT_IDENTITY-f65f183a26b7",
+      "question": "What is the preferred documentation output format (Markdown docs vs OpenAPI spec)?",
+      "category": "PROJECT_IDENTITY",
+      "whyItMatters": "Cosmetic and developer documentation preference with zero runtime consequence.",
+      "whatItAffects": [
+        "documentation files"
+      ],
+      "classification": "INFORMATIONAL",
+      "requiredDecision": "Select documentation format preference",
+      "dependentSection": "projectIdentity",
+      "impact": "Zero execution impact.",
+      "options": [
+        "Markdown Documentation in docs/",
+        "OpenAPI / Swagger JSON & YAML"
+      ],
+      "status": "OPEN"
+    }
+  ],
+  "evaluatedAt": "2026-09-28T21:34:09.175Z",
+  "fingerprint": "150ceb90492ae57f6b5fa3cfd1e1c7df2d834f51a43c261dd4d04936d095d60f"
+}
