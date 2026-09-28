@@ -6,6 +6,7 @@ import { executeInit } from './commands/init.js';
 import { executeStatus } from './commands/status.js';
 import { executeCheckpoint } from './commands/checkpoint.js';
 import { executeRun } from './commands/run.js';
+import { executeDriver } from './commands/driver.js';
 
 export const AIDM_VERSION = '0.1.0';
 
@@ -18,6 +19,7 @@ Usage:
 Commands:
   init                           Initialize an AIDM project/workspace
   run                            Start autonomous lifecycle execution
+  driver [run|status|stop]       Manage and run governed Autonomous Driver runtime
   status                         Read current project lifecycle and Git state
   checkpoint <action>            Manage Git checkpoints (list, create, rollback)
 
@@ -189,6 +191,27 @@ export async function executeCli(
             approvalToken,
             maxRetries: isNaN(maxRetries) ? 3 : maxRetries,
             dryRun,
+            json,
+            verbose,
+          },
+          writer,
+          appOptions
+        );
+      }
+
+      case 'driver': {
+        const action = subcommand ?? (typeof flags['subcommand'] === 'string' ? flags['subcommand'] : 'run');
+        const maxIterations = flags['max-iterations'] ? parseInt(String(flags['max-iterations']), 10) : undefined;
+        const targetTaskId = (flags['task'] ?? flags['task-id'] ?? positionals[2]) as string | undefined;
+        const timeoutMs = flags['timeout-ms'] ? parseInt(String(flags['timeout-ms']), 10) : undefined;
+
+        return await executeDriver(
+          {
+            projectRoot,
+            subcommand: action,
+            targetTaskId,
+            maxIterations: maxIterations && !isNaN(maxIterations) ? maxIterations : undefined,
+            timeoutMs: timeoutMs && !isNaN(timeoutMs) ? timeoutMs : undefined,
             json,
             verbose,
           },

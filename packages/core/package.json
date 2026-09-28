@@ -117,6 +117,14 @@
     "./task-decomposition": {
       "types": "./dist/task-decomposition/index.d.ts",
       "import": "./dist/task-decomposition/index.js"
+    },
+    "./director-loop": {
+      "types": "./dist/director-loop/index.d.ts",
+      "import": "./dist/director-loop/index.js"
+    },
+    "./driver": {
+      "types": "./dist/driver/index.d.ts",
+      "import": "./dist/driver/index.js"
     }
   },
   "bin": {
