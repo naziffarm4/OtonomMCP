@@ -20,12 +20,14 @@ import type { HistoryManager } from '../storage/history-manager.js';
 import { Actor } from '../actors.js';
 import {
   ProjectAcceptanceCriteriaRevisionZodSchema,
+  computeAcceptanceCriteriaFingerprint,
   type ProjectAcceptanceCriteriaRevision,
 } from './acceptance-criteria-types.js';
 import {
   AcceptanceCriteriaValidationError,
   AcceptanceCriteriaProjectBindingMismatchError,
   AcceptanceCriteriaImmutableRevisionError,
+  AcceptanceCriteriaForgedFingerprintError,
 } from './acceptance-criteria-errors.js';
 
 export interface AcceptanceCriteriaStoreOptions {
@@ -88,7 +90,7 @@ export class AcceptanceCriteriaStore {
       );
     }
 
-    // Validate that all criterion IDs match safe deterministic format
+    // Validate that all criterion IDs match safe deterministic format and have consistent traceability
     const criterionIdRegex = /^AC-[A-Za-z0-9_\-]+$/;
     for (const criterion of revision.criteria) {
       if (!criterionIdRegex.test(criterion.criterionId)) {
@@ -97,6 +99,58 @@ export class AcceptanceCriteriaStore {
           { criterionId: criterion.criterionId }
         );
       }
+
+      const reqSorted = [...criterion.sourceRequirements].sort();
+      const traceReqSorted = [...criterion.traceability.requirementIds].sort();
+      if (
+        reqSorted.length !== traceReqSorted.length ||
+        reqSorted.some((v, i) => v !== traceReqSorted[i])
+      ) {
+        throw new AcceptanceCriteriaValidationError(
+          `Traceability mismatch in criterion '${criterion.criterionId}': sourceRequirements does not match traceability.requirementIds.`,
+          { criterionId: criterion.criterionId }
+        );
+      }
+
+      const brSorted = [...criterion.sourceBusinessRules].sort();
+      const traceBrSorted = [...criterion.traceability.businessRuleIds].sort();
+      if (
+        brSorted.length !== traceBrSorted.length ||
+        brSorted.some((v, i) => v !== traceBrSorted[i])
+      ) {
+        throw new AcceptanceCriteriaValidationError(
+          `Traceability mismatch in criterion '${criterion.criterionId}': sourceBusinessRules does not match traceability.businessRuleIds.`,
+          { criterionId: criterion.criterionId }
+        );
+      }
+
+      const archSorted = [...criterion.sourceArchitectureDecisions].sort();
+      const traceArchSorted = [...criterion.traceability.architectureDecisionIds].sort();
+      if (
+        archSorted.length !== traceArchSorted.length ||
+        archSorted.some((v, i) => v !== traceArchSorted[i])
+      ) {
+        throw new AcceptanceCriteriaValidationError(
+          `Traceability mismatch in criterion '${criterion.criterionId}': sourceArchitectureDecisions does not match traceability.architectureDecisionIds.`,
+          { criterionId: criterion.criterionId }
+        );
+      }
+
+      if (criterion.criterionId !== criterion.traceability.criterionId) {
+        throw new AcceptanceCriteriaValidationError(
+          `Traceability mismatch in criterion '${criterion.criterionId}': criterionId does not match traceability.criterionId.`,
+          { criterionId: criterion.criterionId }
+        );
+      }
+    }
+
+    // Validate canonical fingerprint of revision before persisting
+    const canonicalFingerprint = computeAcceptanceCriteriaFingerprint(revision);
+    if (revision.fingerprint !== canonicalFingerprint) {
+      throw new AcceptanceCriteriaForgedFingerprintError(
+        `Fingerprint mismatch for acceptance criteria revision ${revision.acceptanceCriteriaRevision}: declared '${revision.fingerprint}' but recomputed canonical fingerprint is '${canonicalFingerprint}'.`,
+        { declaredFingerprint: revision.fingerprint, canonicalFingerprint }
+      );
     }
 
     const safeProjectId = this.sanitizeProjectId(revision.projectId);
@@ -104,26 +158,36 @@ export class AcceptanceCriteriaStore {
     const revisionFilePath = path.join(projectDir, `rev-${revision.acceptanceCriteriaRevision}.json`);
     const latestFilePath = path.join(projectDir, 'latest.json');
 
-    // Immutability check
+    // Immutability check: compare authoritative canonical content and fingerprint
     if (fs.existsSync(revisionFilePath)) {
-      try {
-        const existing = await readJsonFile<ProjectAcceptanceCriteriaRevision>(revisionFilePath);
-        if (existing && existing.fingerprint !== revision.fingerprint) {
+      const existing = await readJsonFile<ProjectAcceptanceCriteriaRevision>(revisionFilePath);
+      if (existing) {
+        const existingParse = ProjectAcceptanceCriteriaRevisionZodSchema.safeParse(existing);
+        if (!existingParse.success) {
           throw new AcceptanceCriteriaImmutableRevisionError(
-            `Acceptance criteria revision ${revision.acceptanceCriteriaRevision} for project '${revision.projectId}' is immutable and already exists with a different fingerprint.`,
+            `Existing acceptance criteria revision ${revision.acceptanceCriteriaRevision} is corrupted on disk.`,
+            { issues: existingParse.error.issues }
+          );
+        }
+        const existingCanonicalFingerprint = computeAcceptanceCriteriaFingerprint(existing);
+        if (
+          existing.fingerprint !== revision.fingerprint ||
+          existingCanonicalFingerprint !== canonicalFingerprint
+        ) {
+          throw new AcceptanceCriteriaImmutableRevisionError(
+            `Acceptance criteria revision ${revision.acceptanceCriteriaRevision} for project '${revision.projectId}' is immutable and already exists with different canonical content.`,
             {
               projectId: revision.projectId,
               revision: revision.acceptanceCriteriaRevision,
               existingFingerprint: existing.fingerprint,
               newFingerprint: revision.fingerprint,
+              existingCanonicalFingerprint,
+              newCanonicalFingerprint: canonicalFingerprint,
             }
           );
         }
-      } catch (err) {
-        if (err instanceof AcceptanceCriteriaImmutableRevisionError) {
-          throw err;
-        }
-        // If file cannot be read, continue with atomic write
+        // Exact idempotent replay: already persisted with identical canonical content
+        return;
       }
     }
 
@@ -165,6 +229,7 @@ export class AcceptanceCriteriaStore {
   /**
    * Loads a ProjectAcceptanceCriteriaRevision from disk by projectId and optional revision number.
    * If revision is omitted, loads latest revision.
+   * Every persisted Acceptance Criteria revision is independently validated when loaded.
    */
   async loadRevision(
     projectId: string,
@@ -191,15 +256,126 @@ export class AcceptanceCriteriaStore {
       return null;
     }
 
-    // Cross-project mismatch check
-    if (raw.projectId !== projectId) {
+    // 1. Validate complete schema
+    const parseResult = ProjectAcceptanceCriteriaRevisionZodSchema.safeParse(raw);
+    if (!parseResult.success) {
+      throw new AcceptanceCriteriaValidationError(
+        `Corrupted persisted acceptance criteria revision: schema validation failed: ${parseResult.error.message}`,
+        { issues: parseResult.error.issues }
+      );
+    }
+    const validated = parseResult.data;
+
+    // 2. Validate project binding
+    if (validated.projectId !== projectId) {
       throw new AcceptanceCriteriaProjectBindingMismatchError(
-        `Cross-project mismatch: requested '${projectId}' but acceptance criteria record belongs to '${raw.projectId}'.`,
-        { requestedProjectId: projectId, recordProjectId: raw.projectId }
+        `Cross-project mismatch: requested '${projectId}' but acceptance criteria record belongs to '${validated.projectId}'.`,
+        { requestedProjectId: projectId, recordProjectId: validated.projectId }
       );
     }
 
-    return raw;
+    // 3. Validate revision number
+    if (revision !== undefined && validated.acceptanceCriteriaRevision !== revision) {
+      throw new AcceptanceCriteriaValidationError(
+        `Revision mismatch: requested revision ${revision} but loaded artifact contains revision ${validated.acceptanceCriteriaRevision}.`,
+        { requestedRevision: revision, recordRevision: validated.acceptanceCriteriaRevision }
+      );
+    }
+
+    // 4. Validate source revision/fingerprint bindings
+    if (
+      !validated.sourceRequirementsRevision ||
+      validated.sourceRequirementsRevision < 1 ||
+      !validated.sourceRequirementsFingerprint ||
+      !validated.sourceArchitectureRevision ||
+      validated.sourceArchitectureRevision < 1 ||
+      !validated.sourceArchitectureFingerprint ||
+      !validated.sourceBusinessRulesRevision ||
+      validated.sourceBusinessRulesRevision < 1 ||
+      !validated.sourceBusinessRulesFingerprint ||
+      !validated.sourceDiscoveryRevision ||
+      validated.sourceDiscoveryRevision < 1 ||
+      !validated.sourceDiscoveryFingerprint
+    ) {
+      throw new AcceptanceCriteriaValidationError(
+        `Invalid source revision or fingerprint bindings in persisted acceptance criteria record.`,
+        { projectId, revision: validated.acceptanceCriteriaRevision }
+      );
+    }
+
+    // 5. Validate criterion structure and IDs
+    const criterionIdRegex = /^AC-[A-Za-z0-9_\-]+$/;
+    for (const criterion of validated.criteria) {
+      if (
+        !criterionIdRegex.test(criterion.criterionId) ||
+        criterion.criterionId.includes('..') ||
+        criterion.criterionId.includes('/') ||
+        criterion.criterionId.includes('\\')
+      ) {
+        throw new AcceptanceCriteriaValidationError(
+          `Invalid criterionId '${criterion.criterionId}' in persisted record: illegal characters or path traversal.`,
+          { criterionId: criterion.criterionId }
+        );
+      }
+
+      // Validate internal traceability consistency
+      const reqSorted = [...criterion.sourceRequirements].sort();
+      const traceReqSorted = [...criterion.traceability.requirementIds].sort();
+      if (
+        reqSorted.length !== traceReqSorted.length ||
+        reqSorted.some((v, i) => v !== traceReqSorted[i])
+      ) {
+        throw new AcceptanceCriteriaValidationError(
+          `Traceability mismatch in persisted criterion '${criterion.criterionId}': sourceRequirements does not match traceability.requirementIds.`,
+          { criterionId: criterion.criterionId }
+        );
+      }
+
+      const brSorted = [...criterion.sourceBusinessRules].sort();
+      const traceBrSorted = [...criterion.traceability.businessRuleIds].sort();
+      if (
+        brSorted.length !== traceBrSorted.length ||
+        brSorted.some((v, i) => v !== traceBrSorted[i])
+      ) {
+        throw new AcceptanceCriteriaValidationError(
+          `Traceability mismatch in persisted criterion '${criterion.criterionId}': sourceBusinessRules does not match traceability.businessRuleIds.`,
+          { criterionId: criterion.criterionId }
+        );
+      }
+
+      const archSorted = [...criterion.sourceArchitectureDecisions].sort();
+      const traceArchSorted = [...criterion.traceability.architectureDecisionIds].sort();
+      if (
+        archSorted.length !== traceArchSorted.length ||
+        archSorted.some((v, i) => v !== traceArchSorted[i])
+      ) {
+        throw new AcceptanceCriteriaValidationError(
+          `Traceability mismatch in persisted criterion '${criterion.criterionId}': sourceArchitectureDecisions does not match traceability.architectureDecisionIds.`,
+          { criterionId: criterion.criterionId }
+        );
+      }
+
+      if (criterion.criterionId !== criterion.traceability.criterionId) {
+        throw new AcceptanceCriteriaValidationError(
+          `Traceability mismatch in persisted criterion '${criterion.criterionId}': criterionId does not match traceability.criterionId.`,
+          { criterionId: criterion.criterionId }
+        );
+      }
+    }
+
+    // 6. Recompute canonical deterministic fingerprint from the artifact's authoritative content
+    const recomputedFingerprint = computeAcceptanceCriteriaFingerprint(validated);
+    if (validated.fingerprint !== recomputedFingerprint) {
+      throw new AcceptanceCriteriaForgedFingerprintError(
+        `Fingerprint mismatch for persisted acceptance criteria revision ${validated.acceptanceCriteriaRevision}: declared '${validated.fingerprint}' but recomputed canonical fingerprint is '${recomputedFingerprint}'. Persisted artifact has been tampered with or corrupted.`,
+        {
+          declaredFingerprint: validated.fingerprint,
+          recomputedFingerprint,
+        }
+      );
+    }
+
+    return validated;
   }
 
   /**

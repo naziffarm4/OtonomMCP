@@ -1,7 +1,7 @@
 /**
  * Comprehensive Test Suite for Phase 15 Acceptance Criteria Definition (TASK-P15-06)
  *
- * Verifies all 44 required capabilities and safety boundaries:
+ * Verifies all 60 required capabilities and safety boundaries:
  * T01 basic acceptance criteria definition
  * T02 deterministic derivation
  * T03 deterministic fingerprint
@@ -46,6 +46,22 @@
  * T42 no ExecutionIntent
  * T43 no Antigravity invocation
  * T44 restart/reload
+ * T45 persisted semantic tampering is rejected
+ * T46 forged self-consistent fingerprint is rejected
+ * T47 modified source binding is rejected
+ * T48 modified coverage is rejected
+ * T49 modified traceability is rejected
+ * T50 same revision + identical canonical artifact = idempotent success
+ * T51 same revision + different semantic content + recomputed fingerprint = rejected
+ * T52 UNRESOLVED is not accepted by schema
+ * T53 unresolved verification method produces PENDING_DECISION
+ * T54 unresolved verification method creates Product Owner decision
+ * T55 inconsistent traceability rejected
+ * T56 nonexistent requirement reference rejected
+ * T57 nonexistent business-rule reference rejected
+ * T58 nonexistent architecture-decision reference rejected
+ * T59 duplicate/colliding criterion identity rejected
+ * T60 cross-project additional criterion rejected
  */
 
 import { describe, it, beforeEach, afterEach } from 'node:test';
@@ -83,6 +99,9 @@ import {
   DefaultMcpOrchestratorDelegate,
   AIDM_ACCEPTANCE_CRITERIA_DEFINE_TOOL_NAME,
   AIDM_ACCEPTANCE_CRITERIA_GET_TOOL_NAME,
+  computeAcceptanceCriteriaFingerprint,
+  VERIFICATION_METHODS,
+  VerificationMethodZodSchema,
   type ProjectDiscoveryRevision,
   type ProjectRequirementsScopeRevision,
   type ProjectArchitectureRevision,
@@ -482,22 +501,11 @@ describe('Phase 15 Acceptance Criteria Definition (TASK-P15-06)', { concurrency:
     await createBusinessRulesRevision('proj-clinic');
     const result = await acceptanceCriteriaEngine.derive({ projectId: 'proj-clinic' });
 
-    const validMethods = [
-      'AUTOMATED_TEST',
-      'INTEGRATION_TEST',
-      'END_TO_END_TEST',
-      'MANUAL_VERIFICATION',
-      'OBSERVATION',
-      'PERFORMANCE_TEST',
-      'SECURITY_TEST',
-      'STATIC_CHECK',
-      'DEPLOYMENT_CHECK',
-      'DOCUMENT_REVIEW',
-      'UNRESOLVED',
-    ];
+    const validMethods = [...VERIFICATION_METHODS];
 
     for (const c of result.criteria) {
       assert.ok(validMethods.includes(c.verificationMethod), `Method ${c.verificationMethod} must be valid`);
+      assert.notStrictEqual(c.verificationMethod, 'UNRESOLVED');
     }
   });
 
@@ -530,7 +538,9 @@ describe('Phase 15 Acceptance Criteria Definition (TASK-P15-06)', { concurrency:
       (c) => c.status === 'PENDING_DECISION' && c.statement.includes('pending Product Owner specification')
     );
     assert.ok(pendingNfr, 'Unquantified threshold must become PENDING_DECISION');
-    assert.strictEqual(pendingNfr.verificationMethod, 'UNRESOLVED');
+    assert.strictEqual(pendingNfr.status, 'PENDING_DECISION');
+    assert.notStrictEqual(pendingNfr.verificationMethod, 'UNRESOLVED');
+    assert.ok(VERIFICATION_METHODS.includes(pendingNfr.verificationMethod));
   });
 
   // T17: no invented performance threshold
@@ -553,7 +563,8 @@ describe('Phase 15 Acceptance Criteria Definition (TASK-P15-06)', { concurrency:
     assert.strictEqual(fastCrit.status, 'PENDING_DECISION');
     // Ensure no manufactured numbers like "500ms" or "100ms" were injected
     assert.ok(!fastCrit.statement.includes('500ms') && !fastCrit.statement.includes('100ms'));
-    assert.strictEqual(fastCrit.verificationMethod, 'UNRESOLVED');
+    assert.notStrictEqual(fastCrit.verificationMethod, 'UNRESOLVED');
+    assert.strictEqual(fastCrit.verificationMethod, 'PERFORMANCE_TEST');
   });
 
   // T18: no silent human decision
@@ -841,45 +852,38 @@ describe('Phase 15 Acceptance Criteria Definition (TASK-P15-06)', { concurrency:
 
   // T35: deterministic deduplication
   it('T35_deterministic_deduplication: deduplicates duplicate criteria deterministically', async () => {
-    await createBusinessRulesRevision('proj-clinic');
-
-    const customCrit: AcceptanceCriterion = {
-      criterionId: 'AC-CUSTOM-DEDUP-1',
-      title: 'Custom Criterion',
-      description: 'Duplicate test',
-      criterionType: 'FUNCTIONAL',
-      statement: 'When order is submitted, order is persisted.',
-      priority: 'HIGH',
-      status: 'DEFINED',
-      sourceRequirements: ['REQ-01'],
-      sourceBusinessRules: [],
-      sourceArchitectureDecisions: [],
-      verificationMethod: 'AUTOMATED_TEST',
-      expectedResult: 'Order is persisted in database.',
-      dependencies: [],
-      traceability: {
-        criterionId: 'AC-CUSTOM-DEDUP-1',
-        requirementIds: ['REQ-01'],
-        businessRuleIds: [],
-        architectureDecisionIds: [],
+    const discovery = await createDiscoveryRevision('proj-dedup', {
+      sections: {
+        functionalRequirements: {
+          capabilities: [
+            {
+              id: 'FREQ-APPT-1',
+              title: 'Appointment Booking',
+              description: 'Patients can book medical appointments.',
+              businessRules: ['Patients can cancel appointments up to 12 hours before start time.'],
+            },
+            {
+              id: 'FREQ-APPT-2',
+              title: 'Appointment Booking Clone',
+              description: 'Patients can book medical appointments.',
+              businessRules: ['Patients can cancel appointments up to 12 hours before start time.'],
+            },
+          ],
+        },
       },
-      metadata: {},
-    };
-
-    const customCritDuplicate: AcceptanceCriterion = {
-      ...customCrit,
-      criterionId: 'AC-CUSTOM-DEDUP-2',
-    };
-
-    const result = await acceptanceCriteriaEngine.derive({
-      projectId: 'proj-clinic',
-      additionalCriteria: [customCrit, customCritDuplicate],
     });
+    const req = await requirementsEngine.derive({ projectId: 'proj-dedup', discoveryRevision: discovery.discoveryRevision });
+    const arch = await architectureEngine.derive({ projectId: 'proj-dedup', requirementsRevision: req.requirementsRevision });
+    await businessRulesEngine.derive({ projectId: 'proj-dedup', architectureRevision: arch.architectureRevision });
+
+    const result = await acceptanceCriteriaEngine.derive({ projectId: 'proj-dedup' });
 
     const matching = result.criteria.filter(
-      (c) => c.statement === 'When order is submitted, order is persisted.'
+      (c) => c.statement.includes('The product enforces requirement condition: Patients can cancel appointments')
     );
     assert.strictEqual(matching.length, 1, 'Duplicate criteria must be deduplicated into a single entry');
+    assert.ok(matching[0].sourceRequirements.includes('FREQ-APPT-1'));
+    assert.ok(matching[0].sourceRequirements.includes('FREQ-APPT-2'));
   });
 
   // T36: persistence and historical retrieval
@@ -1053,5 +1057,484 @@ describe('Phase 15 Acceptance Criteria Definition (TASK-P15-06)', { concurrency:
     assert.strictEqual(reloaded.fingerprint, original.fingerprint);
     assert.strictEqual(reloaded.criteria.length, original.criteria.length);
     assert.deepStrictEqual(reloaded.coverage, original.coverage);
+  });
+
+  // T45: persisted semantic tampering is rejected
+  it('T45_persisted_semantic_tampering_is_rejected: store rejects tampered criteria whose fingerprint is mismatched', async () => {
+    await createBusinessRulesRevision('proj-clinic');
+    const original = await acceptanceCriteriaEngine.derive({ projectId: 'proj-clinic' });
+
+    // Directly tamper with persisted JSON on disk without updating fingerprint
+    const revFilePath = path.join(
+      tempDir,
+      '.ai-manager',
+      'project-acceptance-criteria',
+      'records',
+      'proj-clinic',
+      `rev-${original.acceptanceCriteriaRevision}.json`
+    );
+    const content = JSON.parse(await fs.promises.readFile(revFilePath, 'utf-8'));
+    content.criteria[0].statement = 'TAMPERED STATEMENT BY ADVERSARY';
+    await fs.promises.writeFile(revFilePath, JSON.stringify(content, null, 2), 'utf-8');
+
+    await assert.rejects(
+      async () => acceptanceCriteriaStore.loadRevision('proj-clinic', original.acceptanceCriteriaRevision),
+      (err) => err instanceof AcceptanceCriteriaForgedFingerprintError
+    );
+  });
+
+  // T46: forged self-consistent fingerprint is rejected
+  it('T46_forged_self_consistent_fingerprint_is_rejected: engine rejects forged artifact even if internal fingerprint is self-consistent', async () => {
+    await createBusinessRulesRevision('proj-clinic');
+    const original = await acceptanceCriteriaEngine.derive({ projectId: 'proj-clinic' });
+
+    // Tamper with semantic field and recompute fingerprint to make it internally self-consistent
+    const revFilePath = path.join(
+      tempDir,
+      '.ai-manager',
+      'project-acceptance-criteria',
+      'records',
+      'proj-clinic',
+      `rev-${original.acceptanceCriteriaRevision}.json`
+    );
+    const latestFilePath = path.join(
+      tempDir,
+      '.ai-manager',
+      'project-acceptance-criteria',
+      'records',
+      'proj-clinic',
+      'latest.json'
+    );
+    const content = JSON.parse(await fs.promises.readFile(revFilePath, 'utf-8'));
+    content.criteria[0].statement = 'MALICIOUS MODIFIED STATEMENT';
+    content.fingerprint = computeAcceptanceCriteriaFingerprint(content);
+
+    await fs.promises.writeFile(revFilePath, JSON.stringify(content, null, 2), 'utf-8');
+    await fs.promises.writeFile(latestFilePath, JSON.stringify(content, null, 2), 'utf-8');
+
+    // Engine must reject because it verifies authoritative derivation from upstream sources
+    await assert.rejects(
+      async () => acceptanceCriteriaEngine.getRevision('proj-clinic', original.acceptanceCriteriaRevision),
+      (err) => err instanceof AcceptanceCriteriaForgedFingerprintError
+    );
+    await assert.rejects(
+      async () => acceptanceCriteriaEngine.getLatest('proj-clinic'),
+      (err) => err instanceof AcceptanceCriteriaForgedFingerprintError
+    );
+  });
+
+  // T47: modified source binding is rejected
+  it('T47_modified_source_binding_is_rejected: rejects artifact when upstream source fingerprint binding is modified', async () => {
+    await createBusinessRulesRevision('proj-clinic');
+    const original = await acceptanceCriteriaEngine.derive({ projectId: 'proj-clinic' });
+
+    const revFilePath = path.join(
+      tempDir,
+      '.ai-manager',
+      'project-acceptance-criteria',
+      'records',
+      'proj-clinic',
+      `rev-${original.acceptanceCriteriaRevision}.json`
+    );
+    const content = JSON.parse(await fs.promises.readFile(revFilePath, 'utf-8'));
+    content.sourceRequirementsFingerprint = 'forged-req-fingerprint-12345';
+    content.fingerprint = computeAcceptanceCriteriaFingerprint(content);
+
+    await fs.promises.writeFile(revFilePath, JSON.stringify(content, null, 2), 'utf-8');
+
+    await assert.rejects(
+      async () => acceptanceCriteriaEngine.getRevision('proj-clinic', original.acceptanceCriteriaRevision),
+      (err) => err instanceof AcceptanceCriteriaForgedFingerprintError
+    );
+  });
+
+  // T48: modified coverage is rejected
+  it('T48_modified_coverage_is_rejected: rejects artifact when coverage statistics are tampered with', async () => {
+    await createBusinessRulesRevision('proj-clinic');
+    const original = await acceptanceCriteriaEngine.derive({ projectId: 'proj-clinic' });
+
+    const revFilePath = path.join(
+      tempDir,
+      '.ai-manager',
+      'project-acceptance-criteria',
+      'records',
+      'proj-clinic',
+      `rev-${original.acceptanceCriteriaRevision}.json`
+    );
+    const content = JSON.parse(await fs.promises.readFile(revFilePath, 'utf-8'));
+    content.coverage.totalRequirements = 9999;
+    content.fingerprint = computeAcceptanceCriteriaFingerprint(content);
+
+    await fs.promises.writeFile(revFilePath, JSON.stringify(content, null, 2), 'utf-8');
+
+    await assert.rejects(
+      async () => acceptanceCriteriaEngine.getRevision('proj-clinic', original.acceptanceCriteriaRevision),
+      (err) => err instanceof AcceptanceCriteriaForgedFingerprintError
+    );
+  });
+
+  // T49: modified traceability is rejected
+  it('T49_modified_traceability_is_rejected: rejects artifact when traceability report is tampered with', async () => {
+    await createBusinessRulesRevision('proj-clinic');
+    const original = await acceptanceCriteriaEngine.derive({ projectId: 'proj-clinic' });
+
+    const revFilePath = path.join(
+      tempDir,
+      '.ai-manager',
+      'project-acceptance-criteria',
+      'records',
+      'proj-clinic',
+      `rev-${original.acceptanceCriteriaRevision}.json`
+    );
+    const content = JSON.parse(await fs.promises.readFile(revFilePath, 'utf-8'));
+    content.requirementsTraceability[0].isCovered = !content.requirementsTraceability[0].isCovered;
+    content.fingerprint = computeAcceptanceCriteriaFingerprint(content);
+
+    await fs.promises.writeFile(revFilePath, JSON.stringify(content, null, 2), 'utf-8');
+
+    await assert.rejects(
+      async () => acceptanceCriteriaEngine.getRevision('proj-clinic', original.acceptanceCriteriaRevision),
+      (err) => err instanceof AcceptanceCriteriaForgedFingerprintError
+    );
+  });
+
+  // T50: same revision + identical canonical artifact = idempotent success
+  it('T50_same_revision_identical_canonical_artifact_idempotent_success: idempotent replay of identical artifact succeeds', async () => {
+    await createBusinessRulesRevision('proj-clinic');
+    const original = await acceptanceCriteriaEngine.derive({ projectId: 'proj-clinic' });
+
+    // Saving identical revision again must succeed without error
+    await assert.doesNotReject(async () => {
+      await acceptanceCriteriaStore.saveRevision(original);
+    });
+  });
+
+  // T51: same revision + different semantic content + recomputed fingerprint = rejected
+  it('T51_same_revision_different_semantic_content_recomputed_fingerprint_rejected: saveRevision rejects same revision with different content', async () => {
+    await createBusinessRulesRevision('proj-clinic');
+    const original = await acceptanceCriteriaEngine.derive({ projectId: 'proj-clinic' });
+
+    const modified: ProjectAcceptanceCriteriaRevision = {
+      ...original,
+      criteria: [
+        {
+          ...original.criteria[0],
+          statement: 'DIFFERENT STATEMENT IN FORGED REVISION',
+        },
+        ...original.criteria.slice(1),
+      ],
+    };
+    modified.fingerprint = computeAcceptanceCriteriaFingerprint(modified);
+
+    await assert.rejects(
+      async () => acceptanceCriteriaStore.saveRevision(modified),
+      (err) => err instanceof AcceptanceCriteriaImmutableRevisionError
+    );
+  });
+
+  // T52: UNRESOLVED is not accepted by schema
+  it('T52_unresolved_is_not_accepted_by_schema: VerificationMethod schema rejects UNRESOLVED', () => {
+    const parseResult = VerificationMethodZodSchema.safeParse('UNRESOLVED');
+    assert.strictEqual(parseResult.success, false);
+  });
+
+  // T53: unresolved verification method produces PENDING_DECISION
+  it('T53_unresolved_verification_method_produces_pending_decision: unquantified criterion receives PENDING_DECISION', async () => {
+    const discovery = await createDiscoveryRevision('proj-pending-dec', {
+      sections: {
+        nonFunctionalRequirements: {
+          performance: ['response time TBD under load'],
+        },
+      },
+    });
+    const req = await requirementsEngine.derive({ projectId: 'proj-pending-dec', discoveryRevision: discovery.discoveryRevision });
+    const arch = await architectureEngine.derive({ projectId: 'proj-pending-dec', requirementsRevision: req.requirementsRevision });
+    await businessRulesEngine.derive({ projectId: 'proj-pending-dec', architectureRevision: arch.architectureRevision });
+
+    const result = await acceptanceCriteriaEngine.derive({ projectId: 'proj-pending-dec' });
+    const pendingCrit = result.criteria.find(
+      (c) => c.status === 'PENDING_DECISION' && c.statement.includes('pending Product Owner specification')
+    );
+
+    assert.ok(pendingCrit);
+    assert.strictEqual(pendingCrit.status, 'PENDING_DECISION');
+    assert.ok(VERIFICATION_METHODS.includes(pendingCrit.verificationMethod));
+    assert.notStrictEqual(pendingCrit.verificationMethod, 'UNRESOLVED');
+  });
+
+  // T54: unresolved verification method creates Product Owner decision
+  it('T54_unresolved_verification_method_creates_product_owner_decision: creates Product Owner decision for unresolved item', async () => {
+    const discovery = await createDiscoveryRevision('proj-po-dec', {
+      sections: {
+        nonFunctionalRequirements: {
+          availability: ['uptime undecided pending SLA review'],
+        },
+      },
+    });
+    const req = await requirementsEngine.derive({ projectId: 'proj-po-dec', discoveryRevision: discovery.discoveryRevision });
+    const arch = await architectureEngine.derive({ projectId: 'proj-po-dec', requirementsRevision: req.requirementsRevision });
+    await businessRulesEngine.derive({ projectId: 'proj-po-dec', architectureRevision: arch.architectureRevision });
+
+    const result = await acceptanceCriteriaEngine.derive({ projectId: 'proj-po-dec' });
+    const decision = result.pendingHumanDecisions.find((d) => d.question.includes('availability'));
+
+    assert.ok(decision);
+    assert.strictEqual(decision.authority, Actor.USER);
+    assert.strictEqual(decision.status, 'PENDING_DECISION');
+  });
+
+  // T55: inconsistent traceability rejected
+  it('T55_inconsistent_traceability_rejected: rejects additional criterion when traceability does not match sources', async () => {
+    await createBusinessRulesRevision('proj-clinic');
+
+    const badCriterion: AcceptanceCriterion = {
+      criterionId: 'AC-BAD-TRACE-1',
+      title: 'Bad Traceability',
+      description: 'Mismatched traceability test',
+      criterionType: 'FUNCTIONAL',
+      statement: 'When action is taken, result occurs.',
+      priority: 'HIGH',
+      status: 'DEFINED',
+      sourceRequirements: ['FREQ-APPT-BOOKING'],
+      sourceBusinessRules: [],
+      sourceArchitectureDecisions: [],
+      verificationMethod: 'AUTOMATED_TEST',
+      expectedResult: 'Expected observable outcome occurs.',
+      dependencies: [],
+      traceability: {
+        criterionId: 'AC-BAD-TRACE-1',
+        requirementIds: ['FREQ-DIFFERENT-REQ'],
+        businessRuleIds: [],
+        architectureDecisionIds: [],
+      },
+      metadata: {},
+    };
+
+    await assert.rejects(
+      async () => acceptanceCriteriaEngine.derive({
+        projectId: 'proj-clinic',
+        additionalCriteria: [badCriterion],
+      }),
+      (err) => err instanceof AcceptanceCriteriaValidationError
+    );
+  });
+
+  // T56: nonexistent requirement reference rejected
+  it('T56_nonexistent_requirement_reference_rejected: rejects additional criterion referencing missing requirement', async () => {
+    await createBusinessRulesRevision('proj-clinic');
+
+    const badCriterion: AcceptanceCriterion = {
+      criterionId: 'AC-NONEXISTENT-REQ',
+      title: 'Nonexistent Req',
+      description: 'Test nonexistent requirement reference',
+      criterionType: 'FUNCTIONAL',
+      statement: 'When action is taken, result occurs.',
+      priority: 'HIGH',
+      status: 'DEFINED',
+      sourceRequirements: ['NONEXISTENT-REQ-999'],
+      sourceBusinessRules: [],
+      sourceArchitectureDecisions: [],
+      verificationMethod: 'AUTOMATED_TEST',
+      expectedResult: 'Expected observable outcome occurs.',
+      dependencies: [],
+      traceability: {
+        criterionId: 'AC-NONEXISTENT-REQ',
+        requirementIds: ['NONEXISTENT-REQ-999'],
+        businessRuleIds: [],
+        architectureDecisionIds: [],
+      },
+      metadata: {},
+    };
+
+    await assert.rejects(
+      async () => acceptanceCriteriaEngine.derive({
+        projectId: 'proj-clinic',
+        additionalCriteria: [badCriterion],
+      }),
+      (err) => err instanceof AcceptanceCriteriaValidationError
+    );
+  });
+
+  // T57: nonexistent business-rule reference rejected
+  it('T57_nonexistent_business_rule_reference_rejected: rejects additional criterion referencing missing business rule', async () => {
+    await createBusinessRulesRevision('proj-clinic');
+
+    const badCriterion: AcceptanceCriterion = {
+      criterionId: 'AC-NONEXISTENT-RULE',
+      title: 'Nonexistent Rule',
+      description: 'Test nonexistent business rule reference',
+      criterionType: 'BUSINESS_RULE',
+      statement: 'When action is taken, rule is enforced.',
+      priority: 'HIGH',
+      status: 'DEFINED',
+      sourceRequirements: ['FREQ-APPT-BOOKING'],
+      sourceBusinessRules: ['NONEXISTENT-RULE-999'],
+      sourceArchitectureDecisions: [],
+      verificationMethod: 'AUTOMATED_TEST',
+      expectedResult: 'Expected observable outcome occurs.',
+      dependencies: [],
+      traceability: {
+        criterionId: 'AC-NONEXISTENT-RULE',
+        requirementIds: ['FREQ-APPT-BOOKING'],
+        businessRuleIds: ['NONEXISTENT-RULE-999'],
+        architectureDecisionIds: [],
+      },
+      metadata: {},
+    };
+
+    await assert.rejects(
+      async () => acceptanceCriteriaEngine.derive({
+        projectId: 'proj-clinic',
+        additionalCriteria: [badCriterion],
+      }),
+      (err) => err instanceof AcceptanceCriteriaValidationError
+    );
+  });
+
+  // T58: nonexistent architecture-decision reference rejected
+  it('T58_nonexistent_architecture_decision_reference_rejected: rejects additional criterion referencing missing arch decision', async () => {
+    await createBusinessRulesRevision('proj-clinic');
+
+    const badCriterion: AcceptanceCriterion = {
+      criterionId: 'AC-NONEXISTENT-ARCH',
+      title: 'Nonexistent Arch',
+      description: 'Test nonexistent architecture reference',
+      criterionType: 'COMPATIBILITY',
+      statement: 'When action is taken, arch is respected.',
+      priority: 'HIGH',
+      status: 'DEFINED',
+      sourceRequirements: ['FREQ-APPT-BOOKING'],
+      sourceBusinessRules: [],
+      sourceArchitectureDecisions: ['NONEXISTENT-ARCH-999'],
+      verificationMethod: 'AUTOMATED_TEST',
+      expectedResult: 'Expected observable outcome occurs.',
+      dependencies: [],
+      traceability: {
+        criterionId: 'AC-NONEXISTENT-ARCH',
+        requirementIds: ['FREQ-APPT-BOOKING'],
+        businessRuleIds: [],
+        architectureDecisionIds: ['NONEXISTENT-ARCH-999'],
+      },
+      metadata: {},
+    };
+
+    await assert.rejects(
+      async () => acceptanceCriteriaEngine.derive({
+        projectId: 'proj-clinic',
+        additionalCriteria: [badCriterion],
+      }),
+      (err) => err instanceof AcceptanceCriteriaValidationError
+    );
+  });
+
+  // T59: duplicate/colliding criterion identity rejected
+  it('T59_duplicate_colliding_criterion_identity_rejected: rejects criterion that collides with generated criteria or duplicate in input', async () => {
+    await createBusinessRulesRevision('proj-clinic');
+    const existing = await acceptanceCriteriaEngine.derive({ projectId: 'proj-clinic' });
+
+    // 1. Collides with an authoritative generated criterion ID
+    const collidingIdCriterion: AcceptanceCriterion = {
+      criterionId: existing.criteria[0].criterionId,
+      title: 'Colliding Criterion',
+      description: 'Has identical ID to an authoritative criterion',
+      criterionType: 'FUNCTIONAL',
+      statement: 'Some unique statement',
+      priority: 'HIGH',
+      status: 'DEFINED',
+      sourceRequirements: ['FREQ-APPT-BOOKING'],
+      sourceBusinessRules: [],
+      sourceArchitectureDecisions: [],
+      verificationMethod: 'AUTOMATED_TEST',
+      expectedResult: 'Some unique expected result',
+      dependencies: [],
+      traceability: {
+        criterionId: existing.criteria[0].criterionId,
+        requirementIds: ['FREQ-APPT-BOOKING'],
+        businessRuleIds: [],
+        architectureDecisionIds: [],
+      },
+      metadata: {},
+    };
+
+    await assert.rejects(
+      async () => acceptanceCriteriaEngine.derive({
+        projectId: 'proj-clinic',
+        additionalCriteria: [collidingIdCriterion],
+      }),
+      (err) => err instanceof AcceptanceCriteriaValidationError
+    );
+
+    // 2. Duplicate criterionId within additionalCriteria
+    const duplicate1: AcceptanceCriterion = {
+      criterionId: 'AC-DUP-ID-1',
+      title: 'Dup 1',
+      description: 'Dup 1 desc',
+      criterionType: 'FUNCTIONAL',
+      statement: 'Statement 1',
+      priority: 'HIGH',
+      status: 'DEFINED',
+      sourceRequirements: ['FREQ-APPT-BOOKING'],
+      sourceBusinessRules: [],
+      sourceArchitectureDecisions: [],
+      verificationMethod: 'AUTOMATED_TEST',
+      expectedResult: 'Expected 1',
+      dependencies: [],
+      traceability: {
+        criterionId: 'AC-DUP-ID-1',
+        requirementIds: ['FREQ-APPT-BOOKING'],
+        businessRuleIds: [],
+        architectureDecisionIds: [],
+      },
+      metadata: {},
+    };
+
+    const duplicate2: AcceptanceCriterion = {
+      ...duplicate1,
+      statement: 'Statement 2 differing',
+    };
+
+    await assert.rejects(
+      async () => acceptanceCriteriaEngine.derive({
+        projectId: 'proj-clinic',
+        additionalCriteria: [duplicate1, duplicate2],
+      }),
+      (err) => err instanceof AcceptanceCriteriaValidationError
+    );
+  });
+
+  // T60: cross-project additional criterion rejected
+  it('T60_cross_project_additional_criterion_rejected: rejects additional criterion belonging to another project', async () => {
+    await createBusinessRulesRevision('proj-clinic');
+
+    const foreignCriterion: AcceptanceCriterion = {
+      criterionId: 'AC-FOREIGN-1',
+      title: 'Foreign Criterion',
+      description: 'Belongs to foreign project',
+      criterionType: 'FUNCTIONAL',
+      statement: 'When action is taken, result occurs.',
+      priority: 'HIGH',
+      status: 'DEFINED',
+      sourceRequirements: ['FREQ-APPT-BOOKING'],
+      sourceBusinessRules: [],
+      sourceArchitectureDecisions: [],
+      verificationMethod: 'AUTOMATED_TEST',
+      expectedResult: 'Expected observable outcome occurs.',
+      dependencies: [],
+      traceability: {
+        criterionId: 'AC-FOREIGN-1',
+        requirementIds: ['FREQ-APPT-BOOKING'],
+        businessRuleIds: [],
+        architectureDecisionIds: [],
+      },
+      metadata: { projectId: 'other-project-id' },
+    };
+
+    await assert.rejects(
+      async () => acceptanceCriteriaEngine.derive({
+        projectId: 'proj-clinic',
+        additionalCriteria: [foreignCriterion],
+      }),
+      (err) => err instanceof AcceptanceCriteriaProjectBindingMismatchError
+    );
   });
 });

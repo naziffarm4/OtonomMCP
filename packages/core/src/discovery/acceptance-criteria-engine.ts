@@ -25,8 +25,14 @@ import { RequirementsScopeStore } from './requirements-scope-store.js';
 import { ArchitectureTechnologyStore } from './architecture-technology-store.js';
 import { BusinessRulesStore } from './business-rules-store.js';
 import { AcceptanceCriteriaStore } from './acceptance-criteria-store.js';
+import type { ProjectRequirementsScopeRevision } from './requirements-scope-types.js';
+import type { ProjectArchitectureRevision } from './architecture-technology-types.js';
+import type { ProjectBusinessRulesRevision } from './business-rules-types.js';
+import type { ProjectDiscoveryRevision } from './adaptive-discovery-types.js';
 import {
   AcceptanceCriteriaInputZodSchema,
+  computeAcceptanceCriteriaFingerprint,
+  VERIFICATION_METHODS,
   type AcceptanceCriteriaInput,
   type ProjectAcceptanceCriteriaRevision,
   type AcceptanceCriterion,
@@ -352,6 +358,229 @@ export class AcceptanceCriteriaEngine {
     }
 
     // 6. Extraction & Derivation
+    const { baselineCriteria, baselineDecisions, baselineConflicts } =
+      this.deriveBaselineCriteria(requirements, architecture, businessRules);
+
+    const rawCriteria: AcceptanceCriterion[] = [...baselineCriteria];
+    const pendingHumanDecisions: AcceptanceCriteriaHumanDecision[] = [...baselineDecisions];
+    const conflicts: AcceptanceCriteriaConflict[] = [...baselineConflicts];
+
+    // 6.6 Merge custom decisions, explicit conflicts, and additional criteria
+    if (parsedInput.data.additionalCriteria) {
+      this.validateAdditionalCriteria(
+        parsedInput.data.additionalCriteria,
+        baselineCriteria,
+        requirements,
+        architecture,
+        businessRules,
+        projectId
+      );
+      rawCriteria.push(...parsedInput.data.additionalCriteria);
+    }
+
+    if (parsedInput.data.customDecisions) {
+      for (const cd of parsedInput.data.customDecisions) {
+        pendingHumanDecisions.push(cd);
+      }
+    }
+
+    if (parsedInput.data.conflicts) {
+      for (const conf of parsedInput.data.conflicts) {
+        conflicts.push(conf);
+        for (const cr of rawCriteria) {
+          if (
+            conf.affectedCriteria.includes(cr.criterionId) ||
+            conf.affectedRequirements.some((req) => cr.sourceRequirements.includes(req)) ||
+            conf.affectedRules.some((r) => cr.sourceBusinessRules.includes(r))
+          ) {
+            cr.status = 'PENDING_DECISION';
+          }
+        }
+      }
+    }
+
+    // 7. Deterministic Deduplication
+    const seenCriteriaMap = new Map<string, AcceptanceCriterion>();
+    for (const criterion of rawCriteria) {
+      const dedupKey = [
+        criterion.criterionType,
+        criterion.statement.trim(),
+        criterion.expectedResult.trim(),
+      ].join('|');
+
+      if (!seenCriteriaMap.has(dedupKey)) {
+        seenCriteriaMap.set(dedupKey, criterion);
+      } else {
+        const existing = seenCriteriaMap.get(dedupKey)!;
+        // Merge sources and dependencies
+        const mergedReqs = Array.from(
+          new Set([...existing.sourceRequirements, ...criterion.sourceRequirements])
+        ).sort();
+        const mergedRules = Array.from(
+          new Set([...existing.sourceBusinessRules, ...criterion.sourceBusinessRules])
+        ).sort();
+        const mergedArch = Array.from(
+          new Set([...existing.sourceArchitectureDecisions, ...criterion.sourceArchitectureDecisions])
+        ).sort();
+        const mergedDeps = Array.from(
+          new Set([...existing.dependencies, ...criterion.dependencies])
+        ).sort();
+
+        // If either was PENDING_DECISION, preserve PENDING_DECISION
+        const status: AcceptanceCriteriaStatus =
+          existing.status === 'PENDING_DECISION' || criterion.status === 'PENDING_DECISION'
+            ? 'PENDING_DECISION'
+            : existing.status;
+
+        seenCriteriaMap.set(dedupKey, {
+          ...existing,
+          status,
+          sourceRequirements: mergedReqs,
+          sourceBusinessRules: mergedRules,
+          sourceArchitectureDecisions: mergedArch,
+          dependencies: mergedDeps,
+          traceability: {
+            criterionId: existing.criterionId,
+            requirementIds: mergedReqs,
+            businessRuleIds: mergedRules,
+            architectureDecisionIds: mergedArch,
+          },
+        });
+      }
+    }
+
+    const criteria = Array.from(seenCriteriaMap.values()).sort((a, b) =>
+      a.criterionId.localeCompare(b.criterionId)
+    );
+
+    // Deduplicate human decisions
+    const seenDecisions = new Map<string, AcceptanceCriteriaHumanDecision>();
+    for (const d of pendingHumanDecisions) {
+      if (!seenDecisions.has(d.decisionId)) {
+        seenDecisions.set(d.decisionId, d);
+      } else {
+        const existing = seenDecisions.get(d.decisionId)!;
+        seenDecisions.set(d.decisionId, {
+          ...existing,
+          affectedCriteria: Array.from(
+            new Set([...existing.affectedCriteria, ...d.affectedCriteria])
+          ).sort(),
+          affectedRequirements: Array.from(
+            new Set([...existing.affectedRequirements, ...d.affectedRequirements])
+          ).sort(),
+        });
+      }
+    }
+    const deduplicatedDecisions = Array.from(seenDecisions.values()).sort((a, b) =>
+      a.decisionId.localeCompare(b.decisionId)
+    );
+
+    // Deduplicate conflicts
+    const seenConflicts = new Map<string, AcceptanceCriteriaConflict>();
+    for (const c of conflicts) {
+      if (!seenConflicts.has(c.conflictId)) {
+        seenConflicts.set(c.conflictId, c);
+      } else {
+        const existing = seenConflicts.get(c.conflictId)!;
+        seenConflicts.set(c.conflictId, {
+          ...existing,
+          affectedCriteria: Array.from(
+            new Set([...existing.affectedCriteria, ...c.affectedCriteria])
+          ).sort(),
+          affectedRequirements: Array.from(
+            new Set([...existing.affectedRequirements, ...c.affectedRequirements])
+          ).sort(),
+          affectedRules: Array.from(
+            new Set([...existing.affectedRules, ...c.affectedRules])
+          ).sort(),
+        });
+      }
+    }
+    const deduplicatedConflicts = Array.from(seenConflicts.values()).sort((a, b) =>
+      a.conflictId.localeCompare(b.conflictId)
+    );
+
+    // 8. Traceability Reports & Coverage Calculation
+    const { requirementsTraceability, businessRulesTraceability, architectureTraceability, coverage } =
+      this.computeTraceabilityAndCoverage(
+        criteria,
+        requirements,
+        businessRules,
+        architecture,
+        deduplicatedDecisions,
+        parsedInput.data.uncoveredExplanations
+      );
+
+    // 9. Deterministic Fingerprint Computation
+    const fingerprint = computeAcceptanceCriteriaFingerprint({
+      projectId,
+      sourceRequirementsRevision: requirements.requirementsRevision,
+      sourceRequirementsFingerprint: requirements.fingerprint,
+      sourceArchitectureRevision: architecture.architectureRevision,
+      sourceArchitectureFingerprint: architecture.fingerprint,
+      sourceBusinessRulesRevision: businessRules.businessRulesRevision,
+      sourceBusinessRulesFingerprint: businessRules.fingerprint,
+      sourceDiscoveryRevision: discovery.discoveryRevision,
+      sourceDiscoveryFingerprint: discovery.fingerprint,
+      criteria,
+      coverage,
+      pendingHumanDecisions: deduplicatedDecisions,
+      conflicts: deduplicatedConflicts,
+      requirementsTraceability,
+      businessRulesTraceability,
+      architectureTraceability,
+    });
+
+    // Check if identical revision has already been saved for this project
+    const latest = await this.acceptanceCriteriaStore.loadRevision(projectId);
+    if (latest && latest.fingerprint === fingerprint) {
+      return latest;
+    }
+
+    const latestCriteriaRev = await this.acceptanceCriteriaStore.getLatestRevisionNumber(projectId);
+    const acceptanceCriteriaRevision = latestCriteriaRev + 1;
+
+    const artifact: ProjectAcceptanceCriteriaRevision = {
+      projectId,
+      acceptanceCriteriaRevision,
+      sourceRequirementsRevision: requirements.requirementsRevision,
+      sourceRequirementsFingerprint: requirements.fingerprint,
+      sourceArchitectureRevision: architecture.architectureRevision,
+      sourceArchitectureFingerprint: architecture.fingerprint,
+      sourceBusinessRulesRevision: businessRules.businessRulesRevision,
+      sourceBusinessRulesFingerprint: businessRules.fingerprint,
+      sourceDiscoveryRevision: discovery.discoveryRevision,
+      sourceDiscoveryFingerprint: discovery.fingerprint,
+      isStale: false,
+      criteria,
+      coverage,
+      pendingHumanDecisions: deduplicatedDecisions,
+      conflicts: deduplicatedConflicts,
+      requirementsTraceability,
+      businessRulesTraceability,
+      architectureTraceability,
+      createdAt: new Date().toISOString(),
+      fingerprint,
+    };
+
+    // 10. Durably persist
+    await this.acceptanceCriteriaStore.saveRevision(artifact);
+
+    return artifact;
+  }
+
+  /**
+   * Derives baseline acceptance criteria, human decisions, and conflicts directly from authoritative upstream sources.
+   */
+  private deriveBaselineCriteria(
+    requirements: ProjectRequirementsScopeRevision,
+    architecture: ProjectArchitectureRevision,
+    businessRules: ProjectBusinessRulesRevision
+  ): {
+    baselineCriteria: AcceptanceCriterion[];
+    baselineDecisions: AcceptanceCriteriaHumanDecision[];
+    baselineConflicts: AcceptanceCriteriaConflict[];
+  } {
     const rawCriteria: AcceptanceCriterion[] = [];
     const pendingHumanDecisions: AcceptanceCriteriaHumanDecision[] = [];
     const conflicts: AcceptanceCriteriaConflict[] = [];
@@ -359,7 +588,7 @@ export class AcceptanceCriteriaEngine {
     // Helper: Infer verification method from textual context
     const inferVerificationMethod = (
       text: string,
-      defaultMethod: VerificationMethod = 'UNRESOLVED'
+      defaultMethod: VerificationMethod = 'MANUAL_VERIFICATION'
     ): VerificationMethod => {
       const lower = text.toLowerCase();
       if (
@@ -725,9 +954,18 @@ export class AcceptanceCriteriaEngine {
             metadata: { nfrCategory: cat, rawNfr: item },
           });
         } else {
-          // NO INVENTED NUMERIC THRESHOLDS! Unresolved threshold becomes PENDING_DECISION
+          // NO INVENTED NUMERIC THRESHOLDS!
+          // Criterion status = PENDING_DECISION rather than verificationMethod = UNRESOLVED
           const statement = `The measurable threshold for '${cat}' (${item}) is pending Product Owner specification.`;
           const expectedResult = `Authoritative threshold defined and accepted by Product Owner for ${item}.`;
+          const fallbackMethod: VerificationMethod =
+            criterionType === 'PERFORMANCE'
+              ? 'PERFORMANCE_TEST'
+              : criterionType === 'SECURITY'
+              ? 'SECURITY_TEST'
+              : criterionType === 'RELIABILITY' || criterionType === 'AVAILABILITY'
+              ? 'PERFORMANCE_TEST'
+              : 'MANUAL_VERIFICATION';
 
           rawCriteria.push({
             criterionId,
@@ -740,7 +978,7 @@ export class AcceptanceCriteriaEngine {
             sourceRequirements: [nfrId],
             sourceBusinessRules: [],
             sourceArchitectureDecisions: [],
-            verificationMethod: 'UNRESOLVED',
+            verificationMethod: fallbackMethod,
             expectedResult,
             dependencies: [],
             traceability: {
@@ -1108,137 +1346,206 @@ export class AcceptanceCriteriaEngine {
       }
     }
 
-    // 6.6 Merge custom decisions, explicit conflicts, and additional criteria
-    if (parsedInput.data.additionalCriteria) {
-      rawCriteria.push(...parsedInput.data.additionalCriteria);
+    return {
+      baselineCriteria: rawCriteria,
+      baselineDecisions: pendingHumanDecisions,
+      baselineConflicts: conflicts,
+    };
+  }
+
+  /**
+   * Validates untrusted caller-provided additional criteria against authoritative upstream specifications.
+   */
+  private validateAdditionalCriteria(
+    additionalCriteria: AcceptanceCriterion[],
+    generatedCriteria: AcceptanceCriterion[],
+    requirements: ProjectRequirementsScopeRevision,
+    architecture: ProjectArchitectureRevision,
+    businessRules: ProjectBusinessRulesRevision,
+    currentProjectId: string
+  ): void {
+    const criterionIdRegex = /^AC-[A-Za-z0-9_\-]+$/;
+    const generatedIds = new Set(generatedCriteria.map((c) => c.criterionId));
+    const seenIds = new Set<string>();
+    const seenDedupKeys = new Set<string>();
+
+    const validReqIds = new Set<string>();
+    for (const freq of requirements.functionalRequirements) {
+      validReqIds.add(freq.requirementId);
+    }
+    for (const cat of NFR_CATEGORIES) {
+      const items = requirements.nonFunctionalRequirements[cat] ?? [];
+      items.forEach((_: unknown, index: number) => {
+        validReqIds.add(`NFR-${cat.toUpperCase()}-${index + 1}`);
+      });
     }
 
-    if (parsedInput.data.customDecisions) {
-      for (const cd of parsedInput.data.customDecisions) {
-        pendingHumanDecisions.push(cd);
+    const validRuleIds = new Set(businessRules.rules.map((r) => r.ruleId));
+    const validArchIds = new Set(architecture.decisions.map((d) => d.decisionId));
+
+    for (const c of additionalCriteria) {
+      // 1. Identity & safe format
+      if (
+        !criterionIdRegex.test(c.criterionId) ||
+        c.criterionId.includes('..') ||
+        c.criterionId.includes('/') ||
+        c.criterionId.includes('\\')
+      ) {
+        throw new AcceptanceCriteriaValidationError(
+          `Invalid additional criterionId '${c.criterionId}': illegal format or path traversal.`,
+          { criterionId: c.criterionId }
+        );
       }
-    }
 
-    if (parsedInput.data.conflicts) {
-      for (const conf of parsedInput.data.conflicts) {
-        conflicts.push(conf);
-        for (const cr of rawCriteria) {
-          if (
-            conf.affectedCriteria.includes(cr.criterionId) ||
-            conf.affectedRequirements.some((req) => cr.sourceRequirements.includes(req)) ||
-            conf.affectedRules.some((r) => cr.sourceBusinessRules.includes(r))
-          ) {
-            cr.status = 'PENDING_DECISION';
-          }
+      // No collision with generated criteria
+      if (generatedIds.has(c.criterionId)) {
+        throw new AcceptanceCriteriaValidationError(
+          `Criterion ID collision: additional criterion '${c.criterionId}' collides with an authoritative generated criterion.`,
+          { criterionId: c.criterionId }
+        );
+      }
+
+      // No duplicate ID in additional criteria
+      if (seenIds.has(c.criterionId)) {
+        throw new AcceptanceCriteriaValidationError(
+          `Duplicate criterionId '${c.criterionId}' in additional criteria.`,
+          { criterionId: c.criterionId }
+        );
+      }
+      seenIds.add(c.criterionId);
+
+      // No duplicate semantic identity
+      const semanticKey = [
+        c.criterionType,
+        c.statement.trim(),
+        c.expectedResult.trim(),
+        [...c.sourceRequirements].sort().join(','),
+        [...c.sourceBusinessRules].sort().join(','),
+        [...c.sourceArchitectureDecisions].sort().join(','),
+      ].join('|');
+      if (seenDedupKeys.has(semanticKey)) {
+        throw new AcceptanceCriteriaValidationError(
+          `Duplicate semantic identity in additional criterion '${c.criterionId}'.`,
+          { criterionId: c.criterionId }
+        );
+      }
+      seenDedupKeys.add(semanticKey);
+
+      // 2. Traceability internal consistency
+      if (c.criterionId !== c.traceability?.criterionId) {
+        throw new AcceptanceCriteriaValidationError(
+          `Traceability mismatch in additional criterion '${c.criterionId}': criterionId does not match traceability.criterionId.`,
+          { criterionId: c.criterionId }
+        );
+      }
+
+      const reqSorted = [...c.sourceRequirements].sort();
+      const traceReqSorted = [...(c.traceability?.requirementIds ?? [])].sort();
+      if (
+        reqSorted.length !== traceReqSorted.length ||
+        reqSorted.some((v, i) => v !== traceReqSorted[i])
+      ) {
+        throw new AcceptanceCriteriaValidationError(
+          `Traceability mismatch in additional criterion '${c.criterionId}': sourceRequirements does not match traceability.requirementIds.`,
+          { criterionId: c.criterionId }
+        );
+      }
+
+      const brSorted = [...c.sourceBusinessRules].sort();
+      const traceBrSorted = [...(c.traceability?.businessRuleIds ?? [])].sort();
+      if (
+        brSorted.length !== traceBrSorted.length ||
+        brSorted.some((v, i) => v !== traceBrSorted[i])
+      ) {
+        throw new AcceptanceCriteriaValidationError(
+          `Traceability mismatch in additional criterion '${c.criterionId}': sourceBusinessRules does not match traceability.businessRuleIds.`,
+          { criterionId: c.criterionId }
+        );
+      }
+
+      const archSorted = [...c.sourceArchitectureDecisions].sort();
+      const traceArchSorted = [...(c.traceability?.architectureDecisionIds ?? [])].sort();
+      if (
+        archSorted.length !== traceArchSorted.length ||
+        archSorted.some((v, i) => v !== traceArchSorted[i])
+      ) {
+        throw new AcceptanceCriteriaValidationError(
+          `Traceability mismatch in additional criterion '${c.criterionId}': sourceArchitectureDecisions does not match traceability.architectureDecisionIds.`,
+          { criterionId: c.criterionId }
+        );
+      }
+
+      // 3. Authoritative source existence
+      for (const reqId of c.sourceRequirements) {
+        if (!validReqIds.has(reqId)) {
+          throw new AcceptanceCriteriaValidationError(
+            `Nonexistent requirement reference '${reqId}' in additional criterion '${c.criterionId}'.`,
+            { criterionId: c.criterionId, requirementId: reqId }
+          );
         }
       }
-    }
+      for (const ruleId of c.sourceBusinessRules) {
+        if (!validRuleIds.has(ruleId)) {
+          throw new AcceptanceCriteriaValidationError(
+            `Nonexistent business rule reference '${ruleId}' in additional criterion '${c.criterionId}'.`,
+            { criterionId: c.criterionId, ruleId }
+          );
+        }
+      }
+      for (const archId of c.sourceArchitectureDecisions) {
+        if (!validArchIds.has(archId)) {
+          throw new AcceptanceCriteriaValidationError(
+            `Nonexistent architecture decision reference '${archId}' in additional criterion '${c.criterionId}'.`,
+            { criterionId: c.criterionId, architectureDecisionId: archId }
+          );
+        }
+      }
 
-    // 7. Deterministic Deduplication
-    const seenCriteriaMap = new Map<string, AcceptanceCriterion>();
-    for (const criterion of rawCriteria) {
-      const dedupKey = [
-        criterion.criterionType,
-        criterion.statement.trim(),
-        criterion.expectedResult.trim(),
-        [...criterion.sourceRequirements].sort().join(','),
-        [...criterion.sourceBusinessRules].sort().join(','),
-        [...criterion.sourceArchitectureDecisions].sort().join(','),
-      ].join('|');
+      // 4. Project context check
+      if (c.metadata && typeof c.metadata === 'object') {
+        const metaProj = (c.metadata as Record<string, unknown>).projectId ?? (c.metadata as Record<string, unknown>).project;
+        if (typeof metaProj === 'string' && metaProj !== currentProjectId) {
+          throw new AcceptanceCriteriaProjectBindingMismatchError(
+            `Cross-project mismatch: additional criterion '${c.criterionId}' belongs to project '${metaProj}' but requested '${currentProjectId}'.`,
+            { requestedProjectId: currentProjectId, criterionProjectId: metaProj }
+          );
+        }
+      }
 
-      if (!seenCriteriaMap.has(dedupKey)) {
-        seenCriteriaMap.set(dedupKey, criterion);
-      } else {
-        const existing = seenCriteriaMap.get(dedupKey)!;
-        // Merge sources and dependencies
-        const mergedReqs = Array.from(
-          new Set([...existing.sourceRequirements, ...criterion.sourceRequirements])
-        ).sort();
-        const mergedRules = Array.from(
-          new Set([...existing.sourceBusinessRules, ...criterion.sourceBusinessRules])
-        ).sort();
-        const mergedArch = Array.from(
-          new Set([...existing.sourceArchitectureDecisions, ...criterion.sourceArchitectureDecisions])
-        ).sort();
-        const mergedDeps = Array.from(
-          new Set([...existing.dependencies, ...criterion.dependencies])
-        ).sort();
+      // 5. Status and lifecycle
+      if (c.status !== 'DEFINED' && c.status !== 'PENDING_DECISION' && c.status !== 'NOT_APPLICABLE') {
+        throw new AcceptanceCriteriaValidationError(
+          `Invalid status '${c.status}' for additional criterion '${c.criterionId}'. Allowed statuses are DEFINED, PENDING_DECISION, NOT_APPLICABLE.`,
+          { criterionId: c.criterionId, status: c.status }
+        );
+      }
 
-        // If either was PENDING_DECISION, preserve PENDING_DECISION
-        const status: AcceptanceCriteriaStatus =
-          existing.status === 'PENDING_DECISION' || criterion.status === 'PENDING_DECISION'
-            ? 'PENDING_DECISION'
-            : existing.status;
-
-        seenCriteriaMap.set(dedupKey, {
-          ...existing,
-          status,
-          sourceRequirements: mergedReqs,
-          sourceBusinessRules: mergedRules,
-          sourceArchitectureDecisions: mergedArch,
-          dependencies: mergedDeps,
-          traceability: {
-            criterionId: existing.criterionId,
-            requirementIds: mergedReqs,
-            businessRuleIds: mergedRules,
-            architectureDecisionIds: mergedArch,
-          },
-        });
+      // 6. Verification method
+      if (!VERIFICATION_METHODS.includes(c.verificationMethod as VerificationMethod)) {
+        throw new AcceptanceCriteriaValidationError(
+          `Invalid verification method '${c.verificationMethod}' for additional criterion '${c.criterionId}'.`,
+          { criterionId: c.criterionId, verificationMethod: c.verificationMethod }
+        );
       }
     }
+  }
 
-    const criteria = Array.from(seenCriteriaMap.values()).sort((a, b) =>
-      a.criterionId.localeCompare(b.criterionId)
-    );
-
-    // Deduplicate human decisions
-    const seenDecisions = new Map<string, AcceptanceCriteriaHumanDecision>();
-    for (const d of pendingHumanDecisions) {
-      if (!seenDecisions.has(d.decisionId)) {
-        seenDecisions.set(d.decisionId, d);
-      } else {
-        const existing = seenDecisions.get(d.decisionId)!;
-        seenDecisions.set(d.decisionId, {
-          ...existing,
-          affectedCriteria: Array.from(
-            new Set([...existing.affectedCriteria, ...d.affectedCriteria])
-          ).sort(),
-          affectedRequirements: Array.from(
-            new Set([...existing.affectedRequirements, ...d.affectedRequirements])
-          ).sort(),
-        });
-      }
-    }
-    const deduplicatedDecisions = Array.from(seenDecisions.values()).sort((a, b) =>
-      a.decisionId.localeCompare(b.decisionId)
-    );
-
-    // Deduplicate conflicts
-    const seenConflicts = new Map<string, AcceptanceCriteriaConflict>();
-    for (const c of conflicts) {
-      if (!seenConflicts.has(c.conflictId)) {
-        seenConflicts.set(c.conflictId, c);
-      } else {
-        const existing = seenConflicts.get(c.conflictId)!;
-        seenConflicts.set(c.conflictId, {
-          ...existing,
-          affectedCriteria: Array.from(
-            new Set([...existing.affectedCriteria, ...c.affectedCriteria])
-          ).sort(),
-          affectedRequirements: Array.from(
-            new Set([...existing.affectedRequirements, ...c.affectedRequirements])
-          ).sort(),
-          affectedRules: Array.from(
-            new Set([...existing.affectedRules, ...c.affectedRules])
-          ).sort(),
-        });
-      }
-    }
-    const deduplicatedConflicts = Array.from(seenConflicts.values()).sort((a, b) =>
-      a.conflictId.localeCompare(b.conflictId)
-    );
-
-    // 8. Traceability Reports & Coverage Calculation
+  /**
+   * Computes deterministic traceability reports and coverage statistics from criteria and upstream sources.
+   */
+  private computeTraceabilityAndCoverage(
+    criteria: AcceptanceCriterion[],
+    requirements: ProjectRequirementsScopeRevision,
+    businessRules: ProjectBusinessRulesRevision,
+    architecture: ProjectArchitectureRevision,
+    pendingHumanDecisions: AcceptanceCriteriaHumanDecision[],
+    uncoveredExplanations?: Record<string, string>
+  ): {
+    requirementsTraceability: AcceptanceCriteriaRequirementTrace[];
+    businessRulesTraceability: AcceptanceCriteriaBusinessRuleTrace[];
+    architectureTraceability: AcceptanceCriteriaArchitectureTrace[];
+    coverage: AcceptanceCriteriaCoverage;
+  } {
     const allRequirements: Array<{ id: string; title: string }> = [
       ...requirements.functionalRequirements.map((f) => ({
         id: f.requirementId,
@@ -1265,7 +1572,7 @@ export class AcceptanceCriteriaEngine {
         const criteriaIds = matchingCriteria.map((c) => c.criterionId).sort();
         const uncoveredReason = isCovered
           ? undefined
-          : parsedInput.data.uncoveredExplanations?.[req.id] ??
+          : uncoveredExplanations?.[req.id] ??
             `Requirement '${req.id}' is not covered by any acceptance criteria.`;
 
         return {
@@ -1345,7 +1652,7 @@ export class AcceptanceCriteriaEngine {
       (c) => c.status === 'PENDING_DECISION'
     ).length;
     const totalPendingDecisionCount =
-      deduplicatedDecisions.length + pendingDecisionCriteriaCount;
+      pendingHumanDecisions.length + pendingDecisionCriteriaCount;
 
     const coverage: AcceptanceCriteriaCoverage = {
       totalRequirements: allRequirements.length,
@@ -1361,129 +1668,247 @@ export class AcceptanceCriteriaEngine {
       pendingDecisionCount: totalPendingDecisionCount,
     };
 
-    // 9. Deterministic Fingerprint Computation
-    const fingerprintMaterial = {
-      projectId,
-      sourceRequirementsRevision: requirements.requirementsRevision,
-      sourceRequirementsFingerprint: requirements.fingerprint,
-      sourceArchitectureRevision: architecture.architectureRevision,
-      sourceArchitectureFingerprint: architecture.fingerprint,
-      sourceBusinessRulesRevision: businessRules.businessRulesRevision,
-      sourceBusinessRulesFingerprint: businessRules.fingerprint,
-      sourceDiscoveryRevision: discovery.discoveryRevision,
-      sourceDiscoveryFingerprint: discovery.fingerprint,
-      criteria: criteria.map((c) => ({
-        criterionId: c.criterionId,
-        title: c.title,
-        description: c.description,
-        criterionType: c.criterionType,
-        statement: c.statement,
-        priority: c.priority,
-        status: c.status,
-        sourceRequirements: [...c.sourceRequirements].sort(),
-        sourceBusinessRules: [...c.sourceBusinessRules].sort(),
-        sourceArchitectureDecisions: [...c.sourceArchitectureDecisions].sort(),
-        verificationMethod: c.verificationMethod,
-        expectedResult: c.expectedResult,
-        dependencies: [...c.dependencies].sort(),
-        metadata: c.metadata,
-      })),
-      coverage: {
-        totalRequirements: coverage.totalRequirements,
-        coveredRequirements: [...coverage.coveredRequirements].sort(),
-        uncoveredRequirements: [...coverage.uncoveredRequirements].sort(),
-        uncoveredRequirementsDetails: [...coverage.uncoveredRequirementsDetails].sort((a, b) =>
-          a.requirementId.localeCompare(b.requirementId)
-        ),
-        totalBusinessRules: coverage.totalBusinessRules,
-        coveredBusinessRules: [...coverage.coveredBusinessRules].sort(),
-        uncoveredBusinessRules: [...coverage.uncoveredBusinessRules].sort(),
-        architectureDecisionsRequiringVerification:
-          coverage.architectureDecisionsRequiringVerification,
-        architectureDecisionsVerified: [...coverage.architectureDecisionsVerified].sort(),
-        criteriaCount: coverage.criteriaCount,
-        pendingDecisionCount: coverage.pendingDecisionCount,
-      },
-      pendingHumanDecisions: deduplicatedDecisions.map((d) => ({
-        decisionId: d.decisionId,
-        question: d.question,
-        whyItMatters: d.whyItMatters,
-        affectedCriteria: [...d.affectedCriteria].sort(),
-        affectedRequirements: [...d.affectedRequirements].sort(),
-        availableOptions: [...d.availableOptions].sort(),
-        consequences: [...d.consequences].sort(),
-        authority: d.authority,
-        status: d.status,
-      })),
-      conflicts: deduplicatedConflicts.map((c) => ({
-        conflictId: c.conflictId,
-        affectedRequirements: [...c.affectedRequirements].sort(),
-        affectedRules: [...c.affectedRules].sort(),
-        affectedCriteria: [...c.affectedCriteria].sort(),
-        conflictingStatements: [...c.conflictingStatements].sort(),
-        whyItMatters: c.whyItMatters,
-        requiredAuthority: c.requiredAuthority,
-        resolutionStatus: c.resolutionStatus,
-      })),
-      requirementsTraceability: requirementsTraceability.map((t) => ({
-        requirementId: t.requirementId,
-        requirementTitle: t.requirementTitle,
-        isCovered: t.isCovered,
-        uncoveredReason: t.uncoveredReason,
-        criteriaIds: [...t.criteriaIds].sort(),
-      })),
-      businessRulesTraceability: businessRulesTraceability.map((t) => ({
-        ruleId: t.ruleId,
-        ruleTitle: t.ruleTitle,
-        isCovered: t.isCovered,
-        criteriaIds: [...t.criteriaIds].sort(),
-      })),
-      architectureTraceability: architectureTraceability.map((t) => ({
-        decisionId: t.decisionId,
-        decisionTitle: t.decisionTitle,
-        requiresVerification: t.requiresVerification,
-        criteriaIds: [...t.criteriaIds].sort(),
-      })),
-    };
-
-    const fingerprint = computeDeterministicFingerprint(fingerprintMaterial);
-
-    // Check if identical revision has already been saved for this project
-    const latest = await this.acceptanceCriteriaStore.loadRevision(projectId);
-    if (latest && latest.fingerprint === fingerprint) {
-      return latest;
-    }
-
-    const latestCriteriaRev = await this.acceptanceCriteriaStore.getLatestRevisionNumber(projectId);
-    const acceptanceCriteriaRevision = latestCriteriaRev + 1;
-
-    const artifact: ProjectAcceptanceCriteriaRevision = {
-      projectId,
-      acceptanceCriteriaRevision,
-      sourceRequirementsRevision: requirements.requirementsRevision,
-      sourceRequirementsFingerprint: requirements.fingerprint,
-      sourceArchitectureRevision: architecture.architectureRevision,
-      sourceArchitectureFingerprint: architecture.fingerprint,
-      sourceBusinessRulesRevision: businessRules.businessRulesRevision,
-      sourceBusinessRulesFingerprint: businessRules.fingerprint,
-      sourceDiscoveryRevision: discovery.discoveryRevision,
-      sourceDiscoveryFingerprint: discovery.fingerprint,
-      isStale: false,
-      criteria,
-      coverage,
-      pendingHumanDecisions: deduplicatedDecisions,
-      conflicts: deduplicatedConflicts,
+    return {
       requirementsTraceability,
       businessRulesTraceability,
       architectureTraceability,
-      createdAt: new Date().toISOString(),
-      fingerprint,
+      coverage,
     };
+  }
 
-    // 10. Durably persist
-    await this.acceptanceCriteriaStore.saveRevision(artifact);
+  /**
+   * Verifies the authoritative integrity of a persisted Acceptance Criteria revision against upstream sources.
+   * Rejects forged or tampered artifacts even if their internal fingerprint is self-consistent.
+   */
+  async verifyAuthoritativeIntegrity(artifact: ProjectAcceptanceCriteriaRevision): Promise<void> {
+    const safeProjectId = this.acceptanceCriteriaStore.sanitizeProjectId(artifact.projectId);
 
-    return artifact;
+    // 1. Authoritative Upstream Bindings Check
+    const requirements = await this.requirementsStore.loadRevision(
+      safeProjectId,
+      artifact.sourceRequirementsRevision
+    );
+    if (!requirements) {
+      throw new AcceptanceCriteriaForgedFingerprintError(
+        `Authoritative requirements revision ${artifact.sourceRequirementsRevision} for project '${artifact.projectId}' does not exist. Persisted acceptance criteria artifact is forged or unbacked.`,
+        { projectId: artifact.projectId, revision: artifact.sourceRequirementsRevision }
+      );
+    }
+    if (requirements.fingerprint !== artifact.sourceRequirementsFingerprint) {
+      throw new AcceptanceCriteriaForgedFingerprintError(
+        `Source requirements fingerprint mismatch for project '${artifact.projectId}': artifact binds to '${artifact.sourceRequirementsFingerprint}' but authoritative requirements revision has '${requirements.fingerprint}'.`,
+        { expected: requirements.fingerprint, actual: artifact.sourceRequirementsFingerprint }
+      );
+    }
+
+    const architecture = await this.architectureStore.loadRevision(
+      safeProjectId,
+      artifact.sourceArchitectureRevision
+    );
+    if (!architecture) {
+      throw new AcceptanceCriteriaForgedFingerprintError(
+        `Authoritative architecture revision ${artifact.sourceArchitectureRevision} for project '${artifact.projectId}' does not exist. Persisted acceptance criteria artifact is forged or unbacked.`,
+        { projectId: artifact.projectId, revision: artifact.sourceArchitectureRevision }
+      );
+    }
+    if (architecture.fingerprint !== artifact.sourceArchitectureFingerprint) {
+      throw new AcceptanceCriteriaForgedFingerprintError(
+        `Source architecture fingerprint mismatch for project '${artifact.projectId}': artifact binds to '${artifact.sourceArchitectureFingerprint}' but authoritative architecture revision has '${architecture.fingerprint}'.`,
+        { expected: architecture.fingerprint, actual: artifact.sourceArchitectureFingerprint }
+      );
+    }
+
+    const businessRules = await this.businessRulesStore.loadRevision(
+      safeProjectId,
+      artifact.sourceBusinessRulesRevision
+    );
+    if (!businessRules) {
+      throw new AcceptanceCriteriaForgedFingerprintError(
+        `Authoritative business rules revision ${artifact.sourceBusinessRulesRevision} for project '${artifact.projectId}' does not exist. Persisted acceptance criteria artifact is forged or unbacked.`,
+        { projectId: artifact.projectId, revision: artifact.sourceBusinessRulesRevision }
+      );
+    }
+    if (businessRules.fingerprint !== artifact.sourceBusinessRulesFingerprint) {
+      throw new AcceptanceCriteriaForgedFingerprintError(
+        `Source business rules fingerprint mismatch for project '${artifact.projectId}': artifact binds to '${artifact.sourceBusinessRulesFingerprint}' but authoritative business rules revision has '${businessRules.fingerprint}'.`,
+        { expected: businessRules.fingerprint, actual: artifact.sourceBusinessRulesFingerprint }
+      );
+    }
+
+    const discovery = await this.discoveryStore.loadRevision(
+      safeProjectId,
+      artifact.sourceDiscoveryRevision
+    );
+    if (!discovery) {
+      throw new AcceptanceCriteriaForgedFingerprintError(
+        `Authoritative discovery revision ${artifact.sourceDiscoveryRevision} for project '${artifact.projectId}' does not exist. Persisted acceptance criteria artifact is forged or unbacked.`,
+        { projectId: artifact.projectId, revision: artifact.sourceDiscoveryRevision }
+      );
+    }
+    if (discovery.fingerprint !== artifact.sourceDiscoveryFingerprint) {
+      throw new AcceptanceCriteriaForgedFingerprintError(
+        `Source discovery fingerprint mismatch for project '${artifact.projectId}': artifact binds to '${artifact.sourceDiscoveryFingerprint}' but authoritative discovery revision has '${discovery.fingerprint}'.`,
+        { expected: discovery.fingerprint, actual: artifact.sourceDiscoveryFingerprint }
+      );
+    }
+
+    // 2. Authoritative Baseline Derivation Check
+    const { baselineCriteria, baselineDecisions, baselineConflicts } =
+      this.deriveBaselineCriteria(requirements, architecture, businessRules);
+
+    const baselineMap = new Map(baselineCriteria.map((c) => [c.criterionId, c]));
+
+    // Check each baseline criterion exists and matches exactly in artifact
+    for (const baseCrit of baselineCriteria) {
+      const artCrit = artifact.criteria.find((c) => c.criterionId === baseCrit.criterionId);
+      if (!artCrit) {
+        throw new AcceptanceCriteriaForgedFingerprintError(
+          `Authoritative baseline criterion '${baseCrit.criterionId}' is missing from persisted acceptance criteria revision.`,
+          { criterionId: baseCrit.criterionId }
+        );
+      }
+
+      if (
+        artCrit.statement !== baseCrit.statement ||
+        artCrit.expectedResult !== baseCrit.expectedResult ||
+        artCrit.verificationMethod !== baseCrit.verificationMethod ||
+        artCrit.criterionType !== baseCrit.criterionType ||
+        artCrit.priority !== baseCrit.priority ||
+        artCrit.status !== baseCrit.status ||
+        [...artCrit.sourceRequirements].sort().join(',') !== [...baseCrit.sourceRequirements].sort().join(',') ||
+        [...artCrit.sourceBusinessRules].sort().join(',') !== [...baseCrit.sourceBusinessRules].sort().join(',') ||
+        [...artCrit.sourceArchitectureDecisions].sort().join(',') !== [...baseCrit.sourceArchitectureDecisions].sort().join(',') ||
+        artCrit.traceability.criterionId !== baseCrit.traceability.criterionId ||
+        [...artCrit.traceability.requirementIds].sort().join(',') !== [...baseCrit.traceability.requirementIds].sort().join(',') ||
+        [...artCrit.traceability.businessRuleIds].sort().join(',') !== [...baseCrit.traceability.businessRuleIds].sort().join(',') ||
+        [...artCrit.traceability.architectureDecisionIds].sort().join(',') !== [...baseCrit.traceability.architectureDecisionIds].sort().join(',')
+      ) {
+        throw new AcceptanceCriteriaForgedFingerprintError(
+          `Persisted criterion '${artCrit.criterionId}' has been modified from its authoritative upstream derivation. Field mismatch detected.`,
+          { criterionId: artCrit.criterionId }
+        );
+      }
+    }
+
+    // 3. Check any non-baseline criteria satisfy additional criteria hardening rules
+    const additionalCriteria = artifact.criteria.filter((c) => !baselineMap.has(c.criterionId));
+    if (additionalCriteria.length > 0) {
+      this.validateAdditionalCriteria(
+        additionalCriteria,
+        baselineCriteria,
+        requirements,
+        architecture,
+        businessRules,
+        artifact.projectId
+      );
+    }
+
+    // 4. Check baseline human decisions and conflicts exist and match
+    for (const baseDec of baselineDecisions) {
+      const artDec = artifact.pendingHumanDecisions.find((d) => d.decisionId === baseDec.decisionId);
+      if (
+        !artDec ||
+        artDec.question !== baseDec.question ||
+        artDec.whyItMatters !== baseDec.whyItMatters
+      ) {
+        throw new AcceptanceCriteriaForgedFingerprintError(
+          `Persisted human decision '${baseDec.decisionId}' has been modified from its authoritative upstream derivation.`,
+          { decisionId: baseDec.decisionId }
+        );
+      }
+    }
+
+    for (const baseConf of baselineConflicts) {
+      const artConf = artifact.conflicts.find((c) => c.conflictId === baseConf.conflictId);
+      if (
+        !artConf ||
+        artConf.whyItMatters !== baseConf.whyItMatters ||
+        [...artConf.conflictingStatements].sort().join(',') !== [...baseConf.conflictingStatements].sort().join(',')
+      ) {
+        throw new AcceptanceCriteriaForgedFingerprintError(
+          `Persisted conflict '${baseConf.conflictId}' has been modified from its authoritative upstream derivation.`,
+          { conflictId: baseConf.conflictId }
+        );
+      }
+    }
+
+    // 5. Recompute coverage and traceability and verify artifact matches
+    const expected = this.computeTraceabilityAndCoverage(
+      artifact.criteria,
+      requirements,
+      businessRules,
+      architecture,
+      artifact.pendingHumanDecisions
+    );
+
+    if (
+      artifact.coverage.totalRequirements !== expected.coverage.totalRequirements ||
+      artifact.coverage.totalBusinessRules !== expected.coverage.totalBusinessRules ||
+      artifact.coverage.architectureDecisionsRequiringVerification !== expected.coverage.architectureDecisionsRequiringVerification ||
+      artifact.coverage.criteriaCount !== artifact.criteria.length ||
+      [...artifact.coverage.coveredRequirements].sort().join(',') !== [...expected.coverage.coveredRequirements].sort().join(',') ||
+      [...artifact.coverage.uncoveredRequirements].sort().join(',') !== [...expected.coverage.uncoveredRequirements].sort().join(',') ||
+      [...artifact.coverage.coveredBusinessRules].sort().join(',') !== [...expected.coverage.coveredBusinessRules].sort().join(',') ||
+      [...artifact.coverage.uncoveredBusinessRules].sort().join(',') !== [...expected.coverage.uncoveredBusinessRules].sort().join(',') ||
+      [...artifact.coverage.architectureDecisionsVerified].sort().join(',') !== [...expected.coverage.architectureDecisionsVerified].sort().join(',')
+    ) {
+      throw new AcceptanceCriteriaForgedFingerprintError(
+        `Persisted coverage statistics do not match authoritative derivation from upstream sources.`,
+        { declaredCoverage: artifact.coverage, expectedCoverage: expected.coverage }
+      );
+    }
+
+    // Verify traceability reports
+    for (const expTrace of expected.requirementsTraceability) {
+      const artTrace = artifact.requirementsTraceability.find((t) => t.requirementId === expTrace.requirementId);
+      if (
+        !artTrace ||
+        artTrace.isCovered !== expTrace.isCovered ||
+        [...artTrace.criteriaIds].sort().join(',') !== [...expTrace.criteriaIds].sort().join(',')
+      ) {
+        throw new AcceptanceCriteriaForgedFingerprintError(
+          `Persisted requirements traceability for '${expTrace.requirementId}' does not match authoritative derivation.`,
+          { requirementId: expTrace.requirementId }
+        );
+      }
+    }
+
+    for (const expTrace of expected.businessRulesTraceability) {
+      const artTrace = artifact.businessRulesTraceability.find((t) => t.ruleId === expTrace.ruleId);
+      if (
+        !artTrace ||
+        artTrace.isCovered !== expTrace.isCovered ||
+        [...artTrace.criteriaIds].sort().join(',') !== [...expTrace.criteriaIds].sort().join(',')
+      ) {
+        throw new AcceptanceCriteriaForgedFingerprintError(
+          `Persisted business rules traceability for '${expTrace.ruleId}' does not match authoritative derivation.`,
+          { ruleId: expTrace.ruleId }
+        );
+      }
+    }
+
+    for (const expTrace of expected.architectureTraceability) {
+      const artTrace = artifact.architectureTraceability.find((t) => t.decisionId === expTrace.decisionId);
+      if (
+        !artTrace ||
+        artTrace.requiresVerification !== expTrace.requiresVerification ||
+        [...artTrace.criteriaIds].sort().join(',') !== [...expTrace.criteriaIds].sort().join(',')
+      ) {
+        throw new AcceptanceCriteriaForgedFingerprintError(
+          `Persisted architecture traceability for '${expTrace.decisionId}' does not match authoritative derivation.`,
+          { decisionId: expTrace.decisionId }
+        );
+      }
+    }
+
+    // 6. Check canonical fingerprint
+    const canonicalFingerprint = computeAcceptanceCriteriaFingerprint(artifact);
+    if (artifact.fingerprint !== canonicalFingerprint) {
+      throw new AcceptanceCriteriaForgedFingerprintError(
+        `Persisted fingerprint '${artifact.fingerprint}' does not match recomputed canonical fingerprint '${canonicalFingerprint}'.`,
+        { declaredFingerprint: artifact.fingerprint, canonicalFingerprint }
+      );
+    }
   }
 
   /**
@@ -1492,6 +1917,7 @@ export class AcceptanceCriteriaEngine {
   async getLatest(projectId: string): Promise<ProjectAcceptanceCriteriaRevision | null> {
     const result = await this.acceptanceCriteriaStore.loadRevision(projectId);
     if (!result) return null;
+    await this.verifyAuthoritativeIntegrity(result);
     const isStale = await this.isRevisionStale(result);
     return { ...result, isStale };
   }
@@ -1505,6 +1931,7 @@ export class AcceptanceCriteriaEngine {
   ): Promise<ProjectAcceptanceCriteriaRevision | null> {
     const result = await this.acceptanceCriteriaStore.loadRevision(projectId, revision);
     if (!result) return null;
+    await this.verifyAuthoritativeIntegrity(result);
     const isStale = await this.isRevisionStale(result);
     return { ...result, isStale };
   }

@@ -27,6 +27,8 @@
 import { z } from 'zod';
 import { Actor } from '../actors.js';
 
+import { computeDeterministicFingerprint } from './adaptive-discovery-normalizer.js';
+
 // ============================================================================
 // 1. CRITERION TYPES
 // ============================================================================
@@ -67,7 +69,6 @@ export const VERIFICATION_METHODS = [
   'STATIC_CHECK',
   'DEPLOYMENT_CHECK',
   'DOCUMENT_REVIEW',
-  'UNRESOLVED',
 ] as const;
 
 export type VerificationMethod = (typeof VERIFICATION_METHODS)[number];
@@ -323,3 +324,204 @@ export const AcceptanceCriteriaInputZodSchema = z.object({
 });
 
 export type AcceptanceCriteriaInput = z.infer<typeof AcceptanceCriteriaInputZodSchema>;
+
+// ============================================================================
+// 12. CANONICAL DETERMINISTIC FINGERPRINT HELPER
+// ============================================================================
+
+export function computeAcceptanceCriteriaFingerprint(
+  revision: {
+    projectId: string;
+    sourceRequirementsRevision: number;
+    sourceRequirementsFingerprint: string;
+    sourceArchitectureRevision: number;
+    sourceArchitectureFingerprint: string;
+    sourceBusinessRulesRevision: number;
+    sourceBusinessRulesFingerprint: string;
+    sourceDiscoveryRevision: number;
+    sourceDiscoveryFingerprint: string;
+    criteria: Array<{
+      criterionId: string;
+      title: string;
+      description: string;
+      criterionType: string;
+      statement: string;
+      priority: string;
+      status: string;
+      sourceRequirements: string[];
+      sourceBusinessRules: string[];
+      sourceArchitectureDecisions: string[];
+      verificationMethod: string;
+      expectedResult: string;
+      dependencies: string[];
+      metadata?: Record<string, unknown>;
+    }>;
+    coverage: {
+      totalRequirements: number;
+      coveredRequirements: string[];
+      uncoveredRequirements: string[];
+      uncoveredRequirementsDetails: Array<{
+        requirementId: string;
+        title: string;
+        reason: string;
+      }>;
+      totalBusinessRules: number;
+      coveredBusinessRules: string[];
+      uncoveredBusinessRules: string[];
+      architectureDecisionsRequiringVerification: number;
+      architectureDecisionsVerified: string[];
+      criteriaCount: number;
+      pendingDecisionCount: number;
+    };
+    pendingHumanDecisions: Array<{
+      decisionId: string;
+      question: string;
+      whyItMatters: string;
+      affectedCriteria: string[];
+      affectedRequirements: string[];
+      availableOptions: string[];
+      consequences: string[];
+      authority: string;
+      status: string;
+    }>;
+    conflicts: Array<{
+      conflictId: string;
+      affectedRequirements: string[];
+      affectedRules: string[];
+      affectedCriteria: string[];
+      conflictingStatements: string[];
+      whyItMatters: string;
+      requiredAuthority: string;
+      resolutionStatus: string;
+    }>;
+    requirementsTraceability: Array<{
+      requirementId: string;
+      requirementTitle: string;
+      isCovered: boolean;
+      uncoveredReason?: string;
+      criteriaIds: string[];
+    }>;
+    businessRulesTraceability: Array<{
+      ruleId: string;
+      ruleTitle: string;
+      isCovered: boolean;
+      criteriaIds: string[];
+    }>;
+    architectureTraceability: Array<{
+      decisionId: string;
+      decisionTitle: string;
+      requiresVerification: boolean;
+      criteriaIds: string[];
+    }>;
+  }
+): string {
+  const sortedCriteria = [...revision.criteria]
+    .sort((a, b) => a.criterionId.localeCompare(b.criterionId))
+    .map((c) => ({
+      criterionId: c.criterionId,
+      title: c.title,
+      description: c.description,
+      criterionType: c.criterionType,
+      statement: c.statement,
+      priority: c.priority,
+      status: c.status,
+      sourceRequirements: [...c.sourceRequirements].sort(),
+      sourceBusinessRules: [...c.sourceBusinessRules].sort(),
+      sourceArchitectureDecisions: [...c.sourceArchitectureDecisions].sort(),
+      verificationMethod: c.verificationMethod,
+      expectedResult: c.expectedResult,
+      dependencies: [...c.dependencies].sort(),
+      metadata: c.metadata ?? {},
+    }));
+
+  const sortedPendingDecisions = [...revision.pendingHumanDecisions]
+    .sort((a, b) => a.decisionId.localeCompare(b.decisionId))
+    .map((d) => ({
+      decisionId: d.decisionId,
+      question: d.question,
+      whyItMatters: d.whyItMatters,
+      affectedCriteria: [...d.affectedCriteria].sort(),
+      affectedRequirements: [...d.affectedRequirements].sort(),
+      availableOptions: [...d.availableOptions].sort(),
+      consequences: [...d.consequences].sort(),
+      authority: d.authority,
+      status: d.status,
+    }));
+
+  const sortedConflicts = [...revision.conflicts]
+    .sort((a, b) => a.conflictId.localeCompare(b.conflictId))
+    .map((c) => ({
+      conflictId: c.conflictId,
+      affectedRequirements: [...c.affectedRequirements].sort(),
+      affectedRules: [...c.affectedRules].sort(),
+      affectedCriteria: [...c.affectedCriteria].sort(),
+      conflictingStatements: [...c.conflictingStatements].sort(),
+      whyItMatters: c.whyItMatters,
+      requiredAuthority: c.requiredAuthority,
+      resolutionStatus: c.resolutionStatus,
+    }));
+
+  const sortedRequirementsTraceability = [...revision.requirementsTraceability]
+    .sort((a, b) => a.requirementId.localeCompare(b.requirementId))
+    .map((t) => ({
+      requirementId: t.requirementId,
+      requirementTitle: t.requirementTitle,
+      isCovered: t.isCovered,
+      uncoveredReason: t.uncoveredReason,
+      criteriaIds: [...t.criteriaIds].sort(),
+    }));
+
+  const sortedBusinessRulesTraceability = [...revision.businessRulesTraceability]
+    .sort((a, b) => a.ruleId.localeCompare(b.ruleId))
+    .map((t) => ({
+      ruleId: t.ruleId,
+      ruleTitle: t.ruleTitle,
+      isCovered: t.isCovered,
+      criteriaIds: [...t.criteriaIds].sort(),
+    }));
+
+  const sortedArchitectureTraceability = [...revision.architectureTraceability]
+    .sort((a, b) => a.decisionId.localeCompare(b.decisionId))
+    .map((t) => ({
+      decisionId: t.decisionId,
+      decisionTitle: t.decisionTitle,
+      requiresVerification: t.requiresVerification,
+      criteriaIds: [...t.criteriaIds].sort(),
+    }));
+
+  const fingerprintMaterial = {
+    projectId: revision.projectId,
+    sourceRequirementsRevision: revision.sourceRequirementsRevision,
+    sourceRequirementsFingerprint: revision.sourceRequirementsFingerprint,
+    sourceArchitectureRevision: revision.sourceArchitectureRevision,
+    sourceArchitectureFingerprint: revision.sourceArchitectureFingerprint,
+    sourceBusinessRulesRevision: revision.sourceBusinessRulesRevision,
+    sourceBusinessRulesFingerprint: revision.sourceBusinessRulesFingerprint,
+    sourceDiscoveryRevision: revision.sourceDiscoveryRevision,
+    sourceDiscoveryFingerprint: revision.sourceDiscoveryFingerprint,
+    criteria: sortedCriteria,
+    coverage: {
+      totalRequirements: revision.coverage.totalRequirements,
+      coveredRequirements: [...revision.coverage.coveredRequirements].sort(),
+      uncoveredRequirements: [...revision.coverage.uncoveredRequirements].sort(),
+      uncoveredRequirementsDetails: [...revision.coverage.uncoveredRequirementsDetails].sort((a, b) =>
+        a.requirementId.localeCompare(b.requirementId)
+      ),
+      totalBusinessRules: revision.coverage.totalBusinessRules,
+      coveredBusinessRules: [...revision.coverage.coveredBusinessRules].sort(),
+      uncoveredBusinessRules: [...revision.coverage.uncoveredBusinessRules].sort(),
+      architectureDecisionsRequiringVerification:
+        revision.coverage.architectureDecisionsRequiringVerification,
+      architectureDecisionsVerified: [...revision.coverage.architectureDecisionsVerified].sort(),
+      criteriaCount: revision.coverage.criteriaCount,
+      pendingDecisionCount: revision.coverage.pendingDecisionCount,
+    },
+    pendingHumanDecisions: sortedPendingDecisions,
+    conflicts: sortedConflicts,
+    requirementsTraceability: sortedRequirementsTraceability,
+    businessRulesTraceability: sortedBusinessRulesTraceability,
+    architectureTraceability: sortedArchitectureTraceability,
+  };
+
+  return computeDeterministicFingerprint(fingerprintMaterial);
+}
