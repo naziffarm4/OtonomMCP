@@ -41,6 +41,8 @@ import { AcceptanceCriteriaEngine } from '../discovery/acceptance-criteria-engin
 import { AcceptanceCriteriaStore } from '../discovery/acceptance-criteria-store.js';
 import { RiskHumanDecisionEngine } from '../discovery/risk-human-decision-engine.js';
 import { RiskHumanDecisionStore } from '../discovery/risk-human-decision-store.js';
+import { ProjectSpecEngine } from '../discovery/project-spec-engine.js';
+import { ProjectSpecStore } from '../discovery/project-spec-store.js';
 import type { ExecutorPort } from '../executor-bridge/executor-port.js';
 import type { ExecutorContextService } from '../executor-bridge/executor-context-service.js';
 
@@ -156,6 +158,8 @@ export interface McpOrchestratorDelegate {
   readonly acceptanceCriteriaStore?: AcceptanceCriteriaStore;
   readonly riskHumanDecisionEngine?: RiskHumanDecisionEngine;
   readonly riskHumanDecisionStore?: RiskHumanDecisionStore;
+  readonly projectSpecEngine?: ProjectSpecEngine;
+  readonly projectSpecStore?: ProjectSpecStore;
 
   /**
    * Authoritative ExecutorPort instance (Phase 10 executor adapter boundary).
@@ -217,6 +221,8 @@ export interface DefaultMcpOrchestratorDelegateOptions {
   readonly acceptanceCriteriaStore?: AcceptanceCriteriaStore;
   readonly riskHumanDecisionEngine?: RiskHumanDecisionEngine;
   readonly riskHumanDecisionStore?: RiskHumanDecisionStore;
+  readonly projectSpecEngine?: ProjectSpecEngine;
+  readonly projectSpecStore?: ProjectSpecStore;
   readonly evidenceProvider?: (
     params: {
       taskId?: string;
@@ -259,6 +265,8 @@ export class DefaultMcpOrchestratorDelegate implements McpOrchestratorDelegate {
   readonly acceptanceCriteriaStore?: AcceptanceCriteriaStore;
   readonly riskHumanDecisionEngine?: RiskHumanDecisionEngine;
   readonly riskHumanDecisionStore?: RiskHumanDecisionStore;
+  readonly projectSpecEngine?: ProjectSpecEngine;
+  readonly projectSpecStore?: ProjectSpecStore;
   private readonly evidenceProvider?: (
     params: {
       taskId?: string;
@@ -469,6 +477,31 @@ export class DefaultMcpOrchestratorDelegate implements McpOrchestratorDelegate {
             businessRulesStore: this.businessRulesStore,
             acceptanceCriteriaStore: this.acceptanceCriteriaStore,
             riskStore: this.riskHumanDecisionStore,
+            historyManager: this.historyManager,
+            specStore: this.specStore,
+          })
+        : undefined);
+    this.projectSpecStore =
+      options.projectSpecStore ??
+      (this.projectRoot
+        ? new ProjectSpecStore({
+            baseDir: this.projectRoot,
+            workspaceRoot: this.projectRoot,
+            historyManager: this.historyManager,
+          })
+        : undefined);
+    this.projectSpecEngine =
+      options.projectSpecEngine ??
+      (this.projectRoot
+        ? new ProjectSpecEngine({
+            workspaceRoot: this.projectRoot,
+            discoveryStore: this.adaptiveDiscoveryStore,
+            requirementsStore: this.requirementsScopeStore,
+            architectureStore: this.architectureTechnologyStore,
+            businessRulesStore: this.businessRulesStore,
+            acceptanceCriteriaStore: this.acceptanceCriteriaStore,
+            riskStore: this.riskHumanDecisionStore,
+            specProjectionStore: this.projectSpecStore,
             historyManager: this.historyManager,
             specStore: this.specStore,
           })

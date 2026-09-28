@@ -118,6 +118,18 @@ import {
   humanDecisionsGetToolDefinition,
   registerRiskHumanDecisionTools,
 } from './risk-human-decision-tool.js';
+import {
+  AIDM_PROJECT_SPEC_GENERATE_TOOL_NAME,
+  AIDM_PROJECT_SPEC_GET_TOOL_NAME,
+  AIDM_PROJECT_SPEC_STALE_TOOL_NAME,
+  createProjectSpecGenerateTool,
+  createProjectSpecGetTool,
+  createProjectSpecStaleTool,
+  projectSpecGenerateToolDefinition,
+  projectSpecGetToolDefinition,
+  projectSpecStaleToolDefinition,
+  registerProjectSpecTools,
+} from './project-spec-tool.js';
 
 export {
   AIDM_PROJECT_STATUS_TOOL_NAME,
@@ -169,6 +181,16 @@ export {
   risksGetToolDefinition,
   humanDecisionsGetToolDefinition,
   registerRiskHumanDecisionTools,
+  AIDM_PROJECT_SPEC_GENERATE_TOOL_NAME,
+  AIDM_PROJECT_SPEC_GET_TOOL_NAME,
+  AIDM_PROJECT_SPEC_STALE_TOOL_NAME,
+  createProjectSpecGenerateTool,
+  createProjectSpecGetTool,
+  createProjectSpecStaleTool,
+  projectSpecGenerateToolDefinition,
+  projectSpecGetToolDefinition,
+  projectSpecStaleToolDefinition,
+  registerProjectSpecTools,
 };
 
 export const DIRECTOR_READ_TOOL_NAMES = [
@@ -273,4 +295,3 @@ export function registerAcceptanceCriteriaTools(server: McpServer): void {
   server.registerTool(defineTool.definition, defineTool.handler);
   server.registerTool(getTool.definition, getTool.handler);
 }
-

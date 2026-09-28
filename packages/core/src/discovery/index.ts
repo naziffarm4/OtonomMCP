@@ -74,3 +74,8 @@ export * from './risk-human-decision-errors.js';
 export * from './risk-human-decision-store.js';
 export * from './risk-human-decision-engine.js';
 export * from './risk-human-decision-tool.js';
+export * from './project-spec-types.js';
+export * from './project-spec-errors.js';
+export * from './project-spec-store.js';
+export * from './project-spec-engine.js';
+export * from './project-spec-tool.js';

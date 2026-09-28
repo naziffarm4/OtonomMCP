@@ -245,6 +245,7 @@ export interface McpServerConfig {
   readonly businessRulesTools?: boolean;
   readonly acceptanceCriteriaTools?: boolean;
   readonly riskTools?: boolean;
+  readonly projectSpecTools?: boolean;
   readonly clarificationTools?: boolean;
   readonly approvalTools?: boolean;
   readonly directorSessionTools?: boolean;
