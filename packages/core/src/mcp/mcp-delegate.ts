@@ -39,6 +39,8 @@ import { BusinessRulesEngine } from '../discovery/business-rules-engine.js';
 import { BusinessRulesStore } from '../discovery/business-rules-store.js';
 import { AcceptanceCriteriaEngine } from '../discovery/acceptance-criteria-engine.js';
 import { AcceptanceCriteriaStore } from '../discovery/acceptance-criteria-store.js';
+import { RiskHumanDecisionEngine } from '../discovery/risk-human-decision-engine.js';
+import { RiskHumanDecisionStore } from '../discovery/risk-human-decision-store.js';
 import type { ExecutorPort } from '../executor-bridge/executor-port.js';
 import type { ExecutorContextService } from '../executor-bridge/executor-context-service.js';
 
@@ -152,6 +154,8 @@ export interface McpOrchestratorDelegate {
   readonly businessRulesStore?: BusinessRulesStore;
   readonly acceptanceCriteriaEngine?: AcceptanceCriteriaEngine;
   readonly acceptanceCriteriaStore?: AcceptanceCriteriaStore;
+  readonly riskHumanDecisionEngine?: RiskHumanDecisionEngine;
+  readonly riskHumanDecisionStore?: RiskHumanDecisionStore;
 
   /**
    * Authoritative ExecutorPort instance (Phase 10 executor adapter boundary).
@@ -211,6 +215,8 @@ export interface DefaultMcpOrchestratorDelegateOptions {
   readonly businessRulesStore?: BusinessRulesStore;
   readonly acceptanceCriteriaEngine?: AcceptanceCriteriaEngine;
   readonly acceptanceCriteriaStore?: AcceptanceCriteriaStore;
+  readonly riskHumanDecisionEngine?: RiskHumanDecisionEngine;
+  readonly riskHumanDecisionStore?: RiskHumanDecisionStore;
   readonly evidenceProvider?: (
     params: {
       taskId?: string;
@@ -251,6 +257,8 @@ export class DefaultMcpOrchestratorDelegate implements McpOrchestratorDelegate {
   readonly businessRulesStore?: BusinessRulesStore;
   readonly acceptanceCriteriaEngine?: AcceptanceCriteriaEngine;
   readonly acceptanceCriteriaStore?: AcceptanceCriteriaStore;
+  readonly riskHumanDecisionEngine?: RiskHumanDecisionEngine;
+  readonly riskHumanDecisionStore?: RiskHumanDecisionStore;
   private readonly evidenceProvider?: (
     params: {
       taskId?: string;
@@ -438,6 +446,29 @@ export class DefaultMcpOrchestratorDelegate implements McpOrchestratorDelegate {
             architectureStore: this.architectureTechnologyStore,
             businessRulesStore: this.businessRulesStore,
             acceptanceCriteriaStore: this.acceptanceCriteriaStore,
+            historyManager: this.historyManager,
+            specStore: this.specStore,
+          })
+        : undefined);
+    this.riskHumanDecisionStore =
+      options.riskHumanDecisionStore ??
+      (this.projectRoot
+        ? new RiskHumanDecisionStore({
+            baseDir: this.projectRoot,
+            historyManager: this.historyManager,
+          })
+        : undefined);
+    this.riskHumanDecisionEngine =
+      options.riskHumanDecisionEngine ??
+      (this.projectRoot
+        ? new RiskHumanDecisionEngine({
+            workspaceRoot: this.projectRoot,
+            discoveryStore: this.adaptiveDiscoveryStore,
+            requirementsStore: this.requirementsScopeStore,
+            architectureStore: this.architectureTechnologyStore,
+            businessRulesStore: this.businessRulesStore,
+            acceptanceCriteriaStore: this.acceptanceCriteriaStore,
+            riskStore: this.riskHumanDecisionStore,
             historyManager: this.historyManager,
             specStore: this.specStore,
           })

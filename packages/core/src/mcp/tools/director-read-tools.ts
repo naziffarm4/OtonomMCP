@@ -106,6 +106,18 @@ import {
   acceptanceCriteriaDefineToolDefinition,
   acceptanceCriteriaGetToolDefinition,
 } from './acceptance-criteria-tool.js';
+import {
+  AIDM_RISKS_DEFINE_TOOL_NAME,
+  AIDM_RISKS_GET_TOOL_NAME,
+  AIDM_HUMAN_DECISIONS_GET_TOOL_NAME,
+  createRisksDefineTool,
+  createRisksGetTool,
+  createHumanDecisionsGetTool,
+  risksDefineToolDefinition,
+  risksGetToolDefinition,
+  humanDecisionsGetToolDefinition,
+  registerRiskHumanDecisionTools,
+} from './risk-human-decision-tool.js';
 
 export {
   AIDM_PROJECT_STATUS_TOOL_NAME,
@@ -147,6 +159,16 @@ export {
   createAcceptanceCriteriaGetTool,
   acceptanceCriteriaDefineToolDefinition,
   acceptanceCriteriaGetToolDefinition,
+  AIDM_RISKS_DEFINE_TOOL_NAME,
+  AIDM_RISKS_GET_TOOL_NAME,
+  AIDM_HUMAN_DECISIONS_GET_TOOL_NAME,
+  createRisksDefineTool,
+  createRisksGetTool,
+  createHumanDecisionsGetTool,
+  risksDefineToolDefinition,
+  risksGetToolDefinition,
+  humanDecisionsGetToolDefinition,
+  registerRiskHumanDecisionTools,
 };
 
 export const DIRECTOR_READ_TOOL_NAMES = [

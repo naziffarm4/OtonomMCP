@@ -25,3 +25,52 @@ export * from './acceptance-criteria-types.js';
 export * from './acceptance-criteria-errors.js';
 export * from './acceptance-criteria-store.js';
 export * from './acceptance-criteria-engine.js';
+export type {
+  ProjectRiskCategory,
+  ProjectRiskProbability,
+  ProjectRiskImpact,
+  ProjectRiskSeverity,
+  ProjectRiskStatus,
+  ProjectRiskResponse,
+  ProjectHumanDecisionAuthority,
+  ProjectHumanDecisionStatus,
+  ProjectHumanDecisionPoint,
+  ProjectRisk,
+  RiskCoverage,
+  HumanDecisionCoverage,
+  ProjectRiskRevision,
+  RiskHumanDecisionInput,
+  RiskTraceabilityLink,
+} from './risk-human-decision-types.js';
+export {
+  PROJECT_RISK_CATEGORIES,
+  ProjectRiskCategoryZodSchema,
+  PROJECT_RISK_PROBABILITIES,
+  ProjectRiskProbabilityZodSchema,
+  PROJECT_RISK_IMPACTS,
+  ProjectRiskImpactZodSchema,
+  PROJECT_RISK_SEVERITIES,
+  ProjectRiskSeverityZodSchema,
+  PROJECT_RISK_STATUSES,
+  ProjectRiskStatusZodSchema,
+  PROJECT_RISK_RESPONSES,
+  ProjectRiskResponseZodSchema,
+  PROJECT_HUMAN_DECISION_AUTHORITIES,
+  ProjectHumanDecisionAuthorityZodSchema,
+  PROJECT_HUMAN_DECISION_STATUSES,
+  ProjectHumanDecisionStatusZodSchema,
+  ProjectHumanDecisionPointZodSchema,
+  ProjectRiskZodSchema,
+  RiskCoverageZodSchema,
+  HumanDecisionCoverageZodSchema,
+  ProjectRiskRevisionZodSchema,
+  RiskHumanDecisionInputZodSchema,
+  RiskTraceabilityLinkZodSchema,
+  RISK_SEVERITY_MATRIX,
+  computeRiskSeverity,
+  computeRiskFingerprint,
+} from './risk-human-decision-types.js';
+export * from './risk-human-decision-errors.js';
+export * from './risk-human-decision-store.js';
+export * from './risk-human-decision-engine.js';
+export * from './risk-human-decision-tool.js';
