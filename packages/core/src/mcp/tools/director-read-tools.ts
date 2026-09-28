@@ -90,6 +90,14 @@ import {
   architectureTechnologyDefineToolDefinition,
   architectureTechnologyGetToolDefinition,
 } from './architecture-technology-tool.js';
+import {
+  AIDM_BUSINESS_RULES_DEFINE_TOOL_NAME,
+  AIDM_BUSINESS_RULES_GET_TOOL_NAME,
+  createBusinessRulesDefineTool,
+  createBusinessRulesGetTool,
+  businessRulesDefineToolDefinition,
+  businessRulesGetToolDefinition,
+} from './business-rules-tool.js';
 
 export {
   AIDM_PROJECT_STATUS_TOOL_NAME,
@@ -119,6 +127,12 @@ export {
   createArchitectureTechnologyGetTool,
   architectureTechnologyDefineToolDefinition,
   architectureTechnologyGetToolDefinition,
+  AIDM_BUSINESS_RULES_DEFINE_TOOL_NAME,
+  AIDM_BUSINESS_RULES_GET_TOOL_NAME,
+  createBusinessRulesDefineTool,
+  createBusinessRulesGetTool,
+  businessRulesDefineToolDefinition,
+  businessRulesGetToolDefinition,
 };
 
 export const DIRECTOR_READ_TOOL_NAMES = [
@@ -200,6 +214,16 @@ export function registerRequirementsScopeTools(server: McpServer): void {
 export function registerArchitectureTechnologyTools(server: McpServer): void {
   const defineTool = createArchitectureTechnologyDefineTool(server.delegate);
   const getTool = createArchitectureTechnologyGetTool(server.delegate);
+  server.registerTool(defineTool.definition, defineTool.handler);
+  server.registerTool(getTool.definition, getTool.handler);
+}
+
+/**
+ * Registers the business rules tools onto an McpServer instance.
+ */
+export function registerBusinessRulesTools(server: McpServer): void {
+  const defineTool = createBusinessRulesDefineTool(server.delegate);
+  const getTool = createBusinessRulesGetTool(server.delegate);
   server.registerTool(defineTool.definition, defineTool.handler);
   server.registerTool(getTool.definition, getTool.handler);
 }

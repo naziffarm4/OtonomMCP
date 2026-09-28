@@ -55,6 +55,7 @@ import {
   registerCompletenessTools,
   registerRequirementsScopeTools,
   registerArchitectureTechnologyTools,
+  registerBusinessRulesTools,
 } from './tools/director-read-tools.js';
 import { registerClarificationTools } from './tools/clarification-tools.js';
 import { registerApprovalTools } from './tools/approval-tools.js';
@@ -135,6 +136,11 @@ export class McpServer {
     // Register Architecture & Technology tools if enabled
     if (config.architectureTools) {
       registerArchitectureTechnologyTools(this);
+    }
+
+    // Register Business Rules tools if enabled
+    if (config.businessRulesTools) {
+      registerBusinessRulesTools(this);
     }
 
     // Register Director clarification protocol tools if enabled

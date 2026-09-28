@@ -35,6 +35,8 @@ import { RequirementsScopeEngine } from '../discovery/requirements-scope-engine.
 import { RequirementsScopeStore } from '../discovery/requirements-scope-store.js';
 import { ArchitectureTechnologyEngine } from '../discovery/architecture-technology-engine.js';
 import { ArchitectureTechnologyStore } from '../discovery/architecture-technology-store.js';
+import { BusinessRulesEngine } from '../discovery/business-rules-engine.js';
+import { BusinessRulesStore } from '../discovery/business-rules-store.js';
 import type { ExecutorPort } from '../executor-bridge/executor-port.js';
 import type { ExecutorContextService } from '../executor-bridge/executor-context-service.js';
 
@@ -144,6 +146,8 @@ export interface McpOrchestratorDelegate {
   readonly requirementsScopeStore?: RequirementsScopeStore;
   readonly architectureTechnologyEngine?: ArchitectureTechnologyEngine;
   readonly architectureTechnologyStore?: ArchitectureTechnologyStore;
+  readonly businessRulesEngine?: BusinessRulesEngine;
+  readonly businessRulesStore?: BusinessRulesStore;
 
   /**
    * Authoritative ExecutorPort instance (Phase 10 executor adapter boundary).
@@ -199,6 +203,8 @@ export interface DefaultMcpOrchestratorDelegateOptions {
   readonly requirementsScopeStore?: RequirementsScopeStore;
   readonly architectureTechnologyEngine?: ArchitectureTechnologyEngine;
   readonly architectureTechnologyStore?: ArchitectureTechnologyStore;
+  readonly businessRulesEngine?: BusinessRulesEngine;
+  readonly businessRulesStore?: BusinessRulesStore;
   readonly evidenceProvider?: (
     params: {
       taskId?: string;
@@ -235,6 +241,8 @@ export class DefaultMcpOrchestratorDelegate implements McpOrchestratorDelegate {
   readonly requirementsScopeStore?: RequirementsScopeStore;
   readonly architectureTechnologyEngine?: ArchitectureTechnologyEngine;
   readonly architectureTechnologyStore?: ArchitectureTechnologyStore;
+  readonly businessRulesEngine?: BusinessRulesEngine;
+  readonly businessRulesStore?: BusinessRulesStore;
   private readonly evidenceProvider?: (
     params: {
       taskId?: string;
@@ -377,6 +385,28 @@ export class DefaultMcpOrchestratorDelegate implements McpOrchestratorDelegate {
             completenessStore: this.completenessGateStore,
             requirementsStore: this.requirementsScopeStore,
             architectureStore: this.architectureTechnologyStore,
+            historyManager: this.historyManager,
+            specStore: this.specStore,
+          })
+        : undefined);
+    this.businessRulesStore =
+      options.businessRulesStore ??
+      (this.projectRoot
+        ? new BusinessRulesStore({
+            baseDir: this.projectRoot,
+            historyManager: this.historyManager,
+          })
+        : undefined);
+    this.businessRulesEngine =
+      options.businessRulesEngine ??
+      (this.projectRoot
+        ? new BusinessRulesEngine({
+            workspaceRoot: this.projectRoot,
+            discoveryStore: this.adaptiveDiscoveryStore,
+            completenessStore: this.completenessGateStore,
+            requirementsStore: this.requirementsScopeStore,
+            architectureStore: this.architectureTechnologyStore,
+            businessRulesStore: this.businessRulesStore,
             historyManager: this.historyManager,
             specStore: this.specStore,
           })
