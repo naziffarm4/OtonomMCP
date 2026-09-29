@@ -36,6 +36,7 @@ import {
   type ArchitectureIntegrationItem,
   type DeploymentArchitecture,
   type ArchitectureDecisionItem,
+  type ArchitectureDecisionStatus,
   type ArchitectureHumanDecision,
   type ArchitectureTraceabilityLink,
 } from './architecture-technology-types.js';
@@ -456,12 +457,18 @@ export class ArchitectureTechnologyEngine {
       hasPendingDecisionInArea('protocol') ||
       hasPendingDecisionInArea('communication');
     const integrations = requirements.inScope.integrations;
-    const hasHttpRest = integrations.some((i) => i.toLowerCase().includes('rest') || i.toLowerCase().includes('http'));
+    const prohibitedTechNames = sections.technology?.prohibitedTechnologies ?? [];
+    const isHttpRestProhibited =
+      prohibitedTechNames.some((t) => t.toLowerCase().includes('rest') || t.toLowerCase().includes('http') || t.toLowerCase().includes('network endpoint') || t.toLowerCase().includes('web api')) ||
+      requirements.outOfScope.capabilities.some((f) => f.toLowerCase().includes('rest') || f.toLowerCase().includes('http') || f.toLowerCase().includes('external api') || f.toLowerCase().includes('web api')) ||
+      requirements.outOfScope.integrations.some((i) => i.toLowerCase().includes('rest') || i.toLowerCase().includes('http') || i.toLowerCase().includes('external api') || i.toLowerCase().includes('web api'));
+
+    const hasHttpRest = !isHttpRestProhibited && (integrations.some((i) => i.toLowerCase().includes('rest') || i.toLowerCase().includes('http')) || (!isApiPending && integrations.length > 0 && !integrations.every((i) => i.toLowerCase().includes('module') || i.toLowerCase().includes('library') || i.toLowerCase().includes('in-process'))));
     const hasWebSocket = integrations.some((i) => i.toLowerCase().includes('websocket') || i.toLowerCase().includes('socket'));
     const hasGraphQl = integrations.some((i) => i.toLowerCase().includes('graphql'));
 
     const apiCommunicationArchitecture: ApiCommunicationArchitecture = {
-      httpRest: isApiPending ? false : (hasHttpRest || (!isApiPending && integrations.length > 0)),
+      httpRest: isApiPending || isHttpRestProhibited ? false : hasHttpRest,
       graphQl: isApiPending ? false : hasGraphQl,
       webSocket: isApiPending ? false : hasWebSocket,
       messageQueues: [],
@@ -678,16 +685,57 @@ export class ArchitectureTechnologyEngine {
 
     // 11.3 API & Communication Decision
     const apiDecId = 'ARCH-DEC-003';
+    const isExternalApiNotApplicable =
+      isHttpRestProhibited ||
+      (!apiCommunicationArchitecture.httpRest &&
+        !apiCommunicationArchitecture.graphQl &&
+        !apiCommunicationArchitecture.webSocket);
+
+    const apiSelectedOption = isExternalApiNotApplicable
+      ? 'NOT_APPLICABLE'
+      : apiCommunicationArchitecture.httpRest
+      ? 'REST'
+      : apiCommunicationArchitecture.graphQl
+      ? 'GraphQL'
+      : 'In-process typed RPC';
+
+    const apiCandidateOptions = [
+      'GraphQL',
+      'In-process typed RPC',
+      'NOT_APPLICABLE',
+      'REST',
+      'WebSocket',
+    ].sort();
+
+    const apiRationale = isExternalApiNotApplicable
+      ? 'Communication protocol for external network API is NOT_APPLICABLE. The product boundary is a typed in-process TypeScript API/module with no HTTP server, no REST endpoint, and no external network listener.'
+      : 'Derived from integrations and subsystem boundaries';
+
+    const apiConsequences = isExternalApiNotApplicable
+      ? [
+          'Communication protocol for external network API: NOT_APPLICABLE',
+          'Product boundary: typed in-process TypeScript API/module',
+          'No HTTP server, no REST endpoint, and no external network listener',
+        ]
+      : ['Determines client contracts, payload schemas, and serialization formats'];
+
+    const apiDecStatus: ArchitectureDecisionStatus =
+      apiCommunicationArchitecture.status === 'PENDING_DECISION'
+        ? 'PENDING_DECISION'
+        : isExternalApiNotApplicable
+        ? 'NOT_APPLICABLE'
+        : 'DECIDED';
+
     decisionsMap.set(apiDecId, {
       decisionId: apiDecId,
       decisionArea: 'API',
       question: 'What communication protocol will expose external and internal interfaces?',
-      status: apiCommunicationArchitecture.status === 'PENDING_DECISION' ? 'PENDING_DECISION' : 'DECIDED',
-      selectedOption: apiCommunicationArchitecture.httpRest ? 'REST' : (apiCommunicationArchitecture.graphQl ? 'GraphQL' : 'In-process typed RPC'),
-      candidateOptions: ['REST', 'GraphQL', 'WebSocket', 'In-process typed RPC'].sort(),
-      rationale: 'Derived from integrations and subsystem boundaries',
+      status: apiDecStatus,
+      selectedOption: apiSelectedOption,
+      candidateOptions: apiCandidateOptions,
+      rationale: apiRationale,
       affectedRequirements: requirements.functionalRequirements.slice(0, 3).map((f) => f.requirementId),
-      consequences: ['Determines client contracts, payload schemas, and serialization formats'],
+      consequences: apiConsequences,
       dependencies: [styleDecId],
       authority: apiCommunicationArchitecture.status === 'PENDING_DECISION' ? Actor.USER : 'SYSTEM',
       revisionBinding: 1,

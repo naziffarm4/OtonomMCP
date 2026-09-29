@@ -1241,10 +1241,17 @@ export class AcceptanceCriteriaEngine {
           8
         ).toUpperCase()}`;
 
-        const statement = `Observable architectural requirement for '${decision.decisionArea}': ${
+        let statement = `Observable architectural requirement for '${decision.decisionArea}': ${
           decision.selectedOption ?? decision.question
         }.`;
-        const expectedResult = `Product operates at its boundary in conformance with architecture decision '${decision.question}'.`;
+        let expectedResult = `Product operates at its boundary in conformance with architecture decision '${decision.question}'.`;
+
+        if (decision.decisionArea === 'API' && decision.selectedOption === 'NOT_APPLICABLE') {
+          statement =
+            "The product exposes a typed in-process TypeScript module API; no HTTP/REST server or endpoint is required; the module can be consumed directly in-process; the boundary conforms to architecture decision 'What communication protocol will expose external and internal interfaces?'.";
+          expectedResult =
+            "Product operates at its boundary as a typed in-process TypeScript module without external HTTP/REST servers or endpoints in conformance with architecture decision 'What communication protocol will expose external and internal interfaces?'.";
+        }
         const verificationMethod: VerificationMethod =
           criterionType === 'DEPLOYMENT'
             ? 'DEPLOYMENT_CHECK'
