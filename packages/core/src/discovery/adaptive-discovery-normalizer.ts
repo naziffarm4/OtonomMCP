@@ -84,7 +84,7 @@ export function canonicalizeForFingerprint(val: unknown): string {
   }
   if (typeof val === 'object') {
     const obj = val as Record<string, unknown>;
-    const sortedKeys = Object.keys(obj).sort();
+    const sortedKeys = Object.keys(obj).filter((k) => obj[k] !== undefined).sort();
     const entries = sortedKeys.map(
       (k) => `${JSON.stringify(k)}:${canonicalizeForFingerprint(obj[k])}`
     );

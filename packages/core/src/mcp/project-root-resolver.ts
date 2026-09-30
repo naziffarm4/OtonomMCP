@@ -19,16 +19,18 @@ import * as path from 'node:path';
 import * as fs from 'node:fs';
 import { McpInvalidRequestError } from './mcp-errors.js';
 import type { McpOrchestratorDelegate } from './mcp-delegate.js';
+import { resolveCanonicalProjectIdentity } from '../director/project-identity-resolver.js';
 
 export interface ResolveProjectRootOptions {
   readonly explicitRoot?: string;
   readonly delegate?: McpOrchestratorDelegate;
   readonly allowCwdFallback?: boolean;
   readonly ignoreActiveContextConflict?: boolean;
+  readonly targetProjectId?: string;
 }
 
 export function resolveTargetProjectRoot(options: ResolveProjectRootOptions): string {
-  const { explicitRoot, delegate, allowCwdFallback = true, ignoreActiveContextConflict = false } = options;
+  const { explicitRoot, delegate, allowCwdFallback = true, ignoreActiveContextConflict = false, targetProjectId } = options;
 
   let validatedExplicit: string | undefined;
 
@@ -82,6 +84,14 @@ export function resolveTargetProjectRoot(options: ResolveProjectRootOptions): st
         `Explicit workspaceRoot "${validatedExplicit}" conflicts with active context projectRoot "${validatedActive}". Cross-project conflict rejected.`
       );
     }
+    if (targetProjectId !== undefined && targetProjectId !== null) {
+      const trimmedTarget = targetProjectId.trim();
+      if (trimmedTarget.length > 0 && activeContext?.projectId && activeContext.projectId !== trimmedTarget) {
+        throw new McpInvalidRequestError(
+          `Target projectId "${trimmedTarget}" conflicts with active context projectId "${activeContext.projectId}". Cross-project conflict rejected.`
+        );
+      }
+    }
     return validatedExplicit;
   }
 
@@ -89,7 +99,16 @@ export function resolveTargetProjectRoot(options: ResolveProjectRootOptions): st
     return validatedExplicit;
   }
 
+  // If no explicit root was provided, check activeContext
   if (validatedActive) {
+    if (targetProjectId !== undefined && targetProjectId !== null) {
+      const trimmedTarget = targetProjectId.trim();
+      if (trimmedTarget.length > 0 && activeContext?.projectId && activeContext.projectId !== trimmedTarget) {
+        throw new McpInvalidRequestError(
+          `Target projectId "${trimmedTarget}" conflicts with active context projectId "${activeContext.projectId}". Cross-project mismatch rejected.`
+        );
+      }
+    }
     return validatedActive;
   }
 
@@ -106,7 +125,19 @@ export function resolveTargetProjectRoot(options: ResolveProjectRootOptions): st
 
   // 4. process.cwd() fallback (Priority 4)
   if (allowCwdFallback) {
-    return process.cwd();
+    const cwd = process.cwd();
+    if (targetProjectId !== undefined && targetProjectId !== null) {
+      const trimmedTarget = targetProjectId.trim();
+      if (trimmedTarget.length > 0) {
+        const cwdCanonical = resolveCanonicalProjectIdentity(cwd);
+        if (cwdCanonical.projectId !== trimmedTarget) {
+          throw new McpInvalidRequestError(
+            `Target projectId "${trimmedTarget}" does not match process.cwd() "${cwd}" (projectId "${cwdCanonical.projectId}"). Cross-project mismatch rejected.`
+          );
+        }
+      }
+    }
+    return cwd;
   }
 
   throw new McpInvalidRequestError('No project root specified and fallback is disabled');

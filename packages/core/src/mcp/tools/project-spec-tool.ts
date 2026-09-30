@@ -123,6 +123,7 @@ export function createProjectSpecGenerateTool(
       const resolvedRoot = resolveTargetProjectRoot({
         explicitRoot: parsed.workspaceRoot,
         delegate: activeDelegate,
+        targetProjectId: parsed.projectId,
       });
       const isSameRoot = activeDelegate?.projectRoot === resolvedRoot;
 
@@ -231,6 +232,7 @@ export function createProjectSpecGetTool(
       const resolvedRoot = resolveTargetProjectRoot({
         explicitRoot: parsed.workspaceRoot,
         delegate: activeDelegate,
+        targetProjectId: parsed.projectId,
       });
       const isSameRoot = activeDelegate?.projectRoot === resolvedRoot;
 
@@ -306,6 +308,7 @@ export function createProjectSpecStaleTool(
       const resolvedRoot = resolveTargetProjectRoot({
         explicitRoot: parsed.workspaceRoot,
         delegate: activeDelegate,
+        targetProjectId: parsed.projectId,
       });
       const isSameRoot = activeDelegate?.projectRoot === resolvedRoot;
 

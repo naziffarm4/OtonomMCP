@@ -147,6 +147,7 @@ export function createAcceptanceCriteriaDefineTool(
       const resolvedRoot = resolveTargetProjectRoot({
         explicitRoot: parsed.workspaceRoot,
         delegate: activeDelegate,
+        targetProjectId: parsed.projectId,
       });
       const isSameRoot = activeDelegate?.projectRoot === resolvedRoot;
 
@@ -240,6 +241,7 @@ export function createAcceptanceCriteriaGetTool(
       const resolvedRoot = resolveTargetProjectRoot({
         explicitRoot: parsed.workspaceRoot,
         delegate: activeDelegate,
+        targetProjectId: parsed.projectId,
       });
       const isSameRoot = activeDelegate?.projectRoot === resolvedRoot;
 

@@ -26,6 +26,11 @@ import type { DurableStateManager } from '../storage/durable-state.js';
 import { ProjectDiscoveryEngine } from './discovery-engine.js';
 import { AdaptiveDiscoveryStore } from './adaptive-discovery-store.js';
 import {
+  resolveCanonicalProjectIdentity,
+  normalizeCanonicalProjectId,
+  validateCanonicalProjectId,
+} from '../director/project-identity-resolver.js';
+import {
   AdaptiveDiscoveryInputZodSchema,
   type AdaptiveDiscoveryInput,
   type ProjectDiscoveryRevision,
@@ -178,6 +183,18 @@ export class AdaptiveDiscoveryEngine {
     // 10. Compute Changed Sections
     const changedSections = this.computeChangedSections(previousRevision, finalSections);
 
+    // Idempotency invariant: if baseline discovery runs on an existing revision with no new inputs or changes, return existing revision
+    if (
+      previousRevision &&
+      !rawPrompt &&
+      (!input.resolvedAnswers || Object.keys(input.resolvedAnswers).length === 0) &&
+      (!input.decidedHumanDecisions || Object.keys(input.decidedHumanDecisions).length === 0) &&
+      !input.explicitSections &&
+      changedSections.length === 0
+    ) {
+      return previousRevision;
+    }
+
     // 11. Compile Aggregate Requirements, Risks, and Decisions Lists
     const allRequirements = deduplicateRequirements(
       finalSections.functionalRequirements.capabilities
@@ -232,13 +249,13 @@ export class AdaptiveDiscoveryEngine {
    */
   private resolveProjectId(input: AdaptiveDiscoveryInput): string {
     if (input.projectId && input.projectId.trim().length > 0) {
-      return input.projectId.trim();
+      return validateCanonicalProjectId(input.projectId);
     }
     if (input.explicitSections?.projectIdentity?.name) {
-      return input.explicitSections.projectIdentity.name.trim();
+      return normalizeCanonicalProjectId(input.explicitSections.projectIdentity.name.trim());
     }
     if (this.workspaceRoot) {
-      return path.basename(this.workspaceRoot);
+      return resolveCanonicalProjectIdentity(this.workspaceRoot).projectId;
     }
     return 'unnamed-project';
   }
@@ -290,6 +307,8 @@ export class AdaptiveDiscoveryEngine {
    * Inspects existing repository artifacts if available.
    */
   private async inspectExistingRepositoryIfAvailable(): Promise<{
+    name?: string;
+    purposeSummary?: string;
     ecosystem?: string;
     languages?: readonly string[];
   } | null> {
@@ -297,6 +316,8 @@ export class AdaptiveDiscoveryEngine {
     try {
       const report = await this.existingDiscoveryEngine.discover();
       return {
+        name: report.projectIdentity?.name,
+        purposeSummary: report.purpose?.summary,
         ecosystem: report.projectIdentity?.ecosystem,
         languages: report.technologyStack?.primaryLanguages,
       };
@@ -317,15 +338,15 @@ export class AdaptiveDiscoveryEngine {
     decidedHumanDecisions?: Readonly<Record<string, string>>;
     existingSpecRequirements: FunctionalRequirementItem[];
     existingSpecDecisions: HumanDecisionPoint[];
-    existingRepoFindings: { ecosystem?: string; languages?: readonly string[] } | null;
+    existingRepoFindings: { name?: string; purposeSummary?: string; ecosystem?: string; languages?: readonly string[] } | null;
   }): DiscoverySections {
     const prev = params.previousRevision?.sections;
     const ext = params.extracted;
     const exp = params.explicitSections;
 
     // 1. PROJECT_IDENTITY
-    const name = exp?.projectIdentity?.name ?? ext?.projectIdentity.name ?? prev?.projectIdentity.name ?? params.projectId;
-    const purpose = exp?.projectIdentity?.purpose ?? ext?.projectIdentity.purpose ?? prev?.projectIdentity.purpose ?? 'Pending purpose discovery.';
+    const name = exp?.projectIdentity?.name ?? ext?.projectIdentity.name ?? prev?.projectIdentity.name ?? params.existingRepoFindings?.name ?? params.projectId;
+    const purpose = exp?.projectIdentity?.purpose ?? ext?.projectIdentity.purpose ?? prev?.projectIdentity.purpose ?? params.existingRepoFindings?.purposeSummary ?? 'Pending purpose discovery.';
     const desiredOutcome = exp?.projectIdentity?.desiredOutcome ?? ext?.projectIdentity.desiredOutcome ?? prev?.projectIdentity.desiredOutcome ?? 'Pending desired outcome.';
 
     // 2. PRODUCT_SCOPE

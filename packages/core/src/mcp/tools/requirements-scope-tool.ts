@@ -87,6 +87,7 @@ export function createRequirementsScopeDefineTool(
       const resolvedRoot = resolveTargetProjectRoot({
         explicitRoot: parsed.workspaceRoot,
         delegate: activeDelegate,
+        targetProjectId: parsed.projectId,
       });
       const isSameRoot = activeDelegate?.projectRoot === resolvedRoot;
 
@@ -168,6 +169,7 @@ export function createRequirementsScopeGetTool(
       const resolvedRoot = resolveTargetProjectRoot({
         explicitRoot: parsed.workspaceRoot,
         delegate: activeDelegate,
+        targetProjectId: parsed.projectId,
       });
       const isSameRoot = activeDelegate?.projectRoot === resolvedRoot;
 

@@ -63,7 +63,7 @@ export interface McpOrchestratorStatus {
 }
 
 export interface ActiveProjectContext {
-  readonly directorSessionId: string;
+  readonly directorSessionId?: string;
   readonly projectId: string;
   readonly projectRoot: string;
 }

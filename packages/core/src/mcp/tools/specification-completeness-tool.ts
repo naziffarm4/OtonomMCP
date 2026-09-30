@@ -70,6 +70,7 @@ export function createSpecificationCompletenessTool(
       const resolvedRoot = resolveTargetProjectRoot({
         explicitRoot: parsed.workspaceRoot,
         delegate: activeDelegate,
+        targetProjectId: parsed.projectId,
       });
       const isSameRoot = activeDelegate?.projectRoot === resolvedRoot;
 

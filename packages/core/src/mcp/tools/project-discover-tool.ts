@@ -21,6 +21,10 @@ import { resolveTargetProjectRoot } from '../project-root-resolver.js';
 import { ProjectDiscoveryEngine } from '../../discovery/discovery-engine.js';
 import { ProjectDiscoveryReport } from '../../discovery/discovery-types.js';
 import { AdaptiveDiscoveryEngine } from '../../discovery/adaptive-discovery-engine.js';
+import {
+  resolveCanonicalProjectIdentity,
+  validateCanonicalProjectId,
+} from '../../director/project-identity-resolver.js';
 
 export const AIDM_PROJECT_DISCOVER_TOOL_NAME = 'aidm.project.discover';
 
@@ -106,49 +110,33 @@ export function createProjectDiscoverTool(
       const resolvedRoot = resolveTargetProjectRoot({
         explicitRoot: parsed.workspaceRoot,
         delegate: activeDelegate,
+        targetProjectId: parsed.projectId,
+      });
+
+      // Canonical Project Identity resolution and validation
+      let canonicalProjectId: string;
+      if (parsed.projectId && parsed.projectId.trim().length > 0) {
+        canonicalProjectId = validateCanonicalProjectId(parsed.projectId);
+      } else {
+        canonicalProjectId = resolveCanonicalProjectIdentity(resolvedRoot).projectId;
+      }
+
+      // Propagate Active Project Context to delegate
+      activeDelegate?.setActiveContext?.({
+        projectId: canonicalProjectId,
+        projectRoot: resolvedRoot,
+        directorSessionId:
+          activeDelegate.activeContext?.projectId === canonicalProjectId
+            ? activeDelegate.activeContext.directorSessionId
+            : undefined,
       });
 
       const naturalPrompt = (parsed.rawPrompt ?? parsed.prompt ?? '').trim();
       const isSameRoot = activeDelegate?.projectRoot === resolvedRoot;
 
-      // If natural prompt or explicit progressive answers are provided, invoke AdaptiveDiscoveryEngine
-      if (naturalPrompt.length > 0 || parsed.resolvedAnswers || parsed.decidedHumanDecisions || parsed.adaptive) {
-        const adaptiveEngine =
-          (isSameRoot && activeDelegate?.adaptiveDiscoveryEngine)
-            ? activeDelegate.adaptiveDiscoveryEngine
-            : new AdaptiveDiscoveryEngine({
-                workspaceRoot: resolvedRoot,
-                specStore: (isSameRoot && activeDelegate?.specStore) ? activeDelegate.specStore : undefined,
-                historyManager: (isSameRoot && activeDelegate?.historyManager) ? activeDelegate.historyManager : undefined,
-                durableStateManager: (isSameRoot && activeDelegate?.durableStateManager) ? activeDelegate.durableStateManager : undefined,
-                discoveryStore: (isSameRoot && activeDelegate?.adaptiveDiscoveryStore) ? activeDelegate.adaptiveDiscoveryStore : undefined,
-                existingDiscoveryEngine: (isSameRoot && activeDelegate?.discoveryEngine)
-                  ? activeDelegate.discoveryEngine
-                  : new ProjectDiscoveryEngine({ workspaceRoot: resolvedRoot }),
-              });
-
-        const revision = await adaptiveEngine.discover({
-          projectId: parsed.projectId,
-          workspaceRoot: resolvedRoot,
-          rawPrompt: naturalPrompt,
-          resolvedAnswers: parsed.resolvedAnswers,
-          decidedHumanDecisions: parsed.decidedHumanDecisions,
-        });
-
-        const sanitized = sanitizeMcpPayload(revision);
-        return {
-          content: [
-            {
-              type: 'text',
-              text: JSON.stringify(sanitized, null, 2),
-            },
-          ],
-        };
-      }
-
-      // Default: Phase 8 existing repository discovery engine
-      const engine =
-        (isSameRoot && activeDelegate?.discoveryEngine)
+      // Always establish and persist authoritative discovery revision via AdaptiveDiscoveryEngine
+      const existingEngine =
+        isSameRoot && activeDelegate?.discoveryEngine
           ? activeDelegate.discoveryEngine
           : new ProjectDiscoveryEngine({
               workspaceRoot: resolvedRoot,
@@ -157,20 +145,60 @@ export function createProjectDiscoverTool(
               maxDocBytes: parsed.maxDocBytes,
             });
 
-      const report: ProjectDiscoveryReport = await engine.discover({
-        allowContextRefresh: parsed.allowContextRefresh,
-        maxFileScan: parsed.maxFileScan,
-        maxDocBytes: parsed.maxDocBytes,
-        maxFeatures: parsed.maxFeatures,
+      const adaptiveEngine =
+        isSameRoot && activeDelegate?.adaptiveDiscoveryEngine
+          ? activeDelegate.adaptiveDiscoveryEngine
+          : new AdaptiveDiscoveryEngine({
+              workspaceRoot: resolvedRoot,
+              specStore: isSameRoot && activeDelegate?.specStore ? activeDelegate.specStore : undefined,
+              historyManager: isSameRoot && activeDelegate?.historyManager ? activeDelegate.historyManager : undefined,
+              durableStateManager: isSameRoot && activeDelegate?.durableStateManager ? activeDelegate.durableStateManager : undefined,
+              discoveryStore: isSameRoot && activeDelegate?.adaptiveDiscoveryStore ? activeDelegate.adaptiveDiscoveryStore : undefined,
+              existingDiscoveryEngine: existingEngine,
+            });
+
+      const revision = await adaptiveEngine.discover({
+        projectId: canonicalProjectId,
+        workspaceRoot: resolvedRoot,
+        rawPrompt: naturalPrompt,
+        resolvedAnswers: parsed.resolvedAnswers,
+        decidedHumanDecisions: parsed.decidedHumanDecisions,
       });
 
-      const sanitized = sanitizeMcpPayload(report);
+      // Backward compatibility: If called without projectId, prompt, progressive answers, or adaptive flag,
+      // return the ProjectDiscoveryReport format (e.g. for legacy Phase-8 callers like T19).
+      const isLegacyCall =
+        !parsed.projectId &&
+        naturalPrompt.length === 0 &&
+        !parsed.resolvedAnswers &&
+        !parsed.decidedHumanDecisions &&
+        !parsed.adaptive;
 
+      if (isLegacyCall) {
+        const report: ProjectDiscoveryReport = await existingEngine.discover({
+          allowContextRefresh: parsed.allowContextRefresh,
+          maxFileScan: parsed.maxFileScan,
+          maxDocBytes: parsed.maxDocBytes,
+          maxFeatures: parsed.maxFeatures,
+        });
+
+        const sanitizedReport = sanitizeMcpPayload(report);
+        return {
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify(sanitizedReport, null, 2),
+            },
+          ],
+        };
+      }
+
+      const sanitizedRevision = sanitizeMcpPayload(revision);
       return {
         content: [
           {
             type: 'text',
-            text: JSON.stringify(sanitized, null, 2),
+            text: JSON.stringify(sanitizedRevision, null, 2),
           },
         ],
       };

@@ -104,6 +104,7 @@ export function createArchitectureTechnologyDefineTool(
       const resolvedRoot = resolveTargetProjectRoot({
         explicitRoot: parsed.workspaceRoot,
         delegate: activeDelegate,
+        targetProjectId: parsed.projectId,
       });
       const isSameRoot = activeDelegate?.projectRoot === resolvedRoot;
 
@@ -188,6 +189,7 @@ export function createArchitectureTechnologyGetTool(
       const resolvedRoot = resolveTargetProjectRoot({
         explicitRoot: parsed.workspaceRoot,
         delegate: activeDelegate,
+        targetProjectId: parsed.projectId,
       });
       const isSameRoot = activeDelegate?.projectRoot === resolvedRoot;
 

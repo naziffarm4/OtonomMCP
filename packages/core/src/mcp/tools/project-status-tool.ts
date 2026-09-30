@@ -21,6 +21,10 @@ import {
 } from '../mcp-types.js';
 import { sanitizeMcpPayload, McpInvalidRequestError } from '../mcp-errors.js';
 import { resolveTargetProjectRoot } from '../project-root-resolver.js';
+import {
+  resolveCanonicalProjectIdentity,
+  validateCanonicalProjectId,
+} from '../../director/project-identity-resolver.js';
 import { DurableStateManager } from '../../storage/durable-state.js';
 import { CheckpointStore, type PersistentCheckpointRecord } from '../../cli/checkpoint-store.js';
 import { DefaultGitPort } from '../../git/default-git-port.js';
@@ -116,12 +120,14 @@ export function createProjectStatusTool(): McpToolRegistration {
       const projectRoot = resolveTargetProjectRoot({
         explicitRoot: input.workspaceRoot,
         delegate,
+        targetProjectId: input.projectId,
       });
       const projectId =
-        input.projectId ??
-        (delegate?.activeContext?.projectRoot === projectRoot
-          ? delegate.activeContext.projectId
-          : path.basename(projectRoot));
+        (input.projectId && input.projectId.trim().length > 0)
+          ? validateCanonicalProjectId(input.projectId)
+          : (delegate?.activeContext?.projectRoot === projectRoot
+            ? delegate.activeContext.projectId
+            : resolveCanonicalProjectIdentity(projectRoot).projectId);
 
       // 2. Query orchestrator availability
       let orchestratorAvailable = false;
