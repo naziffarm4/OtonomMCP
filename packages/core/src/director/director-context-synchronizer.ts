@@ -84,14 +84,16 @@ export class DirectorContextSynchronizer {
   constructor(options: DirectorContextSynchronizerOptions = {}) {
     this.workspaceRoot = options.workspaceRoot ?? options.delegate?.projectRoot;
     this.delegate = options.delegate;
-    this.discoveryEngine = options.discoveryEngine ?? options.delegate?.discoveryEngine;
+    const isSameRoot = Boolean(this.workspaceRoot && options.delegate?.projectRoot === this.workspaceRoot);
+    this.discoveryEngine = options.discoveryEngine ?? (isSameRoot ? options.delegate?.discoveryEngine : undefined);
     this.sessionStore =
       options.sessionStore ??
-      options.delegate?.directorSessionStore ??
-      new DirectorSessionStore({
-        baseDir: this.workspaceRoot,
-        historyManager: options.delegate?.historyManager,
-      });
+      (isSameRoot && options.delegate?.directorSessionStore
+        ? options.delegate.directorSessionStore
+        : new DirectorSessionStore({
+            baseDir: this.workspaceRoot,
+            historyManager: isSameRoot ? options.delegate?.historyManager : undefined,
+          }));
     this.sessionEngine =
       options.sessionEngine ??
       new DirectorSessionEngine({
@@ -208,21 +210,31 @@ export class DirectorContextSynchronizer {
     const projectId = session.projectId;
 
     // 5. Gather authoritative components from delegate or project root
+    const isSameRoot = this.delegate?.projectRoot === projectRoot;
     const durableManager =
-      this.delegate?.durableStateManager ?? new DurableStateManager({ baseDir: projectRoot });
-    const specStore = this.delegate?.specStore ?? new SpecStore({ baseDir: projectRoot });
-    const dagEngine = this.delegate?.dagEngine ?? new TaskDagEngine();
+      (isSameRoot && this.delegate?.durableStateManager)
+        ? this.delegate.durableStateManager
+        : new DurableStateManager({ baseDir: projectRoot });
+    const specStore =
+      (isSameRoot && this.delegate?.specStore) ? this.delegate.specStore : new SpecStore({ baseDir: projectRoot });
+    const dagEngine = (isSameRoot && this.delegate?.dagEngine) ? this.delegate.dagEngine : new TaskDagEngine();
     const contextEngine =
-      this.delegate?.contextEngine ?? new ContextEngine({ workspaceRoot: projectRoot });
-    const gitPort = this.delegate?.gitPort ?? new DefaultGitPort();
+      (isSameRoot && this.delegate?.contextEngine)
+        ? this.delegate.contextEngine
+        : new ContextEngine({ workspaceRoot: projectRoot });
+    const gitPort = (isSameRoot && this.delegate?.gitPort) ? this.delegate.gitPort : new DefaultGitPort();
     const historyManager =
-      this.delegate?.historyManager ?? new HistoryManager({ baseDir: projectRoot });
+      (isSameRoot && this.delegate?.historyManager)
+        ? this.delegate.historyManager
+        : new HistoryManager({ baseDir: projectRoot });
     const clarificationStore =
-      this.delegate?.clarificationStore ??
-      new ClarificationStore({ baseDir: projectRoot, historyManager });
+      (isSameRoot && this.delegate?.clarificationStore)
+        ? this.delegate.clarificationStore
+        : new ClarificationStore({ baseDir: projectRoot, historyManager });
     const approvalStore =
-      this.delegate?.approvalStore ??
-      new ApprovalStore({ baseDir: projectRoot, historyManager });
+      (isSameRoot && this.delegate?.approvalStore)
+        ? this.delegate.approvalStore
+        : new ApprovalStore({ baseDir: projectRoot, historyManager });
 
     const unavailableSections: string[] = [];
     const staleSections: string[] = [];

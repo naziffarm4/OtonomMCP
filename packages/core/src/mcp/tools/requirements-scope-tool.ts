@@ -15,6 +15,7 @@ import { z } from 'zod';
 import type { McpToolDefinition, McpToolHandler, McpRequestContext } from '../mcp-types.js';
 import type { McpOrchestratorDelegate } from '../mcp-delegate.js';
 import { sanitizeMcpPayload } from '../mcp-errors.js';
+import { resolveTargetProjectRoot } from '../project-root-resolver.js';
 import { RequirementsScopeEngine } from '../../discovery/requirements-scope-engine.js';
 import { ScopeAssumptionZodSchema } from '../../discovery/requirements-scope-types.js';
 
@@ -83,18 +84,23 @@ export function createRequirementsScopeDefineTool(
     handler: async (args: Record<string, unknown>, context: McpRequestContext) => {
       const parsed = defineInputSchema.parse(args ?? {});
       const activeDelegate = context.delegate ?? defaultDelegate;
-      const resolvedRoot = parsed.workspaceRoot ?? activeDelegate?.projectRoot ?? process.cwd();
+      const resolvedRoot = resolveTargetProjectRoot({
+        explicitRoot: parsed.workspaceRoot,
+        delegate: activeDelegate,
+      });
+      const isSameRoot = activeDelegate?.projectRoot === resolvedRoot;
 
       const engine =
-        activeDelegate?.requirementsScopeEngine ??
-        new RequirementsScopeEngine({
-          workspaceRoot: resolvedRoot,
-          discoveryStore: activeDelegate?.adaptiveDiscoveryStore,
-          completenessStore: activeDelegate?.completenessGateStore,
-          requirementsStore: activeDelegate?.requirementsScopeStore,
-          historyManager: activeDelegate?.historyManager,
-          specStore: activeDelegate?.specStore,
-        });
+        (isSameRoot && activeDelegate?.requirementsScopeEngine)
+          ? activeDelegate.requirementsScopeEngine
+          : new RequirementsScopeEngine({
+              workspaceRoot: resolvedRoot,
+              discoveryStore: (isSameRoot && activeDelegate?.adaptiveDiscoveryStore) ? activeDelegate.adaptiveDiscoveryStore : undefined,
+              completenessStore: (isSameRoot && activeDelegate?.completenessGateStore) ? activeDelegate.completenessGateStore : undefined,
+              requirementsStore: (isSameRoot && activeDelegate?.requirementsScopeStore) ? activeDelegate.requirementsScopeStore : undefined,
+              historyManager: (isSameRoot && activeDelegate?.historyManager) ? activeDelegate.historyManager : undefined,
+              specStore: (isSameRoot && activeDelegate?.specStore) ? activeDelegate.specStore : undefined,
+            });
 
       const result = await engine.derive({
         projectId: parsed.projectId,
@@ -159,18 +165,23 @@ export function createRequirementsScopeGetTool(
     handler: async (args: Record<string, unknown>, context: McpRequestContext) => {
       const parsed = getInputSchema.parse(args ?? {});
       const activeDelegate = context.delegate ?? defaultDelegate;
-      const resolvedRoot = parsed.workspaceRoot ?? activeDelegate?.projectRoot ?? process.cwd();
+      const resolvedRoot = resolveTargetProjectRoot({
+        explicitRoot: parsed.workspaceRoot,
+        delegate: activeDelegate,
+      });
+      const isSameRoot = activeDelegate?.projectRoot === resolvedRoot;
 
       const engine =
-        activeDelegate?.requirementsScopeEngine ??
-        new RequirementsScopeEngine({
-          workspaceRoot: resolvedRoot,
-          discoveryStore: activeDelegate?.adaptiveDiscoveryStore,
-          completenessStore: activeDelegate?.completenessGateStore,
-          requirementsStore: activeDelegate?.requirementsScopeStore,
-          historyManager: activeDelegate?.historyManager,
-          specStore: activeDelegate?.specStore,
-        });
+        (isSameRoot && activeDelegate?.requirementsScopeEngine)
+          ? activeDelegate.requirementsScopeEngine
+          : new RequirementsScopeEngine({
+              workspaceRoot: resolvedRoot,
+              discoveryStore: (isSameRoot && activeDelegate?.adaptiveDiscoveryStore) ? activeDelegate.adaptiveDiscoveryStore : undefined,
+              completenessStore: (isSameRoot && activeDelegate?.completenessGateStore) ? activeDelegate.completenessGateStore : undefined,
+              requirementsStore: (isSameRoot && activeDelegate?.requirementsScopeStore) ? activeDelegate.requirementsScopeStore : undefined,
+              historyManager: (isSameRoot && activeDelegate?.historyManager) ? activeDelegate.historyManager : undefined,
+              specStore: (isSameRoot && activeDelegate?.specStore) ? activeDelegate.specStore : undefined,
+            });
 
       const result =
         parsed.revision !== undefined

@@ -15,6 +15,7 @@ import { z } from 'zod';
 import type { McpToolDefinition, McpToolHandler, McpRequestContext } from '../mcp-types.js';
 import type { McpOrchestratorDelegate } from '../mcp-delegate.js';
 import { sanitizeMcpPayload } from '../mcp-errors.js';
+import { resolveTargetProjectRoot } from '../project-root-resolver.js';
 import { BusinessRulesEngine } from '../../discovery/business-rules-engine.js';
 import {
   BusinessRuleZodSchema,
@@ -156,20 +157,25 @@ export function createBusinessRulesDefineTool(
     handler: async (args: Record<string, unknown>, context: McpRequestContext) => {
       const parsed = defineInputSchema.parse(args ?? {});
       const activeDelegate = context.delegate ?? defaultDelegate;
-      const resolvedRoot = parsed.workspaceRoot ?? activeDelegate?.projectRoot ?? process.cwd();
+      const resolvedRoot = resolveTargetProjectRoot({
+        explicitRoot: parsed.workspaceRoot,
+        delegate: activeDelegate,
+      });
+      const isSameRoot = activeDelegate?.projectRoot === resolvedRoot;
 
       const engine =
-        activeDelegate?.businessRulesEngine ??
-        new BusinessRulesEngine({
-          workspaceRoot: resolvedRoot,
-          discoveryStore: activeDelegate?.adaptiveDiscoveryStore,
-          completenessStore: activeDelegate?.completenessGateStore,
-          requirementsStore: activeDelegate?.requirementsScopeStore,
-          architectureStore: activeDelegate?.architectureTechnologyStore,
-          businessRulesStore: activeDelegate?.businessRulesStore,
-          historyManager: activeDelegate?.historyManager,
-          specStore: activeDelegate?.specStore,
-        });
+        (isSameRoot && activeDelegate?.businessRulesEngine)
+          ? activeDelegate.businessRulesEngine
+          : new BusinessRulesEngine({
+              workspaceRoot: resolvedRoot,
+              discoveryStore: (isSameRoot && activeDelegate?.adaptiveDiscoveryStore) ? activeDelegate.adaptiveDiscoveryStore : undefined,
+              completenessStore: (isSameRoot && activeDelegate?.completenessGateStore) ? activeDelegate.completenessGateStore : undefined,
+              requirementsStore: (isSameRoot && activeDelegate?.requirementsScopeStore) ? activeDelegate.requirementsScopeStore : undefined,
+              architectureStore: (isSameRoot && activeDelegate?.architectureTechnologyStore) ? activeDelegate.architectureTechnologyStore : undefined,
+              businessRulesStore: (isSameRoot && activeDelegate?.businessRulesStore) ? activeDelegate.businessRulesStore : undefined,
+              historyManager: (isSameRoot && activeDelegate?.historyManager) ? activeDelegate.historyManager : undefined,
+              specStore: (isSameRoot && activeDelegate?.specStore) ? activeDelegate.specStore : undefined,
+            });
 
       const result = await engine.derive({
         projectId: parsed.projectId,
@@ -240,20 +246,25 @@ export function createBusinessRulesGetTool(
     handler: async (args: Record<string, unknown>, context: McpRequestContext) => {
       const parsed = getInputSchema.parse(args ?? {});
       const activeDelegate = context.delegate ?? defaultDelegate;
-      const resolvedRoot = parsed.workspaceRoot ?? activeDelegate?.projectRoot ?? process.cwd();
+      const resolvedRoot = resolveTargetProjectRoot({
+        explicitRoot: parsed.workspaceRoot,
+        delegate: activeDelegate,
+      });
+      const isSameRoot = activeDelegate?.projectRoot === resolvedRoot;
 
       const engine =
-        activeDelegate?.businessRulesEngine ??
-        new BusinessRulesEngine({
-          workspaceRoot: resolvedRoot,
-          discoveryStore: activeDelegate?.adaptiveDiscoveryStore,
-          completenessStore: activeDelegate?.completenessGateStore,
-          requirementsStore: activeDelegate?.requirementsScopeStore,
-          architectureStore: activeDelegate?.architectureTechnologyStore,
-          businessRulesStore: activeDelegate?.businessRulesStore,
-          historyManager: activeDelegate?.historyManager,
-          specStore: activeDelegate?.specStore,
-        });
+        (isSameRoot && activeDelegate?.businessRulesEngine)
+          ? activeDelegate.businessRulesEngine
+          : new BusinessRulesEngine({
+              workspaceRoot: resolvedRoot,
+              discoveryStore: (isSameRoot && activeDelegate?.adaptiveDiscoveryStore) ? activeDelegate.adaptiveDiscoveryStore : undefined,
+              completenessStore: (isSameRoot && activeDelegate?.completenessGateStore) ? activeDelegate.completenessGateStore : undefined,
+              requirementsStore: (isSameRoot && activeDelegate?.requirementsScopeStore) ? activeDelegate.requirementsScopeStore : undefined,
+              architectureStore: (isSameRoot && activeDelegate?.architectureTechnologyStore) ? activeDelegate.architectureTechnologyStore : undefined,
+              businessRulesStore: (isSameRoot && activeDelegate?.businessRulesStore) ? activeDelegate.businessRulesStore : undefined,
+              historyManager: (isSameRoot && activeDelegate?.historyManager) ? activeDelegate.historyManager : undefined,
+              specStore: (isSameRoot && activeDelegate?.specStore) ? activeDelegate.specStore : undefined,
+            });
 
       const result =
         parsed.revision !== undefined

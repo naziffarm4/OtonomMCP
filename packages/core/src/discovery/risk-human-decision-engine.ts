@@ -1013,6 +1013,9 @@ export class RiskHumanDecisionEngine {
     }
 
     for (const dDecision of discovery.decisions ?? []) {
+      if (dDecision.status === 'DECIDED' || dDecision.selectedOption) {
+        continue;
+      }
       const risk = this.buildDeterministicRisk({
         category: 'PRODUCT',
         probability: 'HIGH',

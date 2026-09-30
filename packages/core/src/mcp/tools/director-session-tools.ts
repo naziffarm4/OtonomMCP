@@ -23,6 +23,7 @@ import type { McpToolDefinition, McpToolHandler, McpRequestContext } from '../mc
 import type { McpOrchestratorDelegate } from '../mcp-delegate.js';
 import type { McpServer } from '../mcp-server.js';
 import { sanitizeMcpPayload, McpInvalidRequestError } from '../mcp-errors.js';
+import { resolveTargetProjectRoot } from '../project-root-resolver.js';
 import { DirectorSessionStore } from '../../director/director-session-store.js';
 import { DirectorSessionEngine } from '../../director/director-session-engine.js';
 import {
@@ -32,6 +33,7 @@ import {
 import { DirectorSessionError } from '../../director/director-errors.js';
 import { DirectorContextSynchronizer } from '../../director/director-context-synchronizer.js';
 import { DirectorContextSyncInputZodSchema } from '../../director/director-context-types.js';
+import { HistoryManager } from '../../storage/history-manager.js';
 
 // ============================================================================
 // TOOL NAMES
@@ -49,12 +51,18 @@ function getSessionEngine(
   resolvedRoot: string,
   delegate?: McpOrchestratorDelegate
 ): DirectorSessionEngine {
+  const historyManager =
+    delegate?.historyManager && delegate?.projectRoot === resolvedRoot
+      ? delegate.historyManager
+      : new HistoryManager({ baseDir: resolvedRoot });
+
   const store =
-    delegate?.directorSessionStore ??
-    new DirectorSessionStore({
-      baseDir: resolvedRoot,
-      historyManager: delegate?.historyManager,
-    });
+    delegate?.directorSessionStore && delegate?.projectRoot === resolvedRoot
+      ? delegate.directorSessionStore
+      : new DirectorSessionStore({
+          baseDir: resolvedRoot,
+          historyManager,
+        });
   return new DirectorSessionEngine({
     store,
     workspaceRoot: resolvedRoot,
@@ -144,13 +152,23 @@ export function createDirectorSessionCreateTool(
       }
 
       const delegate = context.delegate ?? defaultDelegate;
-      const resolvedRoot = parsed.workspaceRoot ?? delegate?.projectRoot ?? process.cwd();
+      const resolvedRoot = resolveTargetProjectRoot({
+        explicitRoot: parsed.workspaceRoot,
+        delegate,
+        ignoreActiveContextConflict: true,
+      });
       const engine = getSessionEngine(resolvedRoot, delegate);
 
       try {
         const session = await engine.createSession({
           ...parsed,
           workspaceRoot: resolvedRoot,
+        });
+
+        delegate?.setActiveContext?.({
+          directorSessionId: session.directorSessionId,
+          projectId: session.projectId,
+          projectRoot: session.projectRoot,
         });
 
         return {
@@ -228,7 +246,10 @@ export function createDirectorSessionGetTool(
       }
 
       const delegate = context.delegate ?? defaultDelegate;
-      const resolvedRoot = parsed.workspaceRoot ?? delegate?.projectRoot ?? process.cwd();
+      const resolvedRoot = resolveTargetProjectRoot({
+        explicitRoot: parsed.workspaceRoot,
+        delegate,
+      });
       const engine = getSessionEngine(resolvedRoot, delegate);
 
       try {
@@ -313,7 +334,10 @@ export function createDirectorSessionSuspendTool(
       }
 
       const delegate = context.delegate ?? defaultDelegate;
-      const resolvedRoot = parsed.workspaceRoot ?? delegate?.projectRoot ?? process.cwd();
+      const resolvedRoot = resolveTargetProjectRoot({
+        explicitRoot: parsed.workspaceRoot,
+        delegate,
+      });
       const engine = getSessionEngine(resolvedRoot, delegate);
 
       try {
@@ -397,7 +421,10 @@ export function createDirectorSessionCloseTool(
       }
 
       const delegate = context.delegate ?? defaultDelegate;
-      const resolvedRoot = parsed.workspaceRoot ?? delegate?.projectRoot ?? process.cwd();
+      const resolvedRoot = resolveTargetProjectRoot({
+        explicitRoot: parsed.workspaceRoot,
+        delegate,
+      });
       const engine = getSessionEngine(resolvedRoot, delegate);
 
       try {
@@ -405,6 +432,10 @@ export function createDirectorSessionCloseTool(
           ...parsed,
           workspaceRoot: resolvedRoot,
         });
+
+        if (delegate?.activeContext?.directorSessionId === session.directorSessionId) {
+          delegate.setActiveContext?.(undefined);
+        }
 
         return {
           content: [
@@ -481,13 +512,23 @@ export function createDirectorSessionResumeTool(
       }
 
       const delegate = context.delegate ?? defaultDelegate;
-      const resolvedRoot = parsed.workspaceRoot ?? delegate?.projectRoot ?? process.cwd();
+      const resolvedRoot = resolveTargetProjectRoot({
+        explicitRoot: parsed.workspaceRoot,
+        delegate,
+        ignoreActiveContextConflict: true,
+      });
       const engine = getSessionEngine(resolvedRoot, delegate);
 
       try {
         const session = await engine.resumeSession({
           ...parsed,
           workspaceRoot: resolvedRoot,
+        });
+
+        delegate?.setActiveContext?.({
+          directorSessionId: session.directorSessionId,
+          projectId: session.projectId,
+          projectRoot: session.projectRoot,
         });
 
         return {
@@ -572,7 +613,10 @@ export function createDirectorContextSyncTool(
       }
 
       const delegate = context.delegate ?? defaultDelegate;
-      const resolvedRoot = parsed.workspaceRoot ?? delegate?.projectRoot ?? process.cwd();
+      const resolvedRoot = resolveTargetProjectRoot({
+        explicitRoot: parsed.workspaceRoot,
+        delegate,
+      });
 
       const synchronizer = new DirectorContextSynchronizer({
         workspaceRoot: resolvedRoot,

@@ -18,6 +18,7 @@ import {
   type McpRequestContext,
 } from '../mcp-types.js';
 import { sanitizeMcpPayload, McpInvalidRequestError } from '../mcp-errors.js';
+import { resolveTargetProjectRoot } from '../project-root-resolver.js';
 import { SpecStore, type Decision } from '../../storage/spec-store.js';
 
 export const AIDM_PROJECT_DECISIONS_TOOL_NAME = 'aidm.project.decisions';
@@ -100,9 +101,10 @@ export function createProjectDecisionsTool(): McpToolRegistration {
 
       const input = parseResult.data;
       const delegate = context.delegate;
-      const projectRoot = delegate?.projectRoot ? path.resolve(delegate.projectRoot) : process.cwd();
+      const projectRoot = resolveTargetProjectRoot({ delegate });
+      const isSameRoot = delegate?.projectRoot === projectRoot;
 
-      const specStore = delegate?.specStore ?? new SpecStore({ baseDir: projectRoot });
+      const specStore = (isSameRoot && delegate?.specStore) ? delegate.specStore : new SpecStore({ baseDir: projectRoot });
 
       let loaded: Decision[] = [];
       try {

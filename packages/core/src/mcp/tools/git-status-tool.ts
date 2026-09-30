@@ -18,12 +18,15 @@ import {
   type McpRequestContext,
 } from '../mcp-types.js';
 import { sanitizeMcpPayload, McpInvalidRequestError } from '../mcp-errors.js';
+import { resolveTargetProjectRoot } from '../project-root-resolver.js';
 import { DefaultGitPort } from '../../git/default-git-port.js';
 import { CheckpointStore, type PersistentCheckpointRecord } from '../../cli/checkpoint-store.js';
 
 export const AIDM_GIT_STATUS_TOOL_NAME = 'aidm.git.status';
 
-export const GitStatusInputZodSchema = z.object({}).strict();
+export const GitStatusInputZodSchema = z.object({
+  workspaceRoot: z.string().optional(),
+}).strict();
 
 export type GitStatusInput = z.infer<typeof GitStatusInputZodSchema>;
 
@@ -51,7 +54,12 @@ export const gitStatusToolDefinition: McpToolDefinition = Object.freeze({
     'Returns authoritative current Git state (HEAD commit SHA, branch, clean/dirty state, and accepted checkpoints). Strictly read-only; executes zero Git mutations.',
   inputSchema: {
     type: 'object' as const,
-    properties: {},
+    properties: {
+      workspaceRoot: {
+        type: 'string',
+        description: 'Optional project workspace root directory. Defaults to active context or configured root.',
+      },
+    },
     additionalProperties: false,
   },
 });
@@ -73,7 +81,10 @@ export function createGitStatusTool(): McpToolRegistration {
       }
 
       const delegate = context.delegate;
-      const projectRoot = delegate?.projectRoot ? path.resolve(delegate.projectRoot) : process.cwd();
+      const projectRoot = resolveTargetProjectRoot({
+        explicitRoot: parseResult.data.workspaceRoot,
+        delegate,
+      });
 
       // 1. Inspect Git state safely (read-only inspectState)
       const gitPort = delegate?.gitPort ?? new DefaultGitPort();
@@ -94,7 +105,9 @@ export function createGitStatusTool(): McpToolRegistration {
 
       // 2. Load Checkpoint records
       const checkpointStore =
-        delegate?.checkpointStore ?? new CheckpointStore(projectRoot);
+        delegate?.checkpointStore && delegate?.projectRoot === projectRoot
+          ? delegate.checkpointStore
+          : new CheckpointStore(projectRoot);
 
       let totalAccepted = 0;
       let lastCheckpoint: GitStatusOutput['lastAcceptedCheckpoint'] = null;

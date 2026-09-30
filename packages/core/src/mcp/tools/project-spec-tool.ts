@@ -16,6 +16,7 @@ import { z } from 'zod';
 import type { McpToolDefinition, McpToolHandler, McpRequestContext } from '../mcp-types.js';
 import type { McpOrchestratorDelegate } from '../mcp-delegate.js';
 import { sanitizeMcpPayload } from '../mcp-errors.js';
+import { resolveTargetProjectRoot } from '../project-root-resolver.js';
 import { ProjectSpecEngine } from '../../discovery/project-spec-engine.js';
 import type { McpServer } from '../mcp-server.js';
 
@@ -119,22 +120,27 @@ export function createProjectSpecGenerateTool(
     handler: async (args: Record<string, unknown>, context: McpRequestContext) => {
       const parsed = generateInputSchema.parse(args ?? {});
       const activeDelegate = context.delegate ?? defaultDelegate;
-      const resolvedRoot = parsed.workspaceRoot ?? activeDelegate?.projectRoot ?? process.cwd();
+      const resolvedRoot = resolveTargetProjectRoot({
+        explicitRoot: parsed.workspaceRoot,
+        delegate: activeDelegate,
+      });
+      const isSameRoot = activeDelegate?.projectRoot === resolvedRoot;
 
       const engine =
-        activeDelegate?.projectSpecEngine ??
-        new ProjectSpecEngine({
-          workspaceRoot: resolvedRoot,
-          discoveryStore: activeDelegate?.adaptiveDiscoveryStore,
-          requirementsStore: activeDelegate?.requirementsScopeStore,
-          architectureStore: activeDelegate?.architectureTechnologyStore,
-          businessRulesStore: activeDelegate?.businessRulesStore,
-          acceptanceCriteriaStore: activeDelegate?.acceptanceCriteriaStore,
-          riskStore: activeDelegate?.riskHumanDecisionStore,
-          specProjectionStore: activeDelegate?.projectSpecStore,
-          historyManager: activeDelegate?.historyManager,
-          specStore: activeDelegate?.specStore,
-        });
+        (isSameRoot && activeDelegate?.projectSpecEngine)
+          ? activeDelegate.projectSpecEngine
+          : new ProjectSpecEngine({
+              workspaceRoot: resolvedRoot,
+              discoveryStore: (isSameRoot && activeDelegate?.adaptiveDiscoveryStore) ? activeDelegate.adaptiveDiscoveryStore : undefined,
+              requirementsStore: (isSameRoot && activeDelegate?.requirementsScopeStore) ? activeDelegate.requirementsScopeStore : undefined,
+              architectureStore: (isSameRoot && activeDelegate?.architectureTechnologyStore) ? activeDelegate.architectureTechnologyStore : undefined,
+              businessRulesStore: (isSameRoot && activeDelegate?.businessRulesStore) ? activeDelegate.businessRulesStore : undefined,
+              acceptanceCriteriaStore: (isSameRoot && activeDelegate?.acceptanceCriteriaStore) ? activeDelegate.acceptanceCriteriaStore : undefined,
+              riskStore: (isSameRoot && activeDelegate?.riskHumanDecisionStore) ? activeDelegate.riskHumanDecisionStore : undefined,
+              specProjectionStore: (isSameRoot && activeDelegate?.projectSpecStore) ? activeDelegate.projectSpecStore : undefined,
+              historyManager: (isSameRoot && activeDelegate?.historyManager) ? activeDelegate.historyManager : undefined,
+              specStore: (isSameRoot && activeDelegate?.specStore) ? activeDelegate.specStore : undefined,
+            });
 
       const result = await engine.generate({
         projectId: parsed.projectId,
@@ -222,22 +228,27 @@ export function createProjectSpecGetTool(
     handler: async (args: Record<string, unknown>, context: McpRequestContext) => {
       const parsed = getInputSchema.parse(args ?? {});
       const activeDelegate = context.delegate ?? defaultDelegate;
-      const resolvedRoot = parsed.workspaceRoot ?? activeDelegate?.projectRoot ?? process.cwd();
+      const resolvedRoot = resolveTargetProjectRoot({
+        explicitRoot: parsed.workspaceRoot,
+        delegate: activeDelegate,
+      });
+      const isSameRoot = activeDelegate?.projectRoot === resolvedRoot;
 
       const engine =
-        activeDelegate?.projectSpecEngine ??
-        new ProjectSpecEngine({
-          workspaceRoot: resolvedRoot,
-          discoveryStore: activeDelegate?.adaptiveDiscoveryStore,
-          requirementsStore: activeDelegate?.requirementsScopeStore,
-          architectureStore: activeDelegate?.architectureTechnologyStore,
-          businessRulesStore: activeDelegate?.businessRulesStore,
-          acceptanceCriteriaStore: activeDelegate?.acceptanceCriteriaStore,
-          riskStore: activeDelegate?.riskHumanDecisionStore,
-          specProjectionStore: activeDelegate?.projectSpecStore,
-          historyManager: activeDelegate?.historyManager,
-          specStore: activeDelegate?.specStore,
-        });
+        (isSameRoot && activeDelegate?.projectSpecEngine)
+          ? activeDelegate.projectSpecEngine
+          : new ProjectSpecEngine({
+              workspaceRoot: resolvedRoot,
+              discoveryStore: (isSameRoot && activeDelegate?.adaptiveDiscoveryStore) ? activeDelegate.adaptiveDiscoveryStore : undefined,
+              requirementsStore: (isSameRoot && activeDelegate?.requirementsScopeStore) ? activeDelegate.requirementsScopeStore : undefined,
+              architectureStore: (isSameRoot && activeDelegate?.architectureTechnologyStore) ? activeDelegate.architectureTechnologyStore : undefined,
+              businessRulesStore: (isSameRoot && activeDelegate?.businessRulesStore) ? activeDelegate.businessRulesStore : undefined,
+              acceptanceCriteriaStore: (isSameRoot && activeDelegate?.acceptanceCriteriaStore) ? activeDelegate.acceptanceCriteriaStore : undefined,
+              riskStore: (isSameRoot && activeDelegate?.riskHumanDecisionStore) ? activeDelegate.riskHumanDecisionStore : undefined,
+              specProjectionStore: (isSameRoot && activeDelegate?.projectSpecStore) ? activeDelegate.projectSpecStore : undefined,
+              historyManager: (isSameRoot && activeDelegate?.historyManager) ? activeDelegate.historyManager : undefined,
+              specStore: (isSameRoot && activeDelegate?.specStore) ? activeDelegate.specStore : undefined,
+            });
 
       const result =
         parsed.revision !== undefined
@@ -292,22 +303,27 @@ export function createProjectSpecStaleTool(
     handler: async (args: Record<string, unknown>, context: McpRequestContext) => {
       const parsed = getInputSchema.parse(args ?? {});
       const activeDelegate = context.delegate ?? defaultDelegate;
-      const resolvedRoot = parsed.workspaceRoot ?? activeDelegate?.projectRoot ?? process.cwd();
+      const resolvedRoot = resolveTargetProjectRoot({
+        explicitRoot: parsed.workspaceRoot,
+        delegate: activeDelegate,
+      });
+      const isSameRoot = activeDelegate?.projectRoot === resolvedRoot;
 
       const engine =
-        activeDelegate?.projectSpecEngine ??
-        new ProjectSpecEngine({
-          workspaceRoot: resolvedRoot,
-          discoveryStore: activeDelegate?.adaptiveDiscoveryStore,
-          requirementsStore: activeDelegate?.requirementsScopeStore,
-          architectureStore: activeDelegate?.architectureTechnologyStore,
-          businessRulesStore: activeDelegate?.businessRulesStore,
-          acceptanceCriteriaStore: activeDelegate?.acceptanceCriteriaStore,
-          riskStore: activeDelegate?.riskHumanDecisionStore,
-          specProjectionStore: activeDelegate?.projectSpecStore,
-          historyManager: activeDelegate?.historyManager,
-          specStore: activeDelegate?.specStore,
-        });
+        (isSameRoot && activeDelegate?.projectSpecEngine)
+          ? activeDelegate.projectSpecEngine
+          : new ProjectSpecEngine({
+              workspaceRoot: resolvedRoot,
+              discoveryStore: (isSameRoot && activeDelegate?.adaptiveDiscoveryStore) ? activeDelegate.adaptiveDiscoveryStore : undefined,
+              requirementsStore: (isSameRoot && activeDelegate?.requirementsScopeStore) ? activeDelegate.requirementsScopeStore : undefined,
+              architectureStore: (isSameRoot && activeDelegate?.architectureTechnologyStore) ? activeDelegate.architectureTechnologyStore : undefined,
+              businessRulesStore: (isSameRoot && activeDelegate?.businessRulesStore) ? activeDelegate.businessRulesStore : undefined,
+              acceptanceCriteriaStore: (isSameRoot && activeDelegate?.acceptanceCriteriaStore) ? activeDelegate.acceptanceCriteriaStore : undefined,
+              riskStore: (isSameRoot && activeDelegate?.riskHumanDecisionStore) ? activeDelegate.riskHumanDecisionStore : undefined,
+              specProjectionStore: (isSameRoot && activeDelegate?.projectSpecStore) ? activeDelegate.projectSpecStore : undefined,
+              historyManager: (isSameRoot && activeDelegate?.historyManager) ? activeDelegate.historyManager : undefined,
+              specStore: (isSameRoot && activeDelegate?.specStore) ? activeDelegate.specStore : undefined,
+            });
 
       const result = await engine.detectStale(parsed.projectId, parsed.revision);
       const sanitized = sanitizeMcpPayload(result);

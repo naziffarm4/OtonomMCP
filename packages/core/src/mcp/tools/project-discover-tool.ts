@@ -17,6 +17,7 @@ import { z } from 'zod';
 import type { McpToolDefinition, McpToolHandler, McpRequestContext } from '../mcp-types.js';
 import type { McpOrchestratorDelegate } from '../mcp-delegate.js';
 import { sanitizeMcpPayload } from '../mcp-errors.js';
+import { resolveTargetProjectRoot } from '../project-root-resolver.js';
 import { ProjectDiscoveryEngine } from '../../discovery/discovery-engine.js';
 import { ProjectDiscoveryReport } from '../../discovery/discovery-types.js';
 import { AdaptiveDiscoveryEngine } from '../../discovery/adaptive-discovery-engine.js';
@@ -28,6 +29,7 @@ const discoverInputSchema = z.object({
   projectId: z.string().optional(),
   prompt: z.string().optional(),
   rawPrompt: z.string().optional(),
+  adaptive: z.boolean().optional(),
   resolvedAnswers: z.record(z.string(), z.string()).optional(),
   decidedHumanDecisions: z.record(z.string(), z.string()).optional(),
   allowContextRefresh: z.boolean().optional(),
@@ -60,6 +62,10 @@ export const projectDiscoverToolDefinition: McpToolDefinition = {
       rawPrompt: {
         type: 'string',
         description: 'Alias for prompt: natural language intent for adaptive discovery.',
+      },
+      adaptive: {
+        type: 'boolean',
+        description: 'Optional flag to force adaptive discovery engine evaluation.',
       },
       resolvedAnswers: {
         type: 'object',
@@ -97,22 +103,29 @@ export function createProjectDiscoverTool(
     handler: async (args: Record<string, unknown>, context: McpRequestContext) => {
       const parsed = discoverInputSchema.parse(args ?? {});
       const activeDelegate = context.delegate ?? defaultDelegate;
-      const resolvedRoot = parsed.workspaceRoot ?? activeDelegate?.projectRoot ?? process.cwd();
+      const resolvedRoot = resolveTargetProjectRoot({
+        explicitRoot: parsed.workspaceRoot,
+        delegate: activeDelegate,
+      });
 
       const naturalPrompt = (parsed.rawPrompt ?? parsed.prompt ?? '').trim();
+      const isSameRoot = activeDelegate?.projectRoot === resolvedRoot;
 
       // If natural prompt or explicit progressive answers are provided, invoke AdaptiveDiscoveryEngine
-      if (naturalPrompt.length > 0 || parsed.resolvedAnswers || parsed.decidedHumanDecisions) {
+      if (naturalPrompt.length > 0 || parsed.resolvedAnswers || parsed.decidedHumanDecisions || parsed.adaptive) {
         const adaptiveEngine =
-          activeDelegate?.adaptiveDiscoveryEngine ??
-          new AdaptiveDiscoveryEngine({
-            workspaceRoot: resolvedRoot,
-            specStore: activeDelegate?.specStore,
-            historyManager: activeDelegate?.historyManager,
-            durableStateManager: activeDelegate?.durableStateManager,
-            discoveryStore: activeDelegate?.adaptiveDiscoveryStore,
-            existingDiscoveryEngine: activeDelegate?.discoveryEngine,
-          });
+          (isSameRoot && activeDelegate?.adaptiveDiscoveryEngine)
+            ? activeDelegate.adaptiveDiscoveryEngine
+            : new AdaptiveDiscoveryEngine({
+                workspaceRoot: resolvedRoot,
+                specStore: (isSameRoot && activeDelegate?.specStore) ? activeDelegate.specStore : undefined,
+                historyManager: (isSameRoot && activeDelegate?.historyManager) ? activeDelegate.historyManager : undefined,
+                durableStateManager: (isSameRoot && activeDelegate?.durableStateManager) ? activeDelegate.durableStateManager : undefined,
+                discoveryStore: (isSameRoot && activeDelegate?.adaptiveDiscoveryStore) ? activeDelegate.adaptiveDiscoveryStore : undefined,
+                existingDiscoveryEngine: (isSameRoot && activeDelegate?.discoveryEngine)
+                  ? activeDelegate.discoveryEngine
+                  : new ProjectDiscoveryEngine({ workspaceRoot: resolvedRoot }),
+              });
 
         const revision = await adaptiveEngine.discover({
           projectId: parsed.projectId,
@@ -135,13 +148,14 @@ export function createProjectDiscoverTool(
 
       // Default: Phase 8 existing repository discovery engine
       const engine =
-        activeDelegate?.discoveryEngine ??
-        new ProjectDiscoveryEngine({
-          workspaceRoot: resolvedRoot,
-          delegate: activeDelegate,
-          maxFileScan: parsed.maxFileScan,
-          maxDocBytes: parsed.maxDocBytes,
-        });
+        (isSameRoot && activeDelegate?.discoveryEngine)
+          ? activeDelegate.discoveryEngine
+          : new ProjectDiscoveryEngine({
+              workspaceRoot: resolvedRoot,
+              delegate: isSameRoot ? activeDelegate : undefined,
+              maxFileScan: parsed.maxFileScan,
+              maxDocBytes: parsed.maxDocBytes,
+            });
 
       const report: ProjectDiscoveryReport = await engine.discover({
         allowContextRefresh: parsed.allowContextRefresh,

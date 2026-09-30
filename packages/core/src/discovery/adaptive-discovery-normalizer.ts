@@ -344,14 +344,36 @@ export function extractStructuredDiscoveryFromIntent(
   const usability: string[] = [];
   const compatibility: string[] = [];
 
-  if (lower.includes('online') || lower.includes('realtime') || lower.includes('game') || lower.includes('4-player')) {
-    performance.push('Low-latency state synchronization (< 150ms round-trip under normal conditions)');
-    reliability.push('Resilient connection handling with automated heartbeat ping/pong');
-    availability.push('Graceful handling of dropped socket connections');
+  if (lower.includes('online') || lower.includes('realtime') || lower.includes('game') || lower.includes('4-player') || lower.includes('performance') || lower.includes('latency') || lower.includes('response time')) {
+    const latencyMatch = text.match(/(?:latency|round-trip|response\s*time)[^,\.;\n]*?([<>]=?\s*\d+\s*(?:ms|s)(?:\s*round-trip)?|\d+\s*(?:ms|s)(?:\s*round-trip)?)/i);
+    if (latencyMatch) {
+      performance.push(`Low-latency state synchronization (${latencyMatch[1].trim()})`);
+    } else {
+      performance.push('Low-latency state synchronization');
+    }
+
+    const heartbeatMatch = text.match(/(\d+\s*(?:s|ms|seconds?)\s*(?:heartbeat\s*)?interval)/i);
+    if (heartbeatMatch) {
+      reliability.push(`Resilient connection handling with automated heartbeat ping/pong (${heartbeatMatch[1].trim()})`);
+    } else if (lower.includes('online') || lower.includes('realtime') || lower.includes('game') || lower.includes('4-player')) {
+      reliability.push('Resilient connection handling with automated heartbeat ping/pong');
+    }
+
+    const uptimeMatch = text.match(/(\d{1,3}(?:\.\d+)?%\s*uptime(?:\s*target)?)/i);
+    if (uptimeMatch) {
+      availability.push(`Graceful handling of dropped socket connections (${uptimeMatch[1].trim()})`);
+    } else if (lower.includes('online') || lower.includes('realtime') || lower.includes('game') || lower.includes('4-player')) {
+      availability.push('Graceful handling of dropped socket connections');
+    }
   }
 
   if (lower.includes('account') || lower.includes('auth')) {
-    security.push('Secure password hashing or OAuth token verification; protection against unauthorized access');
+    const tokenMatch = text.match(/(\d{1,3}(?:\.\d+)?%\s*token\s*verification(?:\s*rate)?)/i);
+    if (tokenMatch) {
+      security.push(`Secure password hashing or OAuth token verification; protection against unauthorized access (${tokenMatch[1].trim()})`);
+    } else {
+      security.push('Secure password hashing or OAuth token verification; protection against unauthorized access');
+    }
   }
 
   if (platformConstraints.includes('Mobile (iOS/Android responsive or native)')) {
@@ -394,7 +416,12 @@ export function extractStructuredDiscoveryFromIntent(
   if (lower.includes('cloud') || lower.includes('aws') || lower.includes('gcp')) {
     deploymentModel = 'Cloud Hosted';
   } else if (lower.includes('local') || lower.includes('self-hosted')) {
-    deploymentModel = 'Local / Self-Hosted';
+    const deployMatch = text.match(/(?:local|self-hosted|deployment)[^,\.;\n]*?([<>]=?\s*\d+\s*(?:ms|s|seconds?)(?:\s*healthcheck\s*response)?|\d+\s*(?:ms|s|seconds?))/i);
+    if (deployMatch) {
+      deploymentModel = `Local / Self-Hosted (${deployMatch[1].trim()})`;
+    } else {
+      deploymentModel = 'Local / Self-Hosted';
+    }
   }
 
   // 7. Acceptance

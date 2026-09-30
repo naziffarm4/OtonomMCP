@@ -34,7 +34,7 @@ import {
   isMcpNotification,
 } from './mcp-types.js';
 import type { McpTransport } from './mcp-transport.js';
-import type { McpOrchestratorDelegate } from './mcp-delegate.js';
+import { DefaultMcpOrchestratorDelegate, type McpOrchestratorDelegate } from './mcp-delegate.js';
 import type { PolicyEngine } from '../policy/policy-engine.js';
 import {
   McpErrorNormalizer,
@@ -536,3 +536,57 @@ export class McpServer {
     }
   }
 }
+
+export interface AuthoritativeMcpServerOptions {
+  readonly transport: McpTransport;
+  readonly projectRoot?: string;
+  readonly delegate?: McpOrchestratorDelegate;
+  readonly policyEngine?: PolicyEngine;
+  readonly name?: string;
+  readonly version?: string;
+  readonly instructions?: string;
+}
+
+export function createAuthoritativeMcpServer(options: AuthoritativeMcpServerOptions): McpServer {
+  const delegate = options.delegate ?? new DefaultMcpOrchestratorDelegate({
+    projectRoot: options.projectRoot,
+    policyEngine: options.policyEngine,
+  });
+
+  return new McpServer({
+    name: options.name ?? 'aidm-mcp-server',
+    version: options.version ?? '0.1.0',
+    transport: options.transport,
+    delegate,
+    policyEngine: options.policyEngine ?? delegate.policyEngine,
+    instructions: options.instructions,
+    directorTools: true,
+    discoveryTools: true,
+    completenessTools: true,
+    requirementsScopeTools: true,
+    architectureTools: true,
+    businessRulesTools: true,
+    acceptanceCriteriaTools: true,
+    riskTools: true,
+    projectSpecTools: true,
+    clarificationTools: true,
+    approvalTools: true,
+    directorSessionTools: true,
+    directorDecisionTools: true,
+    humanApprovalTools: true,
+    executionIntentTools: true,
+    executionRequestTools: true,
+    executorTools: true,
+    evidenceVerifyTools: true,
+    phase11ContinuationTools: true,
+    taskDecompositionTools: true,
+    retryAuthorizeTools: true,
+    correctiveTaskTools: true,
+    executorContextTools: true,
+    recoveryTools: true,
+    recoveryEvaluateTools: true,
+    directorLoopTools: true,
+    driverTools: true,
+  });
+}
+

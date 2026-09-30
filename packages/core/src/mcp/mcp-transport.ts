@@ -196,6 +196,7 @@ export class StreamMcpTransport implements McpTransport {
     this.readable.on('data', this.onDataBound);
     this.readable.on('error', this.onErrorBound);
     this.readable.on('end', this.onEndBound);
+    this.readable.on('close', this.onEndBound);
   }
 
   private handleChunk(text: string): void {
@@ -274,6 +275,7 @@ export class StreamMcpTransport implements McpTransport {
     }
     if (this.onEndBound) {
       this.readable.removeListener('end', this.onEndBound);
+      this.readable.removeListener('close', this.onEndBound);
     }
 
     for (const h of this.closeHandlers) {

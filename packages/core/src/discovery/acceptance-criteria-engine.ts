@@ -782,7 +782,7 @@ export class AcceptanceCriteriaEngine {
         return false;
       }
       const numericThresholdPattern =
-        /\b\d+(\.\d+)?\s*(ms|s|seconds?|minutes?|hours?|days?|%|percent|rps|tps|req\/s|users?|concurrency|gb|mb|kb)\b|[<>]=?\s*\d+(\.\d+)?|\b\d{1,3}\.\d{1,3}%\b/;
+        /\b\d+(\.\d+)?\s*(ms|s|seconds?|minutes?|hours?|days?|percent|rps|tps|req\/s|users?|concurrency|gb|mb|kb)\b|\b\d+(\.\d+)?%|[<>]=?\s*\d+(\.\d+)?|\b\d{1,3}\.\d{1,3}%\b/;
       return numericThresholdPattern.test(lower);
     };
 

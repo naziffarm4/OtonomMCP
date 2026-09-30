@@ -15,6 +15,7 @@ import { z } from 'zod';
 import type { McpToolDefinition, McpToolHandler, McpRequestContext } from '../mcp-types.js';
 import type { McpOrchestratorDelegate } from '../mcp-delegate.js';
 import { sanitizeMcpPayload } from '../mcp-errors.js';
+import { resolveTargetProjectRoot } from '../project-root-resolver.js';
 import { RiskHumanDecisionEngine } from '../../discovery/risk-human-decision-engine.js';
 import {
   ProjectRiskZodSchema,
@@ -128,21 +129,26 @@ export function createRisksDefineTool(
     handler: async (args: Record<string, unknown>, context: McpRequestContext) => {
       const parsed = defineInputSchema.parse(args ?? {});
       const activeDelegate = context.delegate ?? defaultDelegate;
-      const resolvedRoot = parsed.workspaceRoot ?? activeDelegate?.projectRoot ?? process.cwd();
+      const resolvedRoot = resolveTargetProjectRoot({
+        explicitRoot: parsed.workspaceRoot,
+        delegate: activeDelegate,
+      });
+      const isSameRoot = activeDelegate?.projectRoot === resolvedRoot;
 
       const engine =
-        activeDelegate?.riskHumanDecisionEngine ??
-        new RiskHumanDecisionEngine({
-          workspaceRoot: resolvedRoot,
-          discoveryStore: activeDelegate?.adaptiveDiscoveryStore,
-          requirementsStore: activeDelegate?.requirementsScopeStore,
-          architectureStore: activeDelegate?.architectureTechnologyStore,
-          businessRulesStore: activeDelegate?.businessRulesStore,
-          acceptanceCriteriaStore: activeDelegate?.acceptanceCriteriaStore,
-          riskStore: activeDelegate?.riskHumanDecisionStore,
-          historyManager: activeDelegate?.historyManager,
-          specStore: activeDelegate?.specStore,
-        });
+        (isSameRoot && activeDelegate?.riskHumanDecisionEngine)
+          ? activeDelegate.riskHumanDecisionEngine
+          : new RiskHumanDecisionEngine({
+              workspaceRoot: resolvedRoot,
+              discoveryStore: (isSameRoot && activeDelegate?.adaptiveDiscoveryStore) ? activeDelegate.adaptiveDiscoveryStore : undefined,
+              requirementsStore: (isSameRoot && activeDelegate?.requirementsScopeStore) ? activeDelegate.requirementsScopeStore : undefined,
+              architectureStore: (isSameRoot && activeDelegate?.architectureTechnologyStore) ? activeDelegate.architectureTechnologyStore : undefined,
+              businessRulesStore: (isSameRoot && activeDelegate?.businessRulesStore) ? activeDelegate.businessRulesStore : undefined,
+              acceptanceCriteriaStore: (isSameRoot && activeDelegate?.acceptanceCriteriaStore) ? activeDelegate.acceptanceCriteriaStore : undefined,
+              riskStore: (isSameRoot && activeDelegate?.riskHumanDecisionStore) ? activeDelegate.riskHumanDecisionStore : undefined,
+              historyManager: (isSameRoot && activeDelegate?.historyManager) ? activeDelegate.historyManager : undefined,
+              specStore: (isSameRoot && activeDelegate?.specStore) ? activeDelegate.specStore : undefined,
+            });
 
       const result = await engine.derive({
         projectId: parsed.projectId,
@@ -216,21 +222,26 @@ export function createRisksGetTool(
     handler: async (args: Record<string, unknown>, context: McpRequestContext) => {
       const parsed = getInputSchema.parse(args ?? {});
       const activeDelegate = context.delegate ?? defaultDelegate;
-      const resolvedRoot = parsed.workspaceRoot ?? activeDelegate?.projectRoot ?? process.cwd();
+      const resolvedRoot = resolveTargetProjectRoot({
+        explicitRoot: parsed.workspaceRoot,
+        delegate: activeDelegate,
+      });
+      const isSameRoot = activeDelegate?.projectRoot === resolvedRoot;
 
       const engine =
-        activeDelegate?.riskHumanDecisionEngine ??
-        new RiskHumanDecisionEngine({
-          workspaceRoot: resolvedRoot,
-          discoveryStore: activeDelegate?.adaptiveDiscoveryStore,
-          requirementsStore: activeDelegate?.requirementsScopeStore,
-          architectureStore: activeDelegate?.architectureTechnologyStore,
-          businessRulesStore: activeDelegate?.businessRulesStore,
-          acceptanceCriteriaStore: activeDelegate?.acceptanceCriteriaStore,
-          riskStore: activeDelegate?.riskHumanDecisionStore,
-          historyManager: activeDelegate?.historyManager,
-          specStore: activeDelegate?.specStore,
-        });
+        (isSameRoot && activeDelegate?.riskHumanDecisionEngine)
+          ? activeDelegate.riskHumanDecisionEngine
+          : new RiskHumanDecisionEngine({
+              workspaceRoot: resolvedRoot,
+              discoveryStore: (isSameRoot && activeDelegate?.adaptiveDiscoveryStore) ? activeDelegate.adaptiveDiscoveryStore : undefined,
+              requirementsStore: (isSameRoot && activeDelegate?.requirementsScopeStore) ? activeDelegate.requirementsScopeStore : undefined,
+              architectureStore: (isSameRoot && activeDelegate?.architectureTechnologyStore) ? activeDelegate.architectureTechnologyStore : undefined,
+              businessRulesStore: (isSameRoot && activeDelegate?.businessRulesStore) ? activeDelegate.businessRulesStore : undefined,
+              acceptanceCriteriaStore: (isSameRoot && activeDelegate?.acceptanceCriteriaStore) ? activeDelegate.acceptanceCriteriaStore : undefined,
+              riskStore: (isSameRoot && activeDelegate?.riskHumanDecisionStore) ? activeDelegate.riskHumanDecisionStore : undefined,
+              historyManager: (isSameRoot && activeDelegate?.historyManager) ? activeDelegate.historyManager : undefined,
+              specStore: (isSameRoot && activeDelegate?.specStore) ? activeDelegate.specStore : undefined,
+            });
 
       const result =
         parsed.revision !== undefined
@@ -283,21 +294,26 @@ export function createHumanDecisionsGetTool(
     handler: async (args: Record<string, unknown>, context: McpRequestContext) => {
       const parsed = getInputSchema.parse(args ?? {});
       const activeDelegate = context.delegate ?? defaultDelegate;
-      const resolvedRoot = parsed.workspaceRoot ?? activeDelegate?.projectRoot ?? process.cwd();
+      const resolvedRoot = resolveTargetProjectRoot({
+        explicitRoot: parsed.workspaceRoot,
+        delegate: activeDelegate,
+      });
+      const isSameRoot = activeDelegate?.projectRoot === resolvedRoot;
 
       const engine =
-        activeDelegate?.riskHumanDecisionEngine ??
-        new RiskHumanDecisionEngine({
-          workspaceRoot: resolvedRoot,
-          discoveryStore: activeDelegate?.adaptiveDiscoveryStore,
-          requirementsStore: activeDelegate?.requirementsScopeStore,
-          architectureStore: activeDelegate?.architectureTechnologyStore,
-          businessRulesStore: activeDelegate?.businessRulesStore,
-          acceptanceCriteriaStore: activeDelegate?.acceptanceCriteriaStore,
-          riskStore: activeDelegate?.riskHumanDecisionStore,
-          historyManager: activeDelegate?.historyManager,
-          specStore: activeDelegate?.specStore,
-        });
+        (isSameRoot && activeDelegate?.riskHumanDecisionEngine)
+          ? activeDelegate.riskHumanDecisionEngine
+          : new RiskHumanDecisionEngine({
+              workspaceRoot: resolvedRoot,
+              discoveryStore: (isSameRoot && activeDelegate?.adaptiveDiscoveryStore) ? activeDelegate.adaptiveDiscoveryStore : undefined,
+              requirementsStore: (isSameRoot && activeDelegate?.requirementsScopeStore) ? activeDelegate.requirementsScopeStore : undefined,
+              architectureStore: (isSameRoot && activeDelegate?.architectureTechnologyStore) ? activeDelegate.architectureTechnologyStore : undefined,
+              businessRulesStore: (isSameRoot && activeDelegate?.businessRulesStore) ? activeDelegate.businessRulesStore : undefined,
+              acceptanceCriteriaStore: (isSameRoot && activeDelegate?.acceptanceCriteriaStore) ? activeDelegate.acceptanceCriteriaStore : undefined,
+              riskStore: (isSameRoot && activeDelegate?.riskHumanDecisionStore) ? activeDelegate.riskHumanDecisionStore : undefined,
+              historyManager: (isSameRoot && activeDelegate?.historyManager) ? activeDelegate.historyManager : undefined,
+              specStore: (isSameRoot && activeDelegate?.specStore) ? activeDelegate.specStore : undefined,
+            });
 
       const result =
         parsed.revision !== undefined

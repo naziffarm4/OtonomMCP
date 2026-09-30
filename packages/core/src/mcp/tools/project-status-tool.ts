@@ -20,6 +20,7 @@ import {
   type McpRequestContext,
 } from '../mcp-types.js';
 import { sanitizeMcpPayload, McpInvalidRequestError } from '../mcp-errors.js';
+import { resolveTargetProjectRoot } from '../project-root-resolver.js';
 import { DurableStateManager } from '../../storage/durable-state.js';
 import { CheckpointStore, type PersistentCheckpointRecord } from '../../cli/checkpoint-store.js';
 import { DefaultGitPort } from '../../git/default-git-port.js';
@@ -29,6 +30,7 @@ export const AIDM_PROJECT_STATUS_TOOL_NAME = 'aidm.project.status';
 
 export const ProjectStatusInputZodSchema = z.object({
   projectId: z.string().optional(),
+  workspaceRoot: z.string().optional(),
 }).strict();
 
 export type ProjectStatusInput = z.infer<typeof ProjectStatusInputZodSchema>;
@@ -83,6 +85,10 @@ export const projectStatusToolDefinition: McpToolDefinition = Object.freeze({
         type: 'string',
         description: 'Optional project identifier to query or verify against.',
       },
+      workspaceRoot: {
+        type: 'string',
+        description: 'Optional project workspace root directory. Defaults to active context or configured root.',
+      },
     },
     additionalProperties: false,
   },
@@ -107,8 +113,15 @@ export function createProjectStatusTool(): McpToolRegistration {
 
       const input = parseResult.data;
       const delegate = context.delegate;
-      const projectRoot = delegate?.projectRoot ? path.resolve(delegate.projectRoot) : process.cwd();
-      const projectId = input.projectId ?? (delegate?.projectRoot ? path.basename(projectRoot) : 'default');
+      const projectRoot = resolveTargetProjectRoot({
+        explicitRoot: input.workspaceRoot,
+        delegate,
+      });
+      const projectId =
+        input.projectId ??
+        (delegate?.activeContext?.projectRoot === projectRoot
+          ? delegate.activeContext.projectId
+          : path.basename(projectRoot));
 
       // 2. Query orchestrator availability
       let orchestratorAvailable = false;
@@ -125,7 +138,9 @@ export function createProjectStatusTool(): McpToolRegistration {
 
       // 3. Query DurableStateManager
       const durableManager =
-        delegate?.durableStateManager ?? new DurableStateManager({ baseDir: projectRoot });
+        delegate?.durableStateManager && delegate?.projectRoot === projectRoot
+          ? delegate.durableStateManager
+          : new DurableStateManager({ baseDir: projectRoot });
 
       let initialized = false;
       let lifecycleState: string = LifecycleState.INITIALIZING;
@@ -168,7 +183,9 @@ export function createProjectStatusTool(): McpToolRegistration {
 
       // 4. Query CheckpointStore
       const checkpointStore =
-        delegate?.checkpointStore ?? new CheckpointStore(projectRoot);
+        delegate?.checkpointStore && delegate?.projectRoot === projectRoot
+          ? delegate.checkpointStore
+          : new CheckpointStore(projectRoot);
 
       let totalCheckpoints = 0;
       let lastAcceptedCheckpoint: PersistentCheckpointRecord | null = null;

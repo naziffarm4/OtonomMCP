@@ -1814,6 +1814,30 @@ export class ApprovalPackageEngine {
   }
 
   /**
+   * Authoritative asynchronous check for development authorization.
+   * Verifies that the package is APPROVED, human PO approval record is valid,
+   * not explicitly marked stale, AND that upstream authoritative store bindings
+   * are fresh and match current project state.
+   */
+  async isDevelopmentAuthorizedAsync(pkg: ApprovalPackage): Promise<boolean> {
+    if (!this.isDevelopmentAuthorized(pkg)) {
+      return false;
+    }
+    if (pkg.sourceBindings) {
+      try {
+        const staleReport = await this.checkStaleness(pkg);
+        if (staleReport.isStale) {
+          return false;
+        }
+      } catch {
+        // Fail closed on store inspection failure
+        return false;
+      }
+    }
+    return true;
+  }
+
+  /**
    * Validates that the actor claiming approval authority is strictly human Product Owner.
    */
   validateApprovalActor(actor: string, actorRole: string): void {
@@ -1857,4 +1881,15 @@ export class ApprovalPackageEngine {
  */
 export function isDevelopmentAuthorized(pkg: ApprovalPackage): boolean {
   return new ApprovalPackageEngine().isDevelopmentAuthorized(pkg);
+}
+
+/**
+ * Convenience helper to asynchronously check development authorization against authoritative freshness.
+ */
+export async function isDevelopmentAuthorizedAsync(
+  pkg: ApprovalPackage,
+  engine?: ApprovalPackageEngine
+): Promise<boolean> {
+  const effectiveEngine = engine ?? new ApprovalPackageEngine();
+  return effectiveEngine.isDevelopmentAuthorizedAsync(pkg);
 }

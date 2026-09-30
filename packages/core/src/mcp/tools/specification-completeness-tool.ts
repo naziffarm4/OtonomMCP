@@ -17,6 +17,7 @@ import { z } from 'zod';
 import type { McpToolDefinition, McpToolHandler, McpRequestContext } from '../mcp-types.js';
 import type { McpOrchestratorDelegate } from '../mcp-delegate.js';
 import { sanitizeMcpPayload } from '../mcp-errors.js';
+import { resolveTargetProjectRoot } from '../project-root-resolver.js';
 import { CompletenessGateEngine } from '../../discovery/completeness-gate-engine.js';
 
 export const AIDM_SPECIFICATION_COMPLETENESS_TOOL_NAME = 'aidm.specification.completeness.evaluate';
@@ -66,17 +67,22 @@ export function createSpecificationCompletenessTool(
     handler: async (args: Record<string, unknown>, context: McpRequestContext) => {
       const parsed = completenessInputSchema.parse(args ?? {});
       const activeDelegate = context.delegate ?? defaultDelegate;
-      const resolvedRoot = parsed.workspaceRoot ?? activeDelegate?.projectRoot ?? process.cwd();
+      const resolvedRoot = resolveTargetProjectRoot({
+        explicitRoot: parsed.workspaceRoot,
+        delegate: activeDelegate,
+      });
+      const isSameRoot = activeDelegate?.projectRoot === resolvedRoot;
 
       const engine =
-        activeDelegate?.completenessGateEngine ??
-        new CompletenessGateEngine({
-          workspaceRoot: resolvedRoot,
-          discoveryStore: activeDelegate?.adaptiveDiscoveryStore,
-          completenessStore: activeDelegate?.completenessGateStore,
-          historyManager: activeDelegate?.historyManager,
-          specStore: activeDelegate?.specStore,
-        });
+        (isSameRoot && activeDelegate?.completenessGateEngine)
+          ? activeDelegate.completenessGateEngine
+          : new CompletenessGateEngine({
+              workspaceRoot: resolvedRoot,
+              discoveryStore: (isSameRoot && activeDelegate?.adaptiveDiscoveryStore) ? activeDelegate.adaptiveDiscoveryStore : undefined,
+              completenessStore: (isSameRoot && activeDelegate?.completenessGateStore) ? activeDelegate.completenessGateStore : undefined,
+              historyManager: (isSameRoot && activeDelegate?.historyManager) ? activeDelegate.historyManager : undefined,
+              specStore: (isSameRoot && activeDelegate?.specStore) ? activeDelegate.specStore : undefined,
+            });
 
       const result = await engine.evaluate({
         projectId: parsed.projectId,

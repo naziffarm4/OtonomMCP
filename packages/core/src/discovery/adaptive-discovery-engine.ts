@@ -148,7 +148,16 @@ export class AdaptiveDiscoveryEngine {
     }
     if (previousRevision) {
       for (const d of previousRevision.decisions) {
-        allDecisionsMap.set(d.id, d);
+        const chosen = input.decidedHumanDecisions?.[d.id] ?? d.selectedOption;
+        if (chosen) {
+          allDecisionsMap.set(d.id, {
+            ...d,
+            status: 'DECIDED',
+            selectedOption: chosen,
+          });
+        } else {
+          allDecisionsMap.set(d.id, d);
+        }
       }
     }
     for (const d of decisions) {
@@ -362,41 +371,54 @@ export class AdaptiveDiscoveryEngine {
     ]);
 
     // 4. NON_FUNCTIONAL_REQUIREMENTS
-    const performance = deduplicateStrings([
-      ...(prev?.nonFunctionalRequirements.performance ?? []),
-      ...(ext?.nonFunctional.performance ?? []),
-      ...(exp?.nonFunctionalRequirements?.performance ?? []),
-    ]);
-    const security = deduplicateStrings([
-      ...(prev?.nonFunctionalRequirements.security ?? []),
-      ...(ext?.nonFunctional.security ?? []),
-      ...(exp?.nonFunctionalRequirements?.security ?? []),
-    ]);
-    const reliability = deduplicateStrings([
-      ...(prev?.nonFunctionalRequirements.reliability ?? []),
-      ...(ext?.nonFunctional.reliability ?? []),
-      ...(exp?.nonFunctionalRequirements?.reliability ?? []),
-    ]);
-    const scalability = deduplicateStrings([
-      ...(prev?.nonFunctionalRequirements.scalability ?? []),
-      ...(ext?.nonFunctional.scalability ?? []),
-      ...(exp?.nonFunctionalRequirements?.scalability ?? []),
-    ]);
-    const availability = deduplicateStrings([
-      ...(prev?.nonFunctionalRequirements.availability ?? []),
-      ...(ext?.nonFunctional.availability ?? []),
-      ...(exp?.nonFunctionalRequirements?.availability ?? []),
-    ]);
-    const usability = deduplicateStrings([
-      ...(prev?.nonFunctionalRequirements.usability ?? []),
-      ...(ext?.nonFunctional.usability ?? []),
-      ...(exp?.nonFunctionalRequirements?.usability ?? []),
-    ]);
-    const compatibility = deduplicateStrings([
-      ...(prev?.nonFunctionalRequirements.compatibility ?? []),
-      ...(ext?.nonFunctional.compatibility ?? []),
-      ...(exp?.nonFunctionalRequirements?.compatibility ?? []),
-    ]);
+    const mergeNfrWithRefinement = (prevItems: string[] = [], newItems: string[] = [], expItems: string[] = []): string[] => {
+      const allNew = [...newItems, ...expItems];
+      const filteredPrev = prevItems.filter((prevItem) => {
+        const isSuperseded = allNew.some((newItem) => {
+          const p = prevItem.toLowerCase().trim();
+          const n = newItem.toLowerCase().trim();
+          return n !== p && n.startsWith(p);
+        });
+        return !isSuperseded;
+      });
+      return deduplicateStrings([...filteredPrev, ...allNew]);
+    };
+
+    const performance = mergeNfrWithRefinement(
+      prev?.nonFunctionalRequirements.performance,
+      ext?.nonFunctional.performance,
+      exp?.nonFunctionalRequirements?.performance
+    );
+    const security = mergeNfrWithRefinement(
+      prev?.nonFunctionalRequirements.security,
+      ext?.nonFunctional.security,
+      exp?.nonFunctionalRequirements?.security
+    );
+    const reliability = mergeNfrWithRefinement(
+      prev?.nonFunctionalRequirements.reliability,
+      ext?.nonFunctional.reliability,
+      exp?.nonFunctionalRequirements?.reliability
+    );
+    const scalability = mergeNfrWithRefinement(
+      prev?.nonFunctionalRequirements.scalability,
+      ext?.nonFunctional.scalability,
+      exp?.nonFunctionalRequirements?.scalability
+    );
+    const availability = mergeNfrWithRefinement(
+      prev?.nonFunctionalRequirements.availability,
+      ext?.nonFunctional.availability,
+      exp?.nonFunctionalRequirements?.availability
+    );
+    const usability = mergeNfrWithRefinement(
+      prev?.nonFunctionalRequirements.usability,
+      ext?.nonFunctional.usability,
+      exp?.nonFunctionalRequirements?.usability
+    );
+    const compatibility = mergeNfrWithRefinement(
+      prev?.nonFunctionalRequirements.compatibility,
+      ext?.nonFunctional.compatibility,
+      exp?.nonFunctionalRequirements?.compatibility
+    );
 
     // 5. TECHNOLOGY
     const requiredTechnologies = deduplicateStrings([

@@ -15,6 +15,7 @@ import { z } from 'zod';
 import type { McpToolDefinition, McpToolHandler, McpRequestContext } from '../mcp-types.js';
 import type { McpOrchestratorDelegate } from '../mcp-delegate.js';
 import { sanitizeMcpPayload } from '../mcp-errors.js';
+import { resolveTargetProjectRoot } from '../project-root-resolver.js';
 import { AcceptanceCriteriaEngine } from '../../discovery/acceptance-criteria-engine.js';
 import {
   AcceptanceCriterionZodSchema,
@@ -143,21 +144,26 @@ export function createAcceptanceCriteriaDefineTool(
     handler: async (args: Record<string, unknown>, context: McpRequestContext) => {
       const parsed = defineInputSchema.parse(args ?? {});
       const activeDelegate = context.delegate ?? defaultDelegate;
-      const resolvedRoot = parsed.workspaceRoot ?? activeDelegate?.projectRoot ?? process.cwd();
+      const resolvedRoot = resolveTargetProjectRoot({
+        explicitRoot: parsed.workspaceRoot,
+        delegate: activeDelegate,
+      });
+      const isSameRoot = activeDelegate?.projectRoot === resolvedRoot;
 
       const engine =
-        activeDelegate?.acceptanceCriteriaEngine ??
-        new AcceptanceCriteriaEngine({
-          workspaceRoot: resolvedRoot,
-          discoveryStore: activeDelegate?.adaptiveDiscoveryStore,
-          completenessStore: activeDelegate?.completenessGateStore,
-          requirementsStore: activeDelegate?.requirementsScopeStore,
-          architectureStore: activeDelegate?.architectureTechnologyStore,
-          businessRulesStore: activeDelegate?.businessRulesStore,
-          acceptanceCriteriaStore: activeDelegate?.acceptanceCriteriaStore,
-          historyManager: activeDelegate?.historyManager,
-          specStore: activeDelegate?.specStore,
-        });
+        (isSameRoot && activeDelegate?.acceptanceCriteriaEngine)
+          ? activeDelegate.acceptanceCriteriaEngine
+          : new AcceptanceCriteriaEngine({
+              workspaceRoot: resolvedRoot,
+              discoveryStore: (isSameRoot && activeDelegate?.adaptiveDiscoveryStore) ? activeDelegate.adaptiveDiscoveryStore : undefined,
+              completenessStore: (isSameRoot && activeDelegate?.completenessGateStore) ? activeDelegate.completenessGateStore : undefined,
+              requirementsStore: (isSameRoot && activeDelegate?.requirementsScopeStore) ? activeDelegate.requirementsScopeStore : undefined,
+              architectureStore: (isSameRoot && activeDelegate?.architectureTechnologyStore) ? activeDelegate.architectureTechnologyStore : undefined,
+              businessRulesStore: (isSameRoot && activeDelegate?.businessRulesStore) ? activeDelegate.businessRulesStore : undefined,
+              acceptanceCriteriaStore: (isSameRoot && activeDelegate?.acceptanceCriteriaStore) ? activeDelegate.acceptanceCriteriaStore : undefined,
+              historyManager: (isSameRoot && activeDelegate?.historyManager) ? activeDelegate.historyManager : undefined,
+              specStore: (isSameRoot && activeDelegate?.specStore) ? activeDelegate.specStore : undefined,
+            });
 
       const result = await engine.derive({
         projectId: parsed.projectId,
@@ -231,21 +237,26 @@ export function createAcceptanceCriteriaGetTool(
     handler: async (args: Record<string, unknown>, context: McpRequestContext) => {
       const parsed = getInputSchema.parse(args ?? {});
       const activeDelegate = context.delegate ?? defaultDelegate;
-      const resolvedRoot = parsed.workspaceRoot ?? activeDelegate?.projectRoot ?? process.cwd();
+      const resolvedRoot = resolveTargetProjectRoot({
+        explicitRoot: parsed.workspaceRoot,
+        delegate: activeDelegate,
+      });
+      const isSameRoot = activeDelegate?.projectRoot === resolvedRoot;
 
       const engine =
-        activeDelegate?.acceptanceCriteriaEngine ??
-        new AcceptanceCriteriaEngine({
-          workspaceRoot: resolvedRoot,
-          discoveryStore: activeDelegate?.adaptiveDiscoveryStore,
-          completenessStore: activeDelegate?.completenessGateStore,
-          requirementsStore: activeDelegate?.requirementsScopeStore,
-          architectureStore: activeDelegate?.architectureTechnologyStore,
-          businessRulesStore: activeDelegate?.businessRulesStore,
-          acceptanceCriteriaStore: activeDelegate?.acceptanceCriteriaStore,
-          historyManager: activeDelegate?.historyManager,
-          specStore: activeDelegate?.specStore,
-        });
+        (isSameRoot && activeDelegate?.acceptanceCriteriaEngine)
+          ? activeDelegate.acceptanceCriteriaEngine
+          : new AcceptanceCriteriaEngine({
+              workspaceRoot: resolvedRoot,
+              discoveryStore: (isSameRoot && activeDelegate?.adaptiveDiscoveryStore) ? activeDelegate.adaptiveDiscoveryStore : undefined,
+              completenessStore: (isSameRoot && activeDelegate?.completenessGateStore) ? activeDelegate.completenessGateStore : undefined,
+              requirementsStore: (isSameRoot && activeDelegate?.requirementsScopeStore) ? activeDelegate.requirementsScopeStore : undefined,
+              architectureStore: (isSameRoot && activeDelegate?.architectureTechnologyStore) ? activeDelegate.architectureTechnologyStore : undefined,
+              businessRulesStore: (isSameRoot && activeDelegate?.businessRulesStore) ? activeDelegate.businessRulesStore : undefined,
+              acceptanceCriteriaStore: (isSameRoot && activeDelegate?.acceptanceCriteriaStore) ? activeDelegate.acceptanceCriteriaStore : undefined,
+              historyManager: (isSameRoot && activeDelegate?.historyManager) ? activeDelegate.historyManager : undefined,
+              specStore: (isSameRoot && activeDelegate?.specStore) ? activeDelegate.specStore : undefined,
+            });
 
       const result =
         parsed.revision !== undefined

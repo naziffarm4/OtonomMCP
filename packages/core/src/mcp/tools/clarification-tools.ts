@@ -20,6 +20,7 @@ import type { McpToolDefinition, McpToolHandler, McpRequestContext } from '../mc
 import type { McpOrchestratorDelegate } from '../mcp-delegate.js';
 import type { McpServer } from '../mcp-server.js';
 import { sanitizeMcpPayload, McpInvalidRequestError } from '../mcp-errors.js';
+import { resolveTargetProjectRoot } from '../project-root-resolver.js';
 import { ProjectDiscoveryEngine } from '../../discovery/discovery-engine.js';
 import { ProjectDiscoveryReport } from '../../discovery/discovery-types.js';
 import { ClarificationSessionEngine } from '../../clarification/clarification-session-engine.js';
@@ -85,17 +86,23 @@ export function createClarificationCreateTool(
     handler: async (args: Record<string, unknown>, context: McpRequestContext) => {
       const parsed = createSessionInputSchema.parse(args ?? {});
       const delegate = context.delegate ?? defaultDelegate;
-      const resolvedRoot = parsed.workspaceRoot ?? delegate?.projectRoot ?? process.cwd();
+      const resolvedRoot = resolveTargetProjectRoot({
+        explicitRoot: parsed.workspaceRoot,
+        delegate,
+      });
+      const isSameRoot = delegate?.projectRoot === resolvedRoot;
 
       // Discover repository findings in read-only manner or consume pre-computed report
       let discoveryReport: ProjectDiscoveryReport;
       if (parsed.discoveryReport) {
         discoveryReport = parsed.discoveryReport as unknown as ProjectDiscoveryReport;
       } else {
-        const discoveryEngine = new ProjectDiscoveryEngine({
-          workspaceRoot: resolvedRoot,
-          delegate,
-        });
+        const discoveryEngine = (isSameRoot && delegate?.discoveryEngine)
+          ? delegate.discoveryEngine
+          : new ProjectDiscoveryEngine({
+              workspaceRoot: resolvedRoot,
+              delegate: isSameRoot ? delegate : undefined,
+            });
         discoveryReport = await discoveryEngine.discover();
       }
 
@@ -107,7 +114,9 @@ export function createClarificationCreateTool(
       });
 
       // Persist session
-      const store = delegate?.clarificationStore ?? new ClarificationStore({ baseDir: resolvedRoot });
+      const store = (isSameRoot && delegate?.clarificationStore)
+        ? delegate.clarificationStore
+        : new ClarificationStore({ baseDir: resolvedRoot });
       await store.saveSession(session);
 
       return {
@@ -158,9 +167,15 @@ export function createClarificationGetTool(
     handler: async (args: Record<string, unknown>, context: McpRequestContext) => {
       const parsed = getSessionInputSchema.parse(args ?? {});
       const delegate = context.delegate ?? defaultDelegate;
-      const resolvedRoot = parsed.workspaceRoot ?? delegate?.projectRoot ?? process.cwd();
+      const resolvedRoot = resolveTargetProjectRoot({
+        explicitRoot: parsed.workspaceRoot,
+        delegate,
+      });
+      const isSameRoot = delegate?.projectRoot === resolvedRoot;
 
-      const store = delegate?.clarificationStore ?? new ClarificationStore({ baseDir: resolvedRoot });
+      const store = (isSameRoot && delegate?.clarificationStore)
+        ? delegate.clarificationStore
+        : new ClarificationStore({ baseDir: resolvedRoot });
       const session = parsed.sessionId
         ? await store.loadSession(parsed.sessionId)
         : await store.getActiveSession();
@@ -260,9 +275,15 @@ export function createClarificationAnswerTool(
     handler: async (args: Record<string, unknown>, context: McpRequestContext) => {
       const parsed = answerClarificationInputSchema.parse(args ?? {});
       const delegate = context.delegate ?? defaultDelegate;
-      const resolvedRoot = parsed.workspaceRoot ?? delegate?.projectRoot ?? process.cwd();
+      const resolvedRoot = resolveTargetProjectRoot({
+        explicitRoot: parsed.workspaceRoot,
+        delegate,
+      });
+      const isSameRoot = delegate?.projectRoot === resolvedRoot;
 
-      const store = delegate?.clarificationStore ?? new ClarificationStore({ baseDir: resolvedRoot });
+      const store = (isSameRoot && delegate?.clarificationStore)
+        ? delegate.clarificationStore
+        : new ClarificationStore({ baseDir: resolvedRoot });
       const session = parsed.sessionId
         ? await store.loadSession(parsed.sessionId)
         : await store.getActiveSession();
@@ -337,9 +358,15 @@ export function createClarificationBlockingTool(
     handler: async (args: Record<string, unknown>, context: McpRequestContext) => {
       const parsed = blockingInputSchema.parse(args ?? {});
       const delegate = context.delegate ?? defaultDelegate;
-      const resolvedRoot = parsed.workspaceRoot ?? delegate?.projectRoot ?? process.cwd();
+      const resolvedRoot = resolveTargetProjectRoot({
+        explicitRoot: parsed.workspaceRoot,
+        delegate,
+      });
+      const isSameRoot = delegate?.projectRoot === resolvedRoot;
 
-      const store = delegate?.clarificationStore ?? new ClarificationStore({ baseDir: resolvedRoot });
+      const store = (isSameRoot && delegate?.clarificationStore)
+        ? delegate.clarificationStore
+        : new ClarificationStore({ baseDir: resolvedRoot });
       const session = parsed.sessionId
         ? await store.loadSession(parsed.sessionId)
         : await store.getActiveSession();
