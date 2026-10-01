@@ -19,11 +19,15 @@ import type { McpOrchestratorDelegate } from '../mcp-delegate.js';
 import { sanitizeMcpPayload } from '../mcp-errors.js';
 import { resolveTargetProjectRoot } from '../project-root-resolver.js';
 import { CompletenessGateEngine } from '../../discovery/completeness-gate-engine.js';
+import {
+  resolveCanonicalProjectIdentity,
+  validateCanonicalProjectId,
+} from '../../director/project-identity-resolver.js';
 
 export const AIDM_SPECIFICATION_COMPLETENESS_TOOL_NAME = 'aidm.specification.completeness.evaluate';
 
 const completenessInputSchema = z.object({
-  projectId: z.string().min(1, 'projectId cannot be empty'),
+  projectId: z.string().min(1, 'projectId cannot be empty').optional(),
   discoveryRevision: z.number().int().positive().optional(),
   workspaceRoot: z.string().optional(),
   forceReevaluate: z.boolean().optional(),
@@ -37,11 +41,10 @@ export const specificationCompletenessToolDefinition: McpToolDefinition = {
     'Evaluates specification completeness for a project discovery revision across all 15 material specification areas, producing an authoritative completeness gate result (COMPLETE, INCOMPLETE, BLOCKED_ON_HUMAN, NOT_APPLICABLE) with audit evidence, missing information, and pending human decisions.',
   inputSchema: {
     type: 'object',
-    required: ['projectId'],
     properties: {
       projectId: {
         type: 'string',
-        description: 'Canonical project identifier to evaluate.',
+        description: 'Optional canonical project identifier to evaluate. Defaults to active context or resolved target project identity.',
       },
       discoveryRevision: {
         type: 'integer',
@@ -72,6 +75,27 @@ export function createSpecificationCompletenessTool(
         delegate: activeDelegate,
         targetProjectId: parsed.projectId,
       });
+
+      // Canonical Project Identity resolution and validation
+      let canonicalProjectId: string;
+      if (parsed.projectId && parsed.projectId.trim().length > 0) {
+        canonicalProjectId = validateCanonicalProjectId(parsed.projectId);
+      } else if (activeDelegate?.activeContext?.projectId) {
+        canonicalProjectId = activeDelegate.activeContext.projectId;
+      } else {
+        canonicalProjectId = resolveCanonicalProjectIdentity(resolvedRoot).projectId;
+      }
+
+      // Propagate Active Project Context to delegate
+      activeDelegate?.setActiveContext?.({
+        projectId: canonicalProjectId,
+        projectRoot: resolvedRoot,
+        directorSessionId:
+          activeDelegate.activeContext?.projectId === canonicalProjectId
+            ? activeDelegate.activeContext.directorSessionId
+            : undefined,
+      });
+
       const isSameRoot = activeDelegate?.projectRoot === resolvedRoot;
 
       const engine =
@@ -86,7 +110,7 @@ export function createSpecificationCompletenessTool(
             });
 
       const result = await engine.evaluate({
-        projectId: parsed.projectId,
+        projectId: canonicalProjectId,
         discoveryRevision: parsed.discoveryRevision,
         workspaceRoot: resolvedRoot,
         forceReevaluate: parsed.forceReevaluate,

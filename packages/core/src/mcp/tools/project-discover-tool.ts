@@ -166,7 +166,7 @@ export function createProjectDiscoverTool(
       });
 
       // Backward compatibility: If called without projectId, prompt, progressive answers, or adaptive flag,
-      // return the ProjectDiscoveryReport format (e.g. for legacy Phase-8 callers like T19).
+      // expose both authoritative revision metadata AND legacy report fields (e.g. for legacy Phase-8 callers like T19).
       const isLegacyCall =
         !parsed.projectId &&
         naturalPrompt.length === 0 &&
@@ -182,7 +182,21 @@ export function createProjectDiscoverTool(
           maxFeatures: parsed.maxFeatures,
         });
 
-        const sanitizedReport = sanitizeMcpPayload(report);
+        // Expose BOTH authoritative revision metadata AND legacy discovery report fields
+        // so legacy callers (expecting report.projectIdentity, report.purpose, report.commands)
+        // and modern callers (expecting discoveryRevision, fingerprint, sections) are both fully satisfied.
+        const merged = {
+          ...revision,
+          ...report,
+          // Guarantee authoritative revision fields take precedence:
+          projectId: canonicalProjectId,
+          discoveryRevision: revision.discoveryRevision,
+          fingerprint: revision.fingerprint,
+          sections: revision.sections,
+          completeness: revision.completeness,
+        };
+
+        const sanitizedReport = sanitizeMcpPayload(merged);
         return {
           content: [
             {

@@ -22,13 +22,17 @@ import {
   AcceptanceCriteriaHumanDecisionZodSchema,
   AcceptanceCriteriaConflictZodSchema,
 } from '../../discovery/acceptance-criteria-types.js';
+import {
+  resolveCanonicalProjectIdentity,
+  validateCanonicalProjectId,
+} from '../../director/project-identity-resolver.js';
 
 export const AIDM_ACCEPTANCE_CRITERIA_DEFINE_TOOL_NAME = 'aidm.acceptance-criteria.define';
 export const AIDM_ACCEPTANCE_CRITERIA_GET_TOOL_NAME = 'aidm.acceptance-criteria.get';
 
 // Input schema for DEFINE
 const defineInputSchema = z.object({
-  projectId: z.string().min(1, 'projectId cannot be empty'),
+  projectId: z.string().min(1, 'projectId cannot be empty').optional(),
   requirementsRevision: z.number().int().positive().optional(),
   expectedRequirementsFingerprint: z.string().optional(),
   architectureRevision: z.number().int().positive().optional(),
@@ -52,11 +56,10 @@ export const acceptanceCriteriaDefineToolDefinition: McpToolDefinition = {
     'Transforms authoritative Requirements / Scope (P15-03), Architecture / Technology (P15-04), Business Rules (P15-05), and Discovery (P15-01) into an explicit, structured, revisioned Acceptance Criteria specification for project initiation. Defines observable behaviors, verification methods, human decision boundaries, coverage metrics, and requirement/rule/architecture traceability without implementation tasks or autonomous execution.',
   inputSchema: {
     type: 'object',
-    required: ['projectId'],
     properties: {
       projectId: {
         type: 'string',
-        description: 'Canonical project identifier.',
+        description: 'Optional canonical project identifier. Defaults to active context or resolved target project root identity.',
       },
       requirementsRevision: {
         type: 'integer',
@@ -149,6 +152,11 @@ export function createAcceptanceCriteriaDefineTool(
         delegate: activeDelegate,
         targetProjectId: parsed.projectId,
       });
+      const canonicalProjectId =
+        parsed.projectId ??
+        activeDelegate?.activeContext?.projectId ??
+        resolveCanonicalProjectIdentity(resolvedRoot).projectId;
+      validateCanonicalProjectId(canonicalProjectId);
       const isSameRoot = activeDelegate?.projectRoot === resolvedRoot;
 
       const engine =
@@ -167,7 +175,7 @@ export function createAcceptanceCriteriaDefineTool(
             });
 
       const result = await engine.derive({
-        projectId: parsed.projectId,
+        projectId: canonicalProjectId,
         requirementsRevision: parsed.requirementsRevision,
         expectedRequirementsFingerprint: parsed.expectedRequirementsFingerprint,
         architectureRevision: parsed.architectureRevision,
@@ -199,7 +207,7 @@ export function createAcceptanceCriteriaDefineTool(
 
 // Input schema for GET
 const getInputSchema = z.object({
-  projectId: z.string().min(1, 'projectId cannot be empty'),
+  projectId: z.string().min(1, 'projectId cannot be empty').optional(),
   revision: z.number().int().positive().optional(),
   workspaceRoot: z.string().optional(),
 });
@@ -212,11 +220,10 @@ export const acceptanceCriteriaGetToolDefinition: McpToolDefinition = {
     'Retrieves authoritative Acceptance Criteria specification by project ID and optional revision number (defaults to latest). Exposes criteria, verification methods, coverage statistics, pending human decisions, and traceability.',
   inputSchema: {
     type: 'object',
-    required: ['projectId'],
     properties: {
       projectId: {
         type: 'string',
-        description: 'Canonical project identifier.',
+        description: 'Optional canonical project identifier. Defaults to active context or resolved target project root identity.',
       },
       revision: {
         type: 'integer',
@@ -243,6 +250,11 @@ export function createAcceptanceCriteriaGetTool(
         delegate: activeDelegate,
         targetProjectId: parsed.projectId,
       });
+      const canonicalProjectId =
+        parsed.projectId ??
+        activeDelegate?.activeContext?.projectId ??
+        resolveCanonicalProjectIdentity(resolvedRoot).projectId;
+      validateCanonicalProjectId(canonicalProjectId);
       const isSameRoot = activeDelegate?.projectRoot === resolvedRoot;
 
       const engine =
@@ -262,10 +274,10 @@ export function createAcceptanceCriteriaGetTool(
 
       const result =
         parsed.revision !== undefined
-          ? await engine.getRevision(parsed.projectId, parsed.revision)
-          : await engine.getLatest(parsed.projectId);
+          ? await engine.getRevision(canonicalProjectId, parsed.revision)
+          : await engine.getLatest(canonicalProjectId);
 
-      const sanitized = sanitizeMcpPayload(result ?? { error: 'NOT_FOUND', projectId: parsed.projectId });
+      const sanitized = sanitizeMcpPayload(result ?? { error: 'NOT_FOUND', projectId: canonicalProjectId });
 
       return {
         content: [

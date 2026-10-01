@@ -21,6 +21,10 @@ import {
   ProjectRiskZodSchema,
   HumanDecisionPointZodSchema,
 } from '../../discovery/risk-human-decision-types.js';
+import {
+  resolveCanonicalProjectIdentity,
+  validateCanonicalProjectId,
+} from '../../director/project-identity-resolver.js';
 import type { McpServer } from '../mcp-server.js';
 
 export const AIDM_RISKS_DEFINE_TOOL_NAME = 'aidm.risks.define';
@@ -29,7 +33,7 @@ export const AIDM_HUMAN_DECISIONS_GET_TOOL_NAME = 'aidm.human-decisions.get';
 
 // Input schema for DEFINE
 const defineInputSchema = z.object({
-  projectId: z.string().min(1, 'projectId cannot be empty'),
+  projectId: z.string().min(1, 'projectId cannot be empty').optional(),
   discoveryRevision: z.number().int().positive().optional(),
   expectedDiscoveryFingerprint: z.string().optional(),
   requirementsRevision: z.number().int().positive().optional(),
@@ -53,11 +57,10 @@ export const risksDefineToolDefinition: McpToolDefinition = {
     'Transforms authoritative Discovery (P15-01), Requirements (P15-03), Architecture (P15-04), Business Rules (P15-05), and Acceptance Criteria (P15-06) into an explicit, revisioned project Risk and Human Decision Point specification for project initiation. Models risks, severity, probability, impact, response, traceability, and Product Owner decisions without implementation execution.',
   inputSchema: {
     type: 'object',
-    required: ['projectId'],
     properties: {
       projectId: {
         type: 'string',
-        description: 'Canonical project identifier.',
+        description: 'Optional canonical project identifier. Defaults to active context or resolved target project root identity.',
       },
       discoveryRevision: {
         type: 'integer',
@@ -134,6 +137,11 @@ export function createRisksDefineTool(
         delegate: activeDelegate,
         targetProjectId: parsed.projectId,
       });
+      const canonicalProjectId =
+        parsed.projectId ??
+        activeDelegate?.activeContext?.projectId ??
+        resolveCanonicalProjectIdentity(resolvedRoot).projectId;
+      validateCanonicalProjectId(canonicalProjectId);
       const isSameRoot = activeDelegate?.projectRoot === resolvedRoot;
 
       const engine =
@@ -152,7 +160,7 @@ export function createRisksDefineTool(
             });
 
       const result = await engine.derive({
-        projectId: parsed.projectId,
+        projectId: canonicalProjectId,
         discoveryRevision: parsed.discoveryRevision,
         expectedDiscoveryFingerprint: parsed.expectedDiscoveryFingerprint,
         requirementsRevision: parsed.requirementsRevision,
@@ -184,7 +192,7 @@ export function createRisksDefineTool(
 
 // Input schema for GET
 const getInputSchema = z.object({
-  projectId: z.string().min(1, 'projectId cannot be empty'),
+  projectId: z.string().min(1, 'projectId cannot be empty').optional(),
   revision: z.number().int().positive().optional(),
   workspaceRoot: z.string().optional(),
 });
@@ -197,11 +205,10 @@ export const risksGetToolDefinition: McpToolDefinition = {
     'Retrieves authoritative Project Risks specification by project ID and optional revision number (defaults to latest). Exposes risks, severity, probability, impact, response, coverage statistics, and traceability.',
   inputSchema: {
     type: 'object',
-    required: ['projectId'],
     properties: {
       projectId: {
         type: 'string',
-        description: 'Canonical project identifier.',
+        description: 'Optional canonical project identifier. Defaults to active context or resolved target project root identity.',
       },
       revision: {
         type: 'integer',
@@ -228,6 +235,11 @@ export function createRisksGetTool(
         delegate: activeDelegate,
         targetProjectId: parsed.projectId,
       });
+      const canonicalProjectId =
+        parsed.projectId ??
+        activeDelegate?.activeContext?.projectId ??
+        resolveCanonicalProjectIdentity(resolvedRoot).projectId;
+      validateCanonicalProjectId(canonicalProjectId);
       const isSameRoot = activeDelegate?.projectRoot === resolvedRoot;
 
       const engine =
@@ -247,10 +259,10 @@ export function createRisksGetTool(
 
       const result =
         parsed.revision !== undefined
-          ? await engine.getRevision(parsed.projectId, parsed.revision)
-          : await engine.getLatest(parsed.projectId);
+          ? await engine.getRevision(canonicalProjectId, parsed.revision)
+          : await engine.getLatest(canonicalProjectId);
 
-      const sanitized = sanitizeMcpPayload(result ?? { error: 'NOT_FOUND', projectId: parsed.projectId });
+      const sanitized = sanitizeMcpPayload(result ?? { error: 'NOT_FOUND', projectId: canonicalProjectId });
 
       return {
         content: [
@@ -270,11 +282,10 @@ export const humanDecisionsGetToolDefinition: McpToolDefinition = {
     'Retrieves authoritative Human Decision Points requiring Product Owner input prior to project approval. Strictly read-only inspection.',
   inputSchema: {
     type: 'object',
-    required: ['projectId'],
     properties: {
       projectId: {
         type: 'string',
-        description: 'Canonical project identifier.',
+        description: 'Optional canonical project identifier. Defaults to active context or resolved target project root identity.',
       },
       revision: {
         type: 'integer',
@@ -301,6 +312,11 @@ export function createHumanDecisionsGetTool(
         delegate: activeDelegate,
         targetProjectId: parsed.projectId,
       });
+      const canonicalProjectId =
+        parsed.projectId ??
+        activeDelegate?.activeContext?.projectId ??
+        resolveCanonicalProjectIdentity(resolvedRoot).projectId;
+      validateCanonicalProjectId(canonicalProjectId);
       const isSameRoot = activeDelegate?.projectRoot === resolvedRoot;
 
       const engine =
@@ -320,8 +336,8 @@ export function createHumanDecisionsGetTool(
 
       const result =
         parsed.revision !== undefined
-          ? await engine.getRevision(parsed.projectId, parsed.revision)
-          : await engine.getLatest(parsed.projectId);
+          ? await engine.getRevision(canonicalProjectId, parsed.revision)
+          : await engine.getLatest(canonicalProjectId);
 
       const output = result
         ? {
@@ -338,7 +354,7 @@ export function createHumanDecisionsGetTool(
               acceptanceCriteriaRevision: result.sourceAcceptanceCriteriaRevision,
             },
           }
-        : { error: 'NOT_FOUND', projectId: parsed.projectId };
+        : { error: 'NOT_FOUND', projectId: canonicalProjectId };
 
       const sanitized = sanitizeMcpPayload(output);
 

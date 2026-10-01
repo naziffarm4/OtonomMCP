@@ -34,6 +34,7 @@ import {
 import { AdaptiveDiscoveryStore } from '../dist/discovery/adaptive-discovery-store.js';
 import { RequirementsScopeStore } from '../dist/discovery/requirements-scope-store.js';
 import { CompletenessGateStore } from '../dist/discovery/completeness-gate-store.js';
+import { ExternalMcpClient } from './helpers/external-mcp-client.ts';
 
 describe('P18 Real External Project: Discovery Persistence, Context Propagation & Identity', () => {
   let tempBaseDir: string;
@@ -573,5 +574,256 @@ describe('P18 Real External Project: Discovery Persistence, Context Propagation 
     assert.ok(completeData.fingerprint);
 
     await server.stop();
+  });
+
+  // ============================================================================
+  // MANDATORY REGRESSION TEST 8: Canonical external discovery with workspaceRoot only (no projectId)
+  // followed by downstream requirements.scope.define with workspaceRoot only (no projectId)
+  // ============================================================================
+  it('MANDATORY REGRESSION TEST 8: Canonical external discovery with workspaceRoot only unblocks downstream define', async () => {
+    const canonicalAppDir = path.join(tempBaseDir, 'canonical-external-app');
+    await fs.mkdir(canonicalAppDir, { recursive: true });
+    await fs.writeFile(
+      path.join(canonicalAppDir, 'package.json'),
+      JSON.stringify({ name: 'canonical-external-app', version: '0.1.0' }, null, 2)
+    );
+
+    const delegate = new DefaultMcpOrchestratorDelegate();
+    const transport = new InMemoryMcpTransport();
+    const server = new McpServer({
+      transport,
+      delegate,
+      discoveryTools: true,
+      requirementsScopeTools: true,
+    });
+    await server.start();
+
+    // 1. aidm.project.discover with ONLY workspaceRoot (no projectId)
+    const discoverReq: McpRequestEnvelope = {
+      jsonrpc: '2.0',
+      id: 201,
+      method: 'tools/call',
+      params: {
+        name: AIDM_PROJECT_DISCOVER_TOOL_NAME,
+        arguments: {
+          workspaceRoot: canonicalAppDir,
+        },
+      },
+    };
+
+    const discoverRes = (await server.handleMessage(discoverReq)) as McpSuccessResponseEnvelope<{
+      content: Array<{ type: string; text: string }>;
+    }>;
+
+    assert.ok(discoverRes.result?.content?.[0]?.text, 'Discover should return text');
+    const discRev = JSON.parse(discoverRes.result.content[0].text);
+
+    // Verify canonical project ID resolved from root, revision 1, fingerprint, sections, completeness
+    assert.equal(discRev.projectId, 'canonical-external-app');
+    assert.equal(discRev.discoveryRevision, 1);
+    assert.ok(typeof discRev.fingerprint === 'string' && discRev.fingerprint.length === 64);
+    assert.ok(discRev.sections, 'Response must expose sections');
+    assert.ok(discRev.completeness, 'Response must expose completeness');
+
+    // Verify target-project .ai-manager isolation and latest.json persistence
+    const targetLatestPath = path.join(
+      canonicalAppDir,
+      '.ai-manager',
+      'project-discovery',
+      'records',
+      'canonical-external-app',
+      'latest.json'
+    );
+    const targetRev1Path = path.join(
+      canonicalAppDir,
+      '.ai-manager',
+      'project-discovery',
+      'records',
+      'canonical-external-app',
+      'rev-1.json'
+    );
+    assert.ok(fsSync.existsSync(targetLatestPath), 'latest.json must be persisted on disk');
+    assert.ok(fsSync.existsSync(targetRev1Path), 'rev-1.json must be persisted on disk');
+
+    const latestJson = JSON.parse(await fs.readFile(targetLatestPath, 'utf-8'));
+    assert.equal(latestJson.discoveryRevision, 1);
+    assert.equal(latestJson.fingerprint, discRev.fingerprint);
+
+    // Verify active project context was bound
+    assert.equal(delegate.activeContext?.projectId, 'canonical-external-app');
+    assert.equal(delegate.activeContext?.projectRoot, canonicalAppDir);
+
+    // Verify NO dependency on Director session
+    assert.equal(delegate.activeDirectorSession, undefined);
+
+    // 2. Downstream aidm.requirements.scope.define with ONLY workspaceRoot (no projectId)
+    const reqScopeReq: McpRequestEnvelope = {
+      jsonrpc: '2.0',
+      id: 202,
+      method: 'tools/call',
+      params: {
+        name: AIDM_REQUIREMENTS_SCOPE_DEFINE_TOOL_NAME,
+        arguments: {
+          workspaceRoot: canonicalAppDir,
+        },
+      },
+    };
+
+    const reqScopeRes = (await server.handleMessage(reqScopeReq)) as McpSuccessResponseEnvelope<{
+      content: Array<{ type: string; text: string }>;
+    }>;
+
+    assert.ok(reqScopeRes.result?.content?.[0]?.text, 'Requirements define should succeed');
+    const reqScopeData = JSON.parse(reqScopeRes.result.content[0].text);
+    assert.equal(reqScopeData.projectId, 'canonical-external-app');
+    assert.equal(reqScopeData.requirementsRevision, 1);
+    assert.equal(reqScopeData.sourceDiscoveryRevision, 1);
+    assert.ok(reqScopeData.fingerprint);
+
+    // Verify requirements state was persisted in target .ai-manager
+    const reqLatestPath = path.join(
+      canonicalAppDir,
+      '.ai-manager',
+      'project-requirements',
+      'records',
+      'canonical-external-app',
+      'latest.json'
+    );
+    assert.ok(fsSync.existsSync(reqLatestPath), 'Requirements latest.json must be persisted');
+
+    // 3. Explicit workspaceRoot mismatch fails closed
+    const conflictReq: McpRequestEnvelope = {
+      jsonrpc: '2.0',
+      id: 203,
+      method: 'tools/call',
+      params: {
+        name: AIDM_REQUIREMENTS_SCOPE_DEFINE_TOOL_NAME,
+        arguments: {
+          workspaceRoot: targetDirB, // Conflicting root
+        },
+      },
+    };
+
+    const conflictRes = (await server.handleMessage(conflictReq)) as McpErrorResponseEnvelope;
+    assert.ok(conflictRes.error, 'Conflicting workspaceRoot must fail closed');
+    assert.ok(conflictRes.error.message.includes('conflicts with active context projectRoot'));
+
+    await server.stop();
+  });
+
+  // ============================================================================
+  // MANDATORY REGRESSION TEST 9: Real stdio transport lifecycle, persistent daemon & restart verification
+  // ============================================================================
+  it('MANDATORY REGRESSION TEST 9: Real stdio process lifecycle differentiates persistent daemon vs restart', async () => {
+    const stdioAppDir = path.join(tempBaseDir, 'stdio-lifecycle-app');
+    await fs.mkdir(stdioAppDir, { recursive: true });
+    await fs.writeFile(
+      path.join(stdioAppDir, 'package.json'),
+      JSON.stringify({ name: 'stdio-lifecycle-app', version: '1.0.0' }, null, 2)
+    );
+
+    // 1. Start real MCP server child process over stdio
+    const client = new ExternalMcpClient({
+      projectRoot: stdioAppDir,
+    });
+    await client.start();
+
+    assert.ok(client.isRunning, 'Stdio server process must be running');
+    const initialPid = client.serverPid;
+    assert.ok(typeof initialPid === 'number' && initialPid > 0);
+
+    // Initialize MCP handshake over stdio
+    const initRes = await client.request('initialize', {
+      protocolVersion: '2024-11-05',
+      capabilities: {},
+      clientInfo: { name: 'test-antigravity-client', version: '1.0.0' },
+    });
+    assert.equal(initRes.error, undefined);
+    await client.notify('notifications/initialized');
+
+    // 2. Discover via stdio with ONLY workspaceRoot (no projectId)
+    const discRes = await client.request<{
+      content: Array<{ type: string; text: string }>;
+    }>('tools/call', {
+      name: AIDM_PROJECT_DISCOVER_TOOL_NAME,
+      arguments: {
+        workspaceRoot: stdioAppDir,
+      },
+    });
+
+    assert.equal(discRes.error, undefined);
+    assert.ok(discRes.result?.content?.[0]?.text);
+    const discData = JSON.parse(discRes.result.content[0].text);
+    assert.equal(discData.projectId, 'stdio-lifecycle-app');
+    assert.equal(discData.discoveryRevision, 1);
+    assert.ok(discData.fingerprint);
+
+    // Verify on-disk persistence
+    const discLatest = path.join(
+      stdioAppDir,
+      '.ai-manager',
+      'project-discovery',
+      'records',
+      'stdio-lifecycle-app',
+      'latest.json'
+    );
+    assert.ok(fsSync.existsSync(discLatest), 'Discovery latest.json must be persisted by stdio server');
+
+    // 3. Persistent Daemon Check: subsequent downstream call uses the SAME running server process
+    assert.equal(client.serverPid, initialPid, 'Server PID must remain identical across requests (persistent daemon)');
+
+    const reqDefineRes = await client.request<{
+      content: Array<{ type: string; text: string }>;
+    }>('tools/call', {
+      name: AIDM_REQUIREMENTS_SCOPE_DEFINE_TOOL_NAME,
+      arguments: {
+        workspaceRoot: stdioAppDir,
+      },
+    });
+
+    assert.equal(reqDefineRes.error, undefined);
+    assert.ok(reqDefineRes.result?.content?.[0]?.text);
+    const reqData = JSON.parse(reqDefineRes.result.content[0].text);
+    assert.equal(reqData.projectId, 'stdio-lifecycle-app');
+    assert.equal(reqData.requirementsRevision, 1);
+    assert.equal(reqData.sourceDiscoveryRevision, 1);
+
+    // 4. Stale daemon distinction: stop old server, verify process termination
+    const stopResult = await client.stop();
+    assert.equal(stopResult.exitCode, 0, 'Server process must terminate cleanly');
+    assert.equal(client.isRunning, false);
+
+    // 5. Fresh daemon cold-start: new process loads persisted disk state without re-running discovery
+    const freshClient = new ExternalMcpClient({
+      projectRoot: stdioAppDir,
+    });
+    await freshClient.start();
+    assert.ok(freshClient.isRunning);
+    assert.notEqual(freshClient.serverPid, initialPid, 'Fresh server must have a distinct PID');
+
+    await freshClient.request('initialize', {
+      protocolVersion: '2024-11-05',
+      capabilities: {},
+      clientInfo: { name: 'fresh-client', version: '1.0.0' },
+    });
+    await freshClient.notify('notifications/initialized');
+
+    // Query requirements get tool without re-discovering
+    const getRes = await freshClient.request<{
+      content: Array<{ type: string; text: string }>;
+    }>('tools/call', {
+      name: AIDM_REQUIREMENTS_SCOPE_GET_TOOL_NAME,
+      arguments: {
+        workspaceRoot: stdioAppDir,
+      },
+    });
+
+    assert.equal(getRes.error, undefined);
+    assert.ok(getRes.result?.content?.[0]?.text);
+    const getData = JSON.parse(getRes.result.content[0].text);
+    assert.equal(getData.projectId, 'stdio-lifecycle-app');
+    assert.equal(getData.requirementsRevision, 1);
+
+    await freshClient.stop();
   });
 });

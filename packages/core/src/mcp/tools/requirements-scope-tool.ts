@@ -18,13 +18,17 @@ import { sanitizeMcpPayload } from '../mcp-errors.js';
 import { resolveTargetProjectRoot } from '../project-root-resolver.js';
 import { RequirementsScopeEngine } from '../../discovery/requirements-scope-engine.js';
 import { ScopeAssumptionZodSchema } from '../../discovery/requirements-scope-types.js';
+import {
+  resolveCanonicalProjectIdentity,
+  validateCanonicalProjectId,
+} from '../../director/project-identity-resolver.js';
 
 export const AIDM_REQUIREMENTS_SCOPE_DEFINE_TOOL_NAME = 'aidm.requirements.scope.define';
 export const AIDM_REQUIREMENTS_SCOPE_GET_TOOL_NAME = 'aidm.requirements.scope.get';
 
 // Input schema for DEFINE
 const defineInputSchema = z.object({
-  projectId: z.string().min(1, 'projectId cannot be empty'),
+  projectId: z.string().min(1, 'projectId cannot be empty').optional(),
   discoveryRevision: z.number().int().positive().optional(),
   expectedDiscoveryFingerprint: z.string().optional(),
   workspaceRoot: z.string().optional(),
@@ -39,11 +43,10 @@ export const requirementsScopeDefineToolDefinition: McpToolDefinition = {
     'Transforms discovered project understanding into an explicit, structured, revisioned Requirements & Scope specification for project initiation. Extracts purpose, target users, in-scope, out-of-scope, undecided items, functional requirements with canonical IDs, non-functional requirements, constraints, assumptions, open questions, and pending human decisions.',
   inputSchema: {
     type: 'object',
-    required: ['projectId'],
     properties: {
       projectId: {
         type: 'string',
-        description: 'Canonical project identifier.',
+        description: 'Optional canonical project identifier. Defaults to active project context or resolved target project root identity.',
       },
       discoveryRevision: {
         type: 'integer',
@@ -89,6 +92,27 @@ export function createRequirementsScopeDefineTool(
         delegate: activeDelegate,
         targetProjectId: parsed.projectId,
       });
+
+      // Canonical Project Identity resolution and validation
+      let canonicalProjectId: string;
+      if (parsed.projectId && parsed.projectId.trim().length > 0) {
+        canonicalProjectId = validateCanonicalProjectId(parsed.projectId);
+      } else if (activeDelegate?.activeContext?.projectId) {
+        canonicalProjectId = activeDelegate.activeContext.projectId;
+      } else {
+        canonicalProjectId = resolveCanonicalProjectIdentity(resolvedRoot).projectId;
+      }
+
+      // Propagate Active Project Context to delegate
+      activeDelegate?.setActiveContext?.({
+        projectId: canonicalProjectId,
+        projectRoot: resolvedRoot,
+        directorSessionId:
+          activeDelegate.activeContext?.projectId === canonicalProjectId
+            ? activeDelegate.activeContext.directorSessionId
+            : undefined,
+      });
+
       const isSameRoot = activeDelegate?.projectRoot === resolvedRoot;
 
       const engine =
@@ -104,7 +128,7 @@ export function createRequirementsScopeDefineTool(
             });
 
       const result = await engine.derive({
-        projectId: parsed.projectId,
+        projectId: canonicalProjectId,
         discoveryRevision: parsed.discoveryRevision,
         expectedDiscoveryFingerprint: parsed.expectedDiscoveryFingerprint,
         workspaceRoot: resolvedRoot,
@@ -127,7 +151,7 @@ export function createRequirementsScopeDefineTool(
 
 // Input schema for GET
 const getInputSchema = z.object({
-  projectId: z.string().min(1, 'projectId cannot be empty'),
+  projectId: z.string().min(1, 'projectId cannot be empty').optional(),
   revision: z.number().int().positive().optional(),
   workspaceRoot: z.string().optional(),
 });
@@ -140,11 +164,10 @@ export const requirementsScopeGetToolDefinition: McpToolDefinition = {
     'Retrieves authoritative Requirements & Scope specification by project ID and optional revision number (defaults to latest).',
   inputSchema: {
     type: 'object',
-    required: ['projectId'],
     properties: {
       projectId: {
         type: 'string',
-        description: 'Canonical project identifier.',
+        description: 'Optional canonical project identifier.',
       },
       revision: {
         type: 'integer',
@@ -171,6 +194,17 @@ export function createRequirementsScopeGetTool(
         delegate: activeDelegate,
         targetProjectId: parsed.projectId,
       });
+
+      // Canonical Project Identity resolution and validation
+      let canonicalProjectId: string;
+      if (parsed.projectId && parsed.projectId.trim().length > 0) {
+        canonicalProjectId = validateCanonicalProjectId(parsed.projectId);
+      } else if (activeDelegate?.activeContext?.projectId) {
+        canonicalProjectId = activeDelegate.activeContext.projectId;
+      } else {
+        canonicalProjectId = resolveCanonicalProjectIdentity(resolvedRoot).projectId;
+      }
+
       const isSameRoot = activeDelegate?.projectRoot === resolvedRoot;
 
       const engine =
@@ -187,10 +221,10 @@ export function createRequirementsScopeGetTool(
 
       const result =
         parsed.revision !== undefined
-          ? await engine.getRevision(parsed.projectId, parsed.revision)
-          : await engine.getLatest(parsed.projectId);
+          ? await engine.getRevision(canonicalProjectId, parsed.revision)
+          : await engine.getLatest(canonicalProjectId);
 
-      const sanitized = sanitizeMcpPayload(result ?? { error: 'NOT_FOUND', projectId: parsed.projectId });
+      const sanitized = sanitizeMcpPayload(result ?? { error: 'NOT_FOUND', projectId: canonicalProjectId });
 
       return {
         content: [
