@@ -1095,7 +1095,7 @@ describe('Phase 17 — Autonomous Driver', { concurrency: 1 }, () => {
 
     // Verify tools registered do not include any shell or bash execution
     const tools = server.getRegisteredTools();
-    const toolNames = tools.map((t) => t.name);
+    const toolNames = tools.flatMap((t: any) => [t.name, t.internalName].filter(Boolean));
 
     assert.ok(!toolNames.includes('bash'));
     assert.ok(!toolNames.includes('sh'));

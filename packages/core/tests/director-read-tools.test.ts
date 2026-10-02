@@ -148,12 +148,12 @@ describe('Phase 8 Director Read-Only MCP Tools (TASK-P8-02)', () => {
     const registered = listRes.result.tools;
     assert.equal(registered.length, 10);
 
-    const registeredNames = registered.map((t) => t.name);
-    assert.ok(registeredNames.includes(AIDM_HEALTH_TOOL_NAME));
+    const registeredNames = registered.flatMap((t: any) => [t.name, t.internalName].filter(Boolean));
+    assert.ok(registeredNames.includes(AIDM_HEALTH_TOOL_NAME) || registeredNames.includes('aidm_health'));
 
     for (const name of DIRECTOR_READ_TOOL_NAMES) {
       assert.ok(registeredNames.includes(name), `Missing tool registration: ${name}`);
-      const toolDef = registered.find((t) => t.name === name)!;
+      const toolDef = registered.find((t: any) => t.name === name || t.internalName === name)!;
       assert.ok(toolDef.description.toLowerCase().includes('read-only'), `${name} description must declare read-only`);
       assert.ok(toolDef.inputSchema, `${name} must have inputSchema`);
     }

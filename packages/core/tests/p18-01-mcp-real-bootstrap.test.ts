@@ -91,13 +91,13 @@ describe('P18-01: Real MCP Server + External Client Bootstrap', () => {
     assert.ok(tools.length >= 30, `Expected >= 30 registered tools, observed ${tools.length}`);
 
     // Verify key canonical tools exist
-    const toolNames = new Set(tools.map((t) => t.name));
-    assert.ok(toolNames.has('aidm.health'), 'aidm.health must be registered');
-    assert.ok(toolNames.has('aidm.project.status'), 'aidm.project.status must be registered');
-    assert.ok(toolNames.has('aidm.git.status'), 'aidm.git.status must be registered');
-    assert.ok(toolNames.has('aidm.tasks.list'), 'aidm.tasks.list must be registered');
-    assert.ok(toolNames.has('aidm.project.discover'), 'aidm.project.discover must be registered');
-    assert.ok(toolNames.has('aidm.director.session.create'), 'aidm.director.session.create must be registered');
+    const toolNames = new Set(tools.flatMap((t: any) => [t.name, t.internalName].filter(Boolean)));
+    assert.ok(toolNames.has('aidm.health') || toolNames.has('aidm_health'), 'aidm.health must be registered');
+    assert.ok(toolNames.has('aidm.project.status') || toolNames.has('aidm_project_status'), 'aidm.project.status must be registered');
+    assert.ok(toolNames.has('aidm.git.status') || toolNames.has('aidm_git_status'), 'aidm.git.status must be registered');
+    assert.ok(toolNames.has('aidm.tasks.list') || toolNames.has('aidm_tasks_list'), 'aidm.tasks.list must be registered');
+    assert.ok(toolNames.has('aidm.project.discover') || toolNames.has('aidm_project_discover'), 'aidm.project.discover must be registered');
+    assert.ok(toolNames.has('aidm.director.session.create') || toolNames.has('aidm_director_session_create'), 'aidm.director.session.create must be registered');
 
     // Verify schemas are valid
     for (const tool of tools) {

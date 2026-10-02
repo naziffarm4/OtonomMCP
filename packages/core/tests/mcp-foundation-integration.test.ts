@@ -506,11 +506,10 @@ Robust financial transaction processing system with strict idempotency and audit
 
     const tools = listRes.result.tools;
     assert.equal(tools.length, 20, 'Expected exactly 20 tools registered when all Phase 8 tools are enabled');
-
-    const toolNames = new Set(tools.map((t) => t.name));
+    const toolNames = new Set(tools.flatMap((t: any) => [t.name, t.internalName].filter(Boolean) as string[]));
 
     // Health
-    assert.ok(toolNames.has(AIDM_HEALTH_TOOL_NAME));
+    assert.ok(toolNames.has(AIDM_HEALTH_TOOL_NAME) || toolNames.has('aidm_health'));
 
     // Read tools (9)
     for (const readTool of DIRECTOR_READ_TOOL_NAMES) {
