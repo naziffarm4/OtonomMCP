@@ -19,6 +19,7 @@ import type {
   ClarificationAnswerType,
 } from './clarification-types.js';
 import { ClarificationValidationError } from './clarification-errors.js';
+import { isUndecidedChoice } from '../discovery/adaptive-discovery-normalizer.js';
 
 const PROHIBITED_EXECUTION_PATTERNS = [
   /<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/i,
@@ -93,7 +94,15 @@ export class AnswerValidator {
     let status: ClarificationAnswerStatus = input.status ?? 'ANSWERED';
     let answerType: ClarificationAnswerType = input.answerType ?? 'OPTION_SELECTION';
 
-    if (input.answerType === 'DEFERRED' || input.status === 'DEFERRED') {
+    const isUndecided =
+      input.status === 'UNDECIDED' ||
+      input.answerType === 'UNDECIDED' ||
+      isUndecidedChoice(input.freeFormResponse, input.selectedOptions);
+
+    if (isUndecided) {
+      status = 'UNDECIDED';
+      answerType = 'UNDECIDED';
+    } else if (input.answerType === 'DEFERRED' || input.status === 'DEFERRED') {
       status = 'DEFERRED';
       answerType = 'DEFERRED';
     } else if (input.answerType === 'REJECTED' || input.status === 'REJECTED') {
@@ -119,7 +128,7 @@ export class AnswerValidator {
     const rawFreeForm = typeof input.freeFormResponse === 'string' ? input.freeFormResponse.trim() : '';
     const hasFreeForm = rawFreeForm.length > 0;
 
-    if (status === 'ANSWERED') {
+    if (status === 'ANSWERED' || status === 'UNDECIDED') {
       if (!hasSelectedOptions && !hasFreeForm) {
         throw new ClarificationValidationError(
           `Clarification answer for '${question.clarificationId}' must provide either selected option(s) or a free-form response`,
@@ -131,8 +140,10 @@ export class AnswerValidator {
 
     // 6. Free-form validation
     let sanitizedFreeForm: string | undefined;
+    const hasOtherOptionSelected = hasSelectedOptions && input.selectedOptions!.some((o) => /^other\b/i.test(o.trim()) || o.trim().toLowerCase() === 'diğer');
+
     if (hasFreeForm) {
-      if (!question.allowsFreeFormAnswer) {
+      if (!question.allowsFreeFormAnswer && !hasOtherOptionSelected && !isUndecided) {
         throw new ClarificationValidationError(
           `Free-form answers are prohibited for clarification question '${question.clarificationId}'`,
           'FREE_FORM_PROHIBITED',
@@ -151,7 +162,8 @@ export class AnswerValidator {
       const allowed = question.options ?? [];
       for (const selected of input.selectedOptions!) {
         const sanitizedSelected = this.sanitizeText(selected);
-        if (allowed.length > 0 && !allowed.includes(sanitizedSelected)) {
+        const isOther = /^other\b/i.test(sanitizedSelected) || sanitizedSelected.toLowerCase() === 'diğer' || sanitizedSelected.toLowerCase() === 'none';
+        if (allowed.length > 0 && !allowed.includes(sanitizedSelected) && !isOther) {
           throw new ClarificationValidationError(
             `Option '${sanitizedSelected}' is not a valid option for question '${question.clarificationId}'. Allowed: ${allowed.join(', ')}`,
             'INVALID_OPTION',

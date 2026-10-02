@@ -94,7 +94,7 @@ export const UndecidedScopeItemZodSchema = z.object({
   topic: z.string().min(1, 'topic cannot be empty'),
   description: z.string().min(1, 'description cannot be empty'),
   availableOptions: z.array(z.string()).default([]),
-  status: z.literal('PENDING_DECISION').default('PENDING_DECISION'),
+  status: z.enum(['PENDING_DECISION', 'UNDECIDED', 'PROPOSED']).default('PENDING_DECISION'),
   whyItMatters: z.string().min(1, 'whyItMatters cannot be empty'),
   affectedAreas: z.array(z.string()).default([]),
 });
@@ -198,7 +198,7 @@ export const ScopeOpenQuestionZodSchema = z.object({
   affectedAreas: z.array(z.string()).default([]),
   classification: ScopeQuestionClassificationZodSchema,
   availableOptions: z.array(z.string()).default([]),
-  status: z.enum(['OPEN', 'PENDING_DECISION', 'RESOLVED']),
+  status: z.enum(['OPEN', 'PENDING_DECISION', 'RESOLVED', 'UNDECIDED', 'PROPOSED']),
 });
 
 export type ScopeOpenQuestion = z.infer<typeof ScopeOpenQuestionZodSchema>;
@@ -215,7 +215,7 @@ export const ScopeHumanDecisionZodSchema = z.object({
   availableOptions: z.array(z.string()).default([]),
   recommendedOption: z.string().optional(),
   authority: z.literal(Actor.USER).default(Actor.USER),
-  status: z.literal('PENDING_DECISION').default('PENDING_DECISION'),
+  status: z.enum(['PENDING_DECISION', 'DECIDED', 'CONFIRMED', 'UNDECIDED', 'PROPOSED', 'OPEN', 'REJECTED']).default('PENDING_DECISION'),
 });
 
 export type ScopeHumanDecision = z.infer<typeof ScopeHumanDecisionZodSchema>;

@@ -149,6 +149,7 @@ export const TECHNOLOGY_SELECTION_STATUSES = [
   'SELECTED',
   'CANDIDATE',
   'UNDECIDED',
+  'PROPOSED',
 ] as const;
 
 export type TechnologySelectionStatus = (typeof TECHNOLOGY_SELECTION_STATUSES)[number];
@@ -306,9 +307,14 @@ export type ArchitectureDecisionArea = (typeof ARCHITECTURE_DECISION_AREAS)[numb
 
 export const ARCHITECTURE_DECISION_STATUSES = [
   'DECIDED',
+  'CONFIRMED',
   'CONSTRAINED',
   'CANDIDATE',
   'PENDING_DECISION',
+  'UNDECIDED',
+  'PROPOSED',
+  'OPEN',
+  'REJECTED',
   'NOT_APPLICABLE',
 ] as const;
 
@@ -344,7 +350,7 @@ export const ArchitectureHumanDecisionZodSchema = z.object({
   availableOptions: z.array(z.string()).default([]),
   consequences: z.array(z.string()).default([]),
   authority: z.literal(Actor.USER).default(Actor.USER),
-  status: z.literal('PENDING_DECISION').default('PENDING_DECISION'),
+  status: z.enum(['PENDING_DECISION', 'DECIDED', 'CONFIRMED', 'UNDECIDED', 'PROPOSED', 'OPEN', 'REJECTED']).default('PENDING_DECISION'),
 });
 
 export type ArchitectureHumanDecision = z.infer<

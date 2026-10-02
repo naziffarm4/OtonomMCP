@@ -37,6 +37,7 @@ import {
   type DiscoverySections,
   type FunctionalRequirementItem,
   type HumanDecisionPoint,
+  type HumanDecisionStatus,
   type DiscoveryQuestion,
   type DiscoveryRisk,
   type DiscoveryCompletenessInfo,
@@ -54,6 +55,7 @@ import {
   createDeterministicDecisionId,
   createDeterministicRequirementId,
   computeDeterministicFingerprint,
+  isUndecidedChoice,
 } from './adaptive-discovery-normalizer.js';
 
 export interface AdaptiveDiscoveryEngineOptions {
@@ -155,10 +157,11 @@ export class AdaptiveDiscoveryEngine {
       for (const d of previousRevision.decisions) {
         const chosen = input.decidedHumanDecisions?.[d.id] ?? d.selectedOption;
         if (chosen) {
+          const isUndecided = isUndecidedChoice(chosen);
           allDecisionsMap.set(d.id, {
             ...d,
-            status: 'DECIDED',
-            selectedOption: chosen,
+            status: isUndecided ? 'UNDECIDED' : 'CONFIRMED',
+            selectedOption: isUndecided ? undefined : chosen,
           });
         } else {
           allDecisionsMap.set(d.id, d);
@@ -458,11 +461,43 @@ export class AdaptiveDiscoveryEngine {
       ...(ext?.technology.prohibitedTechnologies ?? []),
       ...(exp?.technology?.prohibitedTechnologies ?? []),
     ]);
-    const platformConstraints = deduplicateStrings([
+    // Ingest confirmed platforms from answers or decisions if present
+    const additionalPlatforms: string[] = [];
+    if (params.resolvedAnswers) {
+      for (const ans of Object.values(params.resolvedAnswers)) {
+        if (!isUndecidedChoice(ans)) {
+          const lowerAns = ans.toLowerCase();
+          if (lowerAns.includes('web')) additionalPlatforms.push('Web / Browser');
+          else if (lowerAns.includes('mobile')) additionalPlatforms.push('Mobile (iOS/Android responsive or native)');
+          else if (lowerAns.includes('desktop')) additionalPlatforms.push('Desktop');
+          else if (lowerAns.includes('cli') || lowerAns.includes('command line')) additionalPlatforms.push('CLI / Terminal');
+        }
+      }
+    }
+    if (params.decidedHumanDecisions) {
+      for (const choice of Object.values(params.decidedHumanDecisions)) {
+        if (!isUndecidedChoice(choice)) {
+          const lowerChoice = choice.toLowerCase();
+          if (lowerChoice.includes('web')) additionalPlatforms.push('Web / Browser');
+          else if (lowerChoice.includes('mobile')) additionalPlatforms.push('Mobile (iOS/Android responsive or native)');
+          else if (lowerChoice.includes('desktop')) additionalPlatforms.push('Desktop');
+          else if (lowerChoice.includes('cli') || lowerChoice.includes('command line')) additionalPlatforms.push('CLI / Terminal');
+        }
+      }
+    }
+
+    const hasUndecidedPlatformAnswer =
+      Object.entries(params.resolvedAnswers ?? {}).some(([k, v]) => (k.toLowerCase().includes('platform') || k.toLowerCase().includes('tech')) && isUndecidedChoice(v)) ||
+      Object.entries(params.decidedHumanDecisions ?? {}).some(([k, v]) => (k.toLowerCase().includes('platform') || k.toLowerCase().includes('tech')) && isUndecidedChoice(v));
+
+    const rawPlatformConstraints = deduplicateStrings([
       ...(prev?.technology.platformConstraints ?? []),
       ...(ext?.technology.platformConstraints ?? []),
       ...(exp?.technology?.platformConstraints ?? []),
+      ...additionalPlatforms,
     ]);
+
+    const platformConstraints = hasUndecidedPlatformAnswer ? [] : rawPlatformConstraints;
 
     // 6. ARCHITECTURE
     const architecturalConstraints = deduplicateStrings([
@@ -608,6 +643,7 @@ export class AdaptiveDiscoveryEngine {
         params.dependentSection
       );
       const answer = resolvedAnswers[id];
+      const isUndecided = isUndecidedChoice(answer);
       questions.push({
         id,
         question: params.question,
@@ -618,9 +654,9 @@ export class AdaptiveDiscoveryEngine {
         requiredDecision: params.requiredDecision,
         dependentSection: params.dependentSection,
         impact: params.impact,
-        options: params.options,
+        options: params.options ? (params.options.includes('Other') ? params.options : [...params.options, 'Other']) : undefined,
         resolvedAnswer: answer,
-        status: answer ? 'RESOLVED' : 'OPEN',
+        status: answer ? (isUndecided ? 'UNDECIDED' : 'RESOLVED') : 'OPEN',
       });
     };
 
@@ -635,6 +671,20 @@ export class AdaptiveDiscoveryEngine {
     }) => {
       const id = createDeterministicDecisionId(params.title, params.alternatives);
       const chosen = decidedHumanDecisions[id];
+      const isUndecided = isUndecidedChoice(chosen);
+      const isConfirmed = Boolean(chosen && !isUndecided && (params.alternatives.includes(chosen) || !isUndecidedChoice(chosen)));
+
+      let status: HumanDecisionStatus = 'PENDING_DECISION';
+      if (isConfirmed) {
+        status = 'CONFIRMED';
+      } else if (chosen && isUndecided) {
+        status = 'UNDECIDED';
+      } else if (params.recommendedOption) {
+        status = 'PROPOSED';
+      } else {
+        status = 'OPEN';
+      }
+
       decisions.push({
         id,
         title: params.title,
@@ -644,8 +694,8 @@ export class AdaptiveDiscoveryEngine {
         recommendedOption: params.recommendedOption,
         rationale: params.rationale,
         authority: 'USER',
-        status: chosen ? 'DECIDED' : 'PENDING_DECISION',
-        selectedOption: chosen,
+        status,
+        selectedOption: isConfirmed ? chosen : undefined,
       });
     };
 
@@ -666,6 +716,20 @@ export class AdaptiveDiscoveryEngine {
     // 2. Platform / Runtime Constraints
     // RULE: If platform is already specified, do NOT ask for it!
     if (sections.technology.platformConstraints.length === 0) {
+      addDecision({
+        title: 'Target Platform & Interface Selection',
+        description: 'Choose the primary target runtime platform and application interface.',
+        affectedAreas: ['technology choice', 'architecture', 'implementation scope'],
+        alternatives: [
+          'Web Application',
+          'Mobile Application (iOS/Android)',
+          'Desktop Application',
+          'Command Line Tool (CLI)',
+        ],
+        recommendedOption: 'Web Application',
+        rationale: 'Provides broadest cross-platform accessibility with zero client installation.',
+      });
+
       addQuestion({
         category: 'TECHNOLOGY',
         question: 'What is the primary target runtime platform (e.g. Web, Mobile, Desktop, CLI)?',
@@ -675,7 +739,7 @@ export class AdaptiveDiscoveryEngine {
         requiredDecision: 'Select target platform',
         dependentSection: 'technology',
         impact: 'Cannot determine client stack or test targets without platform specification.',
-        options: ['Web Application', 'Mobile Application (iOS/Android)', 'Desktop Application', 'Command Line Tool (CLI)'],
+        options: ['Web Application', 'Mobile Application (iOS/Android)', 'Desktop Application', 'Command Line Tool (CLI)', 'Other'],
       });
     }
 
@@ -855,11 +919,11 @@ export class AdaptiveDiscoveryEngine {
    */
   private computeCompleteness(sections: DiscoverySections): DiscoveryCompletenessInfo {
     const blockingQuestions = sections.openQuestions.filter(
-      (q) => q.classification === 'BLOCKING' && q.status === 'OPEN'
+      (q) => q.classification === 'BLOCKING' && (q.status === 'OPEN' || q.status === 'UNDECIDED')
     );
     const resolvedQuestions = sections.openQuestions.filter((q) => q.status === 'RESOLVED');
     const pendingDecisions = sections.humanDecisions.filter(
-      (d) => d.status === 'PENDING_DECISION'
+      (d) => d.status === 'PENDING_DECISION' || d.status === 'UNDECIDED' || d.status === 'PROPOSED' || d.status === 'OPEN'
     );
 
     const missingMaterial: string[] = [];

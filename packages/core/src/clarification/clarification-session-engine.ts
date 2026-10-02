@@ -112,6 +112,8 @@ export class ClarificationSessionEngine {
       newQuestionStatus = 'BLOCKED';
     } else if (validatedAnswer.status === 'NEEDS_FOLLOWUP') {
       newQuestionStatus = 'NEEDS_FOLLOWUP';
+    } else if (validatedAnswer.status === 'UNDECIDED') {
+      newQuestionStatus = 'UNDECIDED';
     }
 
     const updatedQuestion: ClarificationQuestion = Object.freeze({

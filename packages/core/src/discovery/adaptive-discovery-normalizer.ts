@@ -29,6 +29,60 @@ export function computeDeterministicHash(input: string, length = 12): string {
 }
 
 /**
+ * Detects whether a customer response represents an undecided choice,
+ * uncertainty, or a request for explanation rather than a confirmed selection.
+ */
+export function isUndecidedChoice(value?: unknown, selectedOptions?: readonly string[]): boolean {
+  if (value === null || value === undefined) {
+    if (Array.isArray(selectedOptions) && selectedOptions.length > 0) {
+      return selectedOptions.some((opt) => /^(other|diğer|none|undecided|pending)$/i.test(opt.trim()));
+    }
+    return false;
+  }
+
+  // Check selectedOptions array if provided
+  if (Array.isArray(selectedOptions) && selectedOptions.length > 0) {
+    const hasOther = selectedOptions.some((opt) =>
+      /^(other|diğer|none|undecided|pending)$/i.test(opt.trim())
+    );
+    if (hasOther) {
+      return true;
+    }
+  }
+
+  if (typeof value === 'object' && value !== null) {
+    const obj = value as Record<string, unknown>;
+    if (obj.status === 'UNDECIDED' || obj.answerType === 'UNDECIDED') return true;
+    if (typeof obj.freeFormResponse === 'string' && isUndecidedChoice(obj.freeFormResponse, obj.selectedOptions as string[])) {
+      return true;
+    }
+    if (Array.isArray(obj.selectedOptions) && isUndecidedChoice(undefined, obj.selectedOptions as string[])) {
+      return true;
+    }
+  }
+
+  const str = String(value).trim().toLowerCase();
+  if (str.length === 0) return false;
+
+  if (str === 'undecided' || str === 'pending' || str === 'open' || str === 'other' || str === 'diğer') {
+    return true;
+  }
+
+  const undecidedPatterns = [
+    /\b(haven'?t\s+decided|have\s+not\s+decided|not\s+decided\s+yet|undecided|not\s+sure\s+yet|not\s+sure|unsure)\b/i,
+    /\b(karar\s+vermedim|henüz\s+karar\s+vermedim|kararsızım|belirsiz)\b/i,
+    /\b(explain\s+(?:the\s+)?alternatives|describe\s+(?:the\s+)?options|explain\s+options|alternatifleri\s+açıkla)\b/i,
+    /\b(need\s+(?:an?\s+)?(?:explanation|more\s+information)|tell\s+me\s+the\s+options|help\s+me\s+decide|help\s+me\s+choose)\b/i,
+    /\b(what\s+are\s+the\s+trade-?offs|trade-?offs)\b/i,
+    /\b(before\s+(?:i|we)\s+(?:can\s+)?(?:choose|decide))\b/i,
+    /\bother\s*[:\-]/i,
+  ];
+
+  return undecidedPatterns.some((pattern) => pattern.test(str));
+}
+
+
+/**
  * Computes deterministic canonical ID for a requirement.
  */
 export function createDeterministicRequirementId(title: string, description: string): string {
@@ -226,23 +280,29 @@ export function extractStructuredDiscoveryFromIntent(
     outOfScope.push(match.trim());
   }
 
-  // Detect platforms
+  // Detect platforms (strictly when not marked undecided or requesting alternatives)
   const platformConstraints: string[] = [];
-  if (lower.includes('mobile')) {
-    platformConstraints.push('Mobile (iOS/Android responsive or native)');
-    inScope.push('Mobile device support');
-  }
-  if (lower.includes('web') || lower.includes('browser')) {
-    platformConstraints.push('Web / Browser');
-    inScope.push('Web application interface');
-  }
-  if (lower.includes('desktop')) {
-    platformConstraints.push('Desktop');
-    inScope.push('Desktop application support');
-  }
-  if (lower.includes('cli') || lower.includes('command line')) {
-    platformConstraints.push('CLI / Terminal');
-    inScope.push('Command line interface');
+  const isPlatformUndecided =
+    isUndecidedChoice(text) ||
+    /(?:between|or|whether|undecided|not decided|explain)\s+(?:web|mobile|desktop|cli)/i.test(text);
+
+  if (!isPlatformUndecided) {
+    if (lower.includes('mobile')) {
+      platformConstraints.push('Mobile (iOS/Android responsive or native)');
+      inScope.push('Mobile device support');
+    }
+    if (lower.includes('web') || lower.includes('browser')) {
+      platformConstraints.push('Web / Browser');
+      inScope.push('Web application interface');
+    }
+    if (lower.includes('desktop')) {
+      platformConstraints.push('Desktop');
+      inScope.push('Desktop application support');
+    }
+    if (lower.includes('cli') || lower.includes('command line')) {
+      platformConstraints.push('CLI / Terminal');
+      inScope.push('Command line interface');
+    }
   }
 
   // Detect users & players

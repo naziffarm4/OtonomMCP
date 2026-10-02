@@ -248,7 +248,7 @@ export class ArchitectureTechnologyEngine {
 
     // Decisions from requirements
     for (const d of requirements.humanDecisions) {
-      if (d.status === 'PENDING_DECISION') {
+      if (['PENDING_DECISION', 'UNDECIDED', 'PROPOSED', 'OPEN'].includes(d.status)) {
         pendingHumanDecisions.push({
           decisionId: d.decisionId,
           question: d.title,
@@ -288,7 +288,7 @@ export class ArchitectureTechnologyEngine {
     const rawDiscDecisions = discovery.decisions ?? sections.humanDecisions ?? [];
     for (const d of rawDiscDecisions) {
       if (
-        d.status === 'PENDING_DECISION' &&
+        ['PENDING_DECISION', 'UNDECIDED', 'PROPOSED', 'OPEN'].includes(d.status) &&
         !pendingHumanDecisions.some(
           (p) => p.decisionId === d.id || p.question.toLowerCase() === d.title.toLowerCase()
         )
@@ -300,6 +300,29 @@ export class ArchitectureTechnologyEngine {
           affectedRequirements: [...d.affectedAreas].sort(),
           affectedArchitectureAreas: [...d.affectedAreas].sort(),
           availableOptions: [...(d.alternatives ?? [])].sort(),
+          consequences: [],
+          authority: Actor.USER,
+          status: 'PENDING_DECISION',
+        });
+      }
+    }
+
+    // Unresolved or undecided discovery questions
+    const rawDiscQuestions = discovery.openQuestions ?? sections.openQuestions ?? [];
+    for (const q of rawDiscQuestions) {
+      if (
+        q.status !== 'RESOLVED' &&
+        !pendingHumanDecisions.some(
+          (p) => p.decisionId === q.id || p.question.toLowerCase() === q.question.toLowerCase()
+        )
+      ) {
+        pendingHumanDecisions.push({
+          decisionId: q.id,
+          question: q.question,
+          whyItMatters: q.whyItMatters,
+          affectedRequirements: [...q.whatItAffects].sort(),
+          affectedArchitectureAreas: [...q.whatItAffects].sort(),
+          availableOptions: [...(q.options ?? [])].sort(),
           consequences: [],
           authority: Actor.USER,
           status: 'PENDING_DECISION',
@@ -320,6 +343,12 @@ export class ArchitectureTechnologyEngine {
       );
     };
 
+    const isPlatformPending =
+      hasPendingDecisionInArea('platform') ||
+      hasPendingDecisionInArea('interface') ||
+      hasPendingDecisionInArea('frontend') ||
+      hasPendingDecisionInArea('ui');
+
     // 2. Architectural Style Extraction
     const archSection = sections.architecture;
     const patternConstraint = archSection.architecturalConstraints.find((c) =>
@@ -327,6 +356,7 @@ export class ArchitectureTechnologyEngine {
     );
     const styleFromDiscovery = patternConstraint || 'modular-monolith';
     const isStylePending =
+      isPlatformPending ||
       hasPendingDecisionInArea('style') ||
       hasPendingDecisionInArea('monolith') ||
       hasPendingDecisionInArea('microservice');
@@ -347,10 +377,12 @@ export class ArchitectureTechnologyEngine {
         'Storage Adapters',
         'Integration Adapters',
       ].sort(),
-      clientServerBoundaries: [
-        'Client Application Layer',
-        'Server / Host Application Layer',
-      ].sort(),
+      clientServerBoundaries: isPlatformPending
+        ? ['Application Domain Module', 'Adapter Layer']
+        : [
+            'Client Application Layer',
+            'Server / Host Application Layer',
+          ].sort(),
       deploymentTopology: archSection.deploymentModel ?? 'single-node process',
       communicationModel: 'synchronous RPC / in-process dispatch',
       status: isStylePending ? 'PENDING_DECISION' : 'CONFIRMED',
@@ -432,7 +464,13 @@ export class ArchitectureTechnologyEngine {
     );
 
     // 4. Data Architecture Extraction
-    const isDataPending = hasPendingDecisionInArea('database') || hasPendingDecisionInArea('sql') || hasPendingDecisionInArea('nosql') || hasPendingDecisionInArea('storage');
+    const isDataPending =
+      isPlatformPending ||
+      hasPendingDecisionInArea('database') ||
+      hasPendingDecisionInArea('sql') ||
+      hasPendingDecisionInArea('nosql') ||
+      hasPendingDecisionInArea('storage') ||
+      hasPendingDecisionInArea('persistence');
     const storageExpectations = archSection.dataStorageExpectations ?? [];
     const primaryDataStoreCandidate = storageExpectations.length > 0 ? storageExpectations[0] : undefined;
 
@@ -443,7 +481,7 @@ export class ArchitectureTechnologyEngine {
       caching: [],
       fileObjectStorage: [],
       dataOwnership: ['Core Application Domain owns primary entities'],
-      dataFlow: ['Client -> API Gateway -> Domain Service -> Data Persistence Service'],
+      dataFlow: isPlatformPending ? ['Domain Service -> Storage Adapter'] : ['Client -> API Gateway -> Domain Service -> Data Persistence Service'],
       retentionRequirements: [],
       consistencyRequirements: ['Strong consistency for transactional data'],
       status: isDataPending ? 'PENDING_DECISION' : (primaryDataStoreCandidate ? 'CONFIRMED' : 'NOT_APPLICABLE'),
@@ -514,6 +552,18 @@ export class ArchitectureTechnologyEngine {
         continue;
       }
 
+      if (isPlatformPending && (category === 'FRONTEND_FRAMEWORK' || lower.includes('vite') || lower.includes('react') || lower.includes('localstorage'))) {
+        techStackMap.set(`CANDIDATE:::${normalizedName}`, {
+          category: category === 'FRONTEND_FRAMEWORK' ? 'FRONTEND_FRAMEWORK' : 'OTHER',
+          name: normalizedName,
+          selectionStatus: 'CANDIDATE',
+          source: 'RECOMMENDATION',
+          affectedRequirements: [],
+          rationale: 'Candidate option pending platform and interface selection',
+        });
+        continue;
+      }
+
       techStackMap.set(`${category}:::${normalizedName}`, {
         category,
         name: normalizedName,
@@ -572,17 +622,19 @@ export class ArchitectureTechnologyEngine {
     );
 
     // 7. Platform & Environment Extraction
-    const platformConstraints = [
-      ...(requirements.constraints.platformConstraints ?? []),
-      ...(requirements.inScope.platforms ?? []),
-      ...(techSection.platformConstraints ?? []),
-    ];
+    const platformConstraints = isPlatformPending
+      ? []
+      : [
+          ...(requirements.constraints.platformConstraints ?? []),
+          ...(requirements.inScope.platforms ?? []),
+          ...(techSection.platformConstraints ?? []),
+        ];
 
     const platformEnvironment: PlatformEnvironment = {
       targetOs: [...new Set(platformConstraints.filter((p) => /linux|windows|macos|darwin/i.test(p)))].sort(),
       targetDevices: [...new Set(platformConstraints.filter((p) => /mobile|desktop|server|tablet/i.test(p)))].sort(),
-      browserRequirements: [...new Set(platformConstraints.filter((p) => /chrome|firefox|safari|edge|browser/i.test(p)))].sort(),
-      mobileRequirements: [...new Set(platformConstraints.filter((p) => /ios|android|mobile/i.test(p)))].sort(),
+      browserRequirements: isPlatformPending ? [] : [...new Set(platformConstraints.filter((p) => /chrome|firefox|safari|edge|browser/i.test(p)))].sort(),
+      mobileRequirements: isPlatformPending ? [] : [...new Set(platformConstraints.filter((p) => /ios|android|mobile/i.test(p)))].sort(),
       desktopRequirements: [...new Set(platformConstraints.filter((p) => /electron|desktop|posix/i.test(p)))].sort(),
       serverEnvironment: [...new Set(platformConstraints.filter((p) => /node|container|docker|linux|cloud/i.test(p)))].sort(),
       cloudOnPremRequirements: [...new Set(platformConstraints.filter((p) => /cloud|aws|gcp|azure|on-prem/i.test(p)))].sort(),
@@ -755,6 +807,24 @@ export class ArchitectureTechnologyEngine {
       consequences: ['Constrains toolchain, library ecosystem, and runtime execution'],
       dependencies: [],
       authority: 'SYSTEM',
+      revisionBinding: 1,
+    });
+
+    // 11.5 Platform & Interface Decision
+    const platDecId = 'ARCH-DEC-005';
+    const platformCandidates = ['Web Application', 'CLI (Command Line Interface)', 'Desktop Application', 'Library / Module'].sort();
+    decisionsMap.set(platDecId, {
+      decisionId: platDecId,
+      decisionArea: 'PLATFORM',
+      question: 'What target platform and user interface type will this system provide?',
+      status: isPlatformPending ? 'PENDING_DECISION' : 'DECIDED',
+      selectedOption: isPlatformPending ? undefined : (platformConstraints.length > 0 ? platformConstraints[0] : 'Web Application'),
+      candidateOptions: platformCandidates,
+      rationale: isPlatformPending ? 'Target interface type has not been confirmed by the Product Owner' : 'Derived from confirmed platform constraints',
+      affectedRequirements: requirements.functionalRequirements.slice(0, 3).map((f) => f.requirementId),
+      consequences: ['Governs UI framework selection, runtime environment, and client persistence'],
+      dependencies: [],
+      authority: isPlatformPending ? Actor.USER : 'SYSTEM',
       revisionBinding: 1,
     });
 

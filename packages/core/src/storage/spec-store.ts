@@ -40,6 +40,9 @@ export const DecisionStatus = {
   PROPOSED: 'PROPOSED',
   LOCKED: 'LOCKED',
   REJECTED: 'REJECTED',
+  UNDECIDED: 'UNDECIDED',
+  CONFIRMED: 'CONFIRMED',
+  OPEN: 'OPEN',
 } as const;
 
 export type DecisionStatus = (typeof DecisionStatus)[keyof typeof DecisionStatus];
@@ -49,7 +52,7 @@ export const DecisionZodSchema = z.object({
   title: z.string({ message: 'title is required' }).min(1, 'title cannot be empty'),
   description: z.string({ message: 'description is required' }).min(1, 'description cannot be empty'),
   authority: z.enum(ACTORS as [string, ...string[]]).default(Actor.DIRECTOR),
-  status: z.enum(['PROPOSED', 'LOCKED', 'REJECTED']).default('LOCKED'),
+  status: z.enum(['PROPOSED', 'LOCKED', 'REJECTED', 'UNDECIDED', 'CONFIRMED', 'OPEN']).default('LOCKED'),
   rationale: z.string().optional(),
   createdAt: z.string().min(1, 'createdAt cannot be empty'),
   updatedAt: z.string().min(1, 'updatedAt cannot be empty'),

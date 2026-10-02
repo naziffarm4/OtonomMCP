@@ -48,6 +48,8 @@ export const CLARIFICATION_STATUSES = [
   'DEFERRED',
   'BLOCKED',
   'NEEDS_FOLLOWUP',
+  'UNDECIDED',
+  'PROPOSED',
 ] as const;
 
 export type ClarificationStatus = (typeof CLARIFICATION_STATUSES)[number];
@@ -97,6 +99,8 @@ export const CLARIFICATION_ANSWER_STATUSES = [
   'DEFERRED',
   'REJECTED',
   'NEEDS_FOLLOWUP',
+  'UNDECIDED',
+  'CONFIRMED',
 ] as const;
 
 export type ClarificationAnswerStatus = (typeof CLARIFICATION_ANSWER_STATUSES)[number];
@@ -106,6 +110,7 @@ export const CLARIFICATION_ANSWER_TYPES = [
   'FREE_FORM',
   'DEFERRED',
   'REJECTED',
+  'UNDECIDED',
 ] as const;
 
 export type ClarificationAnswerType = (typeof CLARIFICATION_ANSWER_TYPES)[number];

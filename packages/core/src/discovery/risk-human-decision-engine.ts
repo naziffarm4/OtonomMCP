@@ -220,7 +220,7 @@ export class RiskHumanDecisionEngine {
     consequences?: string[];
     recommendedInformation?: string;
     authority?: 'PRODUCT_OWNER' | 'USER';
-    status?: 'PENDING_DECISION' | 'RESOLVED' | 'REJECTED';
+    status?: 'PENDING_DECISION' | 'RESOLVED' | 'REJECTED' | 'CONFIRMED' | 'UNDECIDED' | 'PROPOSED' | 'OPEN';
     metadata?: Record<string, unknown>;
   }): HumanDecisionPoint {
     const affectedRisks = [...(params.affectedRisks ?? [])].sort();
@@ -228,7 +228,10 @@ export class RiskHumanDecisionEngine {
     const affectedArchitectureDecisions = [...(params.affectedArchitectureDecisions ?? [])].sort();
     const affectedBusinessRules = [...(params.affectedBusinessRules ?? [])].sort();
     const affectedAcceptanceCriteria = [...(params.affectedAcceptanceCriteria ?? [])].sort();
-    const availableOptions = [...params.availableOptions];
+    const availableOptions =
+      params.availableOptions && params.availableOptions.length > 0
+        ? [...params.availableOptions]
+        : ['Accept', 'Reject', 'Defer'];
     const consequences = [...(params.consequences ?? [])].sort();
 
     const hashInput = `${params.title}:::${params.question}:::${affectedRisks.join(',')}:::${affectedRequirements.join(',')}`;
@@ -612,7 +615,7 @@ export class RiskHumanDecisionEngine {
     // B. Derive from Architecture
     for (const dec of architecture.decisions) {
       const archAffectedReqs = (dec.affectedRequirements ?? []).filter((id) => validRequirementIds.has(id));
-      if (dec.status === 'PENDING_DECISION' || dec.status === 'CANDIDATE') {
+      if (['PENDING_DECISION', 'CANDIDATE', 'UNDECIDED', 'PROPOSED', 'OPEN'].includes(dec.status)) {
         const risk = this.buildDeterministicRisk({
           category: 'ARCHITECTURE',
           probability: 'HIGH',

@@ -323,14 +323,14 @@ export class ApprovalPackageEngine {
     const unresolvedHDPs: any[] = [];
     if (risks?.humanDecisionPoints) {
       for (const hdp of risks.humanDecisionPoints) {
-        if (hdp.status === 'PENDING_DECISION') {
+        if (['PENDING_DECISION', 'UNDECIDED', 'PROPOSED', 'OPEN'].includes(hdp.status)) {
           unresolvedHDPs.push(hdp);
         }
       }
     }
     if (completenessResult?.humanDecisions) {
       for (const hd of completenessResult.humanDecisions) {
-        if (hd.status === 'PENDING_DECISION' && !unresolvedHDPs.some((x) => x.decisionId === hd.decisionId)) {
+        if (['PENDING_DECISION', 'UNDECIDED', 'PROPOSED', 'OPEN'].includes(hd.status) && !unresolvedHDPs.some((x) => x.decisionId === hd.decisionId)) {
           unresolvedHDPs.push(hd);
         }
       }

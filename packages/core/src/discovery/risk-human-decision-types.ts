@@ -233,6 +233,10 @@ export const HumanDecisionAuthorityZodSchema = ProjectHumanDecisionAuthorityZodS
 export const PROJECT_HUMAN_DECISION_STATUSES = [
   'PENDING_DECISION',
   'RESOLVED',
+  'CONFIRMED',
+  'UNDECIDED',
+  'PROPOSED',
+  'OPEN',
   'REJECTED',
 ] as const;
 export type ProjectHumanDecisionStatus = (typeof PROJECT_HUMAN_DECISION_STATUSES)[number];

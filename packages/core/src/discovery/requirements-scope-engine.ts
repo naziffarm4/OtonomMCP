@@ -202,7 +202,7 @@ export class RequirementsScopeEngine {
     const pendingHumanDecisions: ScopeHumanDecision[] = [];
 
     for (const d of rawDecisions) {
-      if (d.status === 'PENDING_DECISION') {
+      if (['PENDING_DECISION', 'UNDECIDED', 'PROPOSED', 'OPEN'].includes(d.status)) {
         pendingHumanDecisions.push({
           decisionId: d.id,
           title: d.title,
@@ -211,7 +211,7 @@ export class RequirementsScopeEngine {
           availableOptions: [...(d.alternatives ?? [])].sort(),
           recommendedOption: d.recommendedOption,
           authority: Actor.USER,
-          status: 'PENDING_DECISION',
+          status: (d.status === 'CONFIRMED' || d.status === 'DECIDED') ? 'CONFIRMED' : (d.status as any),
         });
       }
     }
@@ -226,7 +226,7 @@ export class RequirementsScopeEngine {
         topic: d.title,
         description: d.description,
         availableOptions: d.availableOptions,
-        status: 'PENDING_DECISION',
+        status: (d.status === 'UNDECIDED' || d.status === 'PROPOSED' || d.status === 'PENDING_DECISION') ? d.status : 'PENDING_DECISION',
         whyItMatters: `Product Owner decision required before committing to scope: ${d.title}`,
         affectedAreas: d.affectedAreas,
       });
@@ -250,7 +250,7 @@ export class RequirementsScopeEngine {
             topic: q.question,
             description: q.whyItMatters,
             availableOptions: [...q.options].sort(),
-            status: 'PENDING_DECISION',
+            status: (q.status === 'UNDECIDED' || q.status === 'PROPOSED') ? q.status : 'PENDING_DECISION',
             whyItMatters: q.whyItMatters,
             affectedAreas: [...q.whatItAffects].sort(),
           });
@@ -274,7 +274,12 @@ export class RequirementsScopeEngine {
     ].sort();
 
     const inScopeWorkflows = [...new Set(sections.productScope.primaryWorkflows ?? [])].sort();
-    const inScopePlatforms = [...new Set(sections.technology.platformConstraints ?? [])].sort();
+    const isPlatformUndecided = undecidedScope.some(
+      (u) => u.topic.toLowerCase().includes('platform') || u.topic.toLowerCase().includes('interface') || u.topic.toLowerCase().includes('ui')
+    );
+    const inScopePlatforms = isPlatformUndecided
+      ? []
+      : [...new Set(sections.technology.platformConstraints ?? [])].sort();
     const inScopeIntegrations = [...new Set(sections.architecture.integrationRequirements ?? [])].sort();
 
     // 6. Out-Of-Scope Extraction
@@ -350,7 +355,7 @@ export class RequirementsScopeEngine {
     const tech = sections.technology;
     const constraints = {
       technologyConstraints: [...new Set(tech.requiredTechnologies ?? [])].sort(),
-      platformConstraints: [...new Set(tech.platformConstraints ?? [])].sort(),
+      platformConstraints: isPlatformUndecided ? [] : [...new Set(tech.platformConstraints ?? [])].sort(),
       compatibilityConstraints: [...new Set(nfr.compatibility ?? [])].sort(),
       legalComplianceConstraints: [],
       operationalConstraints: [...new Set(sections.architecture.architecturalConstraints ?? [])].sort(),
@@ -387,6 +392,9 @@ export class RequirementsScopeEngine {
     const openQuestions: ScopeOpenQuestion[] = [];
     for (const q of rawQuestions) {
       if (q.status !== 'RESOLVED') {
+        const qStatus = (q.status === 'UNDECIDED' || q.status === 'PROPOSED')
+          ? q.status
+          : (q.options && q.options.length >= 2 ? 'PENDING_DECISION' : 'OPEN');
         openQuestions.push({
           questionId: q.id,
           question: q.question,
@@ -394,7 +402,7 @@ export class RequirementsScopeEngine {
           affectedAreas: [...q.whatItAffects].sort(),
           classification: q.classification,
           availableOptions: [...(q.options ?? [])].sort(),
-          status: q.options && q.options.length >= 2 ? 'PENDING_DECISION' : 'OPEN',
+          status: qStatus,
         });
       }
     }
