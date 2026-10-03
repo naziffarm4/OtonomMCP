@@ -520,48 +520,42 @@ export class ExecutionBridge {
           intent.metadata?.requireTrustedAuthContext === true;
 
         if (authCtx) {
-          if (authCtx.isForged === true || authCtx.verified === false || authCtx.authSource === 'UNTRUSTED_CLIENT') {
-            check6Passed = false;
-            check6Reason = 'Untrusted or forged authContext rejected fail-closed (P18-04 boundary).';
-            check6Code = 'BLOCKED_ON_AUTH_CONTEXT';
-            check6Details = { authContext: authCtx, p18_04_status: 'BLOCKED_ON_AUTH_CONTEXT' };
-          } else if (
-            authCtx.signature &&
-            (authCtx.signature.includes('INVALID') || authCtx.signature === 'forged' || authCtx.signature === 'tampered')
-          ) {
-            check6Passed = false;
-            check6Reason = 'Cryptographic signature verification failed on authContext. Rejected fail-closed.';
-            check6Code = 'BLOCKED_ON_AUTH_CONTEXT';
-            check6Details = { signature: authCtx.signature, p18_04_status: 'BLOCKED_ON_AUTH_CONTEXT' };
-          } else if (authCtx.projectId && authCtx.projectId !== intent.projectId) {
-            check6Passed = false;
-            check6Reason = `Cross-project authContext binding mismatch. Context for '${authCtx.projectId}', intent for '${intent.projectId}'. Rejected fail-closed.`;
-            check6Code = 'BLOCKED_ON_AUTH_CONTEXT';
-            check6Details = { contextProjectId: authCtx.projectId, intentProjectId: intent.projectId, p18_04_status: 'BLOCKED_ON_AUTH_CONTEXT' };
-          } else if (authCtx.sessionId && authCtx.sessionId !== intent.directorSessionId) {
-            check6Passed = false;
-            check6Reason = `Cross-session authContext binding mismatch. Context for '${authCtx.sessionId}', intent for '${intent.directorSessionId}'. Rejected fail-closed.`;
-            check6Code = 'BLOCKED_ON_AUTH_CONTEXT';
-            check6Details = { contextSessionId: authCtx.sessionId, intentSessionId: intent.directorSessionId, p18_04_status: 'BLOCKED_ON_AUTH_CONTEXT' };
-          } else if (authCtx.taskId && authCtx.taskId !== intent.taskId) {
-            check6Passed = false;
-            check6Reason = `Cross-task authContext binding mismatch. Context for '${authCtx.taskId}', intent for '${intent.taskId}'. Rejected fail-closed.`;
-            check6Code = 'BLOCKED_ON_AUTH_CONTEXT';
-            check6Details = { contextTaskId: authCtx.taskId, intentTaskId: intent.taskId, p18_04_status: 'BLOCKED_ON_AUTH_CONTEXT' };
-          } else if (authCtx.expiresAt && Date.parse(authCtx.expiresAt) <= Date.now()) {
-            check6Passed = false;
-            check6Reason = `Expired authContext timestamp '${authCtx.expiresAt}'. Rejected fail-closed.`;
-            check6Code = 'BLOCKED_ON_AUTH_CONTEXT';
-            check6Details = { expiresAt: authCtx.expiresAt, p18_04_status: 'BLOCKED_ON_AUTH_CONTEXT' };
-          } else if (authCtx.nonce) {
-            if (this.seenAuthNonces.has(authCtx.nonce)) {
+          try {
+            const { IdentityManager } = await import('../authorization/identity-manager.js');
+            const { NonceStore } = await import('../authorization/nonce-store.js');
+            const { AuthContextValidator } = await import('../authorization/auth-context-validator.js');
+            
+            const validator = new AuthContextValidator(
+               new IdentityManager({ baseDir: this.workspaceRoot }),
+               new NonceStore({ baseDir: this.workspaceRoot })
+            );
+
+            const validationResult = await validator.validate(authCtx, intent.projectId);
+            
+            if (!validationResult.isValid) {
               check6Passed = false;
-              check6Reason = `Replayed authContext nonce '${authCtx.nonce}'. Duplicate use prohibited. Rejected fail-closed.`;
+              check6Reason = `Untrusted or forged authContext rejected fail-closed (P18-04 boundary): ${validationResult.reason}`;
               check6Code = 'BLOCKED_ON_AUTH_CONTEXT';
-              check6Details = { nonce: authCtx.nonce, p18_04_status: 'BLOCKED_ON_AUTH_CONTEXT' };
+              check6Details = { authContext: authCtx, p18_04_status: 'BLOCKED_ON_AUTH_CONTEXT', reason: validationResult.reason };
+            } else if (authCtx.sessionId && authCtx.sessionId !== intent.directorSessionId) {
+              check6Passed = false;
+              check6Reason = `Cross-session authContext binding mismatch. Context for '${authCtx.sessionId}', intent for '${intent.directorSessionId}'. Rejected fail-closed.`;
+              check6Code = 'BLOCKED_ON_AUTH_CONTEXT';
+              check6Details = { contextSessionId: authCtx.sessionId, intentSessionId: intent.directorSessionId, p18_04_status: 'BLOCKED_ON_AUTH_CONTEXT' };
+            } else if (authCtx.taskId && authCtx.taskId !== intent.taskId) {
+              check6Passed = false;
+              check6Reason = `Cross-task authContext binding mismatch. Context for '${authCtx.taskId}', intent for '${intent.taskId}'. Rejected fail-closed.`;
+              check6Code = 'BLOCKED_ON_AUTH_CONTEXT';
+              check6Details = { contextTaskId: authCtx.taskId, intentTaskId: intent.taskId, p18_04_status: 'BLOCKED_ON_AUTH_CONTEXT' };
             } else {
-              this.seenAuthNonces.add(authCtx.nonce);
+               // Update verification status based on cryptographic proof and true human interaction
+               // P22 dictates that `verified` cannot be blindly trusted if it's just a JSON flag
+               authCtx.verified = validationResult.isTrueHumanInteraction;
             }
+          } catch (err: any) {
+            check6Passed = false;
+            check6Reason = `Cryptographic validation exception: ${err.message}. Rejected fail-closed.`;
+            check6Code = 'BLOCKED_ON_AUTH_CONTEXT';
           }
         }
 

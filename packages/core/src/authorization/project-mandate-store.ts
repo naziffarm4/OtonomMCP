@@ -37,13 +37,23 @@ export class ProjectMandateStore {
 
   async saveMandate(mandate: ProjectMandate, authContext: any): Promise<ProjectMandate> {
     // SECURITY: Mandate'in kim tarafından oluşturulduğu ve değiştirildiği güvenilir kimlik doğrulaması gerektirir.
-    // P22 Trusted IDE Authentication henüz tamamlanmadığı için istemciden gelen
-    // PRODUCT_OWNER, USER, verified: true veya benzeri alanları güvenilir kimlik kabul etme.
-    // Gerçek güvenilir kimlik yoksa mandate oluşturma veya değiştirme işlemini güvenli şekilde beklet.
+    // P22 Trusted IDE Authentication kapsamında gerçek bir IDE entegrasyonu (OS düzeyinde onay penceresi)
+    // olmadığı için yalnızca Ed25519 kriptografi ile tam güven sağlanamaz.
+    // Ancak sistem Fail-Closed tasarımda kalmalı ve geçersiz imzaları reddetmeli.
+    
+    // Geçici import (diğer bağımlılıklar kirlenmesin diye, gerçek yapıda IoC ile enjekte edilir)
+    const { IdentityManager } = await import('./identity-manager.js');
+    const { NonceStore } = await import('./nonce-store.js');
+    const { AuthContextValidator } = await import('./auth-context-validator.js');
+    
+    const validator = new AuthContextValidator(new IdentityManager(), new NonceStore({ baseDir: path.dirname(path.dirname(this.filePath)) }));
+    const result = await validator.validate(authContext, mandate.projectId);
 
-    const isTrusted = authContext?.verified === true && authContext?.authSource === 'TRUSTED_IDE';
+    if (!result.isValid) {
+      throw new Error(`WAITING_FOR_TRUSTED_IDENTITY: Cryptographic validation failed: ${result.reason}`);
+    }
 
-    if (!isTrusted) {
+    if (!result.isTrueHumanInteraction) {
       throw new Error('WAITING_FOR_TRUSTED_IDENTITY: Trusted IDE Authentication is missing. Cannot update mandate.');
     }
 
