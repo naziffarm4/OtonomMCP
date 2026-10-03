@@ -42,6 +42,8 @@ import {
   UnsupportedLlmCapabilityError,
   sanitizeSecrets,
 } from '../errors/llm-error.js';
+import { BudgetError } from '../errors/budget-error.js';
+import type { BudgetManager } from '../budget/budget-manager.js';
 import {
   createEstimatedTelemetry,
   normalizeTelemetry,
@@ -143,6 +145,10 @@ export interface ReferenceLlmAdapterConfig {
   readonly timeoutMs?: number;
   /** Optional endpoint URL */
   readonly endpoint?: string;
+  /** Whether to enforce budget authorization on direct generate calls (P18-03) */
+  readonly enforceBudget?: boolean;
+  /** Optional authoritative BudgetManager to verify reservations in SQLite (P18-03) */
+  readonly budgetManager?: BudgetManager;
 }
 
 // ============================================================================
@@ -155,8 +161,10 @@ export class ReferenceLlmAdapter implements LLMProvider {
   readonly defaultModel: string;
   readonly supportedModels: readonly string[];
   readonly supportedCapabilities: readonly LlmCapability[];
+  readonly enforceBudget: boolean;
+  budgetManager?: BudgetManager;
 
-  private readonly transport: LlmTransport<ReferenceWireRequest, ReferenceWireResponse>;
+  readonly transport: LlmTransport<ReferenceWireRequest, ReferenceWireResponse>;
   private readonly defaultTimeoutMs: number;
   private readonly endpoint?: string;
 
@@ -168,6 +176,8 @@ export class ReferenceLlmAdapter implements LLMProvider {
     this.providerId = config.providerId ?? 'llm:reference-adapter';
     this.providerName = config.providerName ?? 'reference-llm';
     this.defaultModel = config.defaultModel ?? 'ref-model-v1';
+    this.enforceBudget = config.enforceBudget ?? false;
+    this.budgetManager = config.budgetManager;
     this.supportedModels = Object.freeze(
       config.supportedModels && config.supportedModels.length > 0
         ? [...config.supportedModels]
@@ -186,6 +196,17 @@ export class ReferenceLlmAdapter implements LLMProvider {
     this.transport = config.transport;
     this.defaultTimeoutMs = config.timeoutMs ?? 30000;
     this.endpoint = config.endpoint;
+
+    if (this.budgetManager && this.transport && typeof (this.transport as any).setBudgetManager === 'function') {
+      (this.transport as any).setBudgetManager(this.budgetManager);
+    }
+  }
+
+  setBudgetManager(budgetManager: BudgetManager): void {
+    this.budgetManager = budgetManager;
+    if (this.transport && typeof (this.transport as any).setBudgetManager === 'function') {
+      (this.transport as any).setBudgetManager(budgetManager);
+    }
   }
 
   /**
@@ -296,6 +317,37 @@ export class ReferenceLlmAdapter implements LLMProvider {
   async generate<TStructured = unknown>(
     request: LlmRequest
   ): Promise<LlmResponse<TStructured>> {
+    // 0. Budget Enforcement Check (P18-03)
+    if (this.enforceBudget) {
+      const isBudgetAuthorized = Boolean(request.metadata?.__aidm_budget_authorized);
+      const reservationId = request.metadata?.__aidm_reservation_id
+        ? String(request.metadata.__aidm_reservation_id)
+        : undefined;
+
+      if (!isBudgetAuthorized || !reservationId) {
+        throw new BudgetError(
+          `Direct call to provider "${this.providerId}" without valid budget reservation is strictly prohibited. Wrap provider with BudgetAwareLlmAdapter.`,
+          'ERR_BUDGET_REQUIRED',
+          { providerId: this.providerId, reason: 'DIRECT_CALL_PROHIBITED' }
+        );
+      }
+
+      if (this.budgetManager) {
+        const expectedModel = request.model?.trim() || this.defaultModel;
+        const expectedProjectId = request.correlation?.project_id;
+        const dispatchClaimId = request.metadata?.__aidm_dispatch_claim_id
+          ? String(request.metadata.__aidm_dispatch_claim_id)
+          : undefined;
+
+        this.budgetManager.verifyReservation({
+          reservationId,
+          dispatchClaimId,
+          expectedModelId: expectedModel,
+          expectedProjectId,
+        });
+      }
+    }
+
     // 1. Validate request structure and invariants
     const validatedRequest = validateLlmRequest(request);
 
@@ -376,6 +428,14 @@ export class ReferenceLlmAdapter implements LLMProvider {
         'content-type': 'application/json',
         'x-correlation-id': rawRequest.correlation.correlation_id,
         'x-project-id': rawRequest.correlation.project_id,
+        'x-budget-provider-id': this.providerId,
+        'x-budget-model-id': wireRequest.model,
+        ...(rawRequest.metadata?.__aidm_account_id
+          ? { 'x-budget-account-id': String(rawRequest.metadata.__aidm_account_id) }
+          : {}),
+        ...(rawRequest.metadata?.__aidm_reservation_id
+          ? { 'x-budget-reservation-id': String(rawRequest.metadata.__aidm_reservation_id) }
+          : {}),
       }),
       body: wireRequest,
       timeoutMs,
@@ -577,14 +637,24 @@ export class ReferenceLlmAdapter implements LLMProvider {
 
     // 5. Structured output parsing & validation
     let structuredOutput: TStructured | null = null;
-    if (
-      request.response_format === LlmResponseFormat.JSON_OBJECT ||
-      request.response_format === LlmResponseFormat.JSON_SCHEMA
-    ) {
-      structuredOutput = validateStructuredOutput<TStructured>(
-        content,
-        request.json_schema
-      );
+    try {
+      if (
+        request.response_format === LlmResponseFormat.JSON_OBJECT ||
+        request.response_format === LlmResponseFormat.JSON_SCHEMA
+      ) {
+        structuredOutput = validateStructuredOutput<TStructured>(
+          content,
+          request.json_schema
+        );
+      }
+    } catch (err) {
+      if (err instanceof MalformedLlmResponseError) {
+        (err as any).usage = usage;
+        if ((err as any).details && typeof (err as any).details === 'object') {
+          (err as any).details.usage = usage;
+        }
+      }
+      throw err;
     }
 
     // 6. Error state normalization

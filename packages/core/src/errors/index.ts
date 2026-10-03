@@ -19,3 +19,4 @@ export * from './collector-error.js';
 export * from './qa-review-error.js';
 export * from './ui-verification-error.js';
 export * from './git-policy-error.js';
+export * from './budget-error.js';

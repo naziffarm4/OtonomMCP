@@ -84,7 +84,7 @@ export class BaseLlmAdapter implements LLMProvider {
   protected readonly apiKey: string | null;
   protected readonly baseUrl: string | null;
   protected readonly defaultTimeoutMs: number;
-  private readonly transport?: LlmTransportHandler;
+  readonly transport?: LlmTransportHandler;
 
   constructor(config: LlmAdapterConfig = {}) {
     this.providerId = config.providerId ?? 'llm:base-adapter';
@@ -161,9 +161,9 @@ export class BaseLlmAdapter implements LLMProvider {
     }
 
     return Object.freeze({
-      available: true,
+      available: false,
       model: this.defaultModel,
-      reason: null,
+      reason: `Provider "${this.providerName}" has no transport configured`,
     });
   }
 
@@ -229,23 +229,14 @@ export class BaseLlmAdapter implements LLMProvider {
     timeoutMs: number
   ): Promise<RawLlmResponse> {
     if (!this.transport) {
-      // Deterministic boundary fallback when real network transport is not wired:
-      // Return a safe boundary response with explicit mock/boundary telemetry
-      const simulatedText = `[Simulated response for ${translated.model}]: Objective verified.`;
-      return Object.freeze({
-        provider: this.providerName,
-        model: translated.model,
-        content: simulatedText,
-        finish_reason: LlmFinishReason.STOP,
-        usage: {
-          reported_input_tokens: null,
-          reported_output_tokens: null,
-          reported_cached_tokens: null,
-          estimated_tokens: Math.ceil(simulatedText.length / 4),
-          is_exact_provider_metric: false,
-        },
-        raw_metadata: { boundary_mode: true },
-      });
+      throw new LlmProviderUnavailableError(
+        `LLM provider "${this.providerId}" is unavailable: No transport configured`,
+        {
+          providerId: this.providerId,
+          model: translated.model,
+          reason: 'NO_TRANSPORT_CONFIGURED',
+        }
+      );
     }
 
     let timer: NodeJS.Timeout | null = null;

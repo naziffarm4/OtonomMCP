@@ -54,6 +54,10 @@
       "types": "./dist/token-budget/index.d.ts",
       "import": "./dist/token-budget/index.js"
     },
+    "./budget": {
+      "types": "./dist/budget/index.d.ts",
+      "import": "./dist/budget/index.js"
+    },
     "./executor-bridge": {
       "types": "./dist/executor-bridge/index.d.ts",
       "import": "./dist/executor-bridge/index.js"
@@ -122,9 +126,21 @@
       "types": "./dist/director-loop/index.d.ts",
       "import": "./dist/director-loop/index.js"
     },
+    "./director-reasoning": {
+      "types": "./dist/director-reasoning/index.d.ts",
+      "import": "./dist/director-reasoning/index.js"
+    },
+    "./director-action": {
+      "types": "./dist/director-action/index.d.ts",
+      "import": "./dist/director-action/index.js"
+    },
     "./driver": {
       "types": "./dist/driver/index.d.ts",
       "import": "./dist/driver/index.js"
+    },
+    "./execution-bridge": {
+      "types": "./dist/execution-bridge/index.d.ts",
+      "import": "./dist/execution-bridge/index.js"
     }
   },
   "bin": {

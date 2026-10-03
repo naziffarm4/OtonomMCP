@@ -37,6 +37,8 @@ import {
   UnsupportedLlmCapabilityError,
   sanitizeSecrets,
 } from '../errors/llm-error.js';
+import { BudgetError } from '../errors/budget-error.js';
+import type { BudgetManager } from '../budget/budget-manager.js';
 import {
   createEstimatedTelemetry,
   normalizeTelemetry,
@@ -95,6 +97,10 @@ export interface SecondaryLlmAdapterConfig {
   readonly supportedCapabilities?: readonly LlmCapability[];
   readonly transport: LlmTransport<SecondaryWireRequest, SecondaryWireResponse>;
   readonly timeoutMs?: number;
+  /** Whether to enforce budget authorization on direct generate calls (P18-03) */
+  readonly enforceBudget?: boolean;
+  /** Optional authoritative BudgetManager to verify reservations in SQLite (P18-03) */
+  readonly budgetManager?: BudgetManager;
 }
 
 // ============================================================================
@@ -107,8 +113,10 @@ export class SecondaryLlmAdapter implements LLMProvider {
   readonly defaultModel: string;
   readonly supportedModels: readonly string[];
   readonly supportedCapabilities: readonly LlmCapability[];
+  readonly enforceBudget: boolean;
+  budgetManager?: BudgetManager;
 
-  private readonly transport: LlmTransport<SecondaryWireRequest, SecondaryWireResponse>;
+  readonly transport: LlmTransport<SecondaryWireRequest, SecondaryWireResponse>;
   private readonly defaultTimeoutMs: number;
 
   constructor(config: SecondaryLlmAdapterConfig) {
@@ -119,6 +127,8 @@ export class SecondaryLlmAdapter implements LLMProvider {
     this.providerId = config.providerId ?? 'llm:secondary-adapter';
     this.providerName = config.providerName ?? 'secondary-llm';
     this.defaultModel = config.defaultModel ?? 'sec-model-v2';
+    this.enforceBudget = config.enforceBudget ?? false;
+    this.budgetManager = config.budgetManager;
     this.supportedModels = Object.freeze(
       config.supportedModels && config.supportedModels.length > 0
         ? [...config.supportedModels]
@@ -132,6 +142,17 @@ export class SecondaryLlmAdapter implements LLMProvider {
 
     this.transport = config.transport;
     this.defaultTimeoutMs = config.timeoutMs ?? 30000;
+
+    if (this.budgetManager && this.transport && typeof (this.transport as any).setBudgetManager === 'function') {
+      (this.transport as any).setBudgetManager(this.budgetManager);
+    }
+  }
+
+  setBudgetManager(budgetManager: BudgetManager): void {
+    this.budgetManager = budgetManager;
+    if (this.transport && typeof (this.transport as any).setBudgetManager === 'function') {
+      (this.transport as any).setBudgetManager(budgetManager);
+    }
   }
 
   async checkAvailability(): Promise<LlmProviderAvailability> {
@@ -211,6 +232,37 @@ export class SecondaryLlmAdapter implements LLMProvider {
   async generate<TStructured = unknown>(
     request: LlmRequest
   ): Promise<LlmResponse<TStructured>> {
+    // 0. Budget Enforcement Check (P18-03)
+    if (this.enforceBudget) {
+      const isBudgetAuthorized = Boolean(request.metadata?.__aidm_budget_authorized);
+      const reservationId = request.metadata?.__aidm_reservation_id
+        ? String(request.metadata.__aidm_reservation_id)
+        : undefined;
+
+      if (!isBudgetAuthorized || !reservationId) {
+        throw new BudgetError(
+          `Direct call to provider "${this.providerId}" without valid budget reservation is strictly prohibited. Wrap provider with BudgetAwareLlmAdapter.`,
+          'ERR_BUDGET_REQUIRED',
+          { providerId: this.providerId, reason: 'DIRECT_CALL_PROHIBITED' }
+        );
+      }
+
+      if (this.budgetManager) {
+        const expectedModel = request.model?.trim() || this.defaultModel;
+        const expectedProjectId = request.correlation?.project_id;
+        const dispatchClaimId = request.metadata?.__aidm_dispatch_claim_id
+          ? String(request.metadata.__aidm_dispatch_claim_id)
+          : undefined;
+
+        this.budgetManager.verifyReservation({
+          reservationId,
+          dispatchClaimId,
+          expectedModelId: expectedModel,
+          expectedProjectId,
+        });
+      }
+    }
+
     const validatedRequest = validateLlmRequest(request);
 
     // Check availability
@@ -253,6 +305,19 @@ export class SecondaryLlmAdapter implements LLMProvider {
 
     const transportReq: LlmTransportRequest<SecondaryWireRequest> = Object.freeze({
       body: wireRequest,
+      headers: Object.freeze({
+        'content-type': 'application/json',
+        'x-correlation-id': validatedRequest.correlation.correlation_id,
+        'x-project-id': validatedRequest.correlation.project_id,
+        'x-budget-provider-id': this.providerId,
+        'x-budget-model-id': wireRequest.model,
+        ...(validatedRequest.metadata?.__aidm_account_id
+          ? { 'x-budget-account-id': String(validatedRequest.metadata.__aidm_account_id) }
+          : {}),
+        ...(validatedRequest.metadata?.__aidm_reservation_id
+          ? { 'x-budget-reservation-id': String(validatedRequest.metadata.__aidm_reservation_id) }
+          : {}),
+      }),
       timeoutMs,
       signal: abortController.signal,
     });

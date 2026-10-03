@@ -1,4 +1,5 @@
 import { AidmError, type AidmErrorDetails } from './aidm-error.js';
+import type { TokenTelemetry } from '../token-budget/budget-types.js';
 
 export type LlmErrorCode =
   | 'ERR_INVALID_LLM_REQUEST'
@@ -24,15 +25,26 @@ function sanitizeDetails(details?: AidmErrorDetails): AidmErrorDetails | undefin
   if (!details) return undefined;
   const sanitized: Record<string, unknown> = {};
   for (const [key, val] of Object.entries(details)) {
+    const lowerKey = key.toLowerCase();
+    const isTokenMetric =
+      lowerKey.endsWith('_tokens') ||
+      lowerKey.endsWith('tokens') ||
+      lowerKey.startsWith('token_count') ||
+      lowerKey === 'tokens' ||
+      lowerKey === 'usage';
+
     if (typeof val === 'string') {
       sanitized[key] = sanitizeSecrets(val);
     } else if (
-      key.toLowerCase().includes('secret') ||
-      key.toLowerCase().includes('key') ||
-      key.toLowerCase().includes('token') ||
-      key.toLowerCase().includes('auth')
+      !isTokenMetric &&
+      (lowerKey.includes('secret') ||
+        lowerKey.includes('key') ||
+        (lowerKey.includes('token') && typeof val === 'string') ||
+        lowerKey.includes('auth'))
     ) {
       sanitized[key] = '***REDACTED***';
+    } else if (val && typeof val === 'object' && !Array.isArray(val) && isTokenMetric) {
+      sanitized[key] = sanitizeDetails(val as AidmErrorDetails);
     } else {
       sanitized[key] = val;
     }
@@ -226,6 +238,7 @@ export interface MalformedLlmResponseDetails extends AidmErrorDetails {
   correlationId?: string;
   rawResponse?: unknown;
   reason?: string;
+  usage?: TokenTelemetry;
 }
 
 export class MalformedLlmResponseError extends AidmError {
@@ -233,6 +246,7 @@ export class MalformedLlmResponseError extends AidmError {
   readonly model?: string;
   readonly correlationId?: string;
   readonly reason?: string;
+  readonly usage?: TokenTelemetry;
 
   constructor(
     message: string,
@@ -250,6 +264,7 @@ export class MalformedLlmResponseError extends AidmError {
     this.model = details?.model;
     this.correlationId = details?.correlationId;
     this.reason = details?.reason;
+    this.usage = details?.usage;
 
     Object.setPrototypeOf(this, new.target.prototype);
   }
@@ -264,34 +279,22 @@ export interface StructuredOutputValidationDetails extends AidmErrorDetails {
   missingFields?: string[];
   schemaErrors?: string[];
   reason?: string;
+  usage?: TokenTelemetry;
 }
 
-export class StructuredOutputValidationError extends AidmError {
-  readonly providerId?: string;
-  readonly model?: string;
-  readonly correlationId?: string;
+export class StructuredOutputValidationError extends MalformedLlmResponseError {
   readonly missingFields?: string[];
   readonly schemaErrors?: string[];
-  readonly reason?: string;
 
   constructor(
     message: string,
     details?: StructuredOutputValidationDetails,
     code: LlmErrorCode = 'ERR_STRUCTURED_OUTPUT_VALIDATION'
   ) {
-    const cleanMsg = sanitizeSecrets(message);
-    const formattedMessage = cleanMsg.startsWith(`[${code}]`)
-      ? cleanMsg
-      : `[${code}] ${cleanMsg}`;
-
-    super(formattedMessage, code, sanitizeDetails(details));
+    super(message, details, code);
     this.name = 'StructuredOutputValidationError';
-    this.providerId = details?.providerId;
-    this.model = details?.model;
-    this.correlationId = details?.correlationId;
     this.missingFields = details?.missingFields;
     this.schemaErrors = details?.schemaErrors;
-    this.reason = details?.reason;
 
     Object.setPrototypeOf(this, new.target.prototype);
   }

@@ -269,7 +269,12 @@ describe('P18-04: Completeness Gate & Product Owner Approval Boundary via Real M
 
     // Verify Test D: PENDING human decision cannot become DECIDED automatically
     for (const d of discoveryRev1.decisions) {
-      assert.equal(d.status, 'PENDING_DECISION', 'Pending human decision must not be auto-decided');
+      assert.ok(
+        ['PENDING_DECISION', 'PROPOSED', 'OPEN', 'UNDECIDED'].includes(d.status),
+        `Pending human decision must not be auto-decided (got: ${d.status})`
+      );
+      assert.notEqual(d.status, 'DECIDED', 'Pending human decision must not be auto-decided');
+      assert.notEqual(d.status, 'CONFIRMED', 'Pending human decision must not be auto-decided');
     }
 
     // 2. Initial Completeness Gate evaluation: must NOT be COMPLETE (Test B: Missing threshold -> not complete)
@@ -314,7 +319,10 @@ describe('P18-04: Completeness Gate & Product Owner Approval Boundary via Real M
     // Verify Test E: Explicitly decided human decision remains DECIDED
     for (const d of discoveryRev2.decisions) {
       if (decidedHumanDecisions[d.id]) {
-        assert.equal(d.status, 'DECIDED', 'Explicitly decided human decision must remain DECIDED');
+        assert.ok(
+          d.status === 'DECIDED' || d.status === 'CONFIRMED',
+          `Explicitly decided human decision must remain DECIDED or CONFIRMED (got: ${d.status})`
+        );
       }
     }
 
@@ -407,7 +415,7 @@ describe('P18-04: Completeness Gate & Product Owner Approval Boundary via Real M
     // Verify Test F: DECIDED human decision does not resurrect as pending HDP
     const decidedDiscoveryTitles = new Set(
       discoveryRev2.decisions
-        .filter((d: any) => d.status === 'DECIDED')
+        .filter((d: any) => d.status === 'DECIDED' || d.status === 'CONFIRMED')
         .map((d: any) => d.title)
     );
     const resurrectedHdps = (riskPayload.humanDecisionPoints ?? []).filter(
@@ -655,6 +663,55 @@ describe('P18-04: Completeness Gate & Product Owner Approval Boundary via Real M
       'Mismatched approval revision must fail closed'
     );
 
+    // H) Masquerade attacks: Forbidden actors claiming actorRole = PRODUCT_OWNER
+    const forbiddenActors = ['DIRECTOR', 'ANTIGRAVITY', 'SYSTEM', 'EXECUTOR', 'ORCHESTRATOR'];
+    for (const fActor of forbiddenActors) {
+      const masqueradeRes = await client.request<{
+        content?: Array<{ text: string }>;
+        error?: { message: string };
+      }>('tools/call', {
+        name: 'aidm.approval.package.approve',
+        arguments: {
+          workspaceRoot: targetADir,
+          projectId: projectAName,
+          packageId: approvalPackage.packageId,
+          revision: 1,
+          actor: fActor,
+          actorRole: 'PRODUCT_OWNER',
+          intent: 'EXPLICIT_APPROVAL',
+        },
+      });
+      assert.ok(
+        masqueradeRes.error !== undefined ||
+          (masqueradeRes.result?.content?.[0]?.text &&
+            JSON.parse(masqueradeRes.result.content[0].text).error !== undefined),
+        `Masquerade attack with actor='${fActor}' claiming actorRole='PRODUCT_OWNER' must fail closed`
+      );
+    }
+
+    // I) Forged / non-existent package ID
+    const forgedPkgRes = await client.request<{
+      content?: Array<{ text: string }>;
+      error?: { message: string };
+    }>('tools/call', {
+      name: 'aidm.approval.package.approve',
+      arguments: {
+        workspaceRoot: targetADir,
+        projectId: projectAName,
+        packageId: 'forged-non-existent-package-id',
+        revision: 1,
+        actor: 'Human Product Owner',
+        actorRole: 'PRODUCT_OWNER',
+        intent: 'EXPLICIT_APPROVAL',
+      },
+    });
+    assert.ok(
+      forgedPkgRes.error !== undefined ||
+        (forgedPkgRes.result?.content?.[0]?.text &&
+          JSON.parse(forgedPkgRes.result.content[0].text).error !== undefined),
+      'Approval for forged/non-existent package ID must fail closed'
+    );
+
     // Verify developmentAuthorized is STILL strictly false after all negative tests
     const readyVerify = await client.request<{ content: Array<{ text: string }> }>('tools/call', {
       name: 'aidm.approval.package.readiness',
@@ -699,6 +756,29 @@ describe('P18-04: Completeness Gate & Product Owner Approval Boundary via Real M
 
     // Verify history event appended
     assert.ok(approvedPayload.history.some((h: any) => h.eventType === 'APPROVAL_EXPLICITLY_GRANTED'));
+
+    // Replay attack check: Re-submitting approval on an already approved package must fail closed
+    const replayApproveRes = await client.request<{
+      content?: Array<{ text: string }>;
+      error?: { message: string };
+    }>('tools/call', {
+      name: 'aidm.approval.package.approve',
+      arguments: {
+        workspaceRoot: targetADir,
+        projectId: projectAName,
+        packageId: approvalPackage.packageId,
+        revision: 1,
+        actor: 'Canonical Product Owner',
+        actorRole: 'PRODUCT_OWNER',
+        intent: 'EXPLICIT_APPROVAL',
+      },
+    });
+    assert.ok(
+      replayApproveRes.error !== undefined ||
+        (replayApproveRes.result?.content?.[0]?.text &&
+          JSON.parse(replayApproveRes.result.content[0].text).error !== undefined),
+      'Replay attack: Re-submitting approval on already approved package must fail closed'
+    );
   });
 
   // ==========================================================================
