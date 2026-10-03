@@ -16,5 +16,6 @@ pnpm-debug.log*
 # Environment & local state
 .env
 .env.local
-.ai-manager/cache/
-.ai-manager/state/local-runtime.json
+**/.ai-manager/cache/
+**/.ai-manager/state/
+**/.ai-manager/*.sqlite*
