@@ -1,10 +1,48 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+const isVitest = Boolean(process.env.VITEST);
+const testRunner = isVitest ? await import('vitest') : await import('node:test');
+const assert = isVitest ? null : await import('node:assert/strict');
+
+const describe = testRunner.describe;
+const it = testRunner.it;
+const beforeEach = testRunner.beforeEach;
+const afterEach = testRunner.afterEach;
+const expect = isVitest
+  ? (testRunner as any).expect
+  : (actual: any) => ({
+      toBe: (expected: any) => assert!.equal(actual, expected),
+      toEqual: (expected: any) => assert!.deepEqual(actual, expected),
+      toContain: (item: any) => {
+        if (typeof actual === 'string') {
+          assert!.ok(actual.includes(item), `Expected "${actual}" to contain "${item}"`);
+        } else {
+          assert!.ok(actual.includes(item));
+        }
+      },
+      not: {
+        toContain: (item: any) => {
+          if (typeof actual === 'string') {
+            assert!.ok(!actual.includes(item), `Expected "${actual}" NOT to contain "${item}"`);
+          } else {
+            assert!.ok(!actual.includes(item));
+          }
+        },
+        toBe: (expected: any) => assert!.notEqual(actual, expected),
+        toEqual: (expected: any) => assert!.notDeepEqual(actual, expected),
+      },
+      rejects: {
+        toThrow: async (expectedErr?: any) => {
+          await assert!.rejects(
+            actual,
+            expectedErr ? (typeof expectedErr === 'string' ? new RegExp(expectedErr) : expectedErr) : undefined
+          );
+        },
+      },
+    });
+
 import * as crypto from 'node:crypto';
 import * as path from 'node:path';
 import * as fs from 'node:fs/promises';
-import { IdentityManager } from '../src/authorization/identity-manager.js';
-import { AuthContextValidator } from '../src/authorization/auth-context-validator.js';
-import { NonceStore } from '../src/authorization/nonce-store.js';
+import { IdentityManager, AuthContextValidator, NonceStore } from '../dist/index.js';
 
 describe('P22 - Trusted IDE Authentication & Cryptographic Identity', () => {
   let identityManager: IdentityManager;

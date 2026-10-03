@@ -34,3 +34,5 @@ export * from './driver/index.js';
 export * from './execution-bridge/index.js';
 export type { GitState } from './git/index.js';
 export type { AcceptanceCriterion } from './qa-review/index.js';
+
+export * from './authorization/index.js';

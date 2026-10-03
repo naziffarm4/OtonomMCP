@@ -170,5 +170,8 @@
   "dependencies": {
     "playwright-core": "^1.63.0",
     "zod": "^4.6.5"
+  },
+  "devDependencies": {
+    "vitest": "^5.0.3"
   }
 }

@@ -50,6 +50,9 @@ import {
   DurableStateManager,
   BudgetManager,
   resolveCanonicalProjectIdentity,
+  AuthorizationPolicyEngine,
+  ProjectMandateStore,
+  type ProjectMandate,
 } from '../dist/index.js';
 import { createApprovalPackageApproveTool } from '../dist/mcp/tools/approval-tools.js';
 
@@ -69,6 +72,7 @@ describe('Phase 20 TASK-P20-01D — Auth Context Anti-Spoof Verification & Roadm
   let durableManager: DurableStateManager;
   let driverEngine: DriverEngine;
   let budgetManager: BudgetManager;
+  let policyEngine: AuthorizationPolicyEngine;
 
   let activeSession: DirectorSession;
   let activeSnapshot: DirectorContextSnapshot;
@@ -189,6 +193,25 @@ describe('Phase 20 TASK-P20-01D — Auth Context Anti-Spoof Verification & Roadm
       outputRateNum: 2000n,
       outputRateDen: 1000000n,
     });
+
+    const mandateStore = new ProjectMandateStore({ baseDir: tempDir });
+    const baseMandate: ProjectMandate = {
+      projectId: canonicalProjectId,
+      allowedDirectories: ['src/'],
+      allowedOperationTypes: ['FILE_READ', 'FILE_CREATE', 'FILE_MODIFY', 'TEST_EXECUTION', 'BUILD_EXECUTION'],
+      allowedCommandCategories: ['test', 'build', 'lint', 'format'],
+      autoExecutableTaskClasses: ['IMPLEMENTATION', 'TEST'],
+      forbiddenOperations: ['WORKSPACE_ESCAPE', 'SYSTEM_DESTRUCTIVE'],
+      humanApprovalRequiredOperations: ['REPLAN', 'REQUEST_HUMAN_DECISION', 'UPDATE_SECURITY_POLICY'],
+      authorizationStartTime: new Date(Date.now() - 100000).toISOString(),
+      authorizationEndTime: new Date(Date.now() + 100000).toISOString(),
+      resourceAndWorkLimits: { maxFileEdits: 50, maxCommands: 50 },
+      policyVersion: 1,
+      mandateRevision: 1,
+    };
+    await fs.promises.mkdir(path.join(tempDir, '.ai-manager', 'state'), { recursive: true });
+    await fs.promises.writeFile(path.join(tempDir, '.ai-manager', 'state', 'project-mandate.json'), JSON.stringify(baseMandate, null, 2), 'utf8');
+    policyEngine = new AuthorizationPolicyEngine({ historyManager, mandateStore });
 
     // Acquire lock and save durable state
     await runtimeStateManager.save({
@@ -421,6 +444,7 @@ describe('Phase 20 TASK-P20-01D — Auth Context Anti-Spoof Verification & Roadm
       driverEngine,
       executorPort: mockExecutor,
       budgetManager,
+      authorizationPolicyEngine: policyEngine,
       requireTrustedAuthContext,
     });
   }

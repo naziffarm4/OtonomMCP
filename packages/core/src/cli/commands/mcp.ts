@@ -4,7 +4,6 @@ import { CliExitCode } from '../exit-codes.js';
 import { type CliOutputWriter } from '../cli-output.js';
 import { StdioMcpTransport } from '../../mcp/mcp-transport.js';
 import { createAuthoritativeMcpServer } from '../../mcp/mcp-server.js';
-import { LocalRuntimeStateManager } from '../../storage/runtime-state.js';
 
 export async function executeMcp(
   options: McpCommandOptions,
@@ -12,16 +11,6 @@ export async function executeMcp(
   _appOptions?: CliAppOptions
 ): Promise<CliRunResult> {
   const projectRoot = options.projectRoot ? path.resolve(options.projectRoot) : process.cwd();
-
-  // Enforce workspace single-instance lock before starting MCP server
-  const runtimeManager = new LocalRuntimeStateManager({ baseDir: projectRoot });
-  try {
-    await runtimeManager.acquireInstanceLock();
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    writer.writeError(`[aidm-mcp] Startup rejected: ${msg}`);
-    return { exitCode: CliExitCode.POLICY_BLOCKED, error: msg };
-  }
 
   // Create authoritative transport over stdio
   const transport = new StdioMcpTransport();
@@ -54,8 +43,6 @@ export async function executeMcp(
         }
       } catch (err) {
         writer.writeError(`[aidm-mcp] Error during shutdown: ${err instanceof Error ? err.message : String(err)}`);
-      } finally {
-        await runtimeManager.releaseInstanceLock().catch(() => {});
       }
       resolve({ exitCode: code });
     };

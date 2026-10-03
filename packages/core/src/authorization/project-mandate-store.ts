@@ -6,13 +6,15 @@ import { StorageError } from '../errors/storage-error.js';
 
 export class ProjectMandateStore {
   readonly filePath: string;
+  readonly baseDir: string;
 
   constructor(options?: { baseDir?: string; filePath?: string }) {
     if (options?.filePath) {
       this.filePath = options.filePath;
+      this.baseDir = path.dirname(path.dirname(path.dirname(options.filePath)));
     } else {
-      const baseDir = options?.baseDir ?? process.cwd();
-      this.filePath = path.join(baseDir, '.ai-manager', 'state', 'project-mandate.json');
+      this.baseDir = options?.baseDir ?? process.cwd();
+      this.filePath = path.join(this.baseDir, '.ai-manager', 'state', 'project-mandate.json');
     }
   }
 
@@ -46,7 +48,7 @@ export class ProjectMandateStore {
     const { NonceStore } = await import('./nonce-store.js');
     const { AuthContextValidator } = await import('./auth-context-validator.js');
     
-    const validator = new AuthContextValidator(new IdentityManager(), new NonceStore({ baseDir: path.dirname(path.dirname(this.filePath)) }));
+    const validator = new AuthContextValidator(new IdentityManager({ baseDir: this.baseDir }), new NonceStore({ baseDir: this.baseDir }));
     const result = await validator.validate(authContext, mandate.projectId);
 
     if (!result.isValid) {

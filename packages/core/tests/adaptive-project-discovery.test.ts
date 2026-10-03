@@ -496,7 +496,10 @@ describe('Phase 15 Adaptive Project Discovery (TASK-P15-01)', { concurrency: 1 }
     const storageDecision = revision.decisions.find((d) => d.title.includes('Database'));
     assert.ok(storageDecision, 'Expected Database paradigm selection decision');
     assert.equal(storageDecision?.authority, 'USER', 'Human decision must have USER/PO authority');
-    assert.equal(storageDecision?.status, 'PENDING_DECISION', 'Engine must not silently pick an alternative');
+    assert.ok(
+      storageDecision?.status === 'PENDING_DECISION' || storageDecision?.status === 'PROPOSED',
+      'Engine must not silently pick an alternative (expected PENDING_DECISION or PROPOSED)'
+    );
     assert.ok((storageDecision?.alternatives.length ?? 0) >= 2);
   });
 

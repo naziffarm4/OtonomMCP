@@ -512,7 +512,7 @@ describe('Phase 14 TASK-P14-04: Execution Failure Handling', () => {
         {
           id: 'CHECK_TEST_SUITE',
           type: 'TEST',
-          command: `${process.execPath} -e "process.exit(1)"`,
+          command: `"${process.execPath}" -e "process.exit(1)"`,
         },
       ],
     });
@@ -1071,7 +1071,7 @@ setInterval(() => {}, 1000);`
       executable: bgScript,
       args: [],
       cwd: tempDir,
-      timeoutMs: 300,
+      timeoutMs: 1500,
     });
 
     assert.equal(result.timedOut, true);

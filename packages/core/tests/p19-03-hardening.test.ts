@@ -37,6 +37,9 @@ import {
   ApprovalPackageEngine,
   type ApprovalPackage,
   type DirectorContextSnapshot,
+  AuthorizationPolicyEngine,
+  ProjectMandateStore,
+  type ProjectMandate,
 } from '../dist/index.js';
 
 describe('P19-03-HARDENING: Dispatcher Concurrency & Authorization Provenance', () => {
@@ -52,6 +55,7 @@ describe('P19-03-HARDENING: Dispatcher Concurrency & Authorization Provenance', 
   let actionValidator: DirectorActionValidator;
   let dispatcher: DirectorActionDispatcher;
   let snapshot: DirectorContextSnapshot;
+  let authorizationPolicyEngine: AuthorizationPolicyEngine;
 
   const validProjectId = 'notification-dispatch-service';
   const validSessionId = 'sess-director-p19';
@@ -75,6 +79,29 @@ describe('P19-03-HARDENING: Dispatcher Concurrency & Authorization Provenance', 
       approvalStore,
     });
 
+    const mandateStore = new ProjectMandateStore({ baseDir: tempDir });
+    const baseMandate: ProjectMandate = {
+      projectId: validProjectId,
+      allowedDirectories: ['src/'],
+      allowedOperationTypes: ['FILE_READ', 'FILE_CREATE', 'FILE_MODIFY', 'TEST_EXECUTION', 'BUILD_EXECUTION'],
+      allowedCommandCategories: ['test', 'build', 'lint', 'format'],
+      autoExecutableTaskClasses: ['IMPLEMENTATION', 'TEST'],
+      forbiddenOperations: ['WORKSPACE_ESCAPE', 'SYSTEM_DESTRUCTIVE'],
+      humanApprovalRequiredOperations: ['REPLAN', 'REQUEST_HUMAN_DECISION', 'UPDATE_SECURITY_POLICY'],
+      authorizationStartTime: new Date(Date.now() - 100000).toISOString(),
+      authorizationEndTime: new Date(Date.now() + 100000).toISOString(),
+      resourceAndWorkLimits: { maxFileEdits: 50, maxCommands: 50 },
+      policyVersion: 1,
+      mandateRevision: 1,
+    };
+    await fs.mkdir(path.join(tempDir, '.ai-manager', 'state'), { recursive: true });
+    await fs.writeFile(
+      path.join(tempDir, '.ai-manager', 'state', 'project-mandate.json'),
+      JSON.stringify(baseMandate, null, 2),
+      'utf8'
+    );
+    authorizationPolicyEngine = new AuthorizationPolicyEngine({ historyManager, mandateStore });
+
     actionBuilder = new DirectorActionBuilder();
     actionValidator = new DirectorActionValidator({ historyManager });
 
@@ -87,6 +114,7 @@ describe('P19-03-HARDENING: Dispatcher Concurrency & Authorization Provenance', 
       runtimeStateManager,
       approvalStore,
       approvalPackageEngine,
+      authorizationPolicyEngine,
     });
 
     snapshot = {

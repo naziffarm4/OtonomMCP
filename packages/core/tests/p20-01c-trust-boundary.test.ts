@@ -51,6 +51,10 @@ import {
   DurableStateManager,
   BudgetManager,
   resolveCanonicalProjectIdentity,
+  AuthorizationPolicyEngine,
+  ProjectMandateStore,
+  type ProjectMandate,
+  IdentityManager,
 } from '../dist/index.js';
 import { ReservationState } from '../dist/budget/budget-types.js';
 import { createApprovalPackageApproveTool } from '../dist/mcp/tools/approval-tools.js';
@@ -71,6 +75,7 @@ describe('Phase 20 TASK-P20-01C — Product Owner Trust Boundary & AI Cost Scope
   let durableManager: DurableStateManager;
   let driverEngine: DriverEngine;
   let budgetManager: BudgetManager;
+  let policyEngine: AuthorizationPolicyEngine;
 
   let activeSession: DirectorSession;
   let activeSnapshot: DirectorContextSnapshot;
@@ -208,6 +213,25 @@ describe('Phase 20 TASK-P20-01C — Product Owner Trust Boundary & AI Cost Scope
       outputRateNum: 5000n,
       outputRateDen: 1000000n,
     });
+
+    const mandateStore = new ProjectMandateStore({ baseDir: tempDir });
+    const baseMandate: ProjectMandate = {
+      projectId: canonicalProjectId,
+      allowedDirectories: ['src/'],
+      allowedOperationTypes: ['FILE_READ', 'FILE_CREATE', 'FILE_MODIFY', 'TEST_EXECUTION', 'BUILD_EXECUTION'],
+      allowedCommandCategories: ['test', 'build', 'lint', 'format'],
+      autoExecutableTaskClasses: ['IMPLEMENTATION', 'TEST'],
+      forbiddenOperations: ['WORKSPACE_ESCAPE', 'SYSTEM_DESTRUCTIVE'],
+      humanApprovalRequiredOperations: ['REPLAN', 'REQUEST_HUMAN_DECISION', 'UPDATE_SECURITY_POLICY'],
+      authorizationStartTime: new Date(Date.now() - 100000).toISOString(),
+      authorizationEndTime: new Date(Date.now() + 100000).toISOString(),
+      resourceAndWorkLimits: { maxFileEdits: 50, maxCommands: 50 },
+      policyVersion: 1,
+      mandateRevision: 1,
+    };
+    await fs.promises.mkdir(path.join(tempDir, '.ai-manager', 'state'), { recursive: true });
+    await fs.promises.writeFile(path.join(tempDir, '.ai-manager', 'state', 'project-mandate.json'), JSON.stringify(baseMandate, null, 2), 'utf8');
+    policyEngine = new AuthorizationPolicyEngine({ historyManager, mandateStore });
 
     // Acquire workspace instance lock for current process
     await runtimeStateManager.save({
@@ -490,6 +514,7 @@ describe('Phase 20 TASK-P20-01C — Product Owner Trust Boundary & AI Cost Scope
       driverEngine,
       executorPort: mockExecutor,
       budgetManager,
+      authorizationPolicyEngine: policyEngine,
     });
 
     const intent = createValidIntent();
@@ -560,6 +585,7 @@ describe('Phase 20 TASK-P20-01C — Product Owner Trust Boundary & AI Cost Scope
       driverEngine,
       executorPort: mockExecutor,
       budgetManager,
+      authorizationPolicyEngine: policyEngine,
     });
 
     const intent = createValidIntent();
@@ -588,6 +614,7 @@ describe('Phase 20 TASK-P20-01C — Product Owner Trust Boundary & AI Cost Scope
       driverEngine,
       executorPort: mockExecutor,
       budgetManager,
+      authorizationPolicyEngine: policyEngine,
     });
 
     // LLM creates intent with hallucinated packageId
@@ -633,6 +660,7 @@ describe('Phase 20 TASK-P20-01C — Product Owner Trust Boundary & AI Cost Scope
       driverEngine,
       executorPort: mockExecutor,
       budgetManager,
+      authorizationPolicyEngine: policyEngine,
     });
 
     // Intent declares isDevelopmentAuthorized: false
@@ -680,6 +708,7 @@ describe('Phase 20 TASK-P20-01C — Product Owner Trust Boundary & AI Cost Scope
       driverEngine,
       executorPort: mockExecutor,
       budgetManager,
+      authorizationPolicyEngine: policyEngine,
     });
 
     const intent = createValidIntent();
@@ -729,6 +758,7 @@ describe('Phase 20 TASK-P20-01C — Product Owner Trust Boundary & AI Cost Scope
       driverEngine,
       executorPort: mockExecutor,
       budgetManager,
+      authorizationPolicyEngine: policyEngine,
     });
 
     // A: Revision mismatch (intent points to rev 2, store has rev 1)
@@ -797,6 +827,7 @@ describe('Phase 20 TASK-P20-01C — Product Owner Trust Boundary & AI Cost Scope
       driverEngine,
       executorPort: mockExecutor,
       budgetManager,
+      authorizationPolicyEngine: policyEngine,
       requireTrustedAuthContext: true,
     });
 
@@ -827,6 +858,18 @@ describe('Phase 20 TASK-P20-01C — Product Owner Trust Boundary & AI Cost Scope
     assert.equal(mockExecutor.executionCallCount, 0);
 
     // Providing a verified authContext allows execution under zero-trust mode
+    const idManager = new IdentityManager({ baseDir: tempDir });
+    const { privateKey } = await idManager.getOrCreateIdentity();
+    const verifiedPayload = {
+      verified: true,
+      authSource: 'TRUSTED_IDE',
+      actorId: 'po-verified-human',
+      verifiedAt: new Date().toISOString(),
+      projectId: canonicalProjectId,
+      nonce: `nonce-scen7-${Date.now()}`,
+    };
+    const signature = await idManager.signPayload(verifiedPayload, privateKey);
+
     const intentWithVerifiedAuth = createValidIntent({
       authorizationReference: {
         packageId: approvedPackage.packageId,
@@ -835,10 +878,8 @@ describe('Phase 20 TASK-P20-01C — Product Owner Trust Boundary & AI Cost Scope
         authorizedAt: new Date().toISOString(),
         authorizedByRole: 'PRODUCT_OWNER',
         authContext: {
-          verified: true,
-          authSource: 'IDE_SECURE_KEYSTORE',
-          actorId: 'po-verified-human',
-          verifiedAt: new Date().toISOString(),
+          ...verifiedPayload,
+          signature,
         },
       },
     });
@@ -868,6 +909,7 @@ describe('Phase 20 TASK-P20-01C — Product Owner Trust Boundary & AI Cost Scope
       driverEngine,
       executorPort: mockExecutor,
       budgetManager,
+      authorizationPolicyEngine: policyEngine,
     });
 
     const initialAccount = budgetManager.getProjectAccount(canonicalProjectId);
@@ -916,6 +958,7 @@ describe('Phase 20 TASK-P20-01C — Product Owner Trust Boundary & AI Cost Scope
       driverEngine,
       executorPort: mockExecutor,
       budgetManager,
+      authorizationPolicyEngine: policyEngine,
     });
 
     const llmIntent = createValidIntent({

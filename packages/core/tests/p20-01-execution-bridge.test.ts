@@ -55,6 +55,9 @@ import {
   LocalRuntimeStateManager,
   BudgetManager,
   usdToNanoUsd,
+  AuthorizationPolicyEngine,
+  ProjectMandateStore,
+  type ProjectMandate,
 } from '../dist/index.js';
 
 describe('Phase 20 TASK-P20-01 — Execution Bridge Architecture & Safe Driver Handoff', { concurrency: 1 }, () => {
@@ -73,6 +76,7 @@ describe('Phase 20 TASK-P20-01 — Execution Bridge Architecture & Safe Driver H
   let runtimeStateManager: LocalRuntimeStateManager;
   let driverEngine: DriverEngine;
   let budgetManager: BudgetManager;
+  let policyEngine: AuthorizationPolicyEngine;
 
   let activeSession: DirectorSession;
   let activeSnapshot: DirectorContextSnapshot;
@@ -413,6 +417,25 @@ describe('Phase 20 TASK-P20-01 — Execution Bridge Architecture & Safe Driver H
       approvalPackageEngine,
       executorPort: mockExecutor,
     });
+
+    const mandateStore = new ProjectMandateStore({ baseDir: tempDir });
+    const baseMandate: ProjectMandate = {
+      projectId: canonicalProjectId,
+      allowedDirectories: ['src/'],
+      allowedOperationTypes: ['FILE_READ', 'FILE_CREATE', 'FILE_MODIFY', 'TEST_EXECUTION', 'BUILD_EXECUTION'],
+      allowedCommandCategories: ['test', 'build', 'lint', 'format'],
+      autoExecutableTaskClasses: ['IMPLEMENTATION', 'TEST'],
+      forbiddenOperations: ['WORKSPACE_ESCAPE', 'SYSTEM_DESTRUCTIVE'],
+      humanApprovalRequiredOperations: ['REPLAN', 'REQUEST_HUMAN_DECISION', 'UPDATE_SECURITY_POLICY'],
+      authorizationStartTime: new Date(Date.now() - 100000).toISOString(),
+      authorizationEndTime: new Date(Date.now() + 100000).toISOString(),
+      resourceAndWorkLimits: { maxFileEdits: 50, maxCommands: 50 },
+      policyVersion: 1,
+      mandateRevision: 1,
+    };
+    fs.mkdirSync(path.join(tempDir, '.ai-manager', 'state'), { recursive: true });
+    fs.writeFileSync(path.join(tempDir, '.ai-manager', 'state', 'project-mandate.json'), JSON.stringify(baseMandate, null, 2), 'utf8');
+    policyEngine = new AuthorizationPolicyEngine({ historyManager, mandateStore });
   });
 
   afterEach(() => {
@@ -446,6 +469,7 @@ describe('Phase 20 TASK-P20-01 — Execution Bridge Architecture & Safe Driver H
       driverEngine,
       executorPort: mockExecutor,
       budgetManager,
+      authorizationPolicyEngine: policyEngine,
     });
 
     const intent = createValidIntent();
@@ -487,6 +511,7 @@ describe('Phase 20 TASK-P20-01 — Execution Bridge Architecture & Safe Driver H
       driverEngine,
       executorPort: mockExecutor,
       budgetManager,
+      authorizationPolicyEngine: policyEngine,
     });
 
     const intent = createValidIntent();
@@ -518,6 +543,7 @@ describe('Phase 20 TASK-P20-01 — Execution Bridge Architecture & Safe Driver H
       driverEngine,
       executorPort: mockExecutor,
       budgetManager,
+      authorizationPolicyEngine: policyEngine,
     });
 
     const staleIntent = createValidIntent({
@@ -549,6 +575,7 @@ describe('Phase 20 TASK-P20-01 — Execution Bridge Architecture & Safe Driver H
       driverEngine,
       executorPort: mockExecutor,
       budgetManager,
+      authorizationPolicyEngine: policyEngine,
     });
 
     const mismatchIntent = createValidIntent({
@@ -580,6 +607,7 @@ describe('Phase 20 TASK-P20-01 — Execution Bridge Architecture & Safe Driver H
       driverEngine,
       executorPort: mockExecutor,
       budgetManager,
+      authorizationPolicyEngine: policyEngine,
     });
 
     // TASK-02 depends on TASK-01 which is not completed
@@ -616,6 +644,7 @@ describe('Phase 20 TASK-P20-01 — Execution Bridge Architecture & Safe Driver H
       driverEngine,
       executorPort: mockExecutor,
       budgetManager,
+      authorizationPolicyEngine: policyEngine,
     });
 
     const intent = createValidIntent();
@@ -652,6 +681,7 @@ describe('Phase 20 TASK-P20-01 — Execution Bridge Architecture & Safe Driver H
       driverEngine,
       executorPort: mockExecutor,
       budgetManager,
+      authorizationPolicyEngine: policyEngine,
     });
 
     const intent = createValidIntent();
@@ -690,6 +720,7 @@ describe('Phase 20 TASK-P20-01 — Execution Bridge Architecture & Safe Driver H
       driverEngine,
       executorPort: mockExecutor,
       budgetManager,
+      authorizationPolicyEngine: policyEngine,
     });
 
     const intent = createValidIntent();
@@ -721,6 +752,7 @@ describe('Phase 20 TASK-P20-01 — Execution Bridge Architecture & Safe Driver H
       driverEngine,
       executorPort: mockExecutor,
       budgetManager,
+      authorizationPolicyEngine: policyEngine,
     });
 
     const intent = createValidIntent();
@@ -754,6 +786,7 @@ describe('Phase 20 TASK-P20-01 — Execution Bridge Architecture & Safe Driver H
       driverEngine,
       executorPort: mockExecutor,
       budgetManager,
+      authorizationPolicyEngine: policyEngine,
     });
 
     const intent = createValidIntent({ executionIntentId: 'intent-crash-001' });
@@ -776,6 +809,7 @@ describe('Phase 20 TASK-P20-01 — Execution Bridge Architecture & Safe Driver H
       driverEngine,
       executorPort: mockExecutor,
       budgetManager,
+      authorizationPolicyEngine: policyEngine,
     });
 
     // Run recovery
@@ -816,6 +850,7 @@ describe('Phase 20 TASK-P20-01 — Execution Bridge Architecture & Safe Driver H
       driverEngine,
       executorPort: mockExecutor,
       budgetManager,
+      authorizationPolicyEngine: policyEngine,
     });
 
     const intent = createValidIntent();
@@ -846,6 +881,7 @@ describe('Phase 20 TASK-P20-01 — Execution Bridge Architecture & Safe Driver H
       driverEngine,
       executorPort: mockExecutor,
       budgetManager,
+      authorizationPolicyEngine: policyEngine,
     });
 
     const intent = createValidIntent();
@@ -880,6 +916,7 @@ describe('Phase 20 TASK-P20-01 — Execution Bridge Architecture & Safe Driver H
       driverEngine,
       executorPort: mockExecutor,
       budgetManager,
+      authorizationPolicyEngine: policyEngine,
     });
 
     const intent = createValidIntent();

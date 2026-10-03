@@ -334,12 +334,12 @@ export class ArchitectureTechnologyEngine {
 
     // Helper to check if an architectural area has an unresolved decision
     const hasPendingDecisionInArea = (areaKeyword: string): boolean => {
-      const kw = areaKeyword.toLowerCase();
+      const regex = new RegExp(`\\b${areaKeyword}\\b`, 'i');
       return pendingHumanDecisions.some(
         (p) =>
-          p.question.toLowerCase().includes(kw) ||
-          p.whyItMatters.toLowerCase().includes(kw) ||
-          p.affectedArchitectureAreas.some((a) => a.toLowerCase().includes(kw))
+          regex.test(p.question) ||
+          regex.test(p.whyItMatters) ||
+          p.affectedArchitectureAreas.some((a) => regex.test(a))
       );
     };
 

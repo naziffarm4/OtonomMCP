@@ -52,6 +52,9 @@ import {
   LocalRuntimeStateManager,
   BudgetManager,
   usdToNanoUsd,
+  AuthorizationPolicyEngine,
+  ProjectMandateStore,
+  type ProjectMandate,
 } from '../dist/index.js';
 
 describe('Phase 20 TASK-P20-01A — Execution Bridge Final Security & Acceptance Verification', { concurrency: 1 }, () => {
@@ -70,6 +73,7 @@ describe('Phase 20 TASK-P20-01A — Execution Bridge Final Security & Acceptance
   let runtimeStateManager: LocalRuntimeStateManager;
   let driverEngine: DriverEngine;
   let budgetManager: BudgetManager;
+  let policyEngine: AuthorizationPolicyEngine;
 
   let activeSession: DirectorSession;
   let activeSnapshot: DirectorContextSnapshot;
@@ -402,6 +406,25 @@ describe('Phase 20 TASK-P20-01A — Execution Bridge Final Security & Acceptance
       approvalPackageEngine,
       executorPort: mockExecutor,
     });
+
+    const mandateStore = new ProjectMandateStore({ baseDir: tempDir });
+    const baseMandate: ProjectMandate = {
+      projectId: canonicalProjectId,
+      allowedDirectories: ['src/'],
+      allowedOperationTypes: ['FILE_READ', 'FILE_CREATE', 'FILE_MODIFY', 'TEST_EXECUTION', 'BUILD_EXECUTION'],
+      allowedCommandCategories: ['test', 'build', 'lint', 'format'],
+      autoExecutableTaskClasses: ['IMPLEMENTATION', 'TEST'],
+      forbiddenOperations: ['WORKSPACE_ESCAPE', 'SYSTEM_DESTRUCTIVE'],
+      humanApprovalRequiredOperations: ['REPLAN', 'REQUEST_HUMAN_DECISION', 'UPDATE_SECURITY_POLICY'],
+      authorizationStartTime: new Date(Date.now() - 100000).toISOString(),
+      authorizationEndTime: new Date(Date.now() + 100000).toISOString(),
+      resourceAndWorkLimits: { maxFileEdits: 50, maxCommands: 50 },
+      policyVersion: 1,
+      mandateRevision: 1,
+    };
+    fs.mkdirSync(path.join(tempDir, '.ai-manager', 'state'), { recursive: true });
+    fs.writeFileSync(path.join(tempDir, '.ai-manager', 'state', 'project-mandate.json'), JSON.stringify(baseMandate, null, 2), 'utf8');
+    policyEngine = new AuthorizationPolicyEngine({ historyManager, mandateStore });
   });
 
   afterEach(() => {
@@ -443,6 +466,7 @@ describe('Phase 20 TASK-P20-01A — Execution Bridge Final Security & Acceptance
       driverEngine,
       executorPort: mockExecutor,
       budgetManager,
+      authorizationPolicyEngine: policyEngine,
     });
 
     // Intent tries to claim authorizedByRole: 'PRODUCT_OWNER'
@@ -487,6 +511,7 @@ describe('Phase 20 TASK-P20-01A — Execution Bridge Final Security & Acceptance
       driverEngine,
       executorPort: mockExecutor,
       budgetManager,
+      authorizationPolicyEngine: policyEngine,
     });
 
     const intent = createValidIntent();
@@ -516,6 +541,7 @@ describe('Phase 20 TASK-P20-01A — Execution Bridge Final Security & Acceptance
       driverEngine,
       executorPort: mockExecutor,
       budgetManager,
+      authorizationPolicyEngine: policyEngine,
     });
 
     const intent = createValidIntent();
@@ -549,6 +575,7 @@ describe('Phase 20 TASK-P20-01A — Execution Bridge Final Security & Acceptance
       driverEngine,
       executorPort: mockExecutor,
       budgetManager,
+      authorizationPolicyEngine: policyEngine,
     });
 
     const intent = createValidIntent();
@@ -591,6 +618,7 @@ describe('Phase 20 TASK-P20-01A — Execution Bridge Final Security & Acceptance
       driverEngine,
       executorPort: mockExecutor,
       budgetManager,
+      authorizationPolicyEngine: policyEngine,
     });
 
     const intent = createValidIntent({ executionIntentId: 'intent-crash-started' });
@@ -625,6 +653,7 @@ describe('Phase 20 TASK-P20-01A — Execution Bridge Final Security & Acceptance
       driverEngine,
       executorPort: mockExecutor,
       budgetManager,
+      authorizationPolicyEngine: policyEngine,
     });
 
     const recovery = await bridge2.recover();
@@ -650,6 +679,7 @@ describe('Phase 20 TASK-P20-01A — Execution Bridge Final Security & Acceptance
       driverEngine,
       executorPort: mockExecutor,
       budgetManager,
+      authorizationPolicyEngine: policyEngine,
     });
 
     const intent = createValidIntent({ executionIntentId: 'intent-unknown-never-retry' });
@@ -670,6 +700,7 @@ describe('Phase 20 TASK-P20-01A — Execution Bridge Final Security & Acceptance
       driverEngine,
       executorPort: mockExecutor,
       budgetManager,
+      authorizationPolicyEngine: policyEngine,
     });
 
     await bridge2.recover();
@@ -701,6 +732,7 @@ describe('Phase 20 TASK-P20-01A — Execution Bridge Final Security & Acceptance
       driverEngine,
       executorPort: mockExecutor,
       budgetManager,
+      authorizationPolicyEngine: policyEngine,
     });
 
     const intent = createValidIntent();
@@ -732,6 +764,7 @@ describe('Phase 20 TASK-P20-01A — Execution Bridge Final Security & Acceptance
       driverEngine,
       executorPort: mockExecutor,
       budgetManager,
+      authorizationPolicyEngine: policyEngine,
     });
 
     const intent = createValidIntent();
@@ -801,6 +834,7 @@ describe('Phase 20 TASK-P20-01A — Execution Bridge Final Security & Acceptance
       driverEngine,
       executorPort: mockExecutor,
       budgetManager,
+      authorizationPolicyEngine: policyEngine,
     });
 
     // Claim intent NOW (claimedAt is strictly newer than pastTimestamp)
@@ -822,6 +856,7 @@ describe('Phase 20 TASK-P20-01A — Execution Bridge Final Security & Acceptance
       driverEngine,
       executorPort: mockExecutor,
       budgetManager,
+      authorizationPolicyEngine: policyEngine,
     });
 
     const recovery = await bridge2.recover();
@@ -847,6 +882,7 @@ describe('Phase 20 TASK-P20-01A — Execution Bridge Final Security & Acceptance
       driverEngine,
       executorPort: mockExecutor,
       budgetManager,
+      authorizationPolicyEngine: policyEngine,
     });
 
     // Task revision mismatch: intent specifies revision 999, DAG has revision 1
@@ -880,6 +916,7 @@ describe('Phase 20 TASK-P20-01A — Execution Bridge Final Security & Acceptance
       driverEngine,
       executorPort: mockExecutor,
       budgetManager,
+      authorizationPolicyEngine: policyEngine,
     });
 
     const intent = createValidIntent();
@@ -913,6 +950,7 @@ describe('Phase 20 TASK-P20-01A — Execution Bridge Final Security & Acceptance
       driverEngine,
       executorPort: mockExecutor,
       budgetManager,
+      authorizationPolicyEngine: policyEngine,
     });
 
     const intent = createValidIntent();
