@@ -358,37 +358,51 @@ export class DirectorActionDispatcher {
     // ========================================================================
     // 4.5. P21 AUTHORIZATION POLICY ENGINE EVALUATION
     // ========================================================================
-    if (this.authorizationPolicyEngine) {
-      const decision = await this.authorizationPolicyEngine.evaluateAction(envelope);
-      if (decision.decisionResult === AuthorizationDecisionResult.DENY) {
-        const rejectResult: ActionDispatchResult = {
-          dispatchId,
-          actionId: envelope.actionId,
-          actionType: envelope.actionType,
-          status: ActionDispatchStatus.REJECTED,
-          isAuthorized: false,
-          requiresHumanApproval: false,
-          reason: `Policy Engine (P21) rejected action: ${decision.reason}`,
-          code: 'ERR_POLICY_ENGINE_DENIED',
-          dispatchedAt: now,
-        };
-        await this.recordHistory(envelope.projectId, 'DIRECTOR_ACTION_DISPATCH_REJECTED', rejectResult as unknown as Record<string, unknown>);
-        return rejectResult;
-      } else if (decision.decisionResult === AuthorizationDecisionResult.REQUIRE_HUMAN_APPROVAL || decision.decisionResult === AuthorizationDecisionResult.WAITING_FOR_POLICY_CONFIGURATION) {
-        const pendingResult: ActionDispatchResult = {
-          dispatchId,
-          actionId: envelope.actionId,
-          actionType: envelope.actionType,
-          status: ActionDispatchStatus.PENDING_AUTHORIZATION,
-          isAuthorized: false,
-          requiresHumanApproval: true,
-          reason: `Policy Engine (P21) requires human approval or configuration: ${decision.reason}`,
-          code: 'PENDING_POLICY_AUTHORIZATION',
-          dispatchedAt: now,
-        };
-        await this.recordHistory(envelope.projectId, 'DIRECTOR_ACTION_DISPATCHED', pendingResult as unknown as Record<string, unknown>);
-        return pendingResult;
-      }
+    if (!this.authorizationPolicyEngine) {
+      const rejectResult: ActionDispatchResult = {
+        dispatchId,
+        actionId: envelope.actionId,
+        actionType: envelope.actionType,
+        status: ActionDispatchStatus.REJECTED,
+        isAuthorized: false,
+        requiresHumanApproval: false,
+        reason: `Policy Engine (P21) is not configured. Failing closed.`,
+        code: 'ERR_POLICY_ENGINE_MISSING',
+        dispatchedAt: now,
+      };
+      await this.recordHistory(envelope.projectId, 'DIRECTOR_ACTION_DISPATCH_REJECTED', rejectResult as unknown as Record<string, unknown>);
+      return rejectResult;
+    }
+
+    const decision = await this.authorizationPolicyEngine.evaluateAction(envelope);
+    if (decision.decisionResult === AuthorizationDecisionResult.DENY) {
+      const rejectResult: ActionDispatchResult = {
+        dispatchId,
+        actionId: envelope.actionId,
+        actionType: envelope.actionType,
+        status: ActionDispatchStatus.REJECTED,
+        isAuthorized: false,
+        requiresHumanApproval: false,
+        reason: `Policy Engine (P21) rejected action: ${decision.reason}`,
+        code: 'ERR_POLICY_ENGINE_DENIED',
+        dispatchedAt: now,
+      };
+      await this.recordHistory(envelope.projectId, 'DIRECTOR_ACTION_DISPATCH_REJECTED', rejectResult as unknown as Record<string, unknown>);
+      return rejectResult;
+    } else if (decision.decisionResult === AuthorizationDecisionResult.REQUIRE_HUMAN_APPROVAL || decision.decisionResult === AuthorizationDecisionResult.WAITING_FOR_POLICY_CONFIGURATION) {
+      const pendingResult: ActionDispatchResult = {
+        dispatchId,
+        actionId: envelope.actionId,
+        actionType: envelope.actionType,
+        status: ActionDispatchStatus.PENDING_AUTHORIZATION,
+        isAuthorized: false,
+        requiresHumanApproval: true,
+        reason: `Policy Engine (P21) requires human approval or configuration: ${decision.reason}`,
+        code: 'PENDING_POLICY_AUTHORIZATION',
+        dispatchedAt: now,
+      };
+      await this.recordHistory(envelope.projectId, 'DIRECTOR_ACTION_DISPATCHED', pendingResult as unknown as Record<string, unknown>);
+      return pendingResult;
     }
 
     // ========================================================================

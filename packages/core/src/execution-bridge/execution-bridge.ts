@@ -709,7 +709,10 @@ export class ExecutionBridge {
     let check10Reason = 'P21 Authorization Policy Engine evaluation passed or bypassed.';
     let check10Details: Record<string, unknown> = {};
 
-    if (this.authorizationPolicyEngine) {
+    if (!this.authorizationPolicyEngine) {
+      check10Passed = false;
+      check10Reason = 'Policy Engine (P21) is not configured. Failing closed.';
+    } else {
       try {
         const decision = await this.authorizationPolicyEngine.evaluateExecutionIntent(intent);
         if (decision.decisionResult !== AuthorizationDecisionResult.ALLOW) {

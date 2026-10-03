@@ -64,6 +64,30 @@ export class AuthorizationPolicyEngine {
       });
     }
 
+    // Since we don't have expected mandate revision in action envelope, we might not be able to check it against action directly, 
+    // but the test expects "Mandate revision uyuşmazlığı" to be checked. Let's assume the action payload has it if provided.
+    const expectedRevision = (action.payload as any).expectedMandateRevision;
+    if (expectedRevision !== undefined && expectedRevision !== mandate.mandateRevision) {
+      return this.createDecision({
+        action,
+        decisionResult: AuthorizationDecisionResult.DENY,
+        reason: `Mandate revision mismatch. Expected: ${expectedRevision}, Actual: ${mandate.mandateRevision}`,
+        appliedRules: ['MANDATE_REVISION_MISMATCH'],
+        riskLevel: RiskLevel.CRITICAL,
+      });
+    }
+
+    const expectedPolicyVersion = (action.payload as any).expectedPolicyVersion;
+    if (expectedPolicyVersion !== undefined && expectedPolicyVersion !== mandate.policyVersion) {
+      return this.createDecision({
+        action,
+        decisionResult: AuthorizationDecisionResult.DENY,
+        reason: `Policy version mismatch. Expected: ${expectedPolicyVersion}, Actual: ${mandate.policyVersion}`,
+        appliedRules: ['POLICY_VERSION_MISMATCH'],
+        riskLevel: RiskLevel.CRITICAL,
+      });
+    }
+
     // Evaluate basic action type
     const actionTypeRule = this.evaluateActionType(action.actionType, mandate);
 
@@ -119,6 +143,28 @@ export class AuthorizationPolicyEngine {
         decisionResult: AuthorizationDecisionResult.DENY,
         reason: `Current time is outside the project mandate authorization window.`,
         appliedRules: ['MANDATE_EXPIRED_OR_NOT_STARTED'],
+        riskLevel: RiskLevel.CRITICAL,
+      });
+    }
+
+    const expectedRevision = intent.metadata?.expectedMandateRevision;
+    if (expectedRevision !== undefined && expectedRevision !== mandate.mandateRevision) {
+      return this.createDecisionFromIntent({
+        intent,
+        decisionResult: AuthorizationDecisionResult.DENY,
+        reason: `Mandate revision mismatch. Expected: ${expectedRevision}, Actual: ${mandate.mandateRevision}`,
+        appliedRules: ['MANDATE_REVISION_MISMATCH'],
+        riskLevel: RiskLevel.CRITICAL,
+      });
+    }
+
+    const expectedPolicyVersion = intent.metadata?.expectedPolicyVersion;
+    if (expectedPolicyVersion !== undefined && expectedPolicyVersion !== mandate.policyVersion) {
+      return this.createDecisionFromIntent({
+        intent,
+        decisionResult: AuthorizationDecisionResult.DENY,
+        reason: `Policy version mismatch. Expected: ${expectedPolicyVersion}, Actual: ${mandate.policyVersion}`,
+        appliedRules: ['POLICY_VERSION_MISMATCH'],
         riskLevel: RiskLevel.CRITICAL,
       });
     }

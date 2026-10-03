@@ -1,6 +1,6 @@
 import * as path from 'node:path';
 import * as fs from 'node:fs';
-import { ProjectMandate } from './authorization-policy-types.js';
+import { ProjectMandate, ProjectMandateZodSchema } from './authorization-policy-types.js';
 import { readJsonFile, atomicWriteJson } from '../storage/atomic-writer.js';
 import { StorageError } from '../errors/storage-error.js';
 
@@ -26,15 +26,13 @@ export class ProjectMandateStore {
   }
 
   async loadMandate(): Promise<ProjectMandate | null> {
-    const data = await readJsonFile<unknown>(this.filePath);
-    if (!data) return null;
-    
-    // Simplistic runtime validation, a Zod schema is preferable in a real implementation
-    if (typeof data === 'object' && data !== null && 'projectId' in data) {
-      return data as ProjectMandate;
+    try {
+      const data = await readJsonFile<unknown>(this.filePath);
+      if (!data) return null;
+      return ProjectMandateZodSchema.parse(data);
+    } catch {
+      return null;
     }
-    
-    return null;
   }
 
   async saveMandate(mandate: ProjectMandate, authContext: any): Promise<ProjectMandate> {

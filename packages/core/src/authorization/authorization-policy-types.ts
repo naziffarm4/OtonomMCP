@@ -1,4 +1,5 @@
 import { RiskLevel } from '../risk.js';
+import { z } from 'zod';
 
 export const AuthorizationDecisionResult = {
   ALLOW: 'ALLOW',
@@ -30,20 +31,22 @@ export interface PolicyDecisionRecord {
   policyVersion: number;
 }
 
-export interface ProjectMandate {
-  projectId: string;
-  allowedDirectories: string[];
-  allowedOperationTypes: string[];
-  allowedCommandCategories: string[];
-  autoExecutableTaskClasses: string[];
-  forbiddenOperations: string[];
-  humanApprovalRequiredOperations: string[];
-  authorizationStartTime: string;
-  authorizationEndTime: string;
-  resourceAndWorkLimits: {
-    maxFileEdits?: number;
-    maxCommands?: number;
-  };
-  policyVersion: number;
-  mandateRevision: number;
-}
+export const ProjectMandateZodSchema = z.object({
+  projectId: z.string().min(1, 'projectId is required'),
+  allowedDirectories: z.array(z.string()).default([]),
+  allowedOperationTypes: z.array(z.string()).default([]),
+  allowedCommandCategories: z.array(z.string()).default([]),
+  autoExecutableTaskClasses: z.array(z.string()).default([]),
+  forbiddenOperations: z.array(z.string()).default([]),
+  humanApprovalRequiredOperations: z.array(z.string()).default([]),
+  authorizationStartTime: z.string().min(1, 'authorizationStartTime is required'),
+  authorizationEndTime: z.string().min(1, 'authorizationEndTime is required'),
+  resourceAndWorkLimits: z.object({
+    maxFileEdits: z.number().int().nonnegative().optional(),
+    maxCommands: z.number().int().nonnegative().optional(),
+  }).default({}),
+  policyVersion: z.number().int().positive().default(1),
+  mandateRevision: z.number().int().positive().default(1),
+}).strict();
+
+export type ProjectMandate = z.infer<typeof ProjectMandateZodSchema>;
