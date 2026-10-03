@@ -1368,6 +1368,10 @@ export class ApprovalPackageEngine {
       ...(input.understandingRevision !== undefined ? { understandingRevision: input.understandingRevision } : {}),
       ...(input.protocolVersion ? { protocolVersion: input.protocolVersion } : {}),
       ...(input.schemaVersion ? { schemaVersion: input.schemaVersion } : {}),
+      ...(input.provenanceSource ? { provenanceSource: input.provenanceSource } : {}),
+      ...(input.isTrustedHumanAuth !== undefined ? { isTrustedHumanAuth: input.isTrustedHumanAuth } : {}),
+      ...(input.authStatus ? { authStatus: input.authStatus } : {}),
+      ...(input.authContext ? { authContext: input.authContext } : {}),
     });
 
     const approvedPkg: ApprovalPackage = Object.freeze({

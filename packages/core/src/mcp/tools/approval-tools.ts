@@ -572,6 +572,9 @@ export function createApprovalPackageApproveTool(
         intent: parsed.intent as any,
         comment: parsed.comment,
         timestamp: parsed.timestamp,
+        provenanceSource: 'MCP_TOOL',
+        isTrustedHumanAuth: false,
+        authStatus: 'UNVERIFIED_CLIENT_INPUT',
       });
 
       await approvalStore.savePackage(approvedPkg);

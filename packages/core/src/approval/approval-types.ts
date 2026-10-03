@@ -164,6 +164,16 @@ export interface ProjectApprovalRecord {
   readonly understandingRevision?: number | null;
   readonly protocolVersion?: string;
   readonly schemaVersion?: number;
+  readonly provenanceSource?: string;
+  readonly isTrustedHumanAuth?: boolean;
+  readonly authStatus?: 'VERIFIED_HUMAN' | 'UNVERIFIED_CLIENT_INPUT' | 'MOCK_TEST';
+  readonly authContext?: {
+    readonly isTrusted: boolean;
+    readonly authSource?: string;
+    readonly token?: string;
+    readonly actorId?: string;
+    readonly verifiedAt?: string;
+  };
 }
 
 export interface ProjectRejectionRecord {
@@ -318,6 +328,16 @@ export interface ProjectApprovalInput {
   readonly understandingRevision?: number | null;
   readonly protocolVersion?: string;
   readonly schemaVersion?: number;
+  readonly provenanceSource?: string;
+  readonly isTrustedHumanAuth?: boolean;
+  readonly authStatus?: 'VERIFIED_HUMAN' | 'UNVERIFIED_CLIENT_INPUT' | 'MOCK_TEST';
+  readonly authContext?: {
+    readonly isTrusted: boolean;
+    readonly authSource?: string;
+    readonly token?: string;
+    readonly actorId?: string;
+    readonly verifiedAt?: string;
+  };
 }
 
 export interface ProjectRejectionInput {
@@ -376,6 +396,18 @@ export const ProjectApprovalRecordZodSchema = z.object({
   understandingRevision: z.number().int().nonnegative().nullable().optional(),
   protocolVersion: z.string().optional(),
   schemaVersion: z.number().int().positive().optional(),
+  provenanceSource: z.string().optional(),
+  isTrustedHumanAuth: z.boolean().optional(),
+  authStatus: z.enum(['VERIFIED_HUMAN', 'UNVERIFIED_CLIENT_INPUT', 'MOCK_TEST']).optional(),
+  authContext: z
+    .object({
+      isTrusted: z.boolean(),
+      authSource: z.string().optional(),
+      token: z.string().optional(),
+      actorId: z.string().optional(),
+      verifiedAt: z.string().optional(),
+    })
+    .optional(),
 });
 
 export const ProjectRejectionRecordZodSchema = z.object({
