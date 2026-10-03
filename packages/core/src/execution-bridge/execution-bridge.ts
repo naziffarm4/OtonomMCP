@@ -39,6 +39,8 @@ import { DriverRuntime } from '../driver/driver-runtime.js';
 import type { ExecutorPort } from '../executor-bridge/executor-port.js';
 import { BudgetManager } from '../budget/budget-manager.js';
 import type { RecoveryReport } from '../budget/budget-recovery-engine.js';
+import { AuthorizationPolicyEngine } from '../authorization/authorization-policy-engine.js';
+import { AuthorizationDecisionResult } from '../authorization/authorization-policy-types.js';
 import {
   type BridgeExecutionIntent,
   type ClaimedIntentRecord,
@@ -77,6 +79,7 @@ export interface ExecutionBridgeOptions {
   readonly driverRuntime?: DriverRuntime;
   readonly executorPort?: ExecutorPort;
   readonly budgetManager?: BudgetManager;
+  readonly authorizationPolicyEngine?: AuthorizationPolicyEngine;
   readonly requireTrustedAuthContext?: boolean;
 }
 
@@ -95,6 +98,7 @@ export class ExecutionBridge {
   readonly driverRuntime?: DriverRuntime;
   readonly executorPort?: ExecutorPort;
   readonly budgetManager?: BudgetManager;
+  readonly authorizationPolicyEngine?: AuthorizationPolicyEngine;
   readonly requireTrustedAuthContext: boolean;
 
   private readonly claimedRecords = new Map<string, ClaimedIntentRecord>();
@@ -141,6 +145,7 @@ export class ExecutionBridge {
     this.driverRuntime = options.driverRuntime;
     this.executorPort = options.executorPort ?? (this.driverEngine as any).directorLoopEngine?.executorPort;
     this.budgetManager = options.budgetManager;
+    this.authorizationPolicyEngine = options.authorizationPolicyEngine;
     this.requireTrustedAuthContext = options.requireTrustedAuthContext ?? false;
   }
 
@@ -695,6 +700,34 @@ export class ExecutionBridge {
       reason: check9Reason,
       code: check9Passed ? undefined : 'ERR_EXECUTOR_UNAVAILABLE',
       details: check9Details,
+    });
+
+    // ------------------------------------------------------------------------
+    // Check 10: P21 Authorization Policy Engine Evaluation
+    // ------------------------------------------------------------------------
+    let check10Passed = true;
+    let check10Reason = 'P21 Authorization Policy Engine evaluation passed or bypassed.';
+    let check10Details: Record<string, unknown> = {};
+
+    if (this.authorizationPolicyEngine) {
+      try {
+        const decision = await this.authorizationPolicyEngine.evaluateExecutionIntent(intent);
+        if (decision.decisionResult !== AuthorizationDecisionResult.ALLOW) {
+          check10Passed = false;
+          check10Reason = `Policy Engine rejected execution with result '${decision.decisionResult}'. Reason: ${decision.reason}`;
+          check10Details = { decision };
+        }
+      } catch (err: any) {
+        check10Passed = false;
+        check10Reason = `Failed to evaluate Policy Engine decision: ${err.message}`;
+      }
+    }
+    checks.push({
+      checkName: '10_POLICY_ENGINE_AUTHORIZATION',
+      passed: check10Passed,
+      reason: check10Reason,
+      code: check10Passed ? undefined : 'ERR_POLICY_ENGINE_DENIED',
+      details: check10Details,
     });
 
     // ------------------------------------------------------------------------

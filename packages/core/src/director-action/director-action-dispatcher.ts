@@ -48,6 +48,8 @@ import {
 } from '../storage/runtime-state.js';
 import { ApprovalStore } from '../approval/approval-store.js';
 import { ApprovalPackageEngine } from '../approval/approval-package-engine.js';
+import { AuthorizationPolicyEngine } from '../authorization/authorization-policy-engine.js';
+import { AuthorizationDecisionResult } from '../authorization/authorization-policy-types.js';
 
 export interface DispatchedActionRecord {
   readonly actionId: string;
@@ -68,6 +70,7 @@ export interface DirectorActionDispatcherOptions {
   readonly runtimeStateManager?: LocalRuntimeStateManager;
   readonly approvalStore?: ApprovalStore;
   readonly approvalPackageEngine?: ApprovalPackageEngine;
+  readonly authorizationPolicyEngine?: AuthorizationPolicyEngine;
 }
 
 export class DirectorActionDispatcher {
@@ -79,6 +82,7 @@ export class DirectorActionDispatcher {
   readonly runtimeStateManager?: LocalRuntimeStateManager;
   readonly approvalStore?: ApprovalStore;
   readonly approvalPackageEngine?: ApprovalPackageEngine;
+  readonly authorizationPolicyEngine?: AuthorizationPolicyEngine;
 
   private readonly dispatchedRecords = new Map<string, DispatchedActionRecord>();
   private isInitialized = false;
@@ -92,6 +96,7 @@ export class DirectorActionDispatcher {
     this.runtimeStateManager = options.runtimeStateManager;
     this.approvalStore = options.approvalStore;
     this.approvalPackageEngine = options.approvalPackageEngine;
+    this.authorizationPolicyEngine = options.authorizationPolicyEngine;
   }
 
   /**
@@ -348,6 +353,42 @@ export class DirectorActionDispatcher {
         status: ActionDispatchStatus.DUPLICATE,
         reason: 'Action was already dispatched; returning idempotent duplicate result without repeating state mutations.',
       };
+    }
+
+    // ========================================================================
+    // 4.5. P21 AUTHORIZATION POLICY ENGINE EVALUATION
+    // ========================================================================
+    if (this.authorizationPolicyEngine) {
+      const decision = await this.authorizationPolicyEngine.evaluateAction(envelope);
+      if (decision.decisionResult === AuthorizationDecisionResult.DENY) {
+        const rejectResult: ActionDispatchResult = {
+          dispatchId,
+          actionId: envelope.actionId,
+          actionType: envelope.actionType,
+          status: ActionDispatchStatus.REJECTED,
+          isAuthorized: false,
+          requiresHumanApproval: false,
+          reason: `Policy Engine (P21) rejected action: ${decision.reason}`,
+          code: 'ERR_POLICY_ENGINE_DENIED',
+          dispatchedAt: now,
+        };
+        await this.recordHistory(envelope.projectId, 'DIRECTOR_ACTION_DISPATCH_REJECTED', rejectResult as unknown as Record<string, unknown>);
+        return rejectResult;
+      } else if (decision.decisionResult === AuthorizationDecisionResult.REQUIRE_HUMAN_APPROVAL || decision.decisionResult === AuthorizationDecisionResult.WAITING_FOR_POLICY_CONFIGURATION) {
+        const pendingResult: ActionDispatchResult = {
+          dispatchId,
+          actionId: envelope.actionId,
+          actionType: envelope.actionType,
+          status: ActionDispatchStatus.PENDING_AUTHORIZATION,
+          isAuthorized: false,
+          requiresHumanApproval: true,
+          reason: `Policy Engine (P21) requires human approval or configuration: ${decision.reason}`,
+          code: 'PENDING_POLICY_AUTHORIZATION',
+          dispatchedAt: now,
+        };
+        await this.recordHistory(envelope.projectId, 'DIRECTOR_ACTION_DISPATCHED', pendingResult as unknown as Record<string, unknown>);
+        return pendingResult;
+      }
     }
 
     // ========================================================================
