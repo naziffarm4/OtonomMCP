@@ -88,6 +88,36 @@ export class AuthorizationPolicyEngine {
       });
     }
 
+    // Anti-spoofing check: verify actor and role cannot be escalated
+    if (action.actor !== 'DIRECTOR' || action.actorRole !== 'DIRECTOR') {
+      return this.createDecision({
+        action,
+        decisionResult: AuthorizationDecisionResult.DENY,
+        reason: `Actor impersonation rejected: actor must be DIRECTOR and actorRole must be DIRECTOR. Received actor='${action.actor}', actorRole='${action.actorRole}'.`,
+        appliedRules: ['ANTI_SPOOFING_AUTHORITY_VIOLATION'],
+        riskLevel: RiskLevel.CRITICAL,
+      });
+    }
+
+    const payload = action.payload as Record<string, unknown> | undefined;
+    if (payload) {
+      if (
+        payload.isTrustedHumanAuth === true ||
+        payload.authStatus === 'VERIFIED_HUMAN' ||
+        payload.actor === 'USER' ||
+        payload.actorRole === 'PRODUCT_OWNER' ||
+        payload.hasImplementationAuthority === true
+      ) {
+        return this.createDecision({
+          action,
+          decisionResult: AuthorizationDecisionResult.DENY,
+          reason: 'Spoofed authority or unverified human claim detected in action payload. Rejected fail-closed.',
+          appliedRules: ['ANTI_SPOOFING_AUTHORITY_VIOLATION'],
+          riskLevel: RiskLevel.CRITICAL,
+        });
+      }
+    }
+
     // Evaluate basic action type
     const actionTypeRule = this.evaluateActionType(action.actionType, mandate);
 
@@ -167,6 +197,25 @@ export class AuthorizationPolicyEngine {
         appliedRules: ['POLICY_VERSION_MISMATCH'],
         riskLevel: RiskLevel.CRITICAL,
       });
+    }
+
+    const metadata = intent.metadata as Record<string, unknown> | undefined;
+    if (metadata) {
+      if (
+        metadata.isTrustedHumanAuth === true ||
+        metadata.authStatus === 'VERIFIED_HUMAN' ||
+        metadata.actor === 'USER' ||
+        metadata.actorRole === 'PRODUCT_OWNER' ||
+        metadata.hasImplementationAuthority === true
+      ) {
+        return this.createDecisionFromIntent({
+          intent,
+          decisionResult: AuthorizationDecisionResult.DENY,
+          reason: 'Spoofed authority or unverified human claim detected in execution intent metadata. Rejected fail-closed.',
+          appliedRules: ['ANTI_SPOOFING_AUTHORITY_VIOLATION'],
+          riskLevel: RiskLevel.CRITICAL,
+        });
+      }
     }
 
     const actionTypeRule = this.evaluateActionType('IMPLEMENT_TASK', mandate);

@@ -389,7 +389,11 @@ export class DirectorActionDispatcher {
       };
       await this.recordHistory(envelope.projectId, 'DIRECTOR_ACTION_DISPATCH_REJECTED', rejectResult as unknown as Record<string, unknown>);
       return rejectResult;
-    } else if (decision.decisionResult === AuthorizationDecisionResult.REQUIRE_HUMAN_APPROVAL || decision.decisionResult === AuthorizationDecisionResult.WAITING_FOR_POLICY_CONFIGURATION) {
+    } else if (
+      decision.decisionResult === AuthorizationDecisionResult.REQUIRE_HUMAN_APPROVAL ||
+      decision.decisionResult === AuthorizationDecisionResult.WAITING_FOR_POLICY_CONFIGURATION ||
+      decision.decisionResult === AuthorizationDecisionResult.WAITING_FOR_TRUSTED_IDENTITY
+    ) {
       const pendingResult: ActionDispatchResult = {
         dispatchId,
         actionId: envelope.actionId,
@@ -398,11 +402,27 @@ export class DirectorActionDispatcher {
         isAuthorized: false,
         requiresHumanApproval: true,
         reason: `Policy Engine (P21) requires human approval or configuration: ${decision.reason}`,
-        code: 'PENDING_POLICY_AUTHORIZATION',
+        code: decision.decisionResult === AuthorizationDecisionResult.WAITING_FOR_TRUSTED_IDENTITY
+          ? 'WAITING_FOR_TRUSTED_IDENTITY'
+          : 'PENDING_POLICY_AUTHORIZATION',
         dispatchedAt: now,
       };
       await this.recordHistory(envelope.projectId, 'DIRECTOR_ACTION_DISPATCHED', pendingResult as unknown as Record<string, unknown>);
       return pendingResult;
+    } else if (decision.decisionResult !== AuthorizationDecisionResult.ALLOW) {
+      const rejectResult: ActionDispatchResult = {
+        dispatchId,
+        actionId: envelope.actionId,
+        actionType: envelope.actionType,
+        status: ActionDispatchStatus.REJECTED,
+        isAuthorized: false,
+        requiresHumanApproval: false,
+        reason: `Policy Engine (P21) returned non-ALLOW result '${decision.decisionResult}': ${decision.reason}`,
+        code: 'ERR_POLICY_ENGINE_DENIED',
+        dispatchedAt: now,
+      };
+      await this.recordHistory(envelope.projectId, 'DIRECTOR_ACTION_DISPATCH_REJECTED', rejectResult as unknown as Record<string, unknown>);
+      return rejectResult;
     }
 
     // ========================================================================
