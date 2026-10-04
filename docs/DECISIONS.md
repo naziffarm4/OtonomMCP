@@ -37,16 +37,16 @@
 
 ---
 
-### ADR-05: Yerel SQLite Bütçe Yönetimi ve Nano-USD Hassasiyeti (P18-03)
-- **Aşama:** P18-03 (Token & Cost Budget Management).
+### ADR-05: Yerel SQLite Bütçe Yönetimi ve Nano-USD Hassasiyeti (OM-03 / P18-03)
+- **Aşama:** OM-03 / P18-03 (Token & Cost Budget Management).
 - **Karar:** Token harcama ve maliyet bütçesi yerel SQLite veritabanında `BigInt` (Nano-USD, $1 = 1.000.000.000 nUSD) cinsinden tutulacaktır. Her LLM çağrısından önce zorunlu `HOLD` rezervasyonu yapılacak, yanıt sonrası `SETTLE` edilecek; yetersiz bakiyede `BUDGET_EXCEEDED` hatasıyla çağrı fail-closed engellenecektir.
 - **Gerekçe:** Kayan nokta (float) yuvarlama hatalarını önlemek ve modelin bütçeyi aşmasını kesin olarak durdurmak.
 - **Etkisi:** Pre-dispatch hold rezervasyonu yapılmadan hiçbir ağ çağrısı gönderilemez. Atomik bütçe rezervasyonu ve harcama kontrolü garanti edilir.
 
 ---
 
-### ADR-06: Fail-Closed Güvenlik ve Güvenilir İnsan Onayı Sınırı (P18-04 / P20 Check 6)
-- **Aşama:** P18-04 (Trusted Identity Context) ve P20 Check 6.
+### ADR-06: Fail-Closed Güvenlik ve Güvenilir İnsan Onayı Sınırı (OM-04 / P18-04 ve OM-05 / P20 Check 6)
+- **Aşama:** OM-04 / P18-04 (Trusted Identity Context) ve OM-05 / P20 Check 6.
 - **Karar:** Antigravity IDE içindeki sohbet veya istemci beyanları (`isTrustedHumanAuth: true`, `actor: "USER"`) güvenilir insan onayı kanıtı sayılamaz. Bağımsız ve güvenilir bir dış kimlik doğrulaması bulunmadığı sürece insan onayı gerektiren tüm işlemler fail-closed olarak `BLOCKED_ON_AUTH_CONTEXT` durumunda bekletilecektir.
 - **Gerekçe:** Uygulayıcının aradaki bant içi proxy konumunda olması sebebiyle onay taklidini matematiksel olarak engellemek.
 - **Etkisi:** P18-04 henüz tamamlanmamış olup, gerçek güvenilir insan kimliği doğrulaması sağlanana kadar fail-closed davranışı korunur; P20 Check 6 güvenlik kapısı kesin olarak kapalı tutulur.

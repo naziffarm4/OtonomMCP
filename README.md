@@ -148,7 +148,7 @@ Tüm mimari, entegrasyon, güvenlik ve operasyonel detaylar `docs/` dizini altı
    *Sistem Mimarisi ve Bileşen Tasarımı.* Çekirdek modüller, bileşen konumları, 4 seviyeli doğrulama hiyerarşisi, kapalı döngü iş akışı ve çalışma zamanı modeli.
 
 2. **[docs/ROADMAP.md](docs/ROADMAP.md)**
-   *Resmî Faz Yol Haritası.* P18–P25 resmî aşama durumları (`DONE`, `PARTIAL`, `BLOCKED`, `NOT_STARTED`, `VERIFIED_IN_PRODUCTION`), bağımlılıklar ve güvenlik engelleri.
+   *OtonomMCP Tamamlama ve Dondurma Yol Haritası.* OM-01–OM-10 aşama durumları (`DONE`, `PARTIAL`, `BLOCKED`, `NOT_STARTED`, `VERIFIED_IN_PRODUCTION`), bağımlılıklar, güvenlik engelleri ve dondurma koşulları.
 
 3. **[docs/INTEGRATION.md](docs/INTEGRATION.md)**
    *Entegrasyon ve MCP Sözleşmesi.* Gerçek MCP JSON-RPC arayüzü, kayıtlı araçlar, domain tipleri (`ApprovalPackage`, `ProjectApprovalRecord`, `BridgeExecutionIntent`), idempotency ve hata kodları.

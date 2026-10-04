@@ -1,9 +1,9 @@
 # OtonomMCP (AIDM) — Entegrasyon ve MCP Sözleşmesi (INTEGRATION.md)
 
 **Belge Kodu:** AIDM-DOC-INTEG
-**Sürüm:** 1.2.0
-**Tarih:** 2026-10-04
-**Kapsam:** OtonomMCP / AIDM Model Context Protocol (MCP) JSON-RPC 2.0 Arayüzü, Gerçek Veri Şemaları, Araç Sözleşmeleri, Yetkilendirme Sınırları ve Hata Kodları
+**Sürüm:** 2.0.0
+**Tarih:** 2026-10-05
+**Kapsam:** OtonomMCP Genel Entegrasyon ve MCP Sözleşmesi (OM-08 / OM-10 Dondurma Hazırlığı), stdio JSON-RPC 2.0 Arayüzü, Gerçek Domain Şemaları, Araç Sözleşmeleri, Yetkilendirme Sınırları ve Hata Kodları
 
 ---
 

@@ -55,7 +55,7 @@ OtonomMCP çekirdeğinde aşağıdaki güvenlik değişmezleri mutlak olarak uyg
 5. **Bilinmeyen Durumda Kesin Durma (Strict Unknown-State Safety):**
    Yürütme sırasında uygulayıcı süreç çökerse, zaman aşımına uğrarsa veya sonuç belirsiz kalırsa durum `EXECUTION_UNKNOWN` olur ve sistem bu eylemi asla otomatik olarak tekrar çalıştırmaz.
 
-6. **Ön-Rezervasyonlu Bütçe Koruması (P18-03):**
+6. **Ön-Rezervasyonlu Bütçe Koruması (OM-03 / P18-03):**
    Hiçbir LLM isteği veya harcama gerektiren eylem, SQLite veritabanında Nano-USD cinsinden atomik hold rezervasyonu yapılmadan (`claimReservationForDispatch`) ağa gönderilemez. Bütçe yetersizliğinde sistem fail-closed durur (`BUDGET_EXCEEDED`).
 
 7. **Sırların Arındırılması (Secret Sanitization):**
@@ -66,10 +66,10 @@ OtonomMCP çekirdeğinde aşağıdaki güvenlik değişmezleri mutlak olarak uyg
 
 ---
 
-## 3. P18-04 (Trusted Identity Context) ve P20 Check 6 Güvenlik Engeli
+## 3. Güvenilir İnsan Onayı ve Check 6 Güvenlik Engeli (OM-04 / P18-04 ve OM-05 / P20)
 
-- **Aşama Tanımı:** P18-04 (Trusted Identity Context), güvenilir insan kimliği ve onay bağlamını temsil eder. Bütçe yönetimi (P18-03) ile karıştırılmamalıdır.
-- **Mevcut Durum:** `BLOCKED_ON_AUTH_CONTEXT` (P18-04 henüz tamamlanmamış olup, gerçek güvenilir insan kimliği doğrulaması mevcut olmadığı sürece fail-closed davranışı korunur).
+- **Aşama Tanımı:** OM-04 / P18-04 (Trusted Identity Context), güvenilir insan kimliği ve onay bağlamını temsil eder. Bütçe yönetimi (OM-03 / P18-03) ile karıştırılmamalıdır.
+- **Mevcut Durum:** `BLOCKED_ON_AUTH_CONTEXT` (OM-04 / P18-04 henüz tamamlanmamış olup, gerçek güvenilir insan kimliği doğrulaması mevcut olmadığı sürece fail-closed davranışı korunur).
 - **Fail-Closed Kuralı:** İnsan onayı gerektiren bir durum (`REQUIRE_HUMAN_APPROVAL`) oluştuğunda, henüz bağımsız ve güvenilir bir dış kimlik kanıtı doğrulanmadığı için yürütme kesin olarak engellenir.
 - **Güvenlik Taahhüdü:** TPM veya yazılımsal imzalar tek başına insan onayının kanıtı sayılmaz. Sistem hiçbir koşulda sahte onay üretmez, bu kapıyı gevşetmez veya testlerde mocklayarak bypass etmez. Mevcut olmayan bir güvenlik özelliği uygulanmış gibi gösterilemez.
 
