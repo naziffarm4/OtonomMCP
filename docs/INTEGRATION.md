@@ -1,141 +1,233 @@
-# OtonomMCP (Proje A) — Dış Entegrasyon Sözleşmesi (INTEGRATION.md)
+# OtonomMCP (AIDM) — Entegrasyon ve MCP Sözleşmesi (INTEGRATION.md)
 
-**Belge Kodu:** AIDM-DOC-INTEG  
-**Sürüm:** 1.0.0  
-**Tarih:** 2026-10-04  
-**Kapsam:** Proje A (AIDM Çekirdeği) ile Dış Sistemler (Dış İnsan Onayı Sağlayıcıları, Proje B veya Harici İstemciler) Arasındaki Bağlayıcı Genel Entegrasyon Sözleşmesi
-
----
-
-## 1. Mimari Sorumluluk ve Güven Sınırları
-
-Proje A (AIDM), yazılım projelerinin otonom planlama, bütçeleme, yetkilendirme, kod yürütme ve bağımsız kanıt doğrulama süreçlerini yöneten yetkili orkestrasyon çekirdeğidir. Dış onay sistemleriyle (Proje B veya diğer yerel/donanımsal onay mekanizmaları) entegrasyon bu genel sözleşmeye tabidir:
-
-| Sorumluluk Alanı | Proje A (AIDM Çekirdeği) | Dış Onay Sağlayıcısı (Örn. Proje B) |
-|---|---|---|
-| **Görev Planlama & Muhakeme** | **Tam Yetkili.** Director Reasoning Engine ile görevleri ayrıştırır ve planlar. | **Yetkisiz.** Planlama yapmaz. |
-| **Kullanıcı Karar İletişimi** | Karar ihtiyacını tespit eder, kanonik onay paketini hazırlar ve yayınlar. | **Arayüz Sahibi.** İşlem detaylarını bağımsız bant dışı (out-of-band) ekranda kullanıcıya gösterir, kararı alır. |
-| **Bütçe & Harcama Yönetimi** | **Tam Yetkili.** SQLite Nano-USD bütçe ve hold rezervasyonunu yönetir. | Bütçe rakamlarını kullanıcıya gösterir; kural veya bütçe belirlemez. |
-| **Politika & Kapsam Denetimi** | **Tam Yetkili.** Project Mandate kurallarına göre izinleri denetler (`ALLOW`, `DENY`, `REQUIRE_HUMAN_APPROVAL`). | Politika kararı vermez; onaylanan işlemin bütünlüğünü garanti eder. |
-| **Güvenlik Kapısı (Check 6)** | **Kapı Bekçisi.** Dış kriptografik onay kanıtını doğrular; kanıt yoksa veya geçersizse fail-closed bekletir (`BLOCKED_ON_AUTH_CONTEXT`). | **Kanıt Sağlayıcı.** Kullanıcı onayını imzalı kanıt olarak A'ya sunar. |
-| **Kod & Görev Yürütme** | **Tam Yetkili.** ExecutionBridge, Driver ve AGY üzerinden kodları ve testleri yürütür. | **Kesinlikle Yürütmez.** Sistem komutu veya dosya yazma operasyonu yapmaz. |
-| **Bağımsız Kanıt Doğrulama** | **Tam Yetkili.** Dosya hash'i (SHA-256) ve Git durumunu EvidenceCollector ile doğrular. | Kanıt toplamaz. |
+**Belge Kodu:** AIDM-DOC-INTEG
+**Sürüm:** 1.2.0
+**Tarih:** 2026-10-04
+**Kapsam:** OtonomMCP / AIDM Model Context Protocol (MCP) JSON-RPC 2.0 Arayüzü, Gerçek Veri Şemaları, Araç Sözleşmeleri, Yetkilendirme Sınırları ve Hata Kodları
 
 ---
 
-## 2. Bölüm I — Proje A Tarafından Sunulan Genel Entegrasyon Arayüzü
+## 1. Protokol Genel Bakışı ve İletişim Modeli
 
-Aşağıdaki şemalar normatif veri sözleşmesi tanımlarıdır; çalışan bir canlı ortam kanıtı değil, entegrasyon formatı kurallarıdır.
+OtonomMCP (AIDM), Antigravity IDE ve harici karar vericiler (ChatGPT Director) ile iletişimini **Model Context Protocol (MCP) `2024-11-05`** standardı ve **JSON-RPC 2.0** protokolü üzerinden yürütür.
 
-### 2.1. Onay Talebi Veri Formatı Şeması (ApprovalRequestPayload)
+- **Taşıyıcı (Transport):** Standart Girdi/Çıktı boruları (`stdio`) üzerinden satır sonu ayrılmış JSON (`NDJSON` framing) veya bellek içi test taşıyıcısı (`InMemoryMcpTransport`).
+- **Giriş Noktası:** `node packages/core/bin/aidm.js mcp` (Operasyonel CLI üzerinden `mcp` alt komutu ile authoritative MCP sunucusu başlatılır).
+- **Rolü:** MCP katmanı, AIDM Orkestratörü üzerinde bir kontrol düzlemidir (Control Plane). İkinci bir orkestratör değildir; doğrudan FSM durumunu değiştiremez veya yetkilendirme kurallarını atlatamaz.
 
+### Standart JSON-RPC 2.0 İstek Zarfi
 ```json
 {
-  "protocolVersion": "1.0.0",
-  "requestId": "req-9b1deb4d-3b7d-4bad-9bdd-2b0d7b3dcb6d",
-  "projectId": "OtonomMCP",
-  "workspaceId": "ws-main",
-  "directorSessionId": "sess-27a6b156-f2e9-4b83-bf18-9a201690cd26",
-  "cycleId": "cycle-14",
-  "taskId": "task-security-hardening",
-  "actionId": "act-update-policy-rules",
-  "actionType": "MODIFY_SECURITY_POLICY",
-  "mandateRevision": 3,
-  "policyVersion": "1.0",
-  "contextFingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-  "title": "Güvenlik Politikası Güncellemesi",
-  "summary": "Proje mandate kapsamına yeni yetkilendirme kuralı ekleniyor.",
-  "riskLevel": "HIGH",
-  "impact": {
-    "filesModified": ["packages/core/src/policy/policy-engine.ts"],
-    "commandsAllowed": ["pnpm test"],
-    "budgetImpactNanoUsd": "0"
-  },
-  "nonce": "a7f1c98e-4d5a-4e89-8123-bc9a12e4f012",
-  "issuedAt": "2026-10-04T12:00:00.000Z",
-  "expiresAt": "2026-10-04T12:05:00.000Z"
-}
-```
-
-### 2.2. Kanonik İşlem Özeti (Canonical Transaction Hash) Kapsamı ve Formülü
-
-Kanonik hash, onaylanan işlemin bağlamının karar anında tahrif edilmediğini garanti eder.
-
-**Kapsanan 14 Alan (Alfabetik Anahtar Sıralı):**
-1. `actionId`
-2. `actionType`
-3. `contextFingerprint`
-4. `cycleId`
-5. `directorSessionId`
-6. `expiresAt`
-7. `issuedAt`
-8. `mandateRevision`
-9. `nonce`
-10. `policyVersion`
-11. `projectId`
-12. `requestId`
-13. `taskId`
-14. `workspaceId`
-
-**Serileştirme Kuralı:** Alanlar alfabetik anahtar sırasına göre, boşluksuz (compact) ve UTF-8 formatında JSON nesnesi olarak serileştirilir. Ardından SHA-256 kriptografik özeti alınır:
-
-$$\text{canonicalTransactionHash} = \text{SHA256}(\text{CanonicalCompactJson}(\text{fields}))$$
-
-### 2.3. Onay Yanıtı Veri Formatı Şeması (ApprovalResponsePayload)
-
-```json
-{
-  "protocolVersion": "1.0.0",
-  "requestId": "req-9b1deb4d-3b7d-4bad-9bdd-2b0d7b3dcb6d",
-  "decision": "APPROVED",
-  "canonicalTransactionHash": "8c591a27e742880d8591f8691f64f434a94966d54cf8e309cbba6b8e8b0b9736",
-  "nonce": "a7f1c98e-4d5a-4e89-8123-bc9a12e4f012",
-  "decidedAt": "2026-10-04T12:01:15.000Z",
-  "authProof": {
-    "proofType": "GENERIC_ASYMMETRIC_SIGNATURE",
-    "keyFingerprint": "key-fp-782b1c",
-    "signature": "BASE64_SIGNATURE_STRING",
-    "signedData": "8c591a27e742880d8591f8691f64f434a94966d54cf8e309cbba6b8e8b0b9736:a7f1c98e-4d5a-4e89-8123-bc9a12e4f012:2026-10-04T12:01:15.000Z:APPROVED"
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "tools/call",
+  "params": {
+    "name": "aidm_health",
+    "arguments": {}
   }
 }
 ```
 
-**İmzalanan Standart Veri Biçimi:**
-$$\text{signedData} = \text{canonicalTransactionHash} \parallel \text{":"} \parallel \text{nonce} \parallel \text{":"} \parallel \text{decidedAt} \parallel \text{":"} \parallel \text{decision}$$
+---
+
+## 2. İstek İzleme ve Bağlam Yönetimi (Request Correlation)
+
+Her MCP isteği çekirdek motorlara iletilirken `McpRequestCorrelation` nesnesi ile izlenir (`packages/core/src/mcp/mcp-correlation.ts`):
+
+| Alan | Tip | Açıklama |
+|---|---|---|
+| `correlationId` | `string` | Her istek için üretilen benzersiz AIDM denetim ve telemetri izleme kimliği (`aidm-corr-...`). |
+| `mcpRequestId` | `string \| number` | İstemci JSON-RPC istek zarfındaki `id` değeri. |
+| `projectId` | `string` (opsiyonel) | İşlemin ait olduğu çalışma alanı / proje kimliği. |
+| `directorSessionId` | `string` (opsiyonel) | Etkin Director oturum kimliği. |
+| `taskId` | `string` (opsiyonel) | İlgili Task DAG görev kimliği. |
 
 ---
 
-## 3. Bölüm II — Henüz Karşılanmamış Güvenlik Gereksinimleri
+## 3. Gerçek Kaynak Kod Domain Şemaları
 
-Aşağıdaki yetenekler Proje A çekirdeğinde henüz canlı üretimde doğrulanmış bir altyapıya sahip değildir; gelecekteki dış onay sisteminin sağlaması gereken zorunlu kriterlerdir:
+OtonomMCP çekirdeğinde uygulanan ve Zod ile doğrulanan gerçek veri yapıları aşağıda belgelenmiştir:
 
-1. **Güvenilir Açık Anahtar Kaydı (Trusted Key Enrollment):** Dış sağlayıcının imza doğrulama açık anahtarının AIDM'e güvenli, tahrif edilemez ve bant dışı (out-of-band) kaydedilmesi mekanizması.
-2. **Fiziksel İnsan Varlığı Doğrulaması:** Kötü niyetli bir sürecin aynı kullanıcı oturumunda yazılımsal sahte imza üretmesini engelleyen ve fiziksel insanın işlem detaylarını görerek onayladığını (WYSIWYS) kanıtlayan altyapı.
-3. **Bağımsız Kullanıcı Kimlik Kökü:** Antigravity IDE ve AGY uygulayıcısından tamamen izole edilmiş kimlik kanıtı.
+### 3.1. Proje Onay Paketi (`ApprovalPackage`)
+Kaynak: `packages/core/src/approval/approval-types.ts` (`ApprovalPackageZodSchema`)
 
-Bu gereksinimler karşılanana kadar, hiçbir dış onay paketi "doğrulanmış" kabul edilmez.
+Projenin anlaşılmasını, gereksinimlerini ve önerilen geliştirme planını donduran ve Product Owner onayına sunulan immutable veri paketidir:
+
+```typescript
+export interface ApprovalPackage {
+  readonly packageId: string;
+  readonly revision: number;
+  readonly approvalPackageRevision?: number;
+  readonly projectId: string;
+  readonly projectUnderstanding: InitialProjectUnderstanding;
+  readonly proposedDevelopmentPlan: ProposedDevelopmentPlan;
+  readonly status: ProjectApprovalStatus; // 'NOT_READY' | 'READY_FOR_APPROVAL' | 'PENDING' | 'APPROVED' | 'REJECTED' | 'SUPERSEDED' | 'STALE' | 'BLOCKED_ON_HUMAN'
+  readonly specRevision?: number;
+  readonly sourceBindings?: ApprovalSourceBindings;
+  readonly completenessResult?: CompletenessGateResult;
+  readonly approvalRecord?: ProjectApprovalRecord;
+  readonly rejectionRecord?: ProjectRejectionRecord;
+  readonly packageFingerprint?: string;
+  readonly provenance?: ApprovalProvenance;
+  readonly history?: readonly ApprovalHistoryEntry[];
+  readonly isStale?: boolean;
+  readonly staleReport?: ApprovalStaleReport;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+}
+```
+
+### 3.2. Proje Onay Kaydı (`ProjectApprovalRecord`)
+Kaynak: `packages/core/src/approval/approval-types.ts` (`ProjectApprovalRecordZodSchema`)
+
+Yetkili bir aktör tarafından verilen açık onayı temsil eder:
+
+```typescript
+export interface ProjectApprovalRecord {
+  readonly packageId: string;
+  readonly revision: number;
+  readonly actor: string;
+  readonly actorRole: 'PRODUCT_OWNER' | 'USER';
+  readonly intent: 'EXPLICIT_APPROVAL';
+  readonly comment?: string;
+  readonly approvedAt: string;
+  readonly packageHash: string;
+  readonly directorSessionId?: string;
+  readonly contextFingerprint?: string;
+  readonly understandingRevision?: number | null;
+  readonly isTrustedHumanAuth?: boolean;
+  readonly authStatus?: 'VERIFIED_HUMAN' | 'UNVERIFIED_CLIENT_INPUT' | 'MOCK_TEST';
+  readonly authContext?: {
+    readonly isTrusted: boolean;
+    readonly authSource?: string;
+    readonly token?: string;
+    readonly actorId?: string;
+    readonly verifiedAt?: string;
+  };
+}
+```
+
+> [!WARNING]
+> `actorRole` yalnızca `PRODUCT_OWNER` veya `USER` olabilir. `EXECUTOR`, `ANTIGRAVITY`, `DIRECTOR` veya `SYSTEM` aktörlerinin onay vermesi şema ve motor düzeyinde engellenmiştir.
+
+### 3.3. Köprü Yürütme Amacı (`BridgeExecutionIntent`)
+Kaynak: `packages/core/src/execution-bridge/execution-bridge-types.ts` (`BridgeExecutionIntentZodSchema`)
+
+Bir görevin Driver ve AGY uygulayıcısına devredilmeden önce yetkilendirilmesini sağlayan mühürlü icra niyetidir:
+
+```typescript
+export interface BridgeExecutionIntent {
+  readonly executionIntentId: string;
+  readonly actionId: string;
+  readonly idempotencyKey: string;
+  readonly projectId: string;
+  readonly directorSessionId: string;
+  readonly taskId: string;
+  readonly taskRevision?: number;
+  readonly basedOnContextFingerprint: string;
+  readonly understandingRevision: number;
+  readonly authorizationReference: {
+    readonly packageId?: string;
+    readonly packageRevision: number;
+    readonly isDevelopmentAuthorized: boolean;
+    readonly authorizedAt?: string;
+    readonly authorizedByRole?: 'PRODUCT_OWNER' | 'USER';
+    readonly authContext?: {
+      readonly verified: boolean;
+      readonly authSource?: string;
+      readonly token?: string;
+      readonly actorId?: string;
+      readonly verifiedAt?: string;
+      readonly signature?: string;
+      readonly nonce?: string;
+    };
+  };
+  readonly createdAt: string;
+  readonly executionPlan: string;
+  readonly metadata?: Record<string, unknown>;
+}
+```
 
 ---
 
-## 4. Bölüm III — Mevcut Çalışma Davranışı ve Check 6 Kuralı
+## 4. Kayıtlı MCP Araçları (MCP Tools)
 
-Mevcut Proje A kodunda `ExecutionBridge` Check 6 şu şekilde çalışır:
+Sunucu tarafından kaydedilen ve `stdio` üzerinden çağrılabilen temel araçlar şunlardır:
 
-1. **Mevcut Durum:** `BLOCKED_ON_AUTH_CONTEXT`.
-2. **Fail-Closed Davranış:** Bir işlem Product Owner onayı veya insan yetkilendirmesi gerektiriyorsa (`REQUIRE_HUMAN_APPROVAL`), güvenilir kimlik kanıtı bulunmadığı için yürütme kesin olarak engellenir.
-3. **Check 6 Doğrulama Kriterleri:** Bir dış onay sağlayıcısı bağlandığında Check 6'nın geçebilmesi için şu kontrollerin tamamı sağlanmalıdır:
-   - *Anti-Replay:* Nonce `NonceStore` tablosunda taze olmalı, daha önce kullanılmamış olmalıdır.
-   - *Süre Aşımı:* `decidedAt <= expiresAt` ve sistem zaman penceresi geçerli olmalıdır.
-   - *Kanonik Eşleşme:* Yanıttaki `canonicalTransactionHash` ile AIDM'in hesapladığı hash bit düzeyinde eşit olmalıdır.
-   - *Kriptografik İmza:* `signedData` üzerindeki imza kayıtlı açık anahtarla doğrulanmalıdır.
-   - *Karar Denetimi:* `decision === "APPROVED"` olmalıdır; `REJECTED` veya `CANCELLED` ise işlem fail-closed iptal edilir.
-   - *Sözel Beyan Reddi:* İstemci/model beyanları (`isTrustedHumanAuth: true`, `actor: "USER"`) asla geçerli onay sayılmaz.
+### 4.1. Durum ve Sağlık Araçları
+- **`aidm_health`**: Sunucunun, FSM'in ve orkestratörün çalışma durumunu döner.
+- **`aidm_project_status`**: Projenin güncel yaşam döngüsü durumunu (`lifecycleState`), aktif fazı ve varsa engelleyicileri döner.
+- **`aidm_project_requirements`**: Kayıtlı proje gereksinimlerini listeler.
+- **`aidm_project_decisions`**: Sistemde kayıtlı mimari kararları döner.
+- **`aidm_tasks_list`**: Task DAG'daki görevleri, durumlarını ve bağımlılıklarını listeler.
+- **`aidm_tasks_current`**: Şu an yürütülmekte olan veya yürütülmeye hazır sıradaki görevleri döner.
+- **`aidm_context_get`**: Taze sistem bağlamını (snapshot) ve `contextFingerprint` değerini döner.
+- **`aidm_git_status`**: Yerel çalışma alanının Git durumunu (değişen dosyalar, diff) döner.
+
+### 4.2. Onay Paketi Yönetimi
+- **`aidm_approval_package_create`**: Keşif ve gereksinim verilerinden yeni bir `ApprovalPackage` üretir.
+- **`aidm_approval_package_get`**: Belirtilen `packageId` ve revizyona ait onay paketini getirir.
+- **`aidm_approval_package_readiness`**: Paketin onaya hazır olup olmadığını (`ApprovalReadiness`) kontrol eder.
+- **`aidm_approval_package_approve`**: Onay paketine açık `ProjectApprovalRecord` ekler.
+- **`aidm_approval_package_reject`**: Paketi gerekçesiyle reddeder (`ProjectRejectionRecord`).
+
+### 4.3. Director Oturumu ve Karar Araçları
+- **`aidm_director_session_create` / `get` / `resume` / `close`**: Director oturum yaşam döngüsünü yönetir.
+- **`aidm_director_context_sync`**: Sistem bağlamını Director ile senkronize eder ve parmak izini mühürler.
+- **`aidm_director_decision_create`**: Director'ın yapılandırılmış eylem kararını sisteme kaydeder.
+- **`aidm_director_decision_validate`**: Kararın şema ve bütçe kurallarına uygunluğunu doğrular.
+
+### 4.4. Yürütme ve Köprü Araçları
+- **`aidm_execution_intent_validate`**: Bir `BridgeExecutionIntent`'i 6 pre-execution güvenlik kontrolünden geçirir.
+- **`aidm_execution_request_build`**: Yürütme talebini yapılandırır.
+- **`aidm_executor_execute`**: Eylemi Driver ve AGY uygulayıcısına devreder.
+- **`aidm_evidence_verify`**: Eylem tamamlandığında bağımsız delilleri (`SystemExecutionEvidence`) doğrular.
+
+### 4.5. Kapalı Döngü ve Sürücü (Driver) Araçları
+- **`director_ingestInstruction`**: Kullanıcıdan gelen doğal dil talimatını alır.
+- **`director_executeCycle`**: Tek bir muhakeme, eylem, yetkilendirme ve yürütme döngüsünü çalıştırır.
+- **`driver_start` / `driver_status` / `driver_pause` / `driver_resume` / `driver_stop`**: Durum makinesi sürücüsünü yönetir.
 
 ---
 
-## 5. Proje A Genel API, MCP ve Lifecycle Sözleşmesi
+## 5. Yetkilendirme Sınırları ve İnsan Onayı
 
-1. **MCP Standart Araçları:** AIDM, dış kontrol için `aidm.director.*`, `aidm.task.*`, `aidm.evidence.*` standart JSON-RPC 2.0 araçlarını sunar.
-2. **Olay Kaydı (Events):** Tüm durum geçişleri `HistoryManager` tarafından atomik JSONL dosyasına append-only olarak yazılır.
-3. **Kanıt Sözleşmesi:** Bir görevin tamamlandı sayılması için AGY beyanı yetersizdir; `EvidenceCollector` tarafından bağımsız dosya hash'i ve Git diff doğrulaması şarttır.
-4. **Sürümleme:** Bu sözleşme Semantic Versioning (SemVer 2.0) kurallarına tabidir. `protocolVersion` uyuşmazlığı durumunda istekler reddedilir.
+OtonomMCP'de yetkilendirme motoru (`AuthorizationPolicyEngine`) her eylem için üç sonuçtan birini üretir:
+
+1. **`ALLOW`**: Project Mandate sınırları içindeki rutin geliştirme görevleri (dosya okuma/yazma, derleme, test çalıştırma). Bu görevler harici insan onayı gerekmeksizin tam otonom olarak icra edilir.
+2. **`DENY`**: Proje hedeflerine veya güvenlik sınırlarına aykırı eylemler fail-closed olarak iptal edilir.
+3. **`REQUIRE_HUMAN_APPROVAL`**: Güvenlik açısından kritik eylemler (politika değişikliği, bütçe tavanı aşımı vb.).
+
+### Mevcut İnsan Onayı Güvenlik Sınırı
+- OtonomMCP çekirdeğinde, bağımsız ve güvenilir bir bant dışı (out-of-band) insan kimlik doğrulama mekanizması henüz mevcut **değildir**.
+- İstemci payload'ında veya model çıktısında yer alan `isTrustedHumanAuth: true`, `actor: "USER"` veya `authStatus: "VERIFIED_HUMAN"` gibi sözel beyanlar sıfır güven (zero-trust) ilkesi gereği **doğrudan reddedilir**.
+- Bu nedenle, insan onayı gerektiren bir durum oluştuğunda OtonomMCP eylemi **kesin olarak engeller ve fail-closed olarak `BLOCKED_ON_AUTH_CONTEXT` durumunda bekletir**.
+
+---
+
+## 6. Hata Kodları
+
+Standart JSON-RPC 2.0 ve OtonomMCP'ye özgü hata kodları (`packages/core/src/mcp/mcp-errors.ts`):
+
+| JSON-RPC Kodu | Makine Kodu | Açıklama |
+|---|---|---|
+| `-32700` | `ERR_MCP_PARSE_ERROR` | Ayrıştırılamayan bozuk JSON yükü. |
+| `-32600` | `ERR_MCP_INVALID_REQUEST` | Eksik veya geçersiz JSON-RPC alanları. |
+| `-32601` | `ERR_MCP_UNSUPPORTED_OPERATION` | Bilinmeyen metot veya kayıtlı olmayan araç adı. |
+| `-32603` | `ERR_MCP_INTERNAL_FAILURE` | Beklenmeyen iç sistem hatası. |
+| `-32001` | `ERR_MCP_ORCHESTRATOR_UNAVAILABLE` | Orkestratör çevrimdışı veya başlatılamamış. |
+| `-32002` | `ERR_MCP_POLICY_BLOCKED` | Eylem `PolicyEngine` tarafından reddedildi (`DENY`). |
+| `-32003` | `ERR_MCP_HUMAN_BLOCKED` | Eylem güvenilir insan onayı gerektiriyor (`BLOCKED_ON_AUTH_CONTEXT`). |
+
+Tüm hata yanıtlarında sırlar, token'lar ve özel anahtarlar deterministik regex ile arındırılır (`***REDACTED***`).
+
+---
+
+## 7. Yaşam Döngüsü ve İdempotency (Tekillik)
+
+- **Tek Seferlik İcra (Single Execution Claim):** Her `BridgeExecutionIntent` yalnızca bir defa talep edilip çalıştırılabilir (`ExecutionBridgeStatus.EXECUTION_CLAIMED`). Mükerrer çağrılar atomik olarak engellenir.
+- **İdempotency:** Her eylem benzersiz bir `idempotencyKey` taşır.
+- **Sürümleme:**
+  - MCP Protokol Sürümü: `2024-11-05`
+  - Execution Bridge Protokol Sürümü: `P20-01`
+  - Sunucu Temel Sürümü: `0.1.0`

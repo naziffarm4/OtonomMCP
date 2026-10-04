@@ -1,57 +1,86 @@
-# OtonomMCP (AIDM) — Güvenlik Modeli ve Güven Sınırları (SECURITY.md)
+# OtonomMCP (AIDM) — Güvenlik Modeli ve Tehdit Sınırları (SECURITY.md)
 
-**Belge Kodu:** AIDM-DOC-SEC  
-**Sürüm:** 1.0.0  
-**Tarih:** 2026-10-04  
-**Kapsam:** TRUST-ROOT-01..08 ve DIRECTOR-INTERACTION-01/02 Araştırmalarının Bağlayıcı Güvenlik Bulguları, Tehdit Modeli, Saldırı Yüzeyi ve Fail-Closed Kapıları
-
----
-
-## 1. Temel Tehdit Modeli ve İşletim Sistemi Sınırları
-
-### 1.1. Same-User DAC Güvenlik Sınırı Yokluğu (TRUST-ROOT-01)
-Microsoft Windows NT mimarisinde (Discretionary Access Control), aynı yerel kullanıcı hesabı (User SID) ve aynı Bütünlük Düzeyinde (Medium Integrity Level) çalışan süreçler arasında işletim sistemi düzeyinde bir güvenlik sınırı (security boundary) **bulunmamaktadır**.
-- Aynı kullanıcı hesabında çalışan herhangi bir arka plan süreci (PowerShell, Python, kötü niyetli komut dosyası), Antigravity IDE'nin ortam değişkenlerini, dosya sistemini ve stdio borularını okuyabilir veya taklit edebilir.
-- Bu nedenle, "Antigravity IDE'nin yazılımsal sürecine güvenmek" bir istemci tarafı güvenlik yanılsamasıdır (Client-Side Trust Fallacy).
-
-### 1.2. Kurye Aldatmacası ve Bant İçi Proxy Riski (TRUST-ROOT-05, TRUST-ROOT-06, TRUST-ROOT-08)
-Kullanıcı ile AIDM arasındaki tek iletişim hattı AGY'nin kontrolündeki Antigravity IDE sohbet penceresi veya `default_api:ask_question` aracı olduğu sürece, AGY aradaki **Bant İçi Aracı (In-Band Proxy)** konumundadır.
-- Tüm girdi ve çıktıları kontrol eden bir uygulayıcıya karşı, bant dışı (out-of-band) bağımsız bir kanal olmadan soru/cevap bütünlüğü ve işlem şeffaflığı (WYSIWYS) matematiksel olarak kanıtlanamaz (**TRUST-ROOT-08 KESİN NO-GO**).
-- AGY süreci veya bir istemci, kullanıcıya sahte onay penceresi gösterebilir ya da kullanıcının onayını tahrif edebilir.
-- Bu nedenle IDE içi sohbet penceresi insan onayının güven kökü (Root of Trust) **sayılamaz**.
-
-### 1.3. Kör İmzalama Problemi (TRUST-ROOT-02, TRUST-ROOT-03)
-Windows TPM 2.0 ve CNG (Cryptography Next Generation) KSP kullanılarak `NCRYPT_UI_POLICY_ALWAYS` ile Windows Hello (Biyometri / PIN) güvenlik penceresi açtırılabilmektedir.
-- Ancak bu pencere işletim sisteminin yerleşik PIN/Biyometri modalıdır ve ekranda **hangi dosyanın değiştirileceğini, ne kadar harcama yapılacağını veya hangi komutun çalıştırılacağını göstermez**.
-- Yalnızca donanım anahtarının imzalamasını onaylatır; dolayısıyla tek başına bir "İşlem Onayı" (Transaction Consent / WYSIWYS) çözümü değildir.
+**Belge Kodu:** AIDM-DOC-SEC
+**Sürüm:** 1.2.0
+**Tarih:** 2026-10-04
+**Kapsam:** OtonomMCP / AIDM Güvenlik Modeli, Tehdit Analizi, Sıfır Uygulayıcı Güveni (Zero Executor Trust), Güvenlik Kapıları ve Fail-Closed Davranışları
 
 ---
 
-## 2. Değiştirilemez Güvenlik Değişmezleri (Hard Architectural Invariants)
+## 1. Temel Tehdit Modeli ve İşletim Sistemi Güvenlik Sınırları
 
-OtonomMCP çekirdeğinde aşağıdaki değişmezler mutlak olarak uygulanır:
+OtonomMCP'nin güvenlik mimarisi, yerel geliştirici ortamının gerçek fiziksel ve işletim sistemi sınırları göz önüne alınarak tasarlanmıştır:
+
+### 1.1. Same-User DAC Güvenlik Sınırı Yokluğu
+Microsoft Windows NT mimarisinde (Discretionary Access Control), aynı yerel kullanıcı hesabı (aynı User SID) ve aynı Bütünlük Düzeyinde (Medium Integrity Level) çalışan süreçler arasında işletim sistemi düzeyinde bir güvenlik sınırı (OS sandbox) bulunmamaktadır.
+- Antigravity IDE, AIDM ve AGY uygulayıcısı aynı kullanıcı oturumu altında çalışır. AGY'nin bir çocuk süreç (`child_process`) olarak başlatılması, ayrıcalıklı bir yalıtım sağlamaz; yalnızca süreç yaşam döngüsü kontrolü sağlar.
+- Bu nedenle, uygulayıcının kendi yazılımsal beyanına güvenmek bir istemci tarafı güvenlik yanılsamasıdır (Client-Side Trust Fallacy).
+- Güvenlik kontrolü, uygulayıcının kısıtlanmasına değil; eylem öncesi katı politika süzgecine ve eylem sonrası bağımsız delil denetimine dayanır.
+
+### 1.2. Kör İmzalama ve Donanım Anahtarı Sınırı
+Windows TPM 2.0 veya yerel şifreleme anahtarlarıyla üretilen bir kriptografik imza, donanım anahtarının o veri bloğunu imzaladığını kanıtlar.
+- Ancak bu imza tek başına, fiziksel bir insanın ekrandaki işlem detaylarını (hangi dosyaların değişeceğini, hangi komutların çalışacağını veya bütçe etkisini) bizzat görüp onayladığını kanıtlayamaz (Kör İmzalama Riski).
+- Dolayısıyla, donanımsal imza tek başına gerçek bir insan iradesi veya işlem onayı kanıtı sayılamaz.
+
+### 1.3. Bant İçi Aracı (In-Band Proxy) Riski
+Kullanıcı ile AIDM arasındaki iletişim hattı uygulayıcının kontrolündeki IDE sohbet penceresi veya araçları olduğu sürece, uygulayıcı aradaki bant içi aracı konumundadır.
+- Doğal dil modelleri prompt manipülasyonu veya halüsinasyon yoluyla sahte yetkilendirme beyanları (`actor: "USER"`, `isTrustedHumanAuth: true`) üretebilir.
+- Bu nedenle IDE içi sohbet veya prompt beyanları insan onayının güven kökü (Root of Trust) kabul edilemez.
+
+---
+
+## 2. Temel Güvenlik Değişmezleri (Hard Architectural Invariants)
+
+OtonomMCP çekirdeğinde aşağıdaki güvenlik değişmezleri mutlak olarak uygulanır:
 
 1. **Sıfır Uygulayıcı Güveni (Zero Executor Trust):**
-   Uygulayıcının (AGY) süreç çıkış kodu (exit code 0) veya `"Görev başarıyla tamamlandı"` şeklindeki sözel beyanları başarı kanıtı sayılmaz. Yalnızca `EvidenceCollector` tarafından toplanan bağımsız dosya SHA-256 hash'leri, Git diff'i ve bağımsız test çıkışları otoriter başarı kanıtıdır.
-2. **Sözel İstemci Beyanlarının Kesin Reddi:**
-   İstemci payload'ında veya model çıktısında yer alan şu beyanlar ExecutionBridge ve PolicyEngine tarafından doğrudan reddedilir:
+   - **Sözel Beyanlar Kanıt Değildir:** AGY uygulayıcısının `"Görev tamamlandı"`, `"Tüm testler geçti"` veya `"Değişiklik yapıldı"` şeklindeki metinsel beyanları kanıt sayılmaz.
+   - **Tek Başına Exit Code 0 Başarı Kanıtı Sayılmaz:** Bir işletim sistemi sürecinin hatasız sonlanması (`exitCode: 0`), hedeflenen işlevsel sonuca ulaşıldığını veya dosya içeriklerinin doğru güncellendiğini tek başına kanıtlamaz.
+   - **RawExecutorOutcome Başarı Belgesi Değildir:** `AntigravityAdapter` tarafından üretilen çıktı yalnızca ham süreç icra telemetrisidir.
+   - **Bileşik ve Bağımsız Kanıt Şartı:** Bir eylemin tamamlandığı kararı; bağımsız olarak toplanan dosya SHA-256 hash'leri, Git çalışma ağacı değişiklikleri (`git status` / `git diff`) ve bağımsız test çıkış kodlarının `EvidenceCollector` tarafından doğrulanmasıyla (`SystemExecutionEvidence`) verilir.
+
+2. **Sözel İstemci ve Model Beyanlarının Reddi:**
+   İstemci yükünde veya model yanıtında yer alan şu beyanlar doğrudan reddedilir:
    - `actor: "USER"`
    - `isTrustedHumanAuth: true`
    - `authStatus: "VERIFIED_HUMAN"`
    - `hasImplementationAuthority: true`
-3. **Tek Seferlik İcra İddiası (Single Execution Claim):**
-   Bir `ExecutionIntent`, `ExecutionBridge` tarafından yalnızca bir kez talep edilebilir ve çalıştırılabilir. Mükerrer çağrılar atomik olarak engellenir (`ALREADY_CLAIMED`).
-4. **Bilinmeyen Durumda Kesin Durma (Strict Unknown-State Safety):**
-   Yürütme sırasında AGY süreci çökerse, zaman aşımına uğrarsa veya sonuç belirsiz kalırsa durum `EXECUTION_UNKNOWN` olur ve sistem bu eylemi asla otomatik olarak tekrar çalıştırmaz. Durum Director'a raporlanır.
-5. **Ön-Rezervasyonlu Bütçe Taşma Koruması:**
+
+3. **Stale Context (Bayat Bağlam) Koruması:**
+   Her Director eylemi, dayandığı sistem bağlamının SHA-256 parmak izini (`basedOnContextFingerprint`) taşımak zorundadır. Sistem durumu veya dosyalar değiştiğinde eski bağlama dayalı eylemler fail-closed olarak geçersiz kılınır (`STALE_CONTEXT`).
+
+4. **Tek Seferlik İcra ve İdempotency (Single Execution Claim):**
+   Her `BridgeExecutionIntent` benzersiz bir `idempotencyKey` taşır ve `ExecutionBridge` tarafından yalnızca bir defa talep edilebilir. Mükerrer çağrılar atomik olarak engellenir (`ALREADY_CLAIMED`).
+
+5. **Bilinmeyen Durumda Kesin Durma (Strict Unknown-State Safety):**
+   Yürütme sırasında uygulayıcı süreç çökerse, zaman aşımına uğrarsa veya sonuç belirsiz kalırsa durum `EXECUTION_UNKNOWN` olur ve sistem bu eylemi asla otomatik olarak tekrar çalıştırmaz.
+
+6. **Ön-Rezervasyonlu Bütçe Koruması (P18-03):**
    Hiçbir LLM isteği veya harcama gerektiren eylem, SQLite veritabanında Nano-USD cinsinden atomik hold rezervasyonu yapılmadan (`claimReservationForDispatch`) ağa gönderilemez. Bütçe yetersizliğinde sistem fail-closed durur (`BUDGET_EXCEEDED`).
-6. **Sırların Arındırılması (Secret Sanitization):**
-   Bearer token'lar, API anahtarları, parolalar ve özel anahtarlar; URL sorgu parametrelerinden, başlıklardan, hata mesajlarından ve telemetri nesnelerinden deterministik regex ile arındırılır (`***REDACTED***`).
+
+7. **Sırların Arındırılması (Secret Sanitization):**
+   Bearer token'lar, API anahtarları ve şifreler; URL'lerden, başlıklardan, hata mesajlarından ve loglardan deterministik regex ile arındırılır (`***REDACTED***`).
+
+8. **Çalışma Alanı ve Oturum İzolasyonu:**
+   Sistem `.ai-manager/runtime.lock` dosyası ile tekil PID kilidi uygular; eşzamanlı iki sürecin çalışma alanına müdahalesi engellenir.
 
 ---
 
-## 3. P18-04 ve P20 Check 6 Güvenlik Kapısı
+## 3. P18-04 (Trusted Identity Context) ve P20 Check 6 Güvenlik Engeli
 
-- **Mevcut Durum:** `BLOCKED_ON_AUTH_CONTEXT`.
-- **Fail-Closed Kuralı:** İnsan onayı gerektiren bir durum (`REQUIRE_HUMAN_APPROVAL`) oluştuğunda, yukarıda açıklanan nedenlerle henüz güvenilir bir out-of-band insan kimlik kökü bulunmadığı için yürütme kesin olarak engellenir.
-- Sistem hiçbir koşulda sahte onay üretmez, bu kapıyı gevşetmez veya testlerde mocklayarak bypass etmez.
+- **Aşama Tanımı:** P18-04 (Trusted Identity Context), güvenilir insan kimliği ve onay bağlamını temsil eder. Bütçe yönetimi (P18-03) ile karıştırılmamalıdır.
+- **Mevcut Durum:** `BLOCKED_ON_AUTH_CONTEXT` (P18-04 henüz tamamlanmamış olup, gerçek güvenilir insan kimliği doğrulaması mevcut olmadığı sürece fail-closed davranışı korunur).
+- **Fail-Closed Kuralı:** İnsan onayı gerektiren bir durum (`REQUIRE_HUMAN_APPROVAL`) oluştuğunda, henüz bağımsız ve güvenilir bir dış kimlik kanıtı doğrulanmadığı için yürütme kesin olarak engellenir.
+- **Güvenlik Taahhüdü:** TPM veya yazılımsal imzalar tek başına insan onayının kanıtı sayılmaz. Sistem hiçbir koşulda sahte onay üretmez, bu kapıyı gevşetmez veya testlerde mocklayarak bypass etmez. Mevcut olmayan bir güvenlik özelliği uygulanmış gibi gösterilemez.
+
+---
+
+## 4. Tehdit Matrisi ve Mevcut Korumalar
+
+| Tehdit / Risk | Mevcut Koruma | Güvenlik Sınırı |
+|---|---|---|
+| **Same-User Süreç Müdahalesi** | PID kilidi (`runtime.lock`), fail-closed kontroller | Aynı kullanıcı oturumundaki süreçlerin yerel disk dosyalarını okuma riski Windows DAC sınırları gereğidir. |
+| **Kör İmzalamayla Onay Taklidi** | Donanım imzaları tek başına onay sayılmaz; kanonik veri doğrulaması şarttır | İşletim sisteminde bağımsız, tahrif edilemez bir onay sunumu mevcut değildir; fail-closed bekler. |
+| **Bant İçi Proxy / Prompt Manipülasyonu** | IDE içi insan onayı kabul edilmez; sahte yetki rolleri engellenir | İnsan onayı gerektiren işlemlerde sistem `BLOCKED_ON_AUTH_CONTEXT` olarak durur. |
+| **Bütçe Aşımı ve Fatura Şoku** | SQLite Nano-USD atomik hold rezervasyonu ve reconciler | Harcama öncesi bütçe rezerve edilir; yetersiz bakiyede çağrı engellenir. |
+| **Uygulayıcı Halüsinasyonu / Sahte Başarı** | Sıfır Uygulayıcı Güveni (Zero Executor Trust), bağımsız dosya SHA-256 hash'leri, Git diff ve bağımsız test çıkış kodu | Sözel beyanlar reddedilir; kanıt yoksa eylem başarısız sayılır. |

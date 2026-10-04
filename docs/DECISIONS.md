@@ -1,70 +1,87 @@
 # OtonomMCP (AIDM) — Bağlayıcı Mimari Karar Kayıtları (DECISIONS.md)
 
-**Belge Kodu:** AIDM-DOC-ADR  
-**Sürüm:** 1.0.0  
-**Tarih:** 2026-10-04  
-**Kapsam:** OtonomMCP Geliştirme Sürecinde Alınmış ve Halen Bağlayıcı Olan Tüm Temel Mimari Kararlar (ADR)
+**Belge Kodu:** AIDM-DOC-ADR
+**Sürüm:** 1.2.0
+**Tarih:** 2026-10-04
+**Kapsam:** OtonomMCP Geliştirme Sürecinde Alınmış ve Halen Bağlayıcı Olan Temel Mimari Kararlar (ADR)
 
 ---
 
-## ADR-01: Bağımsız Çekirdek ve Sıfır Dış Çalışma Bağımlılığı
-- **Tarih:** 2026-10-01 (P18-00)
-- **Karar:** AIDM çekirdeği harici bir veritabanı (Postgres/Redis), harici bulut servisi veya ağ soketi gerektirmeksizin Node.js 18+ yerel modülleri ve yerleşik SQLite ile çalışacaktır.
-- **Gerekçe:** Geliştiricinin kendi yerel makinesinde sıfır altyapı maliyeti ve tam veri egemenliği sağlamak.
+## Kesinleşmiş Mimari Kararlar
+
+### ADR-01: Tek Director Otoritesi
+- **Karar:** Kullanıcının doğal dil ile yazılım hedeflerini, geliştirme talimatlarını ve mimari yönelimini ileteceği tek planlama ve diyalog muhatabı ChatGPT Director'dır. AIDM çekirdeği veya uygulayıcı için IDE içinde ikinci bir sohbet penceresi, ayrı bir geliştirici arayüzü veya bağımsız interaktif CLI açılmayacaktır.
+- **Gerekçe:** Kullanıcı kafa karışıklığını önlemek, karar hiyerarşisini korumak ve bant içi sahte yetki yükseltmelerini engellemek.
+- **Etkisi:** AIDM, yalnızca Antigravity IDE içinde bir MCP sunucusu olarak çalışır.
 
 ---
 
-## ADR-02: SQLite Atomik Bütçe Motoru ve Nano-USD Hassasiyeti
-- **Tarih:** 2026-10-02 (P18-03)
-- **Karar:** Token ve maliyet bütçesi SQLite veritabanında `BigInt` (Nano-USD, $1 = 1.000.000.000 nUSD) cinsinden tutulacaktır. Her LLM çağrısından önce zorunlu `HOLD` rezervasyonu yapılacak, yanıt sonrası `SETTLE` edilecek; yetersiz bakiyede `BUDGET_EXCEEDED` hatasıyla ağ çağrısı engellenecektir.
-- **Gerekçe:** Kayan noktalı sayı (floating-point) yuvarlama hatalarını önlemek ve modelin bütçeyi aşmasını fail-closed olarak durdurmak.
+### ADR-02: Tek Durum ve Task DAG Otoritesi
+- **Karar:** AIDM Orkestrasyon Çekirdeği, projenin tek durum otoritesidir (Single State Authority). Görevler, bağımlılıklar ve durum geçişleri yalnızca `TaskDagEngine` ve FSM üzerinden yürütülür.
+- **Gerekçe:** Birden fazla aktörün durum tanımlaması veya çakışan görev çizgesi üretmesini engellemek.
+- **Etkisi:** Hiçbir dış aktör veya alt süreç görev durumunu doğrudan değiştiremez.
 
 ---
 
-## ADR-03: Tekil Kullanıcı Arayüzü — Yalnızca Director
-- **Tarih:** 2026-10-04 (DIRECTOR-INTERACTION-01 / 02)
-- **Karar:** Kullanıcının doğal dil ile konuşacağı tek muhatap ChatGPT Director'dır. AIDM veya AGY için IDE içinde ikinci bir sohbet penceresi, ayrı bir GUI veya CLI etkileşim modu açılmayacaktır.
-- **Gerekçe:** Kullanıcının kafa karışıklığını önlemek, tekil karar hiyerarşisini korumak ve sahte yetki yükseltme saldırılarını engellemek.
+### ADR-03: MCP'nin İkinci Orkestratör Olmaması
+- **Karar:** Model Context Protocol (MCP) katmanı, Orkestratör üzerinde yer alan bir protokol adaptörü ve kontrol düzlemidir (Control Plane).
+- **Gerekçe:** MCP araçlarının kendi başına durum makinesi çalıştırmasını, FSM'i baypas etmesini veya bağımsız görev mantığı yürütmesini engellemek.
+- **Etkisi:** Tüm araç çağrıları yetkilendirme süzgecinden ve çekirdek servis delegelerinden geçmek zorundadır.
 
 ---
 
-## ADR-04: Proje A ve Proje B Ayrımı ("Önce A, Sonra B")
-- **Tarih:** 2026-10-04 (A_CURRENT_STATE_AUDIT)
-- **Karar:** Proje A (AIDM Çekirdeği) ile Proje B (Bağımsız Yerel Onay Uygulaması) iki ayrı proje olarak yönetilecektir. Proje A tamamlanıp dondurulmadan (FROZEN) Proje B geliştirmesi başlamayacaktır.
-- **Gerekçe:** Çekirdek orkestratörün tamamlanmasını geciktirmemek, iki projenin kod tabanlarını birbirine karıştırmamak ve A'nın B olmadan da rutin işleri yürütebilmesini garanti etmek.
+### ADR-04: Tek Evidence Collector ve Sıfır Uygulayıcı Güveni (Zero Executor Trust)
+- **Karar:** Uygulayıcının (AGY) sözel başarı beyanları (`"tamamlandı"`, `"testler geçti"` vb.) veya tek başına süreç çıkış kodları (`exitCode: 0`) başarı kanıtı sayılamaz. Görev tamamlanma kararı yalnızca bağımsız `EvidenceCollector` tarafından toplanan dosya SHA-256 hash'leri, Git diff ve bağımsız test çıkış kodlarıyla verilir.
+- **Gerekçe:** Dil modellerinin halüsinasyon veya eksik icra riskine karşı objektif sistem doğrulaması sağlamak.
+- **Etkisi:** Kanıt üretilmemişse eylem başarısız kabul edilir.
 
 ---
 
-## ADR-05: P22 Adlandırma Çakışmasının Çözümü
-- **Tarih:** 2026-10-04 (A_CURRENT_STATE_AUDIT Bölüm 5)
-- **Karar:** Git geçmişinde `744f2c2` nolu commit'te "P22" adı Trusted IDE Authentication için kullanılmıştı. Resmî ana plana göre bu çakışma kesin olarak çözülmüştür:
-  - **P22 (Proje A):** `Director MCP Control Plane` (A5 aşaması — Director'ın kullanacağı üst düzey MCP kontrol araçları).
-  - **Trusted IDE Authentication / Dış Onay:** Proje A kapsamından çıkarılmış ve gelecekteki **Proje B** kapsamına devredilmiştir.
+### ADR-05: Yerel SQLite Bütçe Yönetimi ve Nano-USD Hassasiyeti (P18-03)
+- **Aşama:** P18-03 (Token & Cost Budget Management).
+- **Karar:** Token harcama ve maliyet bütçesi yerel SQLite veritabanında `BigInt` (Nano-USD, $1 = 1.000.000.000 nUSD) cinsinden tutulacaktır. Her LLM çağrısından önce zorunlu `HOLD` rezervasyonu yapılacak, yanıt sonrası `SETTLE` edilecek; yetersiz bakiyede `BUDGET_EXCEEDED` hatasıyla çağrı fail-closed engellenecektir.
+- **Gerekçe:** Kayan nokta (float) yuvarlama hatalarını önlemek ve modelin bütçeyi aşmasını kesin olarak durdurmak.
+- **Etkisi:** Pre-dispatch hold rezervasyonu yapılmadan hiçbir ağ çağrısı gönderilemez. Atomik bütçe rezervasyonu ve harcama kontrolü garanti edilir.
 
 ---
 
-## ADR-06: IDE İçi Onay Mekanizmasının Reddi (TRUST-ROOT-08 KESİN NO-GO)
-- **Tarih:** 2026-10-04 (TRUST-ROOT-08)
-- **Karar:** Antigravity IDE sohbeti veya `default_api:ask_question` aracı üzerinden insan onayı alınması yaklaşımı kesin olarak reddedilmiştir. P18-04 ve P20 Check 6 kapısı bağımsız bir out-of-band güven kökü olmadan açılamaz ve fail-closed kalacaktır.
-- **Gerekçe:** AGY'nin aradaki tek iletişim hattı (in-band proxy) olması sebebiyle soru tahrifatı ve onay taklidinin matematiksel olarak engellenememesi.
+### ADR-06: Fail-Closed Güvenlik ve Güvenilir İnsan Onayı Sınırı (P18-04 / P20 Check 6)
+- **Aşama:** P18-04 (Trusted Identity Context) ve P20 Check 6.
+- **Karar:** Antigravity IDE içindeki sohbet veya istemci beyanları (`isTrustedHumanAuth: true`, `actor: "USER"`) güvenilir insan onayı kanıtı sayılamaz. Bağımsız ve güvenilir bir dış kimlik doğrulaması bulunmadığı sürece insan onayı gerektiren tüm işlemler fail-closed olarak `BLOCKED_ON_AUTH_CONTEXT` durumunda bekletilecektir.
+- **Gerekçe:** Uygulayıcının aradaki bant içi proxy konumunda olması sebebiyle onay taklidini matematiksel olarak engellemek.
+- **Etkisi:** P18-04 henüz tamamlanmamış olup, gerçek güvenilir insan kimliği doğrulaması sağlanana kadar fail-closed davranışı korunur; P20 Check 6 güvenlik kapısı kesin olarak kapalı tutulur.
 
 ---
 
-## ADR-07: Sağlayıcıdan Bağımsız Wire Formatı ve Telemetri Ayrıştırması
-- **Tarih:** 2026-10-04 (A2)
-- **Karar:** `ReferenceLlmAdapter`, OpenAI Chat Completions API formatı ile iç referans formatını `wireFormat: 'auto' | 'openai' | 'reference'` bayrağı ile dinamik olarak yönetecektir. OpenAI uç noktasına kök düzeyinde fazlalık metaveri gönderilmeyecek; `prompt_tokens_details.cached_tokens` ve `completion_tokens_details.reasoning_tokens` alanları telemetriye dahil edilecektir.
-- **Gerekçe:** Canlı LLM sağlayıcılarında HTTP 400 Bad Request hatalarını önlemek ve önbellek/muhakeme maliyet uzlaştırmasını kuruşu kuruşuna doğru yapmak.
-
----
-
-## ADR-08: Rutin Mandate Görevlerinin Bağımsız Yürütülmesi
-- **Tarih:** 2026-10-04 (A_INTEGRATION_CONTRACT)
-- **Karar:** Proje A, dış onay sağlayıcısı mevcut olmadığında da Project Mandate kapsamındaki rutin ve yetkilendirilmiş geliştirme görevlerini (`ALLOW`) otonom olarak yürütmeye devam edecektir. Yalnızca insan onayı gerektiren durumlarda fail-closed bekleyecektir.
-- **Gerekçe:** Dış onay uygulamasının yokluğunun, rutin kod yazma ve test yürütme kabiliyetlerini kilitlemesini önlemek.
-
----
-
-## ADR-09: Tek Çalışma Alanı PID Kilitlenmesi ve Zombi Önleme
-- **Tarih:** 2026-10-02 (P18-02)
-- **Karar:** `.ai-manager/runtime.lock` dosyası PID tabanlı doğrulanacak; çalışan canlı bir süreç varken ikinci bir instance başlatılamayacaktır. Zombie process takeover yapılmayacak; eski kilitler yalnızca sürecin öldüğü işletim sistemi düzeyinde (`process.kill(pid, 0)`) teyit edildikten sonra temizlenecektir.
+### ADR-07: Tek Çalışma Alanı PID Kilitlenmesi ve Zombi Önleme
+- **Karar:** `.ai-manager/runtime.lock` dosyası üzerinden PID tabanlı kilit uygulanacaktır. Canlı bir süreç varken ikinci bir instance başlatılamaz. Zombie process devralması (takeover) yapılmaz; kilit ancak sürecin işletim sistemi düzeyinde öldüğü (`process.kill(pid, 0)`) teyit edildikten sonra temizlenir.
 - **Gerekçe:** Eşzamanlı iki AIDM sürecinin dosya sistemini ve SQLite bütçe tabanını bozmasını engellemek.
+- **Etkisi:** Tekil çalışma alanı güvenliği garanti edilir.
+
+---
+
+### ADR-08: Sağlayıcıdan Bağımsız LLM Wire Formatı ve Telemetri Ayrıştırması
+- **Karar:** `ReferenceLlmAdapter`, OpenAI Chat Completions API formatı ile iç referans formatını dinamik olarak yönetecektir. OpenAI uç noktasına kök düzeyinde fazlalık metaveri gönderilmeyecek; `prompt_tokens_details.cached_tokens` ve `completion_tokens_details.reasoning_tokens` alanları telemetriye dahil edilecektir.
+- **Gerekçe:** Canlı LLM sağlayıcılarında HTTP 400 hatalarını önlemek ve muhakeme/önbellek maliyet uzlaştırmasını kuruşu kuruşuna doğru yapmak.
+- **Etkisi:** Bütçe motoru gerçek harcanan token türlerini doğru fiyatlandırır.
+
+---
+
+### ADR-09: Rutin Mandate Görevlerinin Otonom Yürütülmesi
+- **Karar:** Project Mandate kapsamındaki yetkilendirilmiş rutin geliştirme görevleri (`ALLOW`), harici onay gerekmeksizin tam otonom olarak icra edilmeye devam edecektir. Yalnızca korumalı eylemlerde fail-closed duruş uygulanır.
+- **Gerekçe:** Rutin kod geliştirme ve test çalıştırma kabiliyetlerinin gereksiz yere kilitlenmesini önlemek.
+- **Etkisi:** Otonom geliştirme döngüsü güvenli sınırlar içinde kesintisiz çalışır.
+
+---
+
+### ADR-10: Gerçek Provider ve Mock Taşıyıcı Ayrımı
+- **Karar:** Otomatik birim ve entegrasyon testlerinde `InMemoryMcpTransport` ve mock LLM adaptörleri kullanılacaktır. Canlı ağ ortamında ise unforgeable güvenlik sembolleri ile yalıtılmış `HttpLlmTransport` ve `StdioMcpTransport` kullanılacaktır.
+- **Gerekçe:** Testlerin deterministik, hızlı ve maliyetsiz çalışmasını sağlarken; üretim ortamında gerçek ağ güvenliği sınırlarını korumak.
+- **Etkisi:** Test kodları ve üretim kodları arasında taşıyıcı sızıntısı engellenir.
+
+---
+
+### ADR-11: Commit ve Değişiklik Güvenliği
+- **Karar:** Otonom eylemler yalnızca yerel çalışma ağacında adım adım yürütülür ve bağımsız delil denetimine tabi tutulur. Kontrolsüz veya otomatik `git push` ya da hedef dala körlemesine merge işlemleri yasaktır.
+- **Gerekçe:** Geliştiricinin yerel Git deposunun ve uzak deposunun tahrif edilmesini önlemek.
+- **Etkisi:** Değişiklikler yerel checkpoint'lerle izlenir ve güvenli sınırda tutulur.
