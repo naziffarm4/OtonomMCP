@@ -72,19 +72,29 @@ export class DirectorReasoningEngine {
 
     if (!resolvedProvider) {
       // Attempt to configure from explicit config or environment variables
-      const endpoint = config.endpoint ?? process.env.AIDM_LLM_ENDPOINT;
       const apiKey =
         config.apiKey ??
         process.env.AIDM_LLM_API_KEY ??
         process.env.OPENAI_API_KEY ??
         null;
+      const endpoint =
+        config.endpoint ??
+        process.env.AIDM_LLM_ENDPOINT ??
+        (apiKey ? 'https://api.openai.com/v1/chat/completions' : undefined);
 
       if (endpoint || apiKey) {
+        const defaultEndpoint = endpoint ?? 'https://api.openai.com/v1/chat/completions';
+        const defaultModel =
+          config.model ??
+          process.env.AIDM_LLM_MODEL ??
+          process.env.OPENAI_MODEL ??
+          (defaultEndpoint.includes('openai.com') ? 'gpt-4o' : 'director-reasoning-v1');
+
         const transport = new HttpLlmTransport<
           ReferenceWireRequest,
           ReferenceWireResponse
         >({
-          endpoint: endpoint ?? undefined,
+          endpoint: defaultEndpoint,
           apiKey: apiKey ?? null,
           authHeaderName: config.authHeaderName,
           authHeaderPrefix: config.authHeaderPrefix,
@@ -92,12 +102,13 @@ export class DirectorReasoningEngine {
         });
 
         resolvedProvider = new ReferenceLlmAdapter({
-          providerId: config.providerId ?? 'llm:reference-adapter',
-          providerName: 'reference-llm',
-          defaultModel: config.model ?? 'director-reasoning-v1',
+          providerId: config.providerId ?? (defaultEndpoint.includes('openai.com') ? 'openai' : 'llm:reference-adapter'),
+          providerName: defaultEndpoint.includes('openai.com') ? 'openai' : 'reference-llm',
+          defaultModel,
           transport,
           timeoutMs: this.timeoutMs,
-          endpoint: endpoint ?? undefined,
+          endpoint: defaultEndpoint,
+          wireFormat: defaultEndpoint.includes('openai.com') ? 'openai' : 'auto',
         });
       }
     }

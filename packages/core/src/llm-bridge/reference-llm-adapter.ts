@@ -105,6 +105,16 @@ export interface ReferenceWireUsage {
   readonly completion_tokens?: number | null;
   readonly cached_tokens?: number | null;
   readonly total_tokens?: number | null;
+  readonly prompt_tokens_details?: {
+    readonly cached_tokens?: number | null;
+    readonly audio_tokens?: number | null;
+  } | null;
+  readonly completion_tokens_details?: {
+    readonly reasoning_tokens?: number | null;
+    readonly audio_tokens?: number | null;
+    readonly accepted_prediction_tokens?: number | null;
+    readonly rejected_prediction_tokens?: number | null;
+  } | null;
 }
 
 export interface ReferenceWireResponse {
@@ -149,6 +159,13 @@ export interface ReferenceLlmAdapterConfig {
   readonly enforceBudget?: boolean;
   /** Optional authoritative BudgetManager to verify reservations in SQLite (P18-03) */
   readonly budgetManager?: BudgetManager;
+  /**
+   * Wire format mode:
+   * - 'openai': Standard OpenAI Chat Completions payload format (clean JSON body, nested json_schema)
+   * - 'reference': Internal AIDM reference format (includes top-level director_context and metadata)
+   * - 'auto': Uses 'openai' when endpoint includes 'openai.com' or provider is 'openai', otherwise 'reference'. Defaults to 'auto'.
+   */
+  readonly wireFormat?: 'reference' | 'openai' | 'auto';
 }
 
 // ============================================================================
@@ -162,6 +179,7 @@ export class ReferenceLlmAdapter implements LLMProvider {
   readonly supportedModels: readonly string[];
   readonly supportedCapabilities: readonly LlmCapability[];
   readonly enforceBudget: boolean;
+  readonly wireFormat: 'reference' | 'openai' | 'auto';
   budgetManager?: BudgetManager;
 
   readonly transport: LlmTransport<ReferenceWireRequest, ReferenceWireResponse>;
@@ -196,10 +214,59 @@ export class ReferenceLlmAdapter implements LLMProvider {
     this.transport = config.transport;
     this.defaultTimeoutMs = config.timeoutMs ?? 30000;
     this.endpoint = config.endpoint;
+    this.wireFormat = config.wireFormat ?? 'auto';
 
     if (this.budgetManager && this.transport && typeof (this.transport as any).setBudgetManager === 'function') {
       (this.transport as any).setBudgetManager(this.budgetManager);
     }
+  }
+
+  /**
+   * Evaluates whether OpenAI Chat Completions wire format should be used.
+   */
+  isOpenAiFormat(): boolean {
+    if (this.wireFormat === 'openai') return true;
+    if (this.wireFormat === 'reference') return false;
+    const endpoint = this.endpoint || (this.transport as any)?.endpoint || '';
+    if (typeof endpoint === 'string' && endpoint.includes('openai.com')) {
+      return true;
+    }
+    if (this.providerName.toLowerCase().includes('openai')) {
+      return true;
+    }
+    return false;
+  }
+
+  /**
+   * Formats wire request for standard OpenAI Chat Completions API.
+   * Strips out internal orchestrator metadata from JSON body to prevent HTTP 400 Bad Request.
+   */
+  translateToOpenAiWire(wire: ReferenceWireRequest): Record<string, unknown> {
+    const body: Record<string, unknown> = {
+      model: wire.model,
+      messages: wire.messages,
+    };
+    if (typeof wire.temperature === 'number' && Number.isFinite(wire.temperature)) {
+      body.temperature = wire.temperature;
+    }
+    if (typeof wire.max_tokens === 'number' && Number.isFinite(wire.max_tokens)) {
+      body.max_tokens = wire.max_tokens;
+    }
+    if (wire.response_format) {
+      if (wire.response_format.type === 'json_schema') {
+        body.response_format = {
+          type: 'json_schema',
+          json_schema: {
+            name: wire.response_format.schema_name || 'director_decision',
+            strict: wire.response_format.strict ?? true,
+            schema: wire.response_format.schema ?? {},
+          },
+        };
+      } else if (wire.response_format.type === 'json_object') {
+        body.response_format = { type: 'json_object' };
+      }
+    }
+    return Object.freeze(body);
   }
 
   setBudgetManager(budgetManager: BudgetManager): void {
@@ -421,6 +488,10 @@ export class ReferenceLlmAdapter implements LLMProvider {
       }, timeoutMs);
     });
 
+    const effectiveBody = this.isOpenAiFormat()
+      ? (this.translateToOpenAiWire(wireRequest) as unknown as ReferenceWireRequest)
+      : wireRequest;
+
     const transportReq: LlmTransportRequest<ReferenceWireRequest> = Object.freeze({
       endpoint: this.endpoint,
       method: 'POST',
@@ -437,7 +508,7 @@ export class ReferenceLlmAdapter implements LLMProvider {
           ? { 'x-budget-reservation-id': String(rawRequest.metadata.__aidm_reservation_id) }
           : {}),
       }),
-      body: wireRequest,
+      body: effectiveBody,
       timeoutMs,
       signal: abortController.signal,
     });
@@ -614,10 +685,15 @@ export class ReferenceLlmAdapter implements LLMProvider {
         typeof wire.usage.prompt_tokens === 'number' ||
         typeof wire.usage.completion_tokens === 'number';
 
+      const cachedTokens =
+        wire.usage.cached_tokens ??
+        wire.usage.prompt_tokens_details?.cached_tokens ??
+        null;
+
       usage = normalizeTelemetry({
         reported_input_tokens: wire.usage.prompt_tokens ?? null,
         reported_output_tokens: wire.usage.completion_tokens ?? null,
-        reported_cached_tokens: wire.usage.cached_tokens ?? null,
+        reported_cached_tokens: cachedTokens,
         estimated_tokens:
           wire.usage.total_tokens ??
           ((wire.usage.prompt_tokens ?? 0) + (wire.usage.completion_tokens ?? 0)),
@@ -626,6 +702,13 @@ export class ReferenceLlmAdapter implements LLMProvider {
         model,
         is_exact_provider_metric: hasExactMetrics,
       });
+
+      if (wire.usage.completion_tokens_details) {
+        (usage as any).completion_tokens_details = wire.usage.completion_tokens_details;
+      }
+      if (wire.usage.prompt_tokens_details) {
+        (usage as any).prompt_tokens_details = wire.usage.prompt_tokens_details;
+      }
     } else {
       // When provider metrics are unavailable, reported values remain strictly null
       usage = createEstimatedTelemetry({

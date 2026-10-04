@@ -5,9 +5,65 @@
 **Depo:** https://github.com/naziffarm4/OtonomMCP\
 **Çalışma modeli:** ChatGPT Director + AIDM Orchestrator + Antigravity
 Executor\
-**Belge durumu:** Başlangıç ana planı --- ilk faz öncesi doğrulanacak
+**Belge durumu:** Güncel ana plan ve devam yol haritası — 2026-10-04
+**Güncelleme:** Mevcut P18/P19/P20/P21 ve TRUST-ROOT bulguları işlendi; Director-only kullanıcı etkileşimi ve doğru devam sırası eklendi.
 
 ------------------------------------------------------------------------
+
+------------------------------------------------------------------------
+
+# Güncel durum ve bağlayıcı devam sırası — 2026-10-04
+
+Bu bölüm, belgenin önceki başlangıç planını mevcut proje durumuna göre günceller.
+Çelişki halinde bu bölüm ve Ek D, eski başlangıç durumu/varsayımlarından önceliklidir.
+
+## Mevcut durum özeti
+
+| Alan | Son bilinen durum | Plan kararı |
+|---|---|---|
+| P18 Director Reasoning / bütçe | P18-01/02/03 implementasyon ve testleri raporlandı; gerçek provider çağrısı henüz kanıtlanmadı. P18-04 trusted auth bağlamı bekliyor. | P18-03'ü somut hata yoksa yeniden açma. Gerçek provider smoke testi ayrıca ve yalnızca açık maliyet onayıyla yapılır. |
+| P19 Action Protocol | P19-01/02/03 tamamlandı olarak raporlandı; dispatcher, action validation ve idempotency hattı mevcut. | Tamamlandı kabulü korunur; regresyon hatası çıkarsa hedefli düzelt. |
+| P21 Authorization Policy | Policy engine/mandate enforcement testleriyle kabul edildi olarak raporlandı. | Tamamlandı kabulü korunur; trusted human identity yerine geçmez. |
+| P20 Execution Bridge | P20-01 ve güvenlik sertleştirmeleri mevcut; gerçek IDE/human trust root yokluğu nedeniyle Check 6 ve P20-01D engelli. | P20 tam kapalı çevrim olarak kabul edilmez. Güven kökü çözülmeden insan onayı kapısı gevşetilmez. |
+| Trusted IDE / human approval | TRUST-ROOT-01/02/03 araştırma ve izole PoC raporları mevcut. TPM key işlemi gösterildi; CNG modalı işlem içeriğini göstermiyor. | Üretim entegrasyonu için NO-GO. TRUST-ROOT-04 sıradaki araştırma görevi. |
+| Director kullanıcı kanalı | Ana planda ChatGPT Director tek kullanıcı arayüzü olarak tariflenmiş; Antigravity IDE sohbetinin Director'a güvenilir soru/yanıt/option callback kanalı olup olmadığı kanıtlanmamış. | Mimariyi değiştirmeden teknik fizibilite denetimi yapılacak. |
+
+AGY raporlarındaki test/commit/push sonuçları, bu sohbet içinde bağımsız olarak depo üzerinde doğrulanmış sayılmaz; kanıt seviyesi raporlanmış sonuç olarak korunur. TRUST-ROOT-03'teki bazı görsel dosyalar AI mockup olarak üretildiği için gerçek Windows güvenlik penceresi ekran görüntüsü kanıtı sayılmaz. Testlerin gerçek stdout/JSON çıktısı ayrıca doğrulanmadan 12/12 sonucu bağımsız doğrulanmış kabul edilmez.
+
+## Bağlayıcı mimari kararı: kullanıcı yalnızca Director ile konuşur
+
+- Kullanıcının tek muhatabı **ChatGPT Director** olacaktır. Kullanıcı AIDM Orchestrator veya AGY ile doğrudan karar/izin/clarification alışverişi yapmayacaktır.
+- Gereksinim belirsizliği, ek bilgi, seçenek, ürün kararı, insan onayı, ret, erteleme ve sonuç bildirimi Director tarafından kullanıcıya sunulur.
+- AIDM ve AGY ihtiyaçlarını, hata ve önerilerini Director'a yapılandırılmış biçimde iletir. Kullanıcıya doğrudan soru sormaz ve kendisini karar sahibi olarak sunmaz.
+- AIDM içindeki reasoning/provider runtime, aynı mantıksal Director'ın arka plandaki yürütme kabiliyeti olabilir; **ikinci/bağımsız bir Director veya rakip karar sahibi değildir**. Tek session, tek karar zinciri ve tek kullanıcıya dönük kimlik korunur.
+- Director'ın Antigravity IDE sohbet penceresini kullanması hedeflenen UX seçeneğidir; ancak IDE'nin desteklenen API/extension/MCP yetenekleri kanıtlanmadan uygulanabilir olduğu varsayılmaz.
+- IDE chat üzerinden gelen metin/choice cevabı tek başına güvenilir Product Owner kimliği veya güvenli insan onayı kanıtı değildir. İnsan onayı gerekiyorsa onaylanan işlem, proje/workspace/session/task/action, context fingerprint, nonce, mandate/policy revision ve expiry ile kriptografik olarak bağlanmalı; güven kökü ayrıca doğrulanmalıdır.
+- IDE chat bunu desteklemiyorsa AIDM'ye ikinci bir sohbet arayüzü veya yeni bir ajan eklenmez. Director'ın tek muhatap olma ilkesi korunarak desteklenen alternatif kanal(lar) fizibilite raporunda seçenek olarak sunulur; kullanıcı kararı olmadan mimari değişmez.
+
+## Güncel uygulama sırası
+
+Aşağıdaki sıra mevcut durumdan devam etmek için bağlayıcıdır. Eski §6'daki faz sırası genel bağımlılık sırası olarak kalır; bu liste mevcut engeller ve tamamlanmış işler dikkate alınarak önceliklidir.
+
+1. **TRUST-ROOT-04 — Secure Companion Trust Architecture & Threat Model (READ-ONLY).** Aynı Windows kullanıcısı altındaki kötü niyetli süreç, sahte Companion/UI, IPC taklidi, payload substitution, TOCTOU, UI automation/clickjacking, binary integrity, TPM imza çağrısı, nonce/replay, workspace/session ayrımı ve kullanıcı onayının gerçek anlamını tehdit modeliyle incele. Companion çözümünü peşinen seçme; en az üç mimari alternatifi karşılaştır. TRUST-ROOT-03 test kanıtlarının gerçekliğini de denetle. Kaynak kod/konfigürasyon/bağımlılık değişikliği yok.
+2. **DIRECTOR-INTERACTION-01 — Director-Only IDE Chat Feasibility Audit (READ-ONLY).** Antigravity IDE'nin desteklenen chat/extension/API/MCP mekanizmalarıyla Director'ın kullanıcıya seçenekli soru/clarification/approval sunup yanıtı aynı session/action'a güvenli bağlayıp bağlayamayacağını kanıtla. Yalnızca resmi/desteklenen arayüzleri kullan; UI otomasyonu veya private API'yi güvenilir kabul etme. Tek muhatap Director kuralını ve yukarıdaki güvenlik gereksinimlerini koru. TRUST-ROOT-04 ile aynı anda araştırılabilir; ikisi de tamamlanmadan tasarım/uygulama kararı verme.
+3. **TRUST-ROOT-05 — Human Approval Root-of-Trust Decision & Isolated Validation.** TRUST-ROOT-04 ve DIRECTOR-INTERACTION-01 raporlarına dayanarak hedef trust architecture'ı seçmek için karar kaydı hazırla. Seçilen yol Companion gerektiriyorsa yalnızca izole PoC planı/deneyi yap; üretim entegrasyonu, paket veya runtime değişikliği için ayrı açık karar ve kabul kapısı gerekir. WYSIWYS (kullanıcının gördüğü işlem ile imzalanan/çalıştırılan işlemin birebir aynı olması), signed IPC, binary integrity, OS identity, same-user threat, anti-replay ve fail-closed kanıtları zorunludur.
+4. **P18-04 / P20 Trusted Human Authentication Gate.** Güven kökü çözümü onaylandıktan sonra gerçek Product Owner proof, key custody, consent payload, nonce/expiry/revocation ve güvenli IPC doğrulamasını mevcut IdentityManager/AuthContextValidator/NonceStore/ProjectMandateStore/ExecutionBridge/AuthorizationPolicyEngine içine entegre et. Yeni EventStore/DAG/Driver oluşturma. P20 Check 6, yalnızca gerçek trust proof doğrulandığında geçsin; `verified:true` gibi istemci beyanları kabul edilmesin.
+5. **P20-02 — Closed-loop Coordinator Completion.** P19 action sözleşmesi ve P21 policy zaten kabul edilmiş olduğundan mevcut Execution Bridge/DirectorLoopEngine/DriverRuntime/EvidenceCollector/State Integrator zincirini tamamla. Tek bounded cycle, aynı Director session, stale context/idempotency, AGY timeout/UNKNOWN, bağımsız evidence ve corrective task lineage doğrulansın. P20-01'i yeniden yazma; eksik kalan entegrasyonu tamamla.
+6. **P22 — Director MCP Control Plane (resmî roadmap numarası).** Altı temel MCP tool ve gerçek stdio initialize/list/call, schema, transport auth, session/project isolation ve Director bağlantısını tamamla. TRUST-ROOT iş paketi P22 değildir; bu numara MCP Control Plane için ayrılmıştır.
+7. **P23 — Durable Session & Recovery.** Var olan HistoryManager/DurableStateManager/event altyapısını kullan; aynı Director session/task lineage ile recovery, process ownership, partial output reconciliation ve dirty workspace korumasını tamamla.
+8. **P24 — Real E2E Validation.** Gerçek provider + gerçek AGY + gerçek workspace/Git/test/build/evidence + MCP + Director-only human interaction akışını ayrı test katmanlarıyla doğrula. Gerçek provider çağrısı ücretlidir; kullanıcı açıkça onaylamadan çağrı yapma. Gerçek ChatGPT/IDE client testi yapılamazsa NOT RUN olarak raporla; mock testi yerine sayma.
+9. **P25 — Production Hardening.** Güvenlik, secret storage/rotation, platform process lifecycle, concurrency, observability, backup/migration, Windows dağıtımı, limitler ve operasyonel izleme.
+
+### Bu sırada kesinlikle yapılmayacaklar
+
+- TRUST-ROOT-04 tamamlanmadan Companion Worker veya üretim trust entegrasyonu yazılmayacak.
+- Director-only UX denetlenmeden AIDM/AGY için ayrı kullanıcı sohbeti, ikinci Director veya ikinci approval UI oluşturulmayacak.
+- Güvenli onay kanıtı bulunmadan P20 Check 6 gevşetilmeyecek; `P20 BLOCKED_ON_AUTH_CONTEXT` durumu sahte biçimde kaldırılmayacak.
+- Kullanıcının açık onayı olmadan ücretli provider çağrısı, API harcaması, commit veya push yapılmayacak.
+- Otomatik zombie takeover, Force Unlock, ikinci IDE instance veya CLI tabanlı ayrı AIDM çalışma modu eklenmeyecek.
+- Mevcut dirty/untracked Git çalışması silinmeyecek, resetlenmeyecek, clean/stash yapılmayacak.
+
+---
 
 ## 1. Amaç ve hedef mimari
 
@@ -1083,5 +1139,53 @@ Bu bölüm, belgedeki mock/provider testleriyle ilgili daha önceki ifadelerle �
 
 ### Önceki metinlerle öncelik
 
-Bu karar, özellikle C.4'teki “Real provider smoke tests — Opt-in” ifadesinin yorumunu netleştirir: opt-in olan şey maliyet doğuran gerçek API testinin çalıştırılmasıdır; gerçek provider entegrasyonunun ürün hedefinden çıkarılması veya P18/P20/P24 kabulünden muaf tutulması değildir. Ayrıca P18/P20/P24 için yukarıdaki zorunlu gerçek bağlantı kabul kriterleri geçerlidir.
+Bu karar, özellikle C.4'teki “Real provider smoke tests — Opt-in” ifadesinin yorumunu netleştirir: opt-in olan şey maliyet doğuran gerçek API testinin çalıştırılmasıdır; gerçek provider entegrasyonunun ürün hedefinden çıkarılması veya P18/P20/P24 kabulünden muaf tutulması değildir. Ayrıca P18/P20/P24 için yukarıdaki zorunlu gerçek bağlantı kabul kriterleri geçerlidir.\
+\
+---\
+\
+# Ek D — TRUST-ROOT ve Director-only kullanıcı etkileşimi gereksinimleri
 
+Bu ek, TRUST-ROOT-01/02/03 bulguları ve kullanıcının 2026-10-04 tarihinde netleştirdiği etkileşim kararı doğrultusunda eklenmiştir. Bu ek yeni bir ürün mimarisi icat etmez; mevcut ChatGPT Director + AIDM + AGY rol ayrımını uygulanabilir ve güvenli hale getirecek araştırma/ kabul koşullarını tanımlar.
+
+## D.1 TRUST-ROOT-01/02/03'ten çıkarılan geçerli kararlar
+
+- Antigravity IDE sürecinin aynı Windows kullanıcı bağlamındaki başka süreçlere karşı tek başına güvenilir kimlik kökü olduğu varsayılmaz.
+- TPM-backed key kullanımı kriptografik imza sağlayabilir; tek başına gerçek insanın hangi işlemi onayladığını ispatlamaz.
+- TRUST-ROOT-03'te CNG korumalı anahtar penceresi işlem detaylarını göstermediği için tek başına transaction-consent/WYSIWYS çözümü değildir.
+- AI tarafından üretilmiş UI görselleri gerçek Windows güvenlik penceresi ekran görüntüsü olarak kabul edilmez. Test sonucu için komut, gerçek stdout/stderr/exit code ve ham makinece okunabilir sonuç dosyası saklanmalıdır.
+- Aynı kullanıcı altındaki kötü niyetli süreç, sahte UI, IPC kimliğe bürünme, payload değiştirme ve onaylanan işlem ile yürütülen işlem arasındaki TOCTOU riski çözülmeden Companion Worker güvenli kabul edilmez.
+- TRUST-ROOT-01/02/03 araştırma/PoC tamamlanmış olsa da üretim kimlik doğrulama çözümü kabul edilmiş değildir. P18-04 ve P20 human-auth gate engelli kalır.
+
+## D.2 TRUST-ROOT-04 kabul ölçütleri
+
+1. Tehdit aktörleri, güven sınırları, saldırı yüzeyleri ve varsayımlar açıkça ayrılmalı.
+2. Aynı Windows kullanıcısı altında çalışan kötü niyetli süreç tehdit modeli dışına sessizce çıkarılmamalı; hangi saldırıların teknik olarak engellenemediği belirtilmeli.
+3. Companion UI, OS trust prompt, TPM key, IPC ve AIDM doğrulama katmanları ayrı ayrı değerlendirilmelidir.
+4. Kullanıcıya gösterilen canonical transaction payload ile imzalanan ve sonradan yürütülen payload byte-for-byte veya güvenli canonical serialization/hash üzerinden aynı olmalıdır.
+5. Binary integrity/code signing, named pipe ACL, peer identity, IPC replay, challenge expiry, nonce persistence, process restart, second IDE instance ve UI spoofing değerlendirilmelidir.
+6. En az üç mimari alternatif; güvenlik, uygulanabilirlik, operasyonel karmaşıklık ve kalan riskler açısından karşılaştırılmalıdır.
+7. TRUST-ROOT-03 kanıt kusurları (AI mockup, eksik stdout/JSON, test sınıflandırması) düzeltilmeli veya açıkça unresolved olarak işaretlenmelidir.
+8. Çıktı açık GO / CONDITIONAL GO / NO-GO kararı, gerekçeler, residual risks ve sonraki PoC kabul kriterlerini içermelidir.
+
+## D.3 DIRECTOR-INTERACTION-01 kabul ölçütleri
+
+1. Antigravity IDE sohbet penceresine Director tarafından soru/clarification/approval seçenekleri sunmanın desteklenen teknik yolu belgelenmelidir.
+2. Kullanıcı yanıtının güvenilir biçimde yakalanması, ilgili Director session/cycle/action/context fingerprint ile ilişkilendirilmesi ve duplicate/stale reply koruması incelenmelidir.
+3. Seçenekli cevaplar (approve/reject/clarify/defer ve alan bazlı seçenekler) varsa gerçek UI/API sözleşmesi ve callback modeliyle doğrulanmalıdır; yalnızca metin prompt'u yazmak yeterli değildir.
+4. Director'ın kullanıcıya tek muhatap olması korunmalı; AIDM/AGY doğrudan soru sormamalı, kullanıcı onayı istememeli veya farklı kimlikle görünmemelidir.
+5. Chat UI yanıtı ile güvenli insan kimliği/transaction consent kanıtı birbirine karıştırılmamalıdır. IDE chat'in teknik olarak desteklediği cevap kanalı, trust root olarak varsayılmamalıdır.
+6. IDE'nin resmi/desteklenen API'si yoksa private API, DOM hack, klavye/fare otomasyonu veya güvenilir olmayan pencere taklidi production çözümü olarak önerilmemelidir.
+7. IDE chat uygun değilse alternatifler yalnızca Director'ın tek kullanıcı arayüzü kimliğini koruyacak şekilde karşılaştırılmalı; yeni agent veya AIDM user-facing chat tasarlanmamalıdır.
+8. Bu aşama read-only fizibilite denetimidir; kod, paket, konfigürasyon ve IDE ayarı değiştirilmez.
+
+## D.4 Tek bir Director karar zinciri
+
+Mantıksal akış: Kullanıcı ↔ ChatGPT Director ↔ AIDM Orchestrator ↔ AGY. AIDM/AGY'den gelen rapor, belirsizlik, hata, seçenek ve onay ihtiyacı Director'a döner. Director bunları kullanıcıya sunar; kullanıcının kararını authoritative action/session bağlamına iliştirir. AIDM politika ve güvenlik doğrulamasını yapar; AGY yalnızca yetkilendirilmiş işi uygular.
+
+AIDM içindeki provider/reasoning bileşeninin kullanılması bu tek Director kimliğini ikiye bölmez. İç runtime yalnızca Director'ın karar motoru/uygulama altyapısıdır; kullanıcıyla bağımsız konuşan, kendi başına insan kararı isteyen veya ayrı session sahibi olan ikinci bir Director değildir.
+
+## D.5 İnsan onayı payload'ı için asgari bağlam
+
+İnsan onayı gereken her işlem en az şu alanlarla bağlanmalıdır: `projectId`, `workspaceId`, `directorSessionId`, `cycleId`, `taskId`, `actionId`, `mandateRevision`, `policyVersion`, `contextFingerprint`, `canonicalTransactionHash`, `nonce`, `issuedAt`, `expiresAt`, `decision`. İmza veya güvenilir OS consent kanıtı bu değişmez payload'a bağlanmalıdır. Karar sonrası payload değişirse eski onay geçersiz olmalı ve Director yeniden kullanıcıya sormalıdır.
+
+Bu liste mevcut kodun bu alanları zaten taşıdığını iddia etmez; TRUST-ROOT-04/05 ve P18-04 entegrasyonu sırasında doğrulanacak sözleşmedir.
