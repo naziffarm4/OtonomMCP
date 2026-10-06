@@ -46,4 +46,21 @@ export {
   DirectorActionValidationError,
 } from './director-action/index.js';
 
+export {
+  DirectorPromptBuilder,
+  type DirectorPromptBuildResult,
+  type DirectorReasoningInput,
+  type DirectorReasoningResult,
+} from './director-reasoning/index.js';
+
+export {
+  DirectorRuntime,
+  type DirectorRuntimeDependencies,
+  DirectorPromptBuilder as DirectorActionPromptBuilder,
+  type DirectorPromptBuildResult as DirectorActionPromptBuildResult,
+  type DirectorReasoningInput as DirectorActionReasoningInput,
+  type DirectorReasoningResult as DirectorActionReasoningResult,
+  type DirectorReasoningTrigger as DirectorActionReasoningTrigger,
+} from './director/index.js';
+
 export * from './authorization/index.js';

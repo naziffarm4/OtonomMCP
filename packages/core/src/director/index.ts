@@ -23,3 +23,6 @@ export * from '../executor-bridge/executor-guard.js';
 export * from './director-action-types.js';
 export * from './director-action-schema.js';
 export * from './director-action-errors.js';
+export * from './director-runtime-errors.js';
+export * from './director-prompt-builder.js';
+export * from './director-runtime.js';

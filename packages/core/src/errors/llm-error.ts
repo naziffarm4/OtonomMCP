@@ -18,7 +18,7 @@ export function sanitizeSecrets(text: string): string {
   return text
     .replace(/(?:sk-[a-zA-Z0-9_-]{10,})/g, '***REDACTED_KEY***')
     .replace(/(?:Bearer\s+[a-zA-Z0-9_.-]{10,})/gi, 'Bearer ***REDACTED_TOKEN***')
-    .replace(/(?:key|token|secret|password)=([^&\s]+)/gi, '$1=***REDACTED***');
+    .replace(/(key|token|secret|password)=([^&\s]+)/gi, '$1=***REDACTED***');
 }
 
 function sanitizeDetails(details?: AidmErrorDetails): AidmErrorDetails | undefined {

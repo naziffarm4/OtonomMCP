@@ -88,20 +88,32 @@ export class DirectorDecisionAlreadyExistsError extends DirectorDecisionError {
 }
 
 export class DirectorContextMismatchError extends DirectorDecisionError {
-  constructor(message: string, details?: AidmErrorDetails) {
-    super(message, 'ERR_DIRECTOR_CONTEXT_MISMATCH', details);
+  constructor(message: string, detailsOrCode?: AidmErrorDetails | string, details?: AidmErrorDetails) {
+    if (typeof detailsOrCode === 'string') {
+      super(message, detailsOrCode, details);
+    } else {
+      super(message, 'ERR_DIRECTOR_CONTEXT_MISMATCH', detailsOrCode);
+    }
   }
 }
 
 export class DirectorContextStaleError extends DirectorDecisionError {
-  constructor(message: string, details?: AidmErrorDetails) {
-    super(message, 'ERR_DIRECTOR_CONTEXT_STALE', details);
+  constructor(message: string, detailsOrCode?: AidmErrorDetails | string, details?: AidmErrorDetails) {
+    if (typeof detailsOrCode === 'string') {
+      super(message, detailsOrCode, details);
+    } else {
+      super(message, 'ERR_DIRECTOR_CONTEXT_STALE', detailsOrCode);
+    }
   }
 }
 
 export class DirectorContextIncompleteError extends DirectorDecisionError {
-  constructor(message: string, details?: AidmErrorDetails) {
-    super(message, 'ERR_DIRECTOR_CONTEXT_INCOMPLETE', details);
+  constructor(message: string, detailsOrCode?: AidmErrorDetails | string, details?: AidmErrorDetails) {
+    if (typeof detailsOrCode === 'string') {
+      super(message, detailsOrCode, details);
+    } else {
+      super(message, 'ERR_DIRECTOR_CONTEXT_INCOMPLETE', detailsOrCode);
+    }
   }
 }
 
