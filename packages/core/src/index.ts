@@ -35,4 +35,15 @@ export * from './execution-bridge/index.js';
 export type { GitState } from './git/index.js';
 export type { AcceptanceCriterion } from './qa-review/index.js';
 
+export {
+  DIRECTOR_ACTION_PROTOCOL_VERSION,
+  DIRECTOR_ACTION_SCHEMA_VERSION,
+  DIRECTOR_ACTION_TYPES,
+  type DirectorActionType,
+  type DirectorActionEnvelope,
+  DirectorActionEnvelopeZodSchema,
+  DirectorActionError,
+  DirectorActionValidationError,
+} from './director-action/index.js';
+
 export * from './authorization/index.js';
