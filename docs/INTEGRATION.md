@@ -244,3 +244,27 @@ Tüm hata yanıtlarında sırlar, token'lar ve özel anahtarlar deterministik re
   - MCP Protokol Sürümü: `2024-11-05`
   - Execution Bridge Protokol Sürümü: `P20-01`
   - Sunucu Temel Sürümü: `0.1.0`
+
+---
+
+## 8. OM-09 Canlı E2E Hazırlık Kapısı (Live E2E Readiness Gate)
+
+P35 kapsamında OtonomMCP'nin canlı OM-09 E2E icrasına başlamadan önceki tam zinciri kod ve test seviyesinde denetlenmiş ve doğrulanmıştır:
+
+```text
+AIDM ➔ DirectorRuntime ➔ DirectorAction ➔ AuthorizationPolicyEngine ➔ ClosedLoopCoordinator ➔ ExecutionBridge ➔ AntigravityAdapter/AGY CLI ➔ SystemExecutionEvidence ➔ Verification ➔ Director Review
+```
+
+### 8.1. Kesin İcra ve Yetki Değişmezleri (Hard Architectural Invariants)
+- **`LLM output != authority`**: LLM çıktısı asla yetki (authority) kaynağı olamaz.
+- **`LLM output != evidence`**: LLM tarafından üretilen hiçbir metin delil sayılamaz.
+- **`LLM output != authorization`**: Model kendi kendine onay veremez veya yetki yükseltemez.
+- **`LLM output != execution proof`**: Modelin "tamamlandı" yanıtı icra kanıtı değildir.
+- **`AGY output != completion proof`**: Antigravity/AGY CLI çıktısı yalnızca ham icra sonucudur (`RawExecutorOutcome`). Yalnızca bağımsız `EvidenceCollector` tarafından toplanan `SystemExecutionEvidence` (SHA-256 hash ve Git durumu) nihai kanıt sayılır.
+- **`UNKNOWN != FAILED` & `UNKNOWN != SUCCESS`**: Süre aşımı (timeout) veya bağlantı kopmasında durum `EXECUTION_UNKNOWN` olur ve asla otomatik ikinci icra (blind auto-retry) yapılmaz.
+- **İnsan Onayı Sınırı**: Güvenilir dış kimlik mekanizması mevcut olmadığından insan onayı gereken eylemler kesin olarak `BLOCKED_ON_AUTH_CONTEXT` durumunda bekletilir.
+
+### 8.2. Doğrulama Düzeyi Durumu
+- `DirectorRuntime`, `LLM Bridge`, `AuthorizationPolicyEngine`, `ClosedLoopCoordinator`, `ExecutionBridge`, `AntigravityAdapter`, `EvidenceCollector`: **CODE VERIFIED** ve **TEST VERIFIED** (P35 Deterministic Dry Run ve F01–F16 testleri PASS).
+- Canlı dış ücretli LLM API ve canlı AGY CLI çalıştırmaları yapılmadığı için **`LIVE E2E VERIFIED`** henüz verilmemiştir.
+

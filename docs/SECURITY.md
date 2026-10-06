@@ -88,3 +88,30 @@ OtonomMCP çekirdeğinde aşağıdaki güvenlik değişmezleri mutlak olarak uyg
 | **Bant İçi Proxy / Prompt Manipülasyonu** | IDE içi insan onayı kabul edilmez; sahte yetki rolleri engellenir | İnsan onayı gerektiren işlemlerde sistem `BLOCKED_ON_AUTH_CONTEXT` olarak durur. |
 | **Bütçe Aşımı ve Fatura Şoku** | SQLite Nano-USD atomik hold rezervasyonu ve reconciler | Harcama öncesi bütçe rezerve edilir; yetersiz bakiyede çağrı engellenir. |
 | **Uygulayıcı Halüsinasyonu / Sahte Başarı** | Sıfır Uygulayıcı Güveni (Zero Executor Trust), bağımsız dosya SHA-256 hash'leri, Git diff ve bağımsız test çıkış kodu | Sözel beyanlar reddedilir; kanıt yoksa eylem başarısız sayılır. |
+
+---
+
+## 5. OM-09 Canlı E2E Güvenlik Değişmezleri (Live E2E Invariants)
+
+P35 denetimi ile canlı dış ortam (harici LLM ve yerel AGY CLI) öncesinde aşağıdaki değişmezler mühürlenmiştir:
+
+1. **LLM Çıktısı Yetki veya Delil Değildir:**
+   - `LLM output != authority`: Dil modeli yetki kaynağı değildir; yetkilendirme yalnızca deterministik `AuthorizationPolicyEngine` tarafından verilir.
+   - `LLM output != evidence`: Modelin iddia ettiği başarılar veya değişiklik beyanları delil kabul edilmez.
+   - `LLM output != authorization`: Model kendi kendine izin veya onay veremez.
+   - `LLM output != execution proof`: Modelin oluşturduğu metinler icra kanıtı değildir.
+
+2. **AGY Uygulayıcısı Sıfır Güven Sınırı (Zero Executor Trust):**
+   - AGY çıktıları (`RawExecutorOutcome`) yalnızca ham süreç telemetrisidir.
+   - Dosya değişiklikleri ve Git çalışma ağacı durumu yalnızca bağımsız `EvidenceCollector` ve `EvidenceValidator` tarafından SHA-256 hash bütünlüğü ile doğrulanır.
+   - Delil sağlanamayan veya çelişen icralar başarısız kabul edilir.
+
+3. **Süre Aşımı ve UNKNOWN Durumu Güvenliği:**
+   - İcra sırasında bağlantı kopması, süreç çökmesi veya zaman aşımında durum `EXECUTION_UNKNOWN` olarak işaretlenir.
+   - `EXECUTION_UNKNOWN != FAILED` ve `EXECUTION_UNKNOWN != SUCCESS`.
+   - Sistem asla otomatik olarak ikinci bir AGY icrası (blind auto-retry) başlatmaz; durum uzlaştırılana kadar bekler.
+
+4. **İnsan Onayı ve Dış Kimlik Sınırı:**
+   - Güvenilir bant dışı insan kimlik kanıtı mekanizması mevcut olmadıkça, insan onayı gerektiren tüm işlemler fail-closed olarak `BLOCKED_ON_AUTH_CONTEXT` durumunda kilitlenir.
+   - İstemci payload'undaki hiçbir onay beyanı veya sahte yetki kabul edilmez.
+
