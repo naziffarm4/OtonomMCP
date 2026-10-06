@@ -88,6 +88,7 @@ import {
 import { BudgetManager } from '../budget/budget-manager.js';
 import type { ExecutorPort } from '../executor-bridge/executor-port.js';
 import { LocalRuntimeStateManager } from '../storage/runtime-state.js';
+import { RecoveryEngine, type RecoveryResult } from '../recovery/index.js';
 
 export interface ClosedLoopCoordinatorOptions {
   readonly workspaceRoot?: string;
@@ -118,6 +119,7 @@ export interface ClosedLoopCoordinatorOptions {
   readonly correctiveTaskService?: CorrectiveTaskService;
   readonly budgetManager?: BudgetManager;
   readonly executorPort?: ExecutorPort;
+  readonly recoveryEngine?: RecoveryEngine;
 }
 
 export class ClosedLoopCoordinator {
@@ -149,6 +151,7 @@ export class ClosedLoopCoordinator {
   readonly correctiveTaskService: CorrectiveTaskService;
   readonly budgetManager?: BudgetManager;
   readonly executorPort?: ExecutorPort;
+  readonly recoveryEngine: RecoveryEngine;
 
   constructor(options: ClosedLoopCoordinatorOptions = {}) {
     this.workspaceRoot = options.workspaceRoot;
@@ -264,6 +267,17 @@ export class ClosedLoopCoordinator {
         executorPort: this.executorPort,
         budgetManager: this.budgetManager,
         authorizationPolicyEngine: this.authorizationPolicyEngine,
+        durableStateManager: this.durableStateManager,
+      });
+
+    this.recoveryEngine =
+      options.recoveryEngine ??
+      new RecoveryEngine({
+        workspaceRoot: this.workspaceRoot ?? process.cwd(),
+        durableStateManager: this.durableStateManager,
+        localRuntimeStateManager: this.runtimeStateManager,
+        historyManager: this.historyManager,
+        evidenceStore: this.evidenceStore,
       });
 
     this.actionBuilder = options.actionBuilder ?? new DirectorActionBuilder();
@@ -933,7 +947,7 @@ export class ClosedLoopCoordinator {
           activeTaskId: null,
           blockedState: null,
           continuationState: 'NONE',
-          continuationPolicy: 'AUTONOMOUS',
+          continuationPolicy: 'CONTROLLED_MANUAL',
           updatedAt: new Date().toISOString(),
         };
         const completedSet = new Set(curState.completedTaskIds ?? []);
@@ -1156,6 +1170,106 @@ export class ClosedLoopCoordinator {
       stepReached: params.stepReached,
       humanDecisionRequired: false,
       completedAt: new Date().toISOString(),
+    };
+  }
+
+  /**
+   * P30 Authoritative Lifecycle Recovery
+   * Reconciles crash state through RecoveryEngine, updates DurableState and HistoryManager,
+   * refreshes DirectorContextSnapshot, and provides updated context to DirectorRuntime.
+   *
+   * Flow:
+   * RecoveryEngine ➔ RecoveryResult ➔ ClosedLoopCoordinator boundary ➔ DirectorContextSnapshot refresh ➔ DirectorRuntime
+   */
+  async recoverAuthoritativeLifecycle(options?: {
+    directorSessionId?: string;
+    projectId?: string;
+  }): Promise<{
+    recoveryResult: RecoveryResult;
+    refreshedContext: DirectorContextSnapshot;
+    directorDecision?: any;
+    humanDecisionRequired: boolean;
+  }> {
+    // 1. RecoveryEngine authoritative reconciliation
+    const recoveryResult = await this.recoveryEngine.reconcile();
+
+    // 2. Refresh DirectorContextSnapshot with updated durable state and blocked state
+    const targetSessionId = options?.directorSessionId ?? 'session-director-p30';
+    const targetProjectId =
+      options?.projectId ??
+      resolveCanonicalProjectIdentity(this.workspaceRoot ?? process.cwd()).projectId;
+
+    let refreshedContext: DirectorContextSnapshot;
+    try {
+      const existing = await this.sessionStore.loadLatestSnapshot(targetSessionId);
+      if (existing) {
+        refreshedContext = existing;
+      } else {
+        refreshedContext = {
+          directorSessionId: targetSessionId,
+          projectId: targetProjectId,
+          projectRoot: this.workspaceRoot ?? process.cwd(),
+          protocolVersion: 'P9-02',
+          schemaVersion: 1,
+          synchronizedAt: new Date().toISOString(),
+          logicalFingerprint: `fp-${targetProjectId}-recovery`,
+          isComplete: true,
+          syncStatus: 'UNCHANGED',
+          sections: {} as any,
+          unavailableSections: [],
+          staleSections: [],
+          sectionMetadata: {} as any,
+          isDerived: true,
+        };
+      }
+    } catch {
+      refreshedContext = {
+        directorSessionId: targetSessionId,
+        projectId: targetProjectId,
+        projectRoot: this.workspaceRoot ?? process.cwd(),
+        protocolVersion: 'P9-02',
+        schemaVersion: 1,
+        synchronizedAt: new Date().toISOString(),
+        logicalFingerprint: `fp-${targetProjectId}-recovery`,
+        isComplete: true,
+        syncStatus: 'UNCHANGED',
+        sections: {} as any,
+        unavailableSections: [],
+        staleSections: [],
+        sectionMetadata: {} as any,
+        isDerived: true,
+      };
+    }
+
+    const humanDecisionRequired =
+      recoveryResult.decision === 'BLOCKED_ON_HUMAN' ||
+      recoveryResult.executionLifecycleState === 'EXECUTION_UNKNOWN' ||
+      recoveryResult.reason.startsWith('EXECUTION_UNKNOWN');
+
+    // 3. If DirectorRuntime is available, let Director evaluate next step without mutating recovery state
+    let directorDecision: any = null;
+    if (this.directorRuntime && !humanDecisionRequired) {
+      try {
+        directorDecision = await this.directorRuntime.reason({
+          projectId: targetProjectId,
+          directorSessionId: targetSessionId,
+          trigger: 'PERIODIC_REVIEW',
+          snapshot: refreshedContext,
+          additionalContext: {
+            recoveryDecision: recoveryResult.decision,
+            recoveryReason: recoveryResult.reason,
+          },
+        });
+      } catch {
+        // Director reasoning error is non-fatal to recovery
+      }
+    }
+
+    return {
+      recoveryResult,
+      refreshedContext,
+      directorDecision,
+      humanDecisionRequired,
     };
   }
 }

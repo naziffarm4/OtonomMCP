@@ -79,6 +79,40 @@ export interface FilesystemReconciliationDiff {
   totalActualFiles: number;
 }
 
+export const ExecutionLifecycleState = {
+  NOT_STARTED: 'NOT_STARTED',
+  INTENT_PERSISTED: 'INTENT_PERSISTED',
+  EXECUTING: 'EXECUTING',
+  EXECUTION_SUCCEEDED: 'EXECUTION_SUCCEEDED',
+  EXECUTION_FAILED: 'EXECUTION_FAILED',
+  EXECUTION_UNKNOWN: 'EXECUTION_UNKNOWN',
+} as const;
+
+export type ExecutionLifecycleState =
+  (typeof ExecutionLifecycleState)[keyof typeof ExecutionLifecycleState];
+
+/**
+ * Authoritative persisted execution intent required before execution handoff.
+ */
+export interface DurableExecutionIntent {
+  readonly projectId: string;
+  readonly directorSessionId: string;
+  readonly actionId: string;
+  readonly executionIntentId: string;
+  readonly idempotencyKey: string;
+  readonly taskId: string;
+  readonly taskRevision: number;
+  readonly contextFingerprint: string;
+  readonly understandingRevision: number;
+  readonly approvalPackageRevision: number;
+  readonly executionStartTimestamp: string;
+  readonly lifecycleState: ExecutionLifecycleState;
+  readonly checkpoint: string | null;
+  readonly driverId: string;
+  readonly processId?: number;
+  readonly metadata?: Record<string, unknown>;
+}
+
 /**
  * Comprehensive snapshot of all authoritative evidence sources collected during recovery.
  */
@@ -97,6 +131,9 @@ export interface RecoverySnapshot {
   validationEvidence?: ValidationEvidence | null;
   userResponse?: string | Record<string, unknown> | null;
   isCorrupted?: boolean;
+  executionIntent?: DurableExecutionIntent | null;
+  reconciledExecutionState?: ExecutionLifecycleState;
+  isDriverLockStale?: boolean;
 }
 
 /**
@@ -112,6 +149,9 @@ export interface DeterministicDecisionData {
   resumePoint: string | null;
   targetCheckpoint?: string | null;
   evidenceReferences?: string[];
+  executionLifecycleState?: ExecutionLifecycleState;
+  humanRequired?: boolean;
+  retryAllowed?: boolean;
 }
 
 /**
@@ -139,4 +179,7 @@ export interface RecoveryEngineOptions {
   validationEvidence?: ValidationEvidence | null;
   userResponse?: string | Record<string, unknown> | null;
   isCorrupted?: boolean;
+  lockManager?: any;
+  evidenceStore?: any;
 }
+

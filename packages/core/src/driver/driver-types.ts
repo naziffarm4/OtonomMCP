@@ -155,7 +155,7 @@ export interface DurableDriverState {
   readonly lastInstructionId?: string | null;
   readonly lastEvidenceId?: string | null;
   readonly lastExecutionRequestId?: string | null;
-  readonly lastTerminalStatus?: 'ACCEPTED' | 'REJECTED' | 'BLOCKED' | null;
+  readonly lastTerminalStatus?: 'ACCEPTED' | 'REJECTED' | 'BLOCKED' | 'EXECUTION_UNKNOWN' | null;
   readonly continuationState: DriverContinuationState;
   readonly continuationPolicy: DriverContinuationPolicy;
   readonly startedAt: string;
@@ -204,7 +204,7 @@ export const DurableDriverStateZodSchema = z.object({
   lastInstructionId: z.string().nullable().optional(),
   lastEvidenceId: z.string().nullable().optional(),
   lastExecutionRequestId: z.string().nullable().optional(),
-  lastTerminalStatus: z.enum(['ACCEPTED', 'REJECTED', 'BLOCKED']).nullable().optional(),
+  lastTerminalStatus: z.enum(['ACCEPTED', 'REJECTED', 'BLOCKED', 'EXECUTION_UNKNOWN']).nullable().optional(),
   continuationState: z.enum(DRIVER_CONTINUATION_STATES as [string, ...string[]]),
   continuationPolicy: z.enum(DRIVER_CONTINUATION_POLICIES as [string, ...string[]]),
   startedAt: z.string().datetime(),

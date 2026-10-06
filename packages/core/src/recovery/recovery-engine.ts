@@ -4,7 +4,9 @@ import type {
   RecoveryResult,
   RecoverySnapshot,
   ValidationEvidence,
+  DurableExecutionIntent,
 } from './types.js';
+import { ExecutionLifecycleState, RecoveryDecision } from './types.js';
 import type { DurableState } from '../storage/durable-state.js';
 import type { LocalRuntimeState } from '../storage/runtime-state.js';
 import type { HistoryEvent } from '../storage/history-manager.js';
@@ -16,7 +18,9 @@ import { L0Database } from '../l0/database.js';
 import { scanWorkspaceFiles } from '../l0/scanner.js';
 import { GitObserver } from './git-observer.js';
 import { reconcileFilesystemAndL0 } from './reconciliation.js';
-import { evaluateRecoveryDecision } from './decision-engine.js';
+import { evaluateRecoveryDecision, checkValidationEvidenceApplicability } from './decision-engine.js';
+import { Actor } from '../actors.js';
+import { LifecycleState } from '../lifecycle.js';
 import { RecoveryError } from '../errors/recovery-error.js';
 import { HistoryCorruptError } from '../errors/history-corrupt-error.js';
 import { StateValidationError } from '../errors/state-validation-error.js';
@@ -53,6 +57,8 @@ export class RecoveryEngine {
   private readonly validationEvidence?: ValidationEvidence | null;
   private readonly userResponse: string | Record<string, unknown> | null;
   private readonly isCorrupted: boolean;
+  private readonly lockManager?: any;
+  private readonly evidenceStore?: any;
 
   constructor(options: RecoveryEngineOptions) {
     if (!options.workspaceRoot) {
@@ -82,6 +88,8 @@ export class RecoveryEngine {
     this.validationEvidence = options.validationEvidence ?? null;
     this.userResponse = options.userResponse ?? null;
     this.isCorrupted = options.isCorrupted ?? false;
+    this.lockManager = options.lockManager;
+    this.evidenceStore = options.evidenceStore;
   }
 
   /**
@@ -289,6 +297,146 @@ export class RecoveryEngine {
     // 7. Git observation
     const gitState = await this.gitObserver.observeGitState(this.workspaceRoot);
 
+    // 8. Driver Lock inspection
+    let isDriverLockStale = false;
+    if (this.lockManager) {
+      try {
+        const lockInfo = await this.lockManager.getLockInfo();
+        if (lockInfo) {
+          const lockAlive = this.processLivenessChecker(lockInfo.pid);
+          const age = Date.now() - new Date(lockInfo.heartbeatAt).getTime();
+          const staleTimeout = this.lockManager.heartbeatStaleMs ?? 30000;
+          if (!lockAlive || age >= staleTimeout) {
+            isDriverLockStale = true;
+          }
+        }
+      } catch {
+        // ignore lock inspection error
+      }
+    }
+
+    // 9. Durable execution intent & in-flight crash detection
+    const executionIntent =
+      (durableState?.metadata?.executionIntent as DurableExecutionIntent | undefined) ?? null;
+
+    if (executionIntent?.processId) {
+      if (!this.processLivenessChecker(executionIntent.processId)) {
+        isProcessAlive = false;
+        isRuntimeStale = true;
+      }
+    }
+
+    let reconciledExecutionState: ExecutionLifecycleState | undefined =
+      executionIntent?.lifecycleState ??
+      (durableState?.metadata?.executionLifecycleState as ExecutionLifecycleState | undefined);
+
+    const isInFlight =
+      reconciledExecutionState === ExecutionLifecycleState.EXECUTING ||
+      (durableState?.activeTaskId !== null &&
+        isRuntimeStale &&
+        lastEvent?.eventType === 'EXECUTION_STARTED');
+
+    if (isInFlight) {
+      let foundValidEvidence = false;
+      let foundRejectEvidence = false;
+
+      // Authoritative EvidenceStore inspection
+      if (this.evidenceStore) {
+        try {
+          const allEvidence = await this.evidenceStore.listAllEvidence();
+          const targetTaskId = executionIntent?.taskId ?? durableState?.activeTaskId;
+          const targetProjectId =
+            executionIntent?.projectId ?? (durableState?.metadata?.projectId as string);
+          const targetRevision =
+            executionIntent?.taskRevision ?? (durableState?.metadata?.taskRevision as number);
+
+          for (const ev of allEvidence) {
+            if (ev.taskId !== targetTaskId) continue;
+            if (targetProjectId && ev.projectId && ev.projectId !== targetProjectId) continue;
+            if (
+              targetRevision !== undefined &&
+              ev.taskRevision !== undefined &&
+              ev.taskRevision !== targetRevision
+            )
+              continue;
+            const evSessionId =
+              ev.executionIntentBinding?.directorSessionId ??
+              (ev as any).requestBinding?.directorSessionId;
+            if (
+              executionIntent?.directorSessionId &&
+              evSessionId &&
+              evSessionId !== executionIntent.directorSessionId
+            ) {
+              continue;
+            }
+
+            const evIntentId =
+              (ev.executionIntentBinding as any)?.executionIntentId ??
+              (ev as any).requestBinding?.executionIntentId ??
+              (ev.metadata as any)?.executionIntentId;
+            if (
+              executionIntent?.executionIntentId &&
+              evIntentId &&
+              evIntentId !== executionIntent.executionIntentId
+            ) {
+              continue;
+            }
+            if (executionIntent?.executionStartTimestamp) {
+              const evTime = (ev as any).verifiedAt ?? (ev as any).collectedAt;
+              if (
+                evTime &&
+                new Date(evTime).getTime() <
+                  new Date(executionIntent.executionStartTimestamp).getTime()
+              ) {
+                continue;
+              }
+            }
+            if (ev.verificationDecision === 'ACCEPT') {
+              foundValidEvidence = true;
+              break;
+            } else if (ev.verificationDecision === 'REJECT') {
+              foundRejectEvidence = true;
+            }
+          }
+        } catch {
+          // ignore read error
+        }
+      }
+
+      // Check validationEvidence
+      if (!foundValidEvidence && validationEvidence) {
+        const check = checkValidationEvidenceApplicability(validationEvidence, {
+          durableState,
+          localRuntimeState,
+          historyEvents,
+          lastEvent,
+          l0Records,
+          scannedFiles,
+          gitState,
+          isProcessAlive,
+          isRuntimeStale,
+          filesystemDiff,
+        });
+        if (check.applicable) {
+          foundValidEvidence = true;
+        } else if (
+          validationEvidence.compilable === false ||
+          validationEvidence.buildPassed === false
+        ) {
+          foundRejectEvidence = true;
+        }
+      }
+
+      if (foundValidEvidence) {
+        reconciledExecutionState = ExecutionLifecycleState.EXECUTION_SUCCEEDED;
+      } else if (foundRejectEvidence) {
+        reconciledExecutionState = ExecutionLifecycleState.EXECUTION_FAILED;
+      } else {
+        // No independent verification evidence post-crash -> EXECUTION_UNKNOWN
+        reconciledExecutionState = ExecutionLifecycleState.EXECUTION_UNKNOWN;
+      }
+    }
+
     return {
       durableState,
       localRuntimeState,
@@ -306,6 +454,9 @@ export class RecoveryEngine {
         runtimeOptions?.userResponse !== undefined ? runtimeOptions.userResponse : this.userResponse,
       isCorrupted:
         runtimeOptions?.isCorrupted !== undefined ? runtimeOptions.isCorrupted : this.isCorrupted,
+      executionIntent,
+      reconciledExecutionState,
+      isDriverLockStale,
     };
   }
 
@@ -321,9 +472,157 @@ export class RecoveryEngine {
   }): Promise<RecoveryResult> {
     const snapshot = await this.collectSnapshot(runtimeOptions);
     const decisionData = evaluateRecoveryDecision(snapshot);
+    const timestamp = new Date().toISOString();
+
+    // Authoritative state & audit reconciliation
+    if (snapshot.durableState) {
+      const isUnknown =
+        decisionData.executionLifecycleState === ExecutionLifecycleState.EXECUTION_UNKNOWN ||
+        decisionData.reason.startsWith('EXECUTION_UNKNOWN') ||
+        snapshot.reconciledExecutionState === ExecutionLifecycleState.EXECUTION_UNKNOWN;
+
+      if (isUnknown) {
+        // Persist EXECUTION_UNKNOWN fail-closed state
+        const updatedMeta = {
+          ...(snapshot.durableState.metadata ?? {}),
+          executionLifecycleState: ExecutionLifecycleState.EXECUTION_UNKNOWN,
+          ...(snapshot.executionIntent
+            ? {
+                executionIntent: {
+                  ...snapshot.executionIntent,
+                  lifecycleState: ExecutionLifecycleState.EXECUTION_UNKNOWN,
+                },
+              }
+            : {}),
+        };
+
+        const blockedState = {
+          blockedTaskId:
+            decisionData.taskId ?? snapshot.durableState.activeTaskId ?? 'unknown-task',
+          blockedIteration: decisionData.iteration ?? 1,
+          blockingReason: decisionData.reason,
+          blockedContextReference: decisionData.contextReference ?? 'unknown-context',
+          resumePoint: decisionData.resumePoint ?? 'RESUME_EXACT_BLOCKED_POINT',
+        };
+
+        await this.durableStateManager.save({
+          currentLifecycleState: LifecycleState.BLOCKED_ON_HUMAN,
+          activeTaskId: decisionData.taskId ?? snapshot.durableState.activeTaskId,
+          completedTaskIds: snapshot.durableState.completedTaskIds,
+          blockedState,
+          metadata: updatedMeta,
+        });
+
+        // Authoritative History audit trail
+        try {
+          if (snapshot.isRuntimeStale) {
+            await this.historyManager.appendEvent({
+              eventType: 'RUNTIME_STALE_DETECTED',
+              actor: Actor.ORCHESTRATOR,
+              taskId: decisionData.taskId ?? undefined,
+              payload: {
+                processId: snapshot.localRuntimeState?.processId,
+                isLockStale: snapshot.isDriverLockStale,
+                detectedAt: timestamp,
+              },
+            });
+          }
+
+          await this.historyManager.appendEvent({
+            eventType: 'EXECUTION_UNKNOWN',
+            actor: Actor.ORCHESTRATOR,
+            taskId: decisionData.taskId ?? undefined,
+            payload: {
+              reason: decisionData.reason,
+              evidenceReferences: decisionData.evidenceReferences,
+              intentId: snapshot.executionIntent?.executionIntentId,
+            },
+          });
+
+          await this.historyManager.appendEvent({
+            eventType: 'RECOVERY_EVALUATED',
+            actor: Actor.ORCHESTRATOR,
+            taskId: decisionData.taskId ?? undefined,
+            payload: {
+              decision: decisionData.decision,
+              reason: decisionData.reason,
+              lifecycleState: ExecutionLifecycleState.EXECUTION_UNKNOWN,
+              humanRequired: true,
+              retryAllowed: false,
+            },
+          });
+
+          await this.historyManager.appendEvent({
+            eventType: 'RECOVERY_BLOCKED',
+            actor: Actor.ORCHESTRATOR,
+            taskId: decisionData.taskId ?? undefined,
+            payload: {
+              blockedState,
+            },
+          });
+        } catch {
+          // History writing failure must not compromise fail-closed state
+        }
+      } else if (
+        snapshot.reconciledExecutionState === ExecutionLifecycleState.EXECUTION_SUCCEEDED
+      ) {
+        const completedTaskIds = Array.from(
+          new Set([
+            ...snapshot.durableState.completedTaskIds,
+            ...(decisionData.taskId ? [decisionData.taskId] : []),
+          ])
+        );
+
+        await this.durableStateManager.save({
+          currentLifecycleState: LifecycleState.TASK_LOOP,
+          activeTaskId: null,
+          completedTaskIds,
+          blockedState: null,
+          metadata: {
+            ...(snapshot.durableState.metadata ?? {}),
+            executionLifecycleState: ExecutionLifecycleState.EXECUTION_SUCCEEDED,
+            ...(snapshot.executionIntent
+              ? {
+                  executionIntent: {
+                    ...snapshot.executionIntent,
+                    lifecycleState: ExecutionLifecycleState.EXECUTION_SUCCEEDED,
+                  },
+                }
+              : {}),
+          },
+        });
+
+        try {
+          await this.historyManager.appendEvent({
+            eventType: 'RECOVERY_RECONCILED',
+            actor: Actor.ORCHESTRATOR,
+            taskId: decisionData.taskId ?? undefined,
+            payload: {
+              status: 'EXECUTION_SUCCEEDED',
+              taskId: decisionData.taskId,
+              evidenceReferences: decisionData.evidenceReferences,
+            },
+          });
+        } catch {}
+      } else if (decisionData.decision === RecoveryDecision.RESUME) {
+        try {
+          await this.historyManager.appendEvent({
+            eventType: 'RECOVERY_RESUMED',
+            actor: Actor.ORCHESTRATOR,
+            taskId: decisionData.taskId ?? undefined,
+            payload: {
+              taskId: decisionData.taskId,
+              iteration: decisionData.iteration,
+              resumePoint: decisionData.resumePoint,
+            },
+          });
+        } catch {}
+      }
+    }
+
     return {
       ...decisionData,
-      timestamp: new Date().toISOString(),
+      timestamp,
     };
   }
 

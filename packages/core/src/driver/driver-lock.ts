@@ -102,6 +102,19 @@ export class DriverLockManager {
   }
 
   /**
+   * Checks if an existing lock file exists and is stale (process dead or heartbeat timed out).
+   */
+  async isStaleLock(): Promise<boolean> {
+    const lock = await this.getLockInfo();
+    if (!lock) {
+      return false;
+    }
+    const processAlive = this.isProcessAlive(lock.pid);
+    const heartbeatAge = Date.now() - new Date(lock.heartbeatAt).getTime();
+    return !processAlive || heartbeatAge >= this.heartbeatStaleMs;
+  }
+
+  /**
    * Atomically acquires the lock for `driverId` and `projectId`.
    * Throws DriverConcurrencyError if another active driver holds the lock.
    */

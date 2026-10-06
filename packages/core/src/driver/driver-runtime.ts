@@ -38,6 +38,7 @@ import { DriverStore } from './driver-store.js';
 import { DriverEngine } from './driver-engine.js';
 import { HistoryManager } from '../storage/history-manager.js';
 import { resolveCanonicalProjectIdentity } from '../director/project-identity-resolver.js';
+import { LifecycleState } from '../lifecycle.js';
 
 export interface DriverRuntimeOptions {
   readonly workspaceRoot?: string;
@@ -201,12 +202,12 @@ export class DriverRuntime {
       // Reconcile in-flight cycle if one was recorded
       let reconciledLastCycleId = loaded.lastCompletedCycleId;
       let reconciledEvidenceId = loaded.lastEvidenceId;
-      let reconciledStatus = loaded.lastTerminalStatus;
-
+      let reconciledStatus: any = loaded.lastTerminalStatus;
+      let existingCycle: any = null;
       if (loaded.inFlightCycle) {
         const inFlight = loaded.inFlightCycle;
         // Check if cycle result was completed and saved in loopStore
-        const existingCycle = await this.driverEngine.loopStore.getCycleResultByInstructionId(
+        existingCycle = await this.driverEngine.loopStore.getCycleResultByInstructionId(
           inFlight.instructionId
         );
 
@@ -215,7 +216,53 @@ export class DriverRuntime {
           reconciledLastCycleId = existingCycle.cycleId;
           reconciledEvidenceId = existingCycle.systemEvidence.evidenceId;
           reconciledStatus = existingCycle.terminalStatus;
+        } else {
+          // In-flight cycle lacked authoritative completion evidence -> EXECUTION_UNKNOWN
+          reconciledStatus = 'EXECUTION_UNKNOWN';
         }
+      }
+
+      // Check authoritative DurableStateManager for in-flight execution intent
+      try {
+        const durableState = await this.driverEngine.durableStateManager.load();
+        if (durableState) {
+          const rawIntent = durableState.metadata?.executionIntent as any;
+          if (
+            rawIntent?.lifecycleState === 'EXECUTING' ||
+            durableState.metadata?.executionLifecycleState === 'EXECUTION_UNKNOWN' ||
+            (loaded.inFlightCycle && !existingCycle)
+          ) {
+            reconciledStatus = 'EXECUTION_UNKNOWN';
+            const blockedState = {
+              blockedTaskId: loaded.currentTaskId ?? durableState.activeTaskId ?? 'unknown',
+              blockedIteration: loaded.currentIteration,
+              blockedContextReference: (durableState.metadata?.contextReference as string) ?? 'unknown-context',
+              blockingReason:
+                'EXECUTION_UNKNOWN: In-flight execution interrupted by crash without verified completion evidence. Zombie takeover prevented.',
+              resumePoint: 'RESUME_EXACT_BLOCKED_POINT',
+            };
+            await this.driverEngine.durableStateManager.save({
+              currentLifecycleState: LifecycleState.BLOCKED_ON_HUMAN,
+              activeTaskId: loaded.currentTaskId ?? durableState.activeTaskId,
+              completedTaskIds: durableState.completedTaskIds,
+              blockedState,
+              metadata: {
+                ...(durableState.metadata ?? {}),
+                executionLifecycleState: 'EXECUTION_UNKNOWN',
+                ...(rawIntent
+                  ? {
+                      executionIntent: {
+                        ...rawIntent,
+                        lifecycleState: 'EXECUTION_UNKNOWN',
+                      },
+                    }
+                  : {}),
+              },
+            });
+          }
+        }
+      } catch {
+        // Non-fatal
       }
 
       // Safe recovered state: PAUSED (prevents unintended execution after crash)
@@ -231,7 +278,10 @@ export class DriverRuntime {
         recoveryInfo: {
           retryCount: loaded.recoveryInfo?.retryCount ?? 0,
           maxRetries: loaded.recoveryInfo?.maxRetries ?? 3,
-          lastStrategy: 'RESTART_RECOVERY_RECONCILED',
+          lastStrategy:
+            reconciledStatus === 'EXECUTION_UNKNOWN'
+              ? 'BLOCKED_ON_HUMAN'
+              : 'RESTART_RECOVERY_RECONCILED',
         },
       };
 
@@ -289,6 +339,23 @@ export class DriverRuntime {
 
     // 2. Discover/Recover Durable State
     await this.recover();
+
+    // Zombie takeover prevention: If recovered state is EXECUTION_UNKNOWN or BLOCKED_ON_HUMAN, halt fail-closed
+    if (
+      (this.state?.lastTerminalStatus as any) === 'EXECUTION_UNKNOWN' ||
+      this.state?.recoveryInfo?.lastStrategy === 'BLOCKED_ON_HUMAN'
+    ) {
+      return {
+        driverId: this.driverId,
+        projectId,
+        lifecycleState: DriverLifecycleState.PAUSED,
+        iterationsRun: 0,
+        finalStatus: 'EXECUTION_UNKNOWN',
+        reason:
+          'Driver recovered from crash with in-flight execution in EXECUTION_UNKNOWN state. Zombie takeover prevented; human authorization required to resume.',
+        state: this.state!,
+      };
+    }
 
     // 3. Lifecycle Transition to STARTING -> RUNNING
     const currentState = this.currentLifecycleState;

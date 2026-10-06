@@ -11,10 +11,10 @@ import { BlockedStateZodSchema, toSnakeCaseBlockedState, type BlockedState } fro
 
 
 export type ContinuationState = 'NONE' | 'WAITING';
-export type ContinuationPolicy = 'AUTONOMOUS' | 'MANUAL';
+export type ContinuationPolicy = 'AUTONOMOUS' | 'MANUAL' | 'CONTROLLED_MANUAL';
 
 export const CONTINUATION_STATES: readonly [ContinuationState, ...ContinuationState[]] = ['NONE', 'WAITING'];
-export const CONTINUATION_POLICIES: readonly [ContinuationPolicy, ...ContinuationPolicy[]] = ['AUTONOMOUS', 'MANUAL'];
+export const CONTINUATION_POLICIES: readonly [ContinuationPolicy, ...ContinuationPolicy[]] = ['AUTONOMOUS', 'MANUAL', 'CONTROLLED_MANUAL'];
 
 export const CURRENT_DURABLE_STATE_SCHEMA_VERSION = 1;
 

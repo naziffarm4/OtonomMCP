@@ -42,6 +42,9 @@ import { HistoryManager } from '../../storage/history-manager.js';
 import { ApprovalStore } from '../../approval/approval-store.js';
 import { DirectorSessionStore } from '../../director/director-session-store.js';
 import type { TaskDefinition } from '../../task-engine/task-types.js';
+import { DurableStateManager } from '../../storage/durable-state.js';
+import { DriverLockManager } from '../../driver/driver-lock.js';
+import { resolveCanonicalProjectIdentity } from '../../director/project-identity-resolver.js';
 
 export const AIDM_RECOVERY_EVALUATE_TOOL_NAME = 'aidm.recovery.evaluate';
 
@@ -419,6 +422,134 @@ export function createRecoveryEvaluateTool(options: CreateRecoveryEvaluateToolOp
   };
 }
 
+export const AIDM_RECOVERY_STATUS_TOOL_NAME = 'aidm.recovery.status';
+export const AIDM_RECOVERY_STATUS_TOOL_ALIAS = 'aidm_recovery_status';
+
+export const recoveryStatusToolDefinition: McpToolDefinition = {
+  name: AIDM_RECOVERY_STATUS_TOOL_NAME,
+  description:
+    'Reads durable recovery status, execution lifecycle state, blocked state, driver lock status, and resume eligibility. Pure read-only inspection; does NOT execute tasks or bypass authorization.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      workspaceRoot: {
+        type: 'string',
+        description: 'Optional path to the project root. Defaults to configured delegate project root.',
+      },
+      projectId: {
+        type: 'string',
+        description: 'Optional canonical project identifier.',
+      },
+    },
+  },
+};
+
+export interface CreateRecoveryStatusToolOptions {
+  toolName?: string;
+  defaultDelegate?: McpOrchestratorDelegate;
+}
+
+export function createRecoveryStatusTool(options: CreateRecoveryStatusToolOptions = {}): {
+  definition: McpToolDefinition;
+  handler: McpToolHandler;
+} {
+  const toolName = options.toolName ?? AIDM_RECOVERY_STATUS_TOOL_NAME;
+
+  return {
+    definition: {
+      ...recoveryStatusToolDefinition,
+      name: toolName,
+    },
+    handler: async (rawArgs: Readonly<Record<string, unknown>>, context: McpRequestContext) => {
+      try {
+        const delegate = context.delegate ?? options.defaultDelegate;
+        const resolvedRoot =
+          (typeof rawArgs?.workspaceRoot === 'string' && rawArgs.workspaceRoot.length > 0
+            ? rawArgs.workspaceRoot
+            : undefined) ??
+          delegate?.projectRoot ??
+          process.cwd();
+
+        const rawProjectId = typeof rawArgs?.projectId === 'string' ? rawArgs.projectId : undefined;
+        const resolvedProject = resolveCanonicalProjectIdentity(resolvedRoot);
+        const projectId = rawProjectId ?? resolvedProject.projectId;
+
+        const durableStateManager = new DurableStateManager({
+          baseDir: resolvedRoot,
+        });
+        const durableState = await durableStateManager.load();
+
+        const lockManager = new DriverLockManager({
+          workspaceRoot: resolvedRoot,
+        });
+        const isStale = await lockManager.isStaleLock();
+        const activeLock = await lockManager.getLockInfo();
+
+        const executionLifecycle =
+          (durableState?.metadata?.executionLifecycleState as string) ??
+          ((durableState?.metadata?.executionIntent as any)?.lifecycleState as string) ??
+          'NOT_STARTED';
+        const isExecutionUnknown = executionLifecycle === 'EXECUTION_UNKNOWN';
+        const isBlockedOnHuman =
+          isExecutionUnknown ||
+          durableState?.currentLifecycleState === 'BLOCKED_ON_HUMAN' ||
+          durableState?.blockedState !== null;
+        const resumeEligible = !isExecutionUnknown && !isBlockedOnHuman;
+
+        return {
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify(
+                sanitizeMcpPayload({
+                  success: true,
+                  projectId,
+                  executionLifecycleState: executionLifecycle,
+                  recoveryStatus: durableState?.currentLifecycleState ?? 'READY',
+                  isExecutionUnknown,
+                  isBlockedOnHuman,
+                  blockedState: durableState?.blockedState ?? null,
+                  resumeEligible,
+                  isDriverLockStale: isStale,
+                  activeLock: activeLock
+                    ? {
+                        driverId: activeLock.driverId,
+                        pid: activeLock.pid,
+                        acquiredAt: activeLock.acquiredAt,
+                      }
+                    : null,
+                  lastExecutionIntent: durableState?.metadata?.executionIntent ?? null,
+                }),
+                null,
+                2
+              ),
+            },
+          ],
+          isError: false,
+        };
+      } catch (err: any) {
+        return {
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify(
+                sanitizeMcpPayload({
+                  success: false,
+                  code: 'ERR_RECOVERY_STATUS_FAILED',
+                  message: err?.message ?? String(err),
+                }),
+                null,
+                2
+              ),
+            },
+          ],
+          isError: true,
+        };
+      }
+    },
+  };
+}
+
 export function registerRecoveryEvaluateTools(
   server: McpServer,
   options: { recoveryEngine?: RecoveryPolicyEngine } = {}
@@ -428,4 +559,16 @@ export function registerRecoveryEvaluateTools(
     defaultDelegate: server.delegate,
   });
   server.registerTool(definition, handler);
+}
+
+export function registerRecoveryStatusTool(
+  server: McpServer,
+  options: { defaultDelegate?: McpOrchestratorDelegate } = {}
+): void {
+  const { definition, handler } = createRecoveryStatusTool(options);
+  server.registerTool(definition, handler);
+  server.registerTool(
+    { ...definition, name: AIDM_RECOVERY_STATUS_TOOL_ALIAS },
+    handler
+  );
 }

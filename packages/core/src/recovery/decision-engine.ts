@@ -1,6 +1,6 @@
 import { LifecycleState } from '../lifecycle.js';
 import type { DeterministicDecisionData, RecoverySnapshot, ValidationEvidence } from './types.js';
-import { RecoveryDecision } from './types.js';
+import { RecoveryDecision, ExecutionLifecycleState } from './types.js';
 import { RecoveryError } from '../errors/recovery-error.js';
 
 export interface ValidationEvidenceCheckResult {
@@ -99,14 +99,16 @@ export function checkValidationEvidenceApplicability(
 }
 
 /**
- * Deterministic decision matrix implementing ordered priority rules for recovery:
+ * Deterministic decision matrix implementing ordered priority rules for recovery (P30):
  * 
- * Priority 1: Authoritative State Verification (corrupt state fails deterministically)
- * Priority 2: Explicit BLOCKED_ON_HUMAN / DEC-010 (human response -> exact RESUME, awaiting -> BLOCKED_ON_HUMAN)
- * Priority 3: Workspace Corruption / Missing Files / Unvalidated Disk Changes (RESTART)
- * Priority 4: Retryable Execution Failure with Sound Workspace (RETRY)
- * Priority 5: Interrupted Implementation with Sound Partial Progress / DEC-011 (RESUME)
- * Priority 6: Clean Baseline / Default Milestone Progress (RESUME)
+ * Priority 1: State Corruption / State Integrity (corrupt state fails deterministically)
+ * Priority 2: Security Violation (immediate fail-closed abort to human gate)
+ * Priority 3: EXECUTION_UNKNOWN (unverified in-flight crash blocks on human gate, no blind retry)
+ * Priority 4: Explicit BLOCKED_ON_HUMAN / DEC-010 (human response -> exact RESUME, awaiting -> BLOCKED_ON_HUMAN)
+ * Priority 5: Workspace Corruption / Missing Files / Unexpected External Changes / Unvalidated Disk Changes (RESTART)
+ * Priority 6: Known Execution Failure with Sound Workspace (RETRY if budget permits, else BLOCKED_ON_HUMAN)
+ * Priority 7: Interrupted Implementation with Sound Partial Progress / DEC-011 (RESUME)
+ * Priority 8: Clean Baseline / Default Milestone Progress (RESUME)
  *
  * This evaluator is a pure function: given identical snapshots, it returns strictly identical DeterministicDecisionData.
  */
@@ -123,7 +125,78 @@ export function evaluateRecoveryDecision(snapshot: RecoverySnapshot): Determinis
   const { durableState, localRuntimeState, filesystemDiff, lastEvent } = snapshot;
 
   // --------------------------------------------------------------------------
-  // Priority 2: Explicit BLOCKED_ON_HUMAN (DEC-010)
+  // Priority 2: Security Violation
+  // --------------------------------------------------------------------------
+  const isSecurityViolation =
+    (snapshot.validationEvidence as any)?.securityViolation === true ||
+    (snapshot.validationEvidence as any)?.category === 'SECURITY_VIOLATION' ||
+    durableState.metadata?.securityViolation === true ||
+    lastEvent?.eventType === 'SECURITY_VIOLATION_DETECTED';
+
+  if (isSecurityViolation) {
+    return {
+      decision: RecoveryDecision.BLOCKED_ON_HUMAN,
+      reason: 'SECURITY_VIOLATION: Security breach or unauthorized operation detected. Immediate fail-closed abort required.',
+      taskId: durableState.activeTaskId,
+      iteration: localRuntimeState?.activeAttempt ?? 1,
+      contextReference: (durableState.metadata?.contextReference as string) ?? null,
+      resumePoint: 'RESUME_EXACT_BLOCKED_POINT',
+      targetCheckpoint: durableState.lastCheckpoint ?? null,
+      evidenceReferences: [
+        'security-violation-detected',
+        ...(lastEvent ? [`events.jsonl:${lastEvent.eventId}`] : []),
+      ],
+      humanRequired: true,
+      retryAllowed: false,
+    };
+  }
+
+  // --------------------------------------------------------------------------
+  // Priority 3: EXECUTION_UNKNOWN (Crash recovery without independent completion evidence)
+  // --------------------------------------------------------------------------
+  const validationCheck = checkValidationEvidenceApplicability(snapshot.validationEvidence, snapshot);
+
+  const isExecutionUnknown =
+    snapshot.reconciledExecutionState === ExecutionLifecycleState.EXECUTION_UNKNOWN ||
+    snapshot.executionIntent?.lifecycleState === ExecutionLifecycleState.EXECUTION_UNKNOWN ||
+    durableState.metadata?.executionLifecycleState === ExecutionLifecycleState.EXECUTION_UNKNOWN ||
+    (snapshot.executionIntent?.lifecycleState === ExecutionLifecycleState.EXECUTING &&
+      snapshot.isRuntimeStale &&
+      (!snapshot.validationEvidence || !validationCheck.applicable)) ||
+    (snapshot.isRuntimeStale &&
+      lastEvent?.eventType === 'EXECUTION_STARTED' &&
+      (!snapshot.validationEvidence || !validationCheck.applicable));
+
+  if (isExecutionUnknown) {
+    const taskId = snapshot.executionIntent?.taskId ?? durableState.activeTaskId;
+    const iteration = localRuntimeState?.activeAttempt ?? 1;
+    const contextReference =
+      snapshot.executionIntent?.contextFingerprint ??
+      (durableState.metadata?.contextReference as string) ??
+      null;
+
+    return {
+      decision: RecoveryDecision.BLOCKED_ON_HUMAN,
+      reason:
+        'EXECUTION_UNKNOWN: In-flight execution could not be independently verified post-crash. Automatic retry is strictly prohibited to prevent duplicate side-effects. Human gate required.',
+      taskId,
+      iteration,
+      contextReference,
+      resumePoint: 'RESUME_EXACT_BLOCKED_POINT',
+      targetCheckpoint: durableState.lastCheckpoint ?? null,
+      evidenceReferences: [
+        'execution-intent:lifecycle=EXECUTION_UNKNOWN',
+        `runtime-stale=${snapshot.isRuntimeStale}`,
+        ...(lastEvent ? [`events.jsonl:${lastEvent.eventId}`] : []),
+      ],
+      executionLifecycleState: ExecutionLifecycleState.EXECUTION_UNKNOWN,
+      humanRequired: true,
+      retryAllowed: false,
+    };
+  }
+
+  // --------------------------------------------------------------------------
+  // Priority 4: Explicit BLOCKED_ON_HUMAN (DEC-010)
   // --------------------------------------------------------------------------
   const isBlocked =
     durableState.currentLifecycleState === LifecycleState.BLOCKED_ON_HUMAN ||
@@ -157,6 +230,8 @@ export function evaluateRecoveryDecision(snapshot: RecoverySnapshot): Determinis
           'user-response-received',
           ...(lastEvent ? [`events.jsonl:${lastEvent.eventId}`] : []),
         ],
+        humanRequired: false,
+        retryAllowed: false,
       };
     }
 
@@ -174,11 +249,13 @@ export function evaluateRecoveryDecision(snapshot: RecoverySnapshot): Determinis
         'durable-state.json:blocked_state',
         ...(lastEvent ? [`events.jsonl:${lastEvent.eventId}`] : []),
       ],
+      humanRequired: true,
+      retryAllowed: false,
     };
   }
 
   // --------------------------------------------------------------------------
-  // Priority 3: Workspace Corruption / Missing Files / Unexpected External Changes / Unvalidated Disk Changes -> RESTART
+  // Priority 5: Workspace Corruption / Missing Files / Unexpected External Changes / Unvalidated Disk Changes -> RESTART
   // --------------------------------------------------------------------------
   const isActiveTask =
     durableState.activeTaskId !== null ||
@@ -201,8 +278,6 @@ export function evaluateRecoveryDecision(snapshot: RecoverySnapshot): Determinis
     filesystemDiff.expectedChanges.length > 0 ||
     filesystemDiff.unexpectedModified.length > 0 ||
     filesystemDiff.unexpectedAdded.length > 0;
-
-  const validationCheck = checkValidationEvidenceApplicability(snapshot.validationEvidence, snapshot);
 
   const hasExplicitValidationFailure =
     snapshot.validationEvidence?.compilable === false ||
@@ -282,24 +357,49 @@ export function evaluateRecoveryDecision(snapshot: RecoverySnapshot): Determinis
       resumePoint: 'PRE_FLIGHT_CHECKPOINT',
       targetCheckpoint: durableState.lastCheckpoint ?? 'initial-checkpoint',
       evidenceReferences,
+      humanRequired: false,
+      retryAllowed: false,
     };
   }
 
   // --------------------------------------------------------------------------
-  // Priority 4: Retryable Execution Failure with Sound Workspace -> RETRY
+  // Priority 6: Known Execution Failure with Sound Workspace -> RETRY (within budget)
   // --------------------------------------------------------------------------
   const isRetryRequested =
     durableState.metadata?.retryableFailure === true ||
     durableState.metadata?.lastVerdict === 'RETRY' ||
+    snapshot.reconciledExecutionState === ExecutionLifecycleState.EXECUTION_FAILED ||
     lastEvent?.eventType === 'TASK_REJECTED' ||
     lastEvent?.eventType === 'RETRY_TRIGGERED';
 
   if (isRetryRequested) {
+    const currentAttempt = localRuntimeState?.activeAttempt ?? (durableState.metadata?.activeAttempt as number) ?? 1;
+    const maxAttempts = (durableState.metadata?.maxAttempts as number) ?? 3;
+    const isExhausted = durableState.metadata?.retryExhausted === true || currentAttempt >= maxAttempts;
+
+    if (isExhausted) {
+      return {
+        decision: RecoveryDecision.BLOCKED_ON_HUMAN,
+        reason: `Retry budget exhausted (${currentAttempt}/${maxAttempts} attempts used) for known failure; human gate required`,
+        taskId: durableState.activeTaskId,
+        iteration: currentAttempt,
+        contextReference: (durableState.metadata?.contextReference as string) ?? null,
+        resumePoint: 'RESUME_EXACT_BLOCKED_POINT',
+        targetCheckpoint: durableState.lastCheckpoint ?? null,
+        evidenceReferences: [
+          'retry-budget-exhausted',
+          ...(lastEvent ? [`events.jsonl:${lastEvent.eventId}`] : []),
+        ],
+        humanRequired: true,
+        retryAllowed: false,
+      };
+    }
+
     return {
       decision: RecoveryDecision.RETRY,
       reason: 'Previous execution failed under consistent workspace; retryable condition confirmed',
       taskId: durableState.activeTaskId,
-      iteration: localRuntimeState?.activeAttempt ?? 1,
+      iteration: currentAttempt,
       contextReference: (durableState.metadata?.contextReference as string) ?? null,
       resumePoint: 'INSTRUCT_ANTIGRAVITY',
       targetCheckpoint: durableState.lastCheckpoint ?? null,
@@ -307,11 +407,13 @@ export function evaluateRecoveryDecision(snapshot: RecoverySnapshot): Determinis
         'metadata:retryableFailure',
         ...(lastEvent ? [`events.jsonl:${lastEvent.eventId}`] : []),
       ],
+      humanRequired: false,
+      retryAllowed: true,
     };
   }
 
   // --------------------------------------------------------------------------
-  // Priority 5: Interrupted Implementation / Active Task Loop -> RESUME (DEC-011)
+  // Priority 7: Interrupted Implementation / Active Task Loop -> RESUME (DEC-011)
   // --------------------------------------------------------------------------
   if (isActiveTask) {
     let reason: string;
@@ -345,11 +447,13 @@ export function evaluateRecoveryDecision(snapshot: RecoverySnapshot): Determinis
       resumePoint: (durableState.metadata?.resumePoint as string) ?? 'IMPLEMENTATION',
       targetCheckpoint: durableState.lastCheckpoint ?? null,
       evidenceReferences,
+      humanRequired: false,
+      retryAllowed: false,
     };
   }
 
   // --------------------------------------------------------------------------
-  // Priority 6: Normal Baseline / Milestone Progress -> RESUME
+  // Priority 8: Normal Baseline / Milestone Progress -> RESUME
   // --------------------------------------------------------------------------
   return {
     decision: RecoveryDecision.RESUME,
@@ -360,6 +464,8 @@ export function evaluateRecoveryDecision(snapshot: RecoverySnapshot): Determinis
     resumePoint: durableState.currentLifecycleState,
     targetCheckpoint: durableState.lastCheckpoint ?? null,
     evidenceReferences: [`durable-state.json:state=${durableState.currentLifecycleState}`],
+    humanRequired: false,
+    retryAllowed: false,
   };
 }
 

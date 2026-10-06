@@ -19,6 +19,7 @@ import { DriverValidationError } from './driver-errors.js';
 
 export interface DriverStoreOptions {
   readonly workspaceRoot?: string;
+  readonly baseDir?: string;
   readonly stateFilePath?: string;
   readonly historyManager?: HistoryManager;
 }
@@ -29,13 +30,13 @@ export class DriverStore {
   readonly historyManager?: HistoryManager;
 
   constructor(options: DriverStoreOptions = {}) {
-    this.workspaceRoot = options.workspaceRoot;
+    this.workspaceRoot = options.workspaceRoot ?? options.baseDir;
     this.historyManager = options.historyManager;
 
     if (options.stateFilePath) {
       this.stateFilePath = options.stateFilePath;
     } else {
-      const base = options.workspaceRoot ?? process.cwd();
+      const base = options.workspaceRoot ?? options.baseDir ?? process.cwd();
       this.stateFilePath = path.join(base, '.ai-manager', 'driver', 'driver-state.json');
     }
   }

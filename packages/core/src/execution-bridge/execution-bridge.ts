@@ -41,6 +41,9 @@ import { BudgetManager } from '../budget/budget-manager.js';
 import type { RecoveryReport } from '../budget/budget-recovery-engine.js';
 import { AuthorizationPolicyEngine } from '../authorization/authorization-policy-engine.js';
 import { AuthorizationDecisionResult } from '../authorization/authorization-policy-types.js';
+import { DurableStateManager } from '../storage/durable-state.js';
+import { LifecycleState } from '../lifecycle.js';
+import { ExecutionLifecycleState, type DurableExecutionIntent } from '../recovery/types.js';
 import {
   type BridgeExecutionIntent,
   type ClaimedIntentRecord,
@@ -81,6 +84,7 @@ export interface ExecutionBridgeOptions {
   readonly budgetManager?: BudgetManager;
   readonly authorizationPolicyEngine?: AuthorizationPolicyEngine;
   readonly requireTrustedAuthContext?: boolean;
+  readonly durableStateManager?: DurableStateManager;
 }
 
 export class ExecutionBridge {
@@ -100,6 +104,7 @@ export class ExecutionBridge {
   readonly budgetManager?: BudgetManager;
   readonly authorizationPolicyEngine?: AuthorizationPolicyEngine;
   readonly requireTrustedAuthContext: boolean;
+  readonly durableStateManager?: DurableStateManager;
 
   private readonly claimedRecords = new Map<string, ClaimedIntentRecord>();
   private readonly executionResults = new Map<string, BridgeExecutionResult>();
@@ -110,6 +115,7 @@ export class ExecutionBridge {
 
   constructor(options: ExecutionBridgeOptions = {}) {
     this.workspaceRoot = options.workspaceRoot;
+    this.durableStateManager = options.durableStateManager;
     this.historyManager = options.historyManager;
     this.specStore = options.specStore ?? new SpecStore({ baseDir: this.workspaceRoot });
     this.evidenceStore =
@@ -1022,6 +1028,60 @@ export class ExecutionBridge {
     });
 
     // ------------------------------------------------------------------------
+    // Step 3b: Authoritative Durable Execution Intent Persistence
+    // ------------------------------------------------------------------------
+    const durableIntent: DurableExecutionIntent = {
+      projectId: intent.projectId,
+      directorSessionId: intent.directorSessionId,
+      actionId: intent.actionId,
+      executionIntentId: intent.executionIntentId,
+      idempotencyKey: intent.idempotencyKey,
+      taskId: intent.taskId,
+      taskRevision: (intent.taskRevision as number) ?? 1,
+      contextFingerprint: intent.basedOnContextFingerprint,
+      understandingRevision: (intent.metadata?.understandingRevision as number) ?? 1,
+      approvalPackageRevision: (intent.metadata?.approvalPackageRevision as number) ?? 1,
+      executionStartTimestamp: startedAt,
+      lifecycleState: ExecutionLifecycleState.EXECUTING,
+      checkpoint: (intent.metadata?.checkpoint as string) ?? null,
+      driverId:
+        (this.driverRuntime?.driverId ??
+          intent.metadata?.driverId ??
+          'driver-canonical') as string,
+      processId: process.pid,
+      metadata: intent.metadata,
+    };
+
+    if (this.durableStateManager) {
+      try {
+        const curDurable = await this.durableStateManager.load();
+        await this.durableStateManager.save({
+          currentLifecycleState: curDurable?.currentLifecycleState ?? LifecycleState.TASK_LOOP,
+          activeTaskId: intent.taskId,
+          completedTaskIds: curDurable?.completedTaskIds ?? [],
+          blockedState: null,
+          metadata: {
+            ...(curDurable?.metadata ?? {}),
+            executionIntent: durableIntent,
+            executionLifecycleState: ExecutionLifecycleState.EXECUTING,
+          },
+        });
+      } catch (err: any) {
+        throw new ExecutionBridgeError(
+          `Failed to persist durable execution intent before execution: ${err.message}`,
+          'FAILED_TO_PERSIST_INTENT',
+          { intentId: intent.executionIntentId, error: err.message }
+        );
+      }
+    }
+
+    await this.recordHistory(
+      'EXECUTION_INTENT_PERSISTED',
+      intent.taskId,
+      durableIntent as unknown as Record<string, unknown>
+    );
+
+    // ------------------------------------------------------------------------
     // Step 4: Driver Execution Handoff
     // ------------------------------------------------------------------------
     let iterationResult: any = null;
@@ -1256,6 +1316,52 @@ export class ExecutionBridge {
       }
     }
 
+      if (this.durableStateManager) {
+        try {
+          const curDurable = await this.durableStateManager.load();
+          const finalLifecycle = isSuccess
+            ? ExecutionLifecycleState.EXECUTION_SUCCEEDED
+            : terminalStatus === ExecutionBridgeStatus.EXECUTION_UNKNOWN
+              ? ExecutionLifecycleState.EXECUTION_UNKNOWN
+              : ExecutionLifecycleState.EXECUTION_FAILED;
+
+          const updatedCompleted = isSuccess
+            ? Array.from(new Set([...(curDurable?.completedTaskIds ?? []), intent.taskId]))
+            : (curDurable?.completedTaskIds ?? []);
+
+          const blockedState =
+            finalLifecycle === ExecutionLifecycleState.EXECUTION_UNKNOWN
+              ? {
+                  blockedTaskId: intent.taskId,
+                  blockedIteration: 1,
+                  blockingReason: finalResult.reason,
+                  blockedContextReference: intent.basedOnContextFingerprint,
+                  resumePoint: 'RESUME_EXACT_BLOCKED_POINT',
+                }
+              : null;
+
+          await this.durableStateManager.save({
+            currentLifecycleState:
+              finalLifecycle === ExecutionLifecycleState.EXECUTION_UNKNOWN
+                ? LifecycleState.BLOCKED_ON_HUMAN
+                : (curDurable?.currentLifecycleState ?? LifecycleState.TASK_LOOP),
+            activeTaskId: isSuccess ? null : intent.taskId,
+            completedTaskIds: updatedCompleted,
+            blockedState,
+            metadata: {
+              ...(curDurable?.metadata ?? {}),
+              executionIntent: {
+                ...durableIntent,
+                lifecycleState: finalLifecycle,
+              },
+              executionLifecycleState: finalLifecycle,
+            },
+          });
+        } catch {
+          // Non-fatal
+        }
+      }
+
       return finalResult;
     })();
 
@@ -1368,6 +1474,50 @@ export class ExecutionBridge {
             recoveredAt: now,
           }
         );
+
+        if (this.durableStateManager) {
+          try {
+            const curDurable = await this.durableStateManager.load();
+            const targetLifecycle =
+              resolvedStatus === ExecutionBridgeStatus.EXECUTION_SUCCEEDED
+                ? ExecutionLifecycleState.EXECUTION_SUCCEEDED
+                : ExecutionLifecycleState.EXECUTION_UNKNOWN;
+
+            const updatedCompleted =
+              targetLifecycle === ExecutionLifecycleState.EXECUTION_SUCCEEDED
+                ? Array.from(new Set([...(curDurable?.completedTaskIds ?? []), claim.taskId]))
+                : (curDurable?.completedTaskIds ?? []);
+
+            const blockedState =
+              targetLifecycle === ExecutionLifecycleState.EXECUTION_UNKNOWN
+                ? {
+                    blockedTaskId: claim.taskId,
+                    blockedIteration: 1,
+                    blockedContextReference:
+                      (curDurable?.metadata?.contextReference as string) ?? 'unknown-context',
+                    blockingReason: resolvedReason,
+                    resumePoint: 'RESUME_EXACT_BLOCKED_POINT',
+                  }
+                : null;
+
+            await this.durableStateManager.save({
+              currentLifecycleState:
+                targetLifecycle === ExecutionLifecycleState.EXECUTION_UNKNOWN
+                  ? LifecycleState.BLOCKED_ON_HUMAN
+                  : (curDurable?.currentLifecycleState ?? LifecycleState.TASK_LOOP),
+              activeTaskId:
+                targetLifecycle === ExecutionLifecycleState.EXECUTION_SUCCEEDED ? null : claim.taskId,
+              completedTaskIds: updatedCompleted,
+              blockedState,
+              metadata: {
+                ...(curDurable?.metadata ?? {}),
+                executionLifecycleState: targetLifecycle,
+              },
+            });
+          } catch {
+            // Non-fatal
+          }
+        }
       }
     }
 
