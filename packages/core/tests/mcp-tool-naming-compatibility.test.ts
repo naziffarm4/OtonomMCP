@@ -329,7 +329,8 @@ describe('MCP Tool Naming Compatibility & Antigravity Invariants', () => {
       const server = createAuthoritativeMcpServer({ transport });
 
       const tools = server.getRegisteredTools();
-      assert.equal(tools.length, 71, `Expected exactly 71 registered tools, got ${tools.length}`);
+      assert.ok(tools.length >= 71, `Expected at least 71 registered tools, got ${tools.length}`);
+      assert.equal(tools.length, 77, `Expected exactly 77 registered tools, got ${tools.length}`);
 
       const exposedNames = new Set<string>();
       const antigravityPrefix = 'mcp_OtonomMCP_';
@@ -383,7 +384,7 @@ describe('MCP Tool Naming Compatibility & Antigravity Invariants', () => {
         }
       }
 
-      assert.equal(exposedNames.size, 71, 'All 71 exposed tool names must be unique');
+      assert.equal(exposedNames.size, tools.length, 'All exposed tool names must be unique');
     });
   });
 });
