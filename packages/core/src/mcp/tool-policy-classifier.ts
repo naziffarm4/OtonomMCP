@@ -61,8 +61,9 @@ export function classifyMcpTool(toolName: string): McpToolPolicyClassification {
     };
   }
 
-  // 2. Execution-Capable Tools (cycle execution, task execution, driver execution, retry/corrective)
+  // 2. Execution-Capable Tools (cycle execution, task execution, driver execution, retry/corrective, director.act)
   if (
+    norm.includes('director.act') ||
     norm.includes('executecycle') ||
     norm.includes('execute_cycle') ||
     norm.includes('ingestinstruction') ||
@@ -90,8 +91,10 @@ export function classifyMcpTool(toolName: string): McpToolPolicyClassification {
     };
   }
 
-  // 3. Planning / Director Control Tools (sessions, decisions, sync, spec, boundary evaluation)
+  // 3. Planning / Director Control Tools (sessions, decisions, sync, spec, boundary evaluation, director.open/control)
   if (
+    norm.includes('director.open') ||
+    norm.includes('director.control') ||
     norm.includes('context.sync') ||
     norm.includes('decision.create') ||
     norm.includes('decision.validate') ||

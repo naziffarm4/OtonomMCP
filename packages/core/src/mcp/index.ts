@@ -44,5 +44,7 @@ export * from './tools/executor-context-tool.js';
 export * from './tools/risk-human-decision-tool.js';
 export * from './tools/director-loop-tools.js';
 export * from './tools/driver-tools.js';
+export * from './tools/director-control-plane-tools.js';
+export * from './director-mcp-client.js';
 export * from './tool-policy-classifier.js';
 

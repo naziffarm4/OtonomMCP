@@ -82,7 +82,9 @@ import { registerRecoveryEvaluateTools } from './tools/recovery-evaluate-tool.js
 import { registerExecutorContextTools } from './tools/executor-context-tool.js';
 import { registerDirectorLoopTools } from './tools/director-loop-tools.js';
 import { registerDriverTools } from './tools/driver-tools.js';
+import { registerDirectorControlPlaneTools } from './tools/director-control-plane-tools.js';
 import { classifyMcpTool } from './tool-policy-classifier.js';
+import { createMcpAuthMiddleware } from './director-mcp-client.js';
 
 
 export class McpServer {
@@ -100,6 +102,7 @@ export class McpServer {
   private readonly toolRegistry = new Map<string, McpToolRegistration>();
   private readonly exposedTools = new Map<string, McpToolRegistration>();
   private readonly correlationGenerator?: () => string;
+  private readonly authMiddleware?: (rawMessage: unknown) => { allowed: boolean; reason?: string };
   private clientInitialized = false;
 
   constructor(config: McpServerConfig) {
@@ -116,6 +119,9 @@ export class McpServer {
     });
     this.instructions = config.instructions;
     this.correlationGenerator = config.correlationGenerator;
+    this.authMiddleware =
+      config.authMiddleware ??
+      (config.authToken ? createMcpAuthMiddleware({ requiredToken: config.authToken }) : undefined);
 
     // Register minimal health & capability discovery tool
     const healthTool = createHealthTool({
@@ -253,6 +259,11 @@ export class McpServer {
     // Register Autonomous Driver tools if enabled
     if (config.driverTools) {
       registerDriverTools(this);
+    }
+
+    // Register Phase 22 Director MCP Control Plane tools if enabled
+    if (config.directorControlPlaneTools) {
+      registerDirectorControlPlaneTools(this);
     }
   }
 
@@ -407,6 +418,22 @@ export class McpServer {
           data: { code: McpErrorCode.INVALID_REQUEST },
         },
       };
+    }
+
+    // Optional external auth middleware verification
+    if (this.authMiddleware) {
+      const authDecision = this.authMiddleware(rawMessage);
+      if (!authDecision.allowed) {
+        return {
+          jsonrpc: '2.0',
+          id: (typeof msg.id === 'string' || typeof msg.id === 'number') ? msg.id : null,
+          error: {
+            code: McpJsonRpcErrorCode.INVALID_REQUEST,
+            message: authDecision.reason ?? 'Unauthorized: MCP authentication failed',
+            data: { code: McpErrorCode.POLICY_BLOCKED },
+          },
+        };
+      }
     }
 
     // 2. Handle Notifications (no response envelope returned)
@@ -614,6 +641,9 @@ export interface AuthoritativeMcpServerOptions {
   readonly name?: string;
   readonly version?: string;
   readonly instructions?: string;
+  readonly directorControlPlaneTools?: boolean;
+  readonly authToken?: string;
+  readonly authMiddleware?: (rawMessage: unknown) => { allowed: boolean; reason?: string };
 }
 
 export function createAuthoritativeMcpServer(options: AuthoritativeMcpServerOptions): McpServer {
@@ -629,6 +659,8 @@ export function createAuthoritativeMcpServer(options: AuthoritativeMcpServerOpti
     delegate,
     policyEngine: options.policyEngine ?? delegate.policyEngine,
     instructions: options.instructions,
+    authToken: options.authToken,
+    authMiddleware: options.authMiddleware,
     directorTools: true,
     discoveryTools: true,
     completenessTools: true,
@@ -656,6 +688,7 @@ export function createAuthoritativeMcpServer(options: AuthoritativeMcpServerOpti
     recoveryEvaluateTools: true,
     directorLoopTools: true,
     driverTools: true,
+    directorControlPlaneTools: options.directorControlPlaneTools ?? true,
   });
 }
 

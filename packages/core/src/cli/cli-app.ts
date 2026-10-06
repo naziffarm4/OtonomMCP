@@ -225,9 +225,11 @@ export async function executeCli(
 
       case 'mcp':
       case 'server': {
+        const action = subcommand ?? (typeof flags['subcommand'] === 'string' ? flags['subcommand'] : 'serve');
         return await executeMcp(
           {
             projectRoot,
+            subcommand: action,
             transport: (flags['transport'] as 'stdio' | 'stream') ?? 'stdio',
             verbose,
           },

@@ -267,5 +267,8 @@ export interface McpServerConfig {
   readonly recoveryEvaluateTools?: boolean;
   readonly directorLoopTools?: boolean;
   readonly driverTools?: boolean;
+  readonly directorControlPlaneTools?: boolean;
+  readonly authToken?: string;
+  readonly authMiddleware?: (rawMessage: unknown) => { allowed: boolean; reason?: string };
 }
 
