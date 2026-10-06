@@ -119,7 +119,12 @@ export function isMcpRequest(message: unknown): message is McpRequestEnvelope {
 export function isMcpNotification(message: unknown): message is McpNotificationEnvelope {
   if (typeof message !== 'object' || message === null) return false;
   const notif = message as Record<string, unknown>;
-  return notif.jsonrpc === '2.0' && typeof notif.method === 'string' && !('id' in notif);
+  return (
+    notif.jsonrpc === '2.0' &&
+    typeof notif.method === 'string' &&
+    !('id' in notif) &&
+    (notif.method.startsWith('notifications/') || notif.method.startsWith('$/'))
+  );
 }
 
 export function isMcpResponse(message: unknown): message is McpResponseEnvelope {

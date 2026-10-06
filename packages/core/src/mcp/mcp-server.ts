@@ -85,6 +85,7 @@ import { registerDriverTools } from './tools/driver-tools.js';
 import { registerDirectorControlPlaneTools } from './tools/director-control-plane-tools.js';
 import { classifyMcpTool } from './tool-policy-classifier.js';
 import { createMcpAuthMiddleware } from './director-mcp-client.js';
+import { resolveCanonicalProjectIdentity } from '../director/project-identity-resolver.js';
 
 
 export class McpServer {
@@ -104,6 +105,7 @@ export class McpServer {
   private readonly correlationGenerator?: () => string;
   private readonly authMiddleware?: (rawMessage: unknown) => { allowed: boolean; reason?: string };
   private clientInitialized = false;
+  private listenersAttached = false;
 
   constructor(config: McpServerConfig) {
     this.name = config.name ?? DEFAULT_MCP_SERVER_NAME;
@@ -281,33 +283,36 @@ export class McpServer {
   }
 
   async start(): Promise<void> {
-    if (this.state === McpServerState.RUNNING) {
+    if (this.state === McpServerState.RUNNING || this.state === McpServerState.STARTING) {
       return;
     }
 
     this.state = McpServerState.STARTING;
 
-    this.transport.onMessage(async (message: McpMessage) => {
-      try {
-        const response = await this.handleMessage(message);
-        if (response && this.transport.isConnected) {
-          await this.transport.send(response);
+    if (!this.listenersAttached) {
+      this.transport.onMessage(async (message: McpMessage) => {
+        try {
+          const response = await this.handleMessage(message);
+          if (response && this.transport.isConnected) {
+            await this.transport.send(response);
+          }
+        } catch (err) {
+          // Transport-level sending error
+          this.state = McpServerState.ERROR;
         }
-      } catch (err) {
-        // Transport-level sending error
-        this.state = McpServerState.ERROR;
-      }
-    });
+      });
 
-    this.transport.onError((_err: Error) => {
-      // Keep running or transition to error depending on severity
-    });
+      this.transport.onError((_err: Error) => {
+        // Keep running or transition to error depending on severity
+      });
 
-    this.transport.onClose(() => {
-      if (this.state === McpServerState.RUNNING) {
-        this.state = McpServerState.STOPPED;
-      }
-    });
+      this.transport.onClose(() => {
+        if (this.state === McpServerState.RUNNING || this.state === McpServerState.STARTING) {
+          this.state = McpServerState.STOPPED;
+        }
+      });
+      this.listenersAttached = true;
+    }
 
     await this.transport.start();
     this.state = McpServerState.RUNNING;
@@ -333,8 +338,14 @@ export class McpServer {
   // ==========================================================================
 
   registerTool(definition: McpToolDefinition, handler: McpToolHandler): void {
-    if (!definition || !definition.name) {
+    if (!definition || !definition.name || typeof definition.name !== 'string' || definition.name.trim().length === 0) {
       throw new McpInvalidRequestError('Tool definition must specify a valid name');
+    }
+    if (typeof definition.description !== 'string') {
+      throw new McpInvalidRequestError('Tool definition must specify a description');
+    }
+    if (!definition.inputSchema || typeof definition.inputSchema !== 'object') {
+      throw new McpInvalidRequestError('Tool definition must specify a valid inputSchema');
     }
 
     const internalName = definition.name;
@@ -373,6 +384,90 @@ export class McpServer {
 
   getTool(name: string): McpToolRegistration | undefined {
     return this.toolRegistry.get(name);
+  }
+
+  private validateToolInputSchema(
+    definition: McpToolDefinition,
+    args: Record<string, unknown>,
+    correlationId: string
+  ): void {
+    const schema = definition.inputSchema;
+    if (!schema || typeof schema !== 'object') {
+      return;
+    }
+
+    // Check required fields
+    if (Array.isArray(schema.required)) {
+      for (const requiredField of schema.required) {
+        if (typeof requiredField === 'string' && (args[requiredField] === undefined || args[requiredField] === null)) {
+          throw new McpInvalidRequestError(
+            `Missing required argument "${requiredField}" for tool "${definition.name}"`,
+            { toolName: definition.name, missingArgument: requiredField },
+            correlationId
+          );
+        }
+      }
+    }
+
+    // Check property types
+    if (schema.properties && typeof schema.properties === 'object') {
+      for (const [propName, propSchema] of Object.entries(schema.properties as Record<string, any>)) {
+        const val = args[propName];
+        if (val === undefined || val === null) {
+          continue;
+        }
+
+        if (propSchema.type) {
+          switch (propSchema.type) {
+            case 'string':
+              if (typeof val !== 'string') {
+                throw new McpInvalidRequestError(
+                  `Argument "${propName}" for tool "${definition.name}" must be a string, got ${typeof val}`,
+                  { toolName: definition.name, argument: propName, expectedType: 'string', actualType: typeof val },
+                  correlationId
+                );
+              }
+              break;
+            case 'number':
+              if (typeof val !== 'number' || Number.isNaN(val)) {
+                throw new McpInvalidRequestError(
+                  `Argument "${propName}" for tool "${definition.name}" must be a number, got ${typeof val}`,
+                  { toolName: definition.name, argument: propName, expectedType: 'number', actualType: typeof val },
+                  correlationId
+                );
+              }
+              break;
+            case 'boolean':
+              if (typeof val !== 'boolean') {
+                throw new McpInvalidRequestError(
+                  `Argument "${propName}" for tool "${definition.name}" must be a boolean, got ${typeof val}`,
+                  { toolName: definition.name, argument: propName, expectedType: 'boolean', actualType: typeof val },
+                  correlationId
+                );
+              }
+              break;
+            case 'array':
+              if (!Array.isArray(val)) {
+                throw new McpInvalidRequestError(
+                  `Argument "${propName}" for tool "${definition.name}" must be an array, got ${typeof val}`,
+                  { toolName: definition.name, argument: propName, expectedType: 'array' },
+                  correlationId
+                );
+              }
+              break;
+            case 'object':
+              if (typeof val !== 'object' || val === null || Array.isArray(val)) {
+                throw new McpInvalidRequestError(
+                  `Argument "${propName}" for tool "${definition.name}" must be an object, got ${typeof val}`,
+                  { toolName: definition.name, argument: propName, expectedType: 'object' },
+                  correlationId
+                );
+              }
+              break;
+          }
+        }
+      }
+    }
   }
 
   // ==========================================================================
@@ -461,12 +556,42 @@ export class McpServer {
 
     // Establish request correlation
     const params = req.params ?? {};
+    const args =
+      typeof params.arguments === 'object' && params.arguments !== null
+        ? (params.arguments as Record<string, unknown>)
+        : {};
+
+    const projectId =
+      (typeof params._projectId === 'string' && params._projectId) ||
+      (typeof params.projectId === 'string' && params.projectId) ||
+      (typeof args.projectId === 'string' && args.projectId) ||
+      null;
+
+    const directorSessionId =
+      (typeof params._directorSessionId === 'string' && params._directorSessionId) ||
+      (typeof params.directorSessionId === 'string' && params.directorSessionId) ||
+      (typeof args.directorSessionId === 'string' && args.directorSessionId) ||
+      null;
+
+    const taskId =
+      (typeof params._taskId === 'string' && params._taskId) ||
+      (typeof params.taskId === 'string' && params.taskId) ||
+      (typeof args.taskId === 'string' && args.taskId) ||
+      (typeof args.targetTaskId === 'string' && args.targetTaskId) ||
+      null;
+
+    const executionIterationId =
+      (typeof params._executionIterationId === 'string' && params._executionIterationId) ||
+      (typeof params.executionIterationId === 'string' && params.executionIterationId) ||
+      (typeof args.executionIterationId === 'string' && args.executionIterationId) ||
+      null;
+
     const correlation = createRequestCorrelation({
       mcpRequestId: req.id,
-      directorSessionId: typeof params._directorSessionId === 'string' ? params._directorSessionId : null,
-      projectId: typeof params._projectId === 'string' ? params._projectId : null,
-      taskId: typeof params._taskId === 'string' ? params._taskId : null,
-      executionIterationId: typeof params._executionIterationId === 'string' ? params._executionIterationId : null,
+      directorSessionId,
+      projectId,
+      taskId,
+      executionIterationId,
       customGenerator: this.correlationGenerator,
     });
 
@@ -552,17 +677,64 @@ export class McpServer {
           });
         }
 
+        if (params.arguments !== undefined && (typeof params.arguments !== 'object' || params.arguments === null)) {
+          throw new McpInvalidRequestError(
+            `Invalid arguments for tool "${toolName}": arguments must be an object`,
+            { toolName },
+            correlation.correlationId
+          );
+        }
+
         const args = (typeof params.arguments === 'object' && params.arguments !== null)
           ? (params.arguments as Record<string, unknown>)
           : {};
 
+        // Validate arguments against registration inputSchema
+        this.validateToolInputSchema(registration.definition, args, correlation.correlationId);
+
+        // Cross-project check between correlation and arguments (T5)
+        if (
+          correlation.projectId &&
+          args.projectId &&
+          typeof args.projectId === 'string' &&
+          args.projectId !== correlation.projectId
+        ) {
+          throw new McpPolicyBlockedError(
+            `Cross-project boundary violation: request correlation project '${correlation.projectId}' does not match arguments project '${args.projectId}'`,
+            {
+              toolName,
+              code: 'PROJECT_ISOLATION_VIOLATION',
+              reason: 'Cross-project correlation mismatch',
+            },
+            correlation.correlationId
+          );
+        }
+
+        // WorkspaceRoot canonical project identity check (T6)
+        const resolvedRoot =
+          (args.workspaceRoot as string | undefined) ??
+          this.delegate?.projectRoot ??
+          process.cwd();
+
+        if (this.delegate?.projectRoot && args.workspaceRoot && typeof args.workspaceRoot === 'string') {
+          const serverCanonical = resolveCanonicalProjectIdentity(this.delegate.projectRoot);
+          const callerCanonical = resolveCanonicalProjectIdentity(args.workspaceRoot);
+          if (serverCanonical.projectId !== callerCanonical.projectId) {
+            throw new McpPolicyBlockedError(
+              `Cross-project boundary violation: caller workspaceRoot '${args.workspaceRoot}' canonical identity '${callerCanonical.projectId}' does not match server canonical identity '${serverCanonical.projectId}'`,
+              {
+                toolName,
+                code: 'PROJECT_ISOLATION_VIOLATION',
+                reason: 'Workspace root canonical identity mismatch',
+              },
+              correlation.correlationId
+            );
+          }
+        }
+
         // Policy boundary check if policyEngine is injected
         if (this.policyEngine) {
           const classification = classifyMcpTool(toolName);
-          const resolvedRoot =
-            (args.workspaceRoot as string | undefined) ??
-            this.delegate?.projectRoot ??
-            process.cwd();
           const targetPaths =
             (args.targetFiles as string[] | undefined) ??
             (args.targetPath ? [String(args.targetPath)] : undefined);

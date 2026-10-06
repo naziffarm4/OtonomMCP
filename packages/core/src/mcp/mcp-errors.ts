@@ -70,7 +70,30 @@ const SAFE_DOMAIN_KEYS = new Set([
   'author',
   'traceabilitysources',
   'traceability_sources',
+  'taskid',
+  'task_id',
+  'targettaskid',
+  'target_task_id',
 ]);
+
+/**
+ * Sanitizes potentially sensitive credentials, tokens, and keys from raw text strings.
+ */
+export function sanitizeMcpSecrets(text: string): string {
+  if (typeof text !== 'string') return text;
+  return text
+    // Redact private keys
+    .replace(/-----BEGIN [A-Z ]*PRIVATE KEY-----[^]+?-----END [A-Z ]*PRIVATE KEY-----/gi, '***REDACTED***')
+    // Redact Authorization headers and Bearer tokens (with any token length)
+    .replace(/(?:Authorization:\s*)?Bearer\s+[a-zA-Z0-9_.\-]+/gi, '***REDACTED***')
+    // Redact OpenAI / Antigravity style sk- keys (e.g., sk-test-secret, sk-12345)
+    .replace(/\bsk-[a-zA-Z0-9_\-]{3,}/gi, '***REDACTED***')
+    // Redact key-value pairs (e.g., token=super-secret, humanApprovalToken=secret, password=..., secret=...)
+    .replace(
+      /\b(humanApprovalToken|human_approval_token|authToken|auth_token|token|key|secret|password)\s*(=|:)\s*([^\s,;&"]+)/gi,
+      '$1$2***REDACTED***'
+    );
+}
 
 /**
  * Recursively sanitize objects to prevent leaking secrets in error details and outputs.
@@ -78,7 +101,7 @@ const SAFE_DOMAIN_KEYS = new Set([
 export function sanitizeMcpPayload<T>(value: T): T {
   if (value === null || value === undefined) return value;
   if (typeof value === 'string') {
-    return sanitizeSecrets(value) as unknown as T;
+    return sanitizeMcpSecrets(value) as unknown as T;
   }
   if (Array.isArray(value)) {
     return value.map((item) => sanitizeMcpPayload(item)) as unknown as T;
@@ -95,10 +118,18 @@ export function sanitizeMcpPayload<T>(value: T): T {
           lowerKey.includes('credential') ||
           lowerKey.endsWith('key') ||
           lowerKey === 'key' ||
+          lowerKey.includes('humanapproval') ||
+          lowerKey.includes('human_approval') ||
+          lowerKey.includes('privatekey') ||
+          lowerKey.includes('private_key') ||
           (lowerKey.includes('auth') && !lowerKey.includes('author')));
 
       if (isSensitiveKey) {
-        result[k] = '***REDACTED***';
+        if (typeof v === 'object' && v !== null && !Array.isArray(v)) {
+          result[k] = sanitizeMcpPayload(v);
+        } else {
+          result[k] = '***REDACTED***';
+        }
       } else {
         result[k] = sanitizeMcpPayload(v);
       }
@@ -126,7 +157,7 @@ export class McpError extends AidmError {
     details?: AidmErrorDetails,
     correlationId?: string
   ) {
-    const cleanMessage = sanitizeSecrets(message);
+    const cleanMessage = sanitizeMcpSecrets(message);
     const cleanDetails = details ? sanitizeMcpPayload(details) : undefined;
     super(cleanMessage, aidmCode, cleanDetails);
     this.name = this.constructor.name;
@@ -245,12 +276,12 @@ export class McpErrorNormalizer {
     if (error instanceof McpError) {
       return {
         code: error.rpcCode,
-        message: sanitizeSecrets(error.message),
-        data: {
+        message: sanitizeMcpSecrets(error.message),
+        data: sanitizeMcpPayload({
           code: error.code,
           correlationId: error.correlationId ?? correlationId,
-          details: error.details ? sanitizeMcpPayload(error.details) : undefined,
-        },
+          ...(error.details ? { details: error.details } : {}),
+        }),
       };
     }
 
@@ -258,12 +289,12 @@ export class McpErrorNormalizer {
     if (error instanceof PolicyViolationError) {
       return {
         code: McpDomainErrorCode.POLICY_BLOCKED,
-        message: sanitizeSecrets(error.message),
-        data: {
+        message: sanitizeMcpSecrets(error.message),
+        data: sanitizeMcpPayload({
           code: McpErrorCode.POLICY_BLOCKED,
           correlationId,
-          details: error.details ? sanitizeMcpPayload(error.details) : undefined,
-        },
+          ...(error.details ? { details: error.details } : {}),
+        }),
       };
     }
 
@@ -285,27 +316,44 @@ export class McpErrorNormalizer {
 
       return {
         code,
-        message: sanitizeSecrets(error.message),
-        data: {
+        message: sanitizeMcpSecrets(error.message),
+        data: sanitizeMcpPayload({
           code: mcpCode,
           correlationId,
-          details: error.details ? sanitizeMcpPayload(error.details) : undefined,
-        },
+          ...(error.details ? { details: error.details } : {}),
+        }),
       };
     }
 
     // 4. Standard JavaScript Error
     if (error instanceof Error) {
-      const cleanMsg = sanitizeSecrets(error.message);
+      const cleanMsg = sanitizeMcpSecrets(error.message);
       // Check message hints for policy or unavailable
       if (cleanMsg.toLowerCase().includes('policy')) {
         return {
           code: McpDomainErrorCode.POLICY_BLOCKED,
           message: cleanMsg,
-          data: {
+          data: sanitizeMcpPayload({
             code: McpErrorCode.POLICY_BLOCKED,
             correlationId,
-          },
+            details: (error as any).details,
+          }),
+        };
+      }
+
+      if (
+        cleanMsg.toLowerCase().includes('human') ||
+        cleanMsg.toLowerCase().includes('approval') ||
+        error.name.toLowerCase().includes('human')
+      ) {
+        return {
+          code: McpDomainErrorCode.HUMAN_BLOCKED,
+          message: cleanMsg,
+          data: sanitizeMcpPayload({
+            code: McpErrorCode.HUMAN_BLOCKED,
+            correlationId,
+            details: (error as any).details,
+          }),
         };
       }
 
@@ -313,20 +361,38 @@ export class McpErrorNormalizer {
         return {
           code: McpDomainErrorCode.ORCHESTRATOR_UNAVAILABLE,
           message: cleanMsg,
-          data: {
+          data: sanitizeMcpPayload({
             code: McpErrorCode.ORCHESTRATOR_UNAVAILABLE,
             correlationId,
-          },
+            details: (error as any).details,
+          }),
+        };
+      }
+
+      if (
+        cleanMsg.toLowerCase().includes('validation') ||
+        cleanMsg.toLowerCase().includes('invalid') ||
+        error.name === 'ZodError'
+      ) {
+        return {
+          code: McpJsonRpcErrorCode.INVALID_REQUEST,
+          message: cleanMsg,
+          data: sanitizeMcpPayload({
+            code: McpErrorCode.INVALID_REQUEST,
+            correlationId,
+            details: (error as any).details ?? (error as any).issues,
+          }),
         };
       }
 
       return {
         code: McpJsonRpcErrorCode.INTERNAL_ERROR,
         message: cleanMsg,
-        data: {
+        data: sanitizeMcpPayload({
           code: McpErrorCode.INTERNAL_FAILURE,
           correlationId,
-        },
+          details: (error as any).details,
+        }),
       };
     }
 

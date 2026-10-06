@@ -188,6 +188,15 @@ Sunucu tarafından kaydedilen ve `stdio` üzerinden çağrılabilen temel araçl
 - **`director_executeCycle`**: Tek bir muhakeme, eylem, yetkilendirme ve yürütme döngüsünü çalıştırır.
 - **`driver_start` / `driver_status` / `driver_pause` / `driver_resume` / `driver_stop`**: Durum makinesi sürücüsünü yönetir.
 
+### 4.6. Director MCP Kontrol Düzlemi (Control Plane) Araçları
+ChatGPT Director ve üst düzey istemciler için sunulan 6 temel yüksek seviyeli araç (hem normalized `_` hem internal `.` adlandırması ile tam uyumlu):
+- **`aidm_director_open` (`aidm.director.open`)**: Oturum sürekliliğini koruyarak projeyi veya aktif/askıya alınmış oturumu açar.
+- **`aidm_director_context` (`aidm.director.context`)**: Salt okunur authoritative snapshot, fingerprint ve revizyon döner.
+- **`aidm_director_act` (`aidm.director.act`)**: Yapılandırılmış eylemi doğrular, bağlam tazeliğini denetler ve ClosedLoopCoordinator üzerinden icra eder.
+- **`aidm_director_result` (`aidm.director.result`)**: İcra döngüsü, delil ve eylem sonucunu sorgular.
+- **`aidm_director_status` (`aidm.director.status`)**: Proje, oturum, DAG ve sürücü durumunu tekilleştirilmiş durum enum'ı ile döner.
+- **`aidm_director_control` (`aidm.director.control`)**: İnce taneli yetkilendirme ile yaşam döngüsünü yönetir (`pause`, `resume`, `stop`).
+
 ---
 
 ## 5. Yetkilendirme Sınırları ve İnsan Onayı

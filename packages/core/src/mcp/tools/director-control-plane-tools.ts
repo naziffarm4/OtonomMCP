@@ -287,7 +287,7 @@ export function createDirectorOpenHandler(
 
     const correlationId = context.correlation.correlationId;
     const canonical = resolveCanonicalProjectIdentity(resolvedRoot);
-    const requestedProjectId = rawArgs.projectId as string | undefined;
+    const requestedProjectId = (rawArgs.projectId as string | undefined) ?? (context.correlation.projectId ?? undefined);
 
     if (requestedProjectId && requestedProjectId !== canonical.projectId) {
       const payload = {
@@ -451,7 +451,7 @@ export function createDirectorContextHandler(
 
     const correlationId = context.correlation.correlationId;
     const canonical = resolveCanonicalProjectIdentity(resolvedRoot);
-    const requestedProjectId = rawArgs.projectId as string | undefined;
+    const requestedProjectId = (rawArgs.projectId as string | undefined) ?? (context.correlation.projectId ?? undefined);
 
     if (requestedProjectId && requestedProjectId !== canonical.projectId) {
       const payload = {
@@ -586,7 +586,7 @@ export function createDirectorActHandler(
 
     const correlationId = context.correlation.correlationId;
     const canonical = resolveCanonicalProjectIdentity(resolvedRoot);
-    const requestedProjectId = rawArgs.projectId as string | undefined;
+    const requestedProjectId = (rawArgs.projectId as string | undefined) ?? (context.correlation.projectId ?? undefined);
 
     if (requestedProjectId && requestedProjectId !== canonical.projectId) {
       const payload = {
@@ -916,7 +916,7 @@ export function createDirectorResultHandler(
 
     const correlationId = context.correlation.correlationId;
     const canonical = resolveCanonicalProjectIdentity(resolvedRoot);
-    const requestedProjectId = rawArgs.projectId as string | undefined;
+    const requestedProjectId = (rawArgs.projectId as string | undefined) ?? (context.correlation.projectId ?? undefined);
 
     if (requestedProjectId && requestedProjectId !== canonical.projectId) {
       const payload = {
@@ -1010,7 +1010,7 @@ export function createDirectorStatusHandler(
 
     const correlationId = context.correlation.correlationId;
     const canonical = resolveCanonicalProjectIdentity(resolvedRoot);
-    const requestedProjectId = rawArgs.projectId as string | undefined;
+    const requestedProjectId = (rawArgs.projectId as string | undefined) ?? (context.correlation.projectId ?? undefined);
 
     if (requestedProjectId && requestedProjectId !== canonical.projectId) {
       const payload = {
@@ -1129,7 +1129,7 @@ export function createDirectorControlHandler(
 
     const correlationId = context.correlation.correlationId;
     const canonical = resolveCanonicalProjectIdentity(resolvedRoot);
-    const requestedProjectId = rawArgs.projectId as string | undefined;
+    const requestedProjectId = (rawArgs.projectId as string | undefined) ?? (context.correlation.projectId ?? undefined);
 
     if (requestedProjectId && requestedProjectId !== canonical.projectId) {
       const payload = {
