@@ -510,6 +510,7 @@ describe('Phase A4: Closed-Loop Coordinator Integration', { concurrency: 1 }, ()
       recoveryPolicyEngine,
       correctiveTaskService,
       executorPort: mockExecutor,
+      allowLegacyReasoning: true,
     });
   });
 

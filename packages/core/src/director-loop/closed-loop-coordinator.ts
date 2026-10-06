@@ -46,6 +46,7 @@ import { DirectorSessionStore } from '../director/director-session-store.js';
 import { DirectorSessionEngine } from '../director/director-session-engine.js';
 import { DirectorDecisionStore } from '../director/director-decision-store.js';
 import type { DirectorContextSnapshot } from '../director/director-context-types.js';
+import { DirectorContextSynchronizer } from '../director/director-context-synchronizer.js';
 import { ApprovalStore } from '../approval/approval-store.js';
 import { ApprovalPackageEngine } from '../approval/approval-package-engine.js';
 import { SpecStore } from '../storage/spec-store.js';
@@ -120,6 +121,8 @@ export interface ClosedLoopCoordinatorOptions {
   readonly budgetManager?: BudgetManager;
   readonly executorPort?: ExecutorPort;
   readonly recoveryEngine?: RecoveryEngine;
+  /** Explicit test-only flag to allow legacy reasoning engine fallback */
+  readonly allowLegacyReasoning?: boolean;
 }
 
 export class ClosedLoopCoordinator {
@@ -140,6 +143,7 @@ export class ClosedLoopCoordinator {
   readonly runtimeStateManager?: LocalRuntimeStateManager;
   readonly directorRuntime?: DirectorRuntime;
   readonly reasoningEngine?: DirectorReasoningEngine;
+  readonly allowLegacyReasoning: boolean;
   readonly actionPipeline?: DirectorActionPipeline;
   readonly actionBuilder: DirectorActionBuilder;
   readonly actionValidator: DirectorActionValidator;
@@ -160,6 +164,7 @@ export class ClosedLoopCoordinator {
     this.executorPort = options.executorPort;
     this.authorizationPolicyEngine = options.authorizationPolicyEngine;
     this.runtimeStateManager = options.runtimeStateManager;
+    this.allowLegacyReasoning = options.allowLegacyReasoning ?? false;
 
     this.specStore = options.specStore ?? new SpecStore({ baseDir: this.workspaceRoot });
     this.dagEngine = options.dagEngine ?? new TaskDagEngine();
@@ -310,12 +315,14 @@ export class ClosedLoopCoordinator {
             directorRuntime: this.directorRuntime,
             actionBuilder: this.actionBuilder,
             actionValidator: this.actionValidator,
+            allowLegacyReasoningEngine: this.allowLegacyReasoning,
           })
-        : this.reasoningEngine
+        : this.reasoningEngine && this.allowLegacyReasoning
         ? new DirectorActionPipeline({
             reasoningEngine: this.reasoningEngine,
             actionBuilder: this.actionBuilder,
             actionValidator: this.actionValidator,
+            allowLegacyReasoningEngine: true,
           })
         : undefined);
   }
@@ -407,24 +414,46 @@ export class ClosedLoopCoordinator {
     }
 
     if (!snapshot) {
-      const fallbackSnapshot: DirectorContextSnapshot = {
-        directorSessionId: session.directorSessionId,
+      try {
+        const synchronizer = new DirectorContextSynchronizer({
+          workspaceRoot: workingDir,
+          sessionStore: this.sessionStore,
+          sessionEngine: this.sessionEngine,
+        });
+        snapshot = await synchronizer.synchronize({
+          directorSessionId: session.directorSessionId,
+          projectId,
+        });
+      } catch {
+        // failed to synchronize
+      }
+    }
+
+    // Authoritative snapshot invariant enforcement (Section 4 & 5):
+    // Must be non-null, complete, matching project & session, and non-synthetic
+    const isSyntheticFingerprint =
+      Boolean(snapshot?.logicalFingerprint?.endsWith('-auto')) ||
+      Boolean(snapshot?.logicalFingerprint?.endsWith('-recovery'));
+
+    if (
+      !snapshot ||
+      snapshot.isComplete !== true ||
+      !snapshot.logicalFingerprint ||
+      isSyntheticFingerprint ||
+      snapshot.projectId !== projectId ||
+      snapshot.directorSessionId !== session.directorSessionId
+    ) {
+      return {
+        cycleId: `cycle-${Date.now()}-no-context`,
         projectId,
-        projectRoot: workingDir,
-        protocolVersion: 'P9-02',
-        schemaVersion: 1,
-        synchronizedAt: new Date().toISOString(),
-        logicalFingerprint: `fp-${projectId}-auto`,
-        isComplete: true,
-        syncStatus: 'UNCHANGED',
-        sections: {} as any,
-        unavailableSections: [],
-        staleSections: [],
-        sectionMetadata: {} as any,
-        isDerived: true,
+        directorSessionId: session.directorSessionId,
+        status: 'EXECUTION_FAILED',
+        isSuccess: false,
+        summary: `CONTEXT_UNAVAILABLE: Authoritative DirectorContextSnapshot is missing, incomplete, synthetic, or mismatched for session ${session.directorSessionId}.`,
+        stepReached: 'CONTEXT_SYNC',
+        humanDecisionRequired: false,
+        completedAt: new Date().toISOString(),
       };
-      await this.sessionStore.saveSnapshot(fallbackSnapshot);
-      snapshot = fallbackSnapshot;
     }
 
     const currentUnderstandingRevision = session.understandingRevision ?? 1;
@@ -463,7 +492,7 @@ export class ClosedLoopCoordinator {
             completedAt: new Date().toISOString(),
           };
         }
-      } else if (this.reasoningEngine) {
+      } else if (this.reasoningEngine && this.allowLegacyReasoning) {
         try {
           legacyReasoningResult = await this.reasoningEngine.reason({
             snapshot,
@@ -483,25 +512,8 @@ export class ClosedLoopCoordinator {
             completedAt: new Date().toISOString(),
           };
         }
-      } else {
-        // Fallback safety (Section 15):
-        // In production, closed-loop reasoning MUST fail closed if no authoritative runtime is configured.
-        const isProduction = process.env.NODE_ENV === 'production';
-        if (isProduction) {
-          return {
-            cycleId: `cycle-${Date.now()}-no-runtime`,
-            projectId,
-            directorSessionId: session.directorSessionId,
-            status: 'EXECUTION_FAILED',
-            isSuccess: false,
-            summary: 'Fail closed: No authoritative DirectorRuntime configured in production environment.',
-            stepReached: 'REASONING',
-            humanDecisionRequired: false,
-            completedAt: new Date().toISOString(),
-          };
-        }
-
-        // Test/compatibility fallback only when targetTaskId or eligible task exists:
+      } else if (this.allowLegacyReasoning) {
+        // Test/compatibility fallback strictly when allowLegacyReasoning is explicitly enabled:
         let targetTaskId = input.targetTaskId;
         const allTasks = await this.specStore.loadTasks();
 
@@ -531,6 +543,21 @@ export class ClosedLoopCoordinator {
             },
           };
         }
+      } else {
+        // Fail closed: In production execution path, closed-loop reasoning MUST fail closed
+        // if DirectorRuntime is not configured. Legacy reasoning fallback is rejected unless
+        // explicitly allowed via test option allowLegacyReasoning.
+        return {
+          cycleId: `cycle-${Date.now()}-no-runtime`,
+          projectId,
+          directorSessionId: session.directorSessionId,
+          status: 'EXECUTION_FAILED',
+          isSuccess: false,
+          summary: 'DIRECTOR_RUNTIME_UNAVAILABLE: Fail closed: No authoritative DirectorRuntime configured for closed-loop execution.',
+          stepReached: 'REASONING',
+          humanDecisionRequired: false,
+          completedAt: new Date().toISOString(),
+        };
       }
     }
 
@@ -573,6 +600,34 @@ export class ClosedLoopCoordinator {
     };
 
     if (actionEnvelope) {
+      // Anti-spoofing & authority boundary verification on arbitrary custom envelope
+      const p = (actionEnvelope.payload ?? {}) as Record<string, unknown>;
+      if (
+        (actionEnvelope as any).actor === 'USER' ||
+        (actionEnvelope as any).actorRole === 'PRODUCT_OWNER' ||
+        p.isDevelopmentAuthorized === true ||
+        p.hasImplementationAuthority === true ||
+        p.isTrustedHumanAuth === true ||
+        p.authStatus === 'VERIFIED_HUMAN' ||
+        p.actor === 'USER' ||
+        p.actorRole === 'PRODUCT_OWNER' ||
+        p.selfApproved === true ||
+        p.claimImplementationAuthority === true
+      ) {
+        return {
+          cycleId: `cycle-${Date.now()}-envelope-spoof-err`,
+          projectId,
+          directorSessionId: session.directorSessionId,
+          status: 'EXECUTION_FAILED',
+          isSuccess: false,
+          summary: 'Action envelope validation failed: Spoofed authority or unauthorized role escalation detected in payload.',
+          stepReached: 'ACTION_PACKAGING',
+          actionEnvelope,
+          humanDecisionRequired: false,
+          completedAt: new Date().toISOString(),
+        };
+      }
+
       try {
         const val = await this.actionValidator.validate(actionEnvelope, validationContext);
         validatedActionResult = {
@@ -803,6 +858,35 @@ export class ClosedLoopCoordinator {
 
     const activePkg = await this.approvalStore.getActivePackage(projectId);
 
+    // Persist authoritative Director decision if action is IMPLEMENT_TASK
+    if (actionEnvelope && actionEnvelope.actionType === 'IMPLEMENT_TASK' && targetTaskId) {
+      const existingDecisions = await this.decisionStore.listDecisions({ sessionId: session.directorSessionId });
+      const hasDecision = existingDecisions.some(
+        (d) => d.decisionType === 'IMPLEMENT_TASK' && (d.metadata as any)?.taskId === targetTaskId
+      );
+      if (!hasDecision) {
+        await this.decisionStore.saveDecision({
+          decisionId: `dec-${actionEnvelope.actionId}`,
+          directorSessionId: session.directorSessionId,
+          projectId,
+          protocolVersion: 'P9-03',
+          schemaVersion: 1,
+          actor: 'DIRECTOR',
+          decisionType: 'IMPLEMENT_TASK',
+          rationale:
+            (actionEnvelope.payload as any)?.rationale ??
+            (actionEnvelope.payload as any)?.objective ??
+            `Authoritative Director implementation decision for task ${targetTaskId}`,
+          basedOnContextFingerprint: actionEnvelope.basedOnContextFingerprint,
+          basedOnApprovalRevision: activePkg?.revision ?? 1,
+          basedOnUnderstandingRevision: actionEnvelope.understandingRevision,
+          createdAt: new Date().toISOString(),
+          metadata: { taskId: targetTaskId },
+          hasImplementationAuthority: false,
+        });
+      }
+    }
+
     const intent: BridgeExecutionIntent = createFrozenBridgeExecutionIntent({
       executionIntentId: dispatchResult.executionIntentId ?? `intent-${Date.now()}`,
       actionId: actionEnvelope.actionId,
@@ -836,18 +920,26 @@ export class ClosedLoopCoordinator {
         authContext: input.authContext as any,
       });
     } catch (err: any) {
+      const isTimeout =
+        err.code === 'ETIMEDOUT' ||
+        err.name === 'TimeoutError' ||
+        (typeof err.message === 'string' &&
+          (err.message.toLowerCase().includes('timed out') ||
+            err.message.toLowerCase().includes('timeout') ||
+            err.message.toLowerCase().includes('aborted')));
+
       return {
         cycleId: `cycle-${Date.now()}-bridge-err`,
         projectId,
         directorSessionId: session.directorSessionId,
-        status: 'EXECUTION_FAILED',
+        status: isTimeout ? 'EXECUTION_UNKNOWN' : 'EXECUTION_FAILED',
         isSuccess: false,
         summary: `Execution bridge error: ${err.message}`,
-        stepReached: 'BRIDGE_EXECUTION',
+        stepReached: isTimeout ? 'EVIDENCE_VERIFICATION' : 'BRIDGE_EXECUTION',
         taskId: intent.taskId,
         actionEnvelope,
         dispatchResult,
-        humanDecisionRequired: false,
+        humanDecisionRequired: isTimeout,
         completedAt: new Date().toISOString(),
       };
     }
@@ -1202,43 +1294,45 @@ export class ClosedLoopCoordinator {
     let refreshedContext: DirectorContextSnapshot;
     try {
       const existing = await this.sessionStore.loadLatestSnapshot(targetSessionId);
-      if (existing) {
+      if (existing && existing.isComplete && !existing.logicalFingerprint.endsWith('-recovery')) {
         refreshedContext = existing;
       } else {
-        refreshedContext = {
+        const synchronizer = new DirectorContextSynchronizer({
+          workspaceRoot: this.workspaceRoot ?? process.cwd(),
+          sessionStore: this.sessionStore,
+          sessionEngine: this.sessionEngine,
+        });
+        refreshedContext = await synchronizer.synchronize({
           directorSessionId: targetSessionId,
           projectId: targetProjectId,
-          projectRoot: this.workspaceRoot ?? process.cwd(),
-          protocolVersion: 'P9-02',
-          schemaVersion: 1,
-          synchronizedAt: new Date().toISOString(),
-          logicalFingerprint: `fp-${targetProjectId}-recovery`,
-          isComplete: true,
-          syncStatus: 'UNCHANGED',
-          sections: {} as any,
-          unavailableSections: [],
-          staleSections: [],
-          sectionMetadata: {} as any,
-          isDerived: true,
-        };
+        });
       }
     } catch {
-      refreshedContext = {
-        directorSessionId: targetSessionId,
-        projectId: targetProjectId,
-        projectRoot: this.workspaceRoot ?? process.cwd(),
-        protocolVersion: 'P9-02',
-        schemaVersion: 1,
-        synchronizedAt: new Date().toISOString(),
-        logicalFingerprint: `fp-${targetProjectId}-recovery`,
-        isComplete: true,
-        syncStatus: 'UNCHANGED',
-        sections: {} as any,
-        unavailableSections: [],
-        staleSections: [],
-        sectionMetadata: {} as any,
-        isDerived: true,
-      };
+      try {
+        let sess = await this.sessionStore.loadSession(targetSessionId);
+        if (!sess) {
+          sess = await this.sessionEngine.createSession({
+            directorSessionId: targetSessionId,
+            projectId: targetProjectId,
+          });
+        }
+        const synchronizer = new DirectorContextSynchronizer({
+          workspaceRoot: this.workspaceRoot ?? process.cwd(),
+          sessionStore: this.sessionStore,
+          sessionEngine: this.sessionEngine,
+        });
+        refreshedContext = await synchronizer.synchronize({
+          directorSessionId: targetSessionId,
+          projectId: targetProjectId,
+        });
+      } catch {
+        const fallbackExisting = await this.sessionStore.loadLatestSnapshot(targetSessionId);
+        if (fallbackExisting) {
+          refreshedContext = fallbackExisting;
+        } else {
+          throw new Error(`Cannot recover authoritative lifecycle: Context unavailable for session ${targetSessionId}`);
+        }
+      }
     }
 
     const humanDecisionRequired =

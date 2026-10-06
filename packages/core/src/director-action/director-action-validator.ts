@@ -51,6 +51,10 @@ export interface DirectorActionValidationContext {
   readonly currentDirectorSessionId: string;
   readonly currentProjectId: string;
   readonly existingTasks?: readonly TaskSummaryInfo[];
+  readonly expectedApprovalRevision?: number;
+  readonly actualApprovalRevision?: number;
+  readonly expectedMandateRevision?: number;
+  readonly actualMandateRevision?: number;
 }
 
 export interface DirectorActionIdempotencyRecord {
@@ -196,6 +200,28 @@ export class DirectorActionValidator {
       );
     }
 
+    if (
+      context.expectedApprovalRevision !== undefined &&
+      context.actualApprovalRevision !== undefined &&
+      context.expectedApprovalRevision !== context.actualApprovalRevision
+    ) {
+      throw new DirectorActionValidationError(
+        `Approval revision mismatch: expected ${context.expectedApprovalRevision}, got ${context.actualApprovalRevision}.`,
+        { expectedApprovalRevision: context.expectedApprovalRevision, actualApprovalRevision: context.actualApprovalRevision }
+      );
+    }
+
+    if (
+      context.expectedMandateRevision !== undefined &&
+      context.actualMandateRevision !== undefined &&
+      context.expectedMandateRevision !== context.actualMandateRevision
+    ) {
+      throw new DirectorActionValidationError(
+        `Mandate revision mismatch: expected ${context.expectedMandateRevision}, got ${context.actualMandateRevision}.`,
+        { expectedMandateRevision: context.expectedMandateRevision, actualMandateRevision: context.actualMandateRevision }
+      );
+    }
+
     // 5. Payload-Specific Schema & Semantic Validation
     const typedPayload = this.validateActionPayload(
       parsedEnvelope.actionType,
@@ -307,6 +333,16 @@ export class DirectorActionValidator {
         { actor: envelope.actor, actorRole: envelope.actorRole }
       );
     }
+
+    if (
+      (envelope as any).hasImplementationAuthority === true ||
+      (envelope as any).isDevelopmentAuthorized === true
+    ) {
+      throw new DirectorActionImpersonationError(
+        'Director action envelope cannot claim implementation authority or development authorization directly.',
+        { actor: envelope.actor, actorRole: envelope.actorRole }
+      );
+    }
   }
 
   private validateActionPayload(
@@ -318,10 +354,15 @@ export class DirectorActionValidator {
       if (
         p.isDevelopmentAuthorized !== undefined ||
         p.hasImplementationAuthority !== undefined ||
-        p.isTrustedHumanAuth !== undefined
+        p.isTrustedHumanAuth !== undefined ||
+        p.authStatus === 'VERIFIED_HUMAN' ||
+        p.actor === 'USER' ||
+        p.actorRole === 'PRODUCT_OWNER' ||
+        p.selfApproved !== undefined ||
+        p.claimImplementationAuthority !== undefined
       ) {
         throw new DirectorActionValidationError(
-          'Payload contains prohibited authority claim fields (isDevelopmentAuthorized / hasImplementationAuthority / isTrustedHumanAuth).'
+          'Payload contains prohibited authority claim fields (isDevelopmentAuthorized / hasImplementationAuthority / isTrustedHumanAuth / authStatus / selfApproved).'
         );
       }
     }

@@ -291,6 +291,7 @@ describe('A3: Director Action Protocol & Authorization Policy Integration', () =
       reasoningEngine,
       actionBuilder,
       actionValidator,
+      allowLegacyReasoningEngine: true,
     });
 
     const result = await pipeline.execute({

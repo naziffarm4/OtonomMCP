@@ -64,9 +64,10 @@ export class AuthorizationPolicyEngine {
       });
     }
 
-    // Since we don't have expected mandate revision in action envelope, we might not be able to check it against action directly, 
-    // but the test expects "Mandate revision uyuşmazlığı" to be checked. Let's assume the action payload has it if provided.
-    const expectedRevision = (action.payload as any).expectedMandateRevision;
+    const expectedRevision =
+      (action.payload as any)?.expectedMandateRevision ??
+      (action as any).expectedMandateRevision ??
+      (action as any).metadata?.expectedMandateRevision;
     if (expectedRevision !== undefined && expectedRevision !== mandate.mandateRevision) {
       return this.createDecision({
         action,
@@ -77,7 +78,10 @@ export class AuthorizationPolicyEngine {
       });
     }
 
-    const expectedPolicyVersion = (action.payload as any).expectedPolicyVersion;
+    const expectedPolicyVersion =
+      (action.payload as any)?.expectedPolicyVersion ??
+      (action as any).expectedPolicyVersion ??
+      (action as any).metadata?.expectedPolicyVersion;
     if (expectedPolicyVersion !== undefined && expectedPolicyVersion !== mandate.policyVersion) {
       return this.createDecision({
         action,
@@ -99,6 +103,19 @@ export class AuthorizationPolicyEngine {
       });
     }
 
+    if (
+      (action as any).hasImplementationAuthority === true ||
+      (action as any).isDevelopmentAuthorized === true
+    ) {
+      return this.createDecision({
+        action,
+        decisionResult: AuthorizationDecisionResult.DENY,
+        reason: 'Director cannot self-authorize or escalate implementation authority. Rejected fail-closed.',
+        appliedRules: ['ANTI_SPOOFING_AUTHORITY_VIOLATION'],
+        riskLevel: RiskLevel.CRITICAL,
+      });
+    }
+
     const payload = action.payload as Record<string, unknown> | undefined;
     if (payload) {
       if (
@@ -106,7 +123,10 @@ export class AuthorizationPolicyEngine {
         payload.authStatus === 'VERIFIED_HUMAN' ||
         payload.actor === 'USER' ||
         payload.actorRole === 'PRODUCT_OWNER' ||
-        payload.hasImplementationAuthority === true
+        payload.hasImplementationAuthority === true ||
+        payload.isDevelopmentAuthorized === true ||
+        payload.claimImplementationAuthority === true ||
+        payload.selfApproved === true
       ) {
         return this.createDecision({
           action,
@@ -206,7 +226,10 @@ export class AuthorizationPolicyEngine {
         metadata.authStatus === 'VERIFIED_HUMAN' ||
         metadata.actor === 'USER' ||
         metadata.actorRole === 'PRODUCT_OWNER' ||
-        metadata.hasImplementationAuthority === true
+        metadata.hasImplementationAuthority === true ||
+        metadata.isDevelopmentAuthorized === true ||
+        metadata.claimImplementationAuthority === true ||
+        metadata.selfApproved === true
       ) {
         return this.createDecisionFromIntent({
           intent,
@@ -277,7 +300,12 @@ export class AuthorizationPolicyEngine {
     }
 
     // 3. Human approval required by mandate
-    if (mandate.humanApprovalRequiredOperations.includes(actionType)) {
+    if (
+      mandate.humanApprovalRequiredOperations.includes(actionType) ||
+      ((actionType === 'IMPLEMENT_TASK' || actionType === 'RETRY_TASK' || actionType === 'CORRECT_TASK') &&
+        (mandate.humanApprovalRequiredOperations.includes('IMPLEMENTATION') ||
+         mandate.humanApprovalRequiredOperations.includes('FILE_MODIFY')))
+    ) {
       return {
         result: AuthorizationDecisionResult.REQUIRE_HUMAN_APPROVAL,
         rule: 'EXPLICITLY_REQUIRES_HUMAN_APPROVAL',

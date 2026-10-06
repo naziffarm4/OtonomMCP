@@ -30,7 +30,11 @@ import type {
   DirectorReasoningInput,
   DirectorReasoningResult as LegacyDirectorReasoningResult,
 } from '../director-reasoning/director-reasoning-types.js';
-import { DirectorRuntime, type DirectorReasoningResult as P27DirectorReasoningResult } from '../director/director-runtime.js';
+import {
+  DirectorRuntime,
+  type DirectorReasoningResult as P27DirectorReasoningResult,
+} from '../director/director-runtime.js';
+import { DirectorRuntimeUnavailableError } from '../director/director-runtime-errors.js';
 import {
   type DirectorActionEnvelope,
   type DirectorActionType,
@@ -48,6 +52,8 @@ export interface DirectorActionPipelineConfig {
   readonly directorRuntime?: DirectorRuntime;
   readonly actionBuilder?: DirectorActionBuilder;
   readonly actionValidator?: DirectorActionValidator;
+  /** Explicit test-only flag to allow legacy DirectorReasoningEngine fallback */
+  readonly allowLegacyReasoningEngine?: boolean;
 }
 
 export interface RunDirectorActionPipelineInput extends Partial<DirectorReasoningInput> {
@@ -93,18 +99,21 @@ export class DirectorActionPipeline {
   readonly directorRuntime?: DirectorRuntime;
   readonly actionBuilder: DirectorActionBuilder;
   readonly actionValidator: DirectorActionValidator;
+  readonly allowLegacyReasoningEngine: boolean;
 
   constructor(config: DirectorActionPipelineConfig) {
     this.directorRuntime = config.directorRuntime;
     this.reasoningEngine = config.reasoningEngine;
     this.actionBuilder = config.actionBuilder ?? new DirectorActionBuilder();
     this.actionValidator = config.actionValidator ?? new DirectorActionValidator();
+    this.allowLegacyReasoningEngine = config.allowLegacyReasoningEngine ?? false;
   }
 
   /**
    * Executes the full Director reasoning to validated action envelope pipeline.
    * Authoritative production flow uses P27 DirectorRuntime.
    *
+   * @throws DirectorRuntimeUnavailableError if DirectorRuntime is not configured
    * @throws DirectorRuntimeError | DirectorLlmRequestFailedError if DirectorRuntime reasoning fails
    * @throws DirectorActionValidationError | DirectorActionStaleContextError if validation fails
    */
@@ -160,8 +169,8 @@ export class DirectorActionPipeline {
       };
     }
 
-    // 2. Legacy fallback path: DirectorReasoningEngine
-    if (this.reasoningEngine) {
+    // 2. Explicit test-only legacy fallback path: DirectorReasoningEngine
+    if (this.allowLegacyReasoningEngine && this.reasoningEngine) {
       const reasoningResult = await this.reasoningEngine.reason(input as any);
 
       const envelope = this.actionBuilder.buildEnvelope({
@@ -198,6 +207,13 @@ export class DirectorActionPipeline {
       };
     }
 
-    throw new Error('DirectorActionPipeline: neither directorRuntime nor reasoningEngine is configured.');
+    throw new DirectorRuntimeUnavailableError(
+      'DirectorActionPipeline: Authoritative DirectorRuntime is not configured. Legacy reasoning fallback is prohibited in production execution.',
+      {
+        hasRuntime: Boolean(this.directorRuntime),
+        hasReasoningEngine: Boolean(this.reasoningEngine),
+        allowLegacyReasoningEngine: this.allowLegacyReasoningEngine,
+      }
+    );
   }
 }

@@ -53,6 +53,7 @@ import { CorrectiveTaskService } from '../recovery/corrective-task-service.js';
 import { RecoveryStrategy } from '../recovery/recovery-policy-types.js';
 import type { DirectorDecision } from '../director/director-decision-types.js';
 import type { DirectorContextSnapshot } from '../director/director-context-types.js';
+import { DirectorContextSynchronizer } from '../director/director-context-synchronizer.js';
 
 export interface DriverEngineOptions {
   readonly workspaceRoot?: string;
@@ -288,6 +289,25 @@ export class DriverEngine {
       };
     }
 
+    // 3b. Check Director Context Snapshot Freshness
+    const snapshot = await this.sessionStore.loadLatestSnapshot(session.directorSessionId);
+    const isSynthetic =
+      Boolean(snapshot?.logicalFingerprint?.endsWith('-auto')) ||
+      Boolean(snapshot?.logicalFingerprint?.endsWith('-recovery'));
+    if (!snapshot || !snapshot.isComplete || !snapshot.logicalFingerprint || isSynthetic) {
+      return {
+        isAllowed: false,
+        requiresHumanDecision: true,
+        reason: 'Authoritative DirectorContextSnapshot is missing, incomplete, or synthetic.',
+        humanDecisionPoint: {
+          decisionId: 'decision-context-stale',
+          category: 'CONTEXT_STALE',
+          description: 'Context snapshot must be valid and synchronized for driver continuation.',
+          reason: 'Snapshot missing or synthetic.',
+        },
+      };
+    }
+
     // 4. Resolve next ready task and check dependencies
     const tasks = await this.specStore.loadTasks();
     if (tasks.length === 0) {
@@ -471,25 +491,34 @@ export class DriverEngine {
 
     let snapshot = await this.sessionStore.loadLatestSnapshot(session.directorSessionId);
     if (!snapshot) {
-      // Create minimal synchronized snapshot if not present
-      const newSnapshot: DirectorContextSnapshot = {
-        directorSessionId: session.directorSessionId,
-        projectId,
-        projectRoot: workingDir,
-        protocolVersion: 'P9-02',
-        schemaVersion: 1,
-        synchronizedAt: new Date().toISOString(),
-        logicalFingerprint: `fp-${projectId}-driver-auto`,
-        isComplete: true,
-        syncStatus: 'UNCHANGED',
-        sections: {} as any,
-        unavailableSections: [],
-        staleSections: [],
-        sectionMetadata: {} as any,
-        isDerived: true,
+      try {
+        const synchronizer = new DirectorContextSynchronizer({
+          workspaceRoot: workingDir,
+          sessionStore: this.sessionStore,
+        });
+        snapshot = await synchronizer.synchronize({
+          directorSessionId: session.directorSessionId,
+          projectId,
+        });
+      } catch {
+        // failed to synchronize
+      }
+    }
+
+    const isSyntheticFingerprint =
+      Boolean(snapshot?.logicalFingerprint?.endsWith('-auto')) ||
+      Boolean(snapshot?.logicalFingerprint?.endsWith('-recovery'));
+
+    if (!snapshot || !snapshot.isComplete || !snapshot.logicalFingerprint || isSyntheticFingerprint) {
+      return {
+        iteration: input.iterationNumber,
+        taskId: task.task_id,
+        instructionId: 'none',
+        cycleResult: null as any,
+        nextAction: null as any,
+        decision: 'HUMAN_DECISION_REQUIRED',
+        reason: `Authoritative Director context snapshot missing, incomplete, or synthetic for session ${session.directorSessionId}. Driver cannot proceed without valid Director context.`,
       };
-      await this.sessionStore.saveSnapshot(newSnapshot);
-      snapshot = newSnapshot;
     }
 
     const pkg = await this.approvalStore.getActivePackage();
@@ -520,24 +549,16 @@ export class DriverEngine {
     }
 
     if (!decision) {
-      // Create IMPLEMENT_TASK decision bound to this task
-      decision = {
-        decisionId: `dec-driver-${task.task_id}-${Date.now()}`,
-        directorSessionId: session.directorSessionId,
-        projectId,
-        protocolVersion: 'P9-03',
-        schemaVersion: 1,
-        actor: 'DIRECTOR',
-        decisionType: 'IMPLEMENT_TASK',
-        rationale: `Autonomous driver executing task ${task.task_id}`,
-        basedOnContextFingerprint: snapshot.logicalFingerprint,
-        basedOnApprovalRevision: pkg.revision,
-        basedOnUnderstandingRevision: session.understandingRevision,
-        createdAt: new Date().toISOString(),
-        metadata: { taskId: task.task_id },
-        hasImplementationAuthority: false,
+      // Driver MUST NOT manufacture technical Director decisions!
+      return {
+        iteration: input.iterationNumber,
+        taskId: task.task_id,
+        instructionId: 'none',
+        cycleResult: null as any,
+        nextAction: null as any,
+        decision: 'HUMAN_DECISION_REQUIRED',
+        reason: `No authoritative Director decision found for task '${task.task_id}'. Driver has no authority to manufacture implementation decisions.`,
       };
-      await this.decisionStore.saveDecision(decision);
     }
 
     // 5. Check or Ingest DirectorInstruction

@@ -629,9 +629,13 @@ export function createDirectorActHandler(
       const rawPayload = (rawArgs.payload as Record<string, unknown>) ?? {};
       if (
         (rawPayload as any).actor === 'USER' ||
+        (rawPayload as any).actorRole === 'PRODUCT_OWNER' ||
         (rawPayload as any).isTrustedHumanAuth === true ||
+        (rawPayload as any).authStatus === 'VERIFIED_HUMAN' ||
         (rawPayload as any).isDevelopmentAuthorized === true ||
-        (rawPayload as any).hasImplementationAuthority === true
+        (rawPayload as any).hasImplementationAuthority === true ||
+        (rawPayload as any).selfApproved === true ||
+        (rawPayload as any).claimImplementationAuthority === true
       ) {
         throw new DirectorInstructionUnauthorizedError(
           'Anti-spoofing violation: fake USER authorization or unverified implementation authority in payload rejected.',

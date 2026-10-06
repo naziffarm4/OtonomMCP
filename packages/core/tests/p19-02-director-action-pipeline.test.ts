@@ -90,6 +90,7 @@ describe('TASK-P19-02: Director Reasoning Engine / Structured Action Envelope In
       reasoningEngine,
       actionBuilder,
       actionValidator,
+      allowLegacyReasoningEngine: true,
     });
 
     snapshot = {
@@ -371,6 +372,7 @@ describe('TASK-P19-02: Director Reasoning Engine / Structured Action Envelope In
       reasoningEngine,
       actionBuilder,
       actionValidator: restartedValidator,
+      allowLegacyReasoningEngine: true,
     });
 
     // 3. Execution in Process B with the same key

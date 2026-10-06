@@ -18,6 +18,7 @@ export const DirectorRuntimeErrorCode = {
   DIRECTOR_CONTEXT_STALE: 'DIRECTOR_CONTEXT_STALE',
   DIRECTOR_CONTEXT_INCOMPLETE: 'DIRECTOR_CONTEXT_INCOMPLETE',
   DIRECTOR_CONTEXT_MISMATCH: 'DIRECTOR_CONTEXT_MISMATCH',
+  DIRECTOR_RUNTIME_UNAVAILABLE: 'DIRECTOR_RUNTIME_UNAVAILABLE',
   DIRECTOR_LLM_PROVIDER_UNAVAILABLE: 'DIRECTOR_LLM_PROVIDER_UNAVAILABLE',
   DIRECTOR_LLM_REQUEST_FAILED: 'DIRECTOR_LLM_REQUEST_FAILED',
   DIRECTOR_LLM_RESPONSE_INVALID: 'DIRECTOR_LLM_RESPONSE_INVALID',
@@ -39,6 +40,12 @@ export class DirectorRuntimeError extends AidmError {
     super(cleanMsg, code, details);
     this.name = this.constructor.name;
     Object.setPrototypeOf(this, new.target.prototype);
+  }
+}
+
+export class DirectorRuntimeUnavailableError extends DirectorRuntimeError {
+  constructor(message: string, details?: AidmErrorDetails) {
+    super(message, DirectorRuntimeErrorCode.DIRECTOR_RUNTIME_UNAVAILABLE, details);
   }
 }
 
