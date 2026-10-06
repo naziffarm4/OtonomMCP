@@ -56,7 +56,10 @@ export class PricingEngine {
    */
   getRate(providerId: string, modelId: string): PricingRate {
     const key = this.makeKey(providerId, modelId);
-    const rate = this.rates.get(key);
+    let rate = this.rates.get(key);
+    if (!rate) {
+      rate = this.rates.get(this.makeKey(providerId, '*'));
+    }
     if (!rate) {
       throw new BudgetError(
         `Pricing rate not found for provider '${providerId}' and model '${modelId}'`,

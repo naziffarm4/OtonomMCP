@@ -47,6 +47,18 @@ export class BudgetManager {
     this.reconciliationEngine = new ReconciliationEngine(this.db, this.pricingEngine);
     this.recoveryEngine = new BudgetRecoveryEngine(this.db);
     this.historyManager = options?.historyManager as HistoryManager | undefined;
+
+    // Register standard default pricing for openai provider models
+    this.pricingEngine.registerRate({
+      providerId: 'openai',
+      modelId: '*',
+      inputRateNum: 2_500_000_000n, // $2.50 / 1M input
+      inputRateDen: 1_000_000n,
+      outputRateNum: 10_000_000_000n, // $10.00 / 1M output
+      outputRateDen: 1_000_000n,
+      cachedInputRateNum: 1_250_000_000n,
+      cachedInputRateDen: 1_000_000n,
+    });
   }
 
   open(): void {

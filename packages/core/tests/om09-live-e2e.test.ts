@@ -105,6 +105,7 @@ import {
 
 import {
   BudgetManager,
+  BudgetAwareLlmAdapter,
 } from '../dist/budget/index.js';
 
 import { LlmFinishReason } from '../dist/llm-bridge/llm-types.js';
@@ -1250,5 +1251,462 @@ describe('OM-09: Live E2E Execution Gate (Real Host & Tooling)', () => {
         return true;
       }
     );
+  });
+
+  // ==========================================================================
+  // OM-09B: REAL OPENAI CLOUD LLM E2E CHAIN
+  // ==========================================================================
+  it('T01: OM-09B Complete Real Cloud LLM E2E Chain (Real OpenAI HTTPS API -> DirectorRuntime -> Authorization -> Real AGY -> Independent Evidence -> ACCEPT)', async () => {
+    // 0. Load native .env if not already loaded
+    if (!process.env.AIDM_LLM_API_KEY && !process.env.OPENAI_API_KEY) {
+      for (const p of ['.env', '../../.env', '../.env', path.resolve(process.cwd(), '.env'), path.resolve(process.cwd(), '../../.env')]) {
+        try {
+          if (fs.existsSync(p) && typeof (process as any).loadEnvFile === 'function') {
+            (process as any).loadEnvFile(p);
+            break;
+          }
+        } catch {
+          // ignore
+        }
+      }
+    }
+
+    const cloudApiKey = process.env.AIDM_LLM_API_KEY || process.env.OPENAI_API_KEY;
+    const cloudEndpoint = process.env.AIDM_LLM_ENDPOINT || 'https://api.openai.com/v1/chat/completions';
+    const cloudModel = process.env.AIDM_LLM_MODEL || process.env.OPENAI_MODEL || 'gpt-4o';
+
+    assert.ok(cloudApiKey, 'OPENAI_API_KEY must be configured in .env for OM-09B');
+    assert.ok(!cloudEndpoint.includes('localhost') && !cloudEndpoint.includes('127.0.0.1'), 'Cloud endpoint must not be localhost/mock');
+
+    const cloudTaskId = 'TASK-OM09B-CLOUD-LIVE-001';
+    const cloudTargetFilename = 'om09-cloud-llm-live.txt';
+    const cloudExpectedContent = 'OM-09-CLOUD-LLM-PASS';
+
+    // 1. Session Open
+    const session = await sessionEngine.createSession({
+      workspaceRoot: tempDir,
+      directorSessionId: 'dir-sess-om09b-live-001',
+      understandingRevision: 1,
+    });
+    assert.strictEqual(session.status, 'ACTIVE');
+
+    // 2. Initial Authoritative Context Snapshot
+    let snapshot = await synchronizer.synchronize({
+      directorSessionId: session.directorSessionId,
+      workspaceRoot: tempDir,
+    });
+    assert.ok(snapshot.logicalFingerprint);
+
+    // 3. Project Mandate Setup
+    const mandate: ProjectMandate = {
+      projectId,
+      allowedDirectories: ['./', 'src/', cloudTargetFilename],
+      allowedOperationTypes: ['FILE_CREATE', 'FILE_MODIFY', 'IMPLEMENT_TASK', 'IMPLEMENTATION'],
+      allowedCommandCategories: ['test', 'build'],
+      autoExecutableTaskClasses: ['IMPLEMENTATION'],
+      forbiddenOperations: ['WORKSPACE_ESCAPE', 'SYSTEM_DESTRUCTIVE'],
+      humanApprovalRequiredOperations: ['REPLAN', 'REQUEST_HUMAN_DECISION'],
+      authorizationStartTime: new Date(Date.now() - 3600000).toISOString(),
+      authorizationEndTime: new Date(Date.now() + 3600000).toISOString(),
+      resourceAndWorkLimits: { maxFileEdits: 10, maxCommands: 10 },
+      policyVersion: 1,
+      mandateRevision: 1,
+    };
+    saveMandateDirectly(tempDir, mandate);
+
+    // 4. Product Owner Explicit Approval
+    const report = createMockReport(tempDir, projectId);
+    const understanding = new InitialProjectUnderstandingBuilder().build(report, undefined, { projectId });
+    let pkg = approvalPackageEngine.buildPackage(understanding, undefined, { packageId: 'pkg-om09b-001' });
+    await approvalStore.savePackage(pkg);
+
+    const approvalResult = await humanApprovalEngine.submitApproval({
+      workspaceRoot: tempDir,
+      projectId,
+      directorSessionId: session.directorSessionId,
+      packageId: pkg.packageId,
+      revision: pkg.revision,
+      contextFingerprint: snapshot.logicalFingerprint,
+      understandingRevision: 1,
+      actor: 'product-owner-signoff',
+      actorRole: 'PRODUCT_OWNER',
+      intent: 'EXPLICIT_APPROVAL',
+      comment: 'Live Cloud LLM E2E sandbox verification authorized',
+    });
+    assert.strictEqual(approvalResult.isDevelopmentAuthorized, true);
+    pkg = approvalResult.package;
+
+    // 5. Register Task in SpecStore
+    await specStore.saveTasks([
+      {
+        task_id: 'FEAT-OM09B-ROOT',
+        parent_feature_id: null,
+        title: 'OM-09B Feature Root',
+        description: 'Root container for OM-09B tasks',
+        traceability_sources: ['REQ-OM09B'],
+        dependencies: [],
+        acceptance_criteria: ['Feature completion'],
+        status: TaskStatus.READY,
+        attempt: 0,
+        max_attempts: 1,
+        priority: TaskPriority.HIGH,
+        risk_level: RiskLevel.LOW,
+        created_at: new Date().toISOString(),
+        hierarchy_level: 'FEATURE',
+        metadata: { revision: 1 },
+      },
+      {
+        task_id: cloudTaskId,
+        parent_feature_id: 'FEAT-OM09B-ROOT',
+        title: 'Create om09-cloud-llm-live.txt in Sandbox',
+        description: `Sandbox workspace içinde: ${cloudTargetFilename} dosyasını oluştur. Dosya içeriği: ${cloudExpectedContent}. Başka dosyaya dokunma.`,
+        status: TaskStatus.READY,
+        priority: TaskPriority.HIGH,
+        dependencies: [],
+        acceptance_criteria: [`File ${cloudTargetFilename} must exist with exact content "${cloudExpectedContent}"`],
+        tags: ['om09b', 'cloud-llm'],
+        traceability_sources: ['REQ-OM09B'],
+        assigned_to: 'antigravity',
+        estimated_complexity: 'LOW',
+        risk_level: RiskLevel.LOW,
+        attempt: 0,
+        max_attempts: 1,
+        created_at: new Date().toISOString(),
+        hierarchy_level: 'TASK',
+        metadata: {
+          taskClass: 'IMPLEMENTATION',
+          targetFiles: [cloudTargetFilename],
+          implementationScope: [cloudTargetFilename],
+          revision: 1,
+        },
+      },
+    ]);
+
+    // 5.1 Synchronize Context Snapshot with READY task and explicit approval
+    snapshot = await synchronizer.synchronize({
+      directorSessionId: session.directorSessionId,
+      workspaceRoot: tempDir,
+    });
+    assert.ok(snapshot.logicalFingerprint);
+
+    // 6. Setup BudgetManager
+    const budgetDbPath = path.join(tempDir, '.ai-manager', 'budget.sqlite');
+    const budgetManager = new BudgetManager({ dbPath: budgetDbPath, historyManager });
+    budgetManager.open();
+    budgetManager.createGlobalAccount(10.0); // $10.00 budget
+
+    // 7. Setup Real Cloud HttpLlmTransport + ReferenceLlmAdapter + BudgetAwareLlmAdapter
+    const httpTransport = new HttpLlmTransport<ReferenceWireRequest, ReferenceWireResponse>({
+      endpoint: cloudEndpoint,
+      apiKey: cloudApiKey,
+      defaultTimeoutMs: 30000,
+    });
+
+    const baseAdapter = new ReferenceLlmAdapter({
+      providerId: 'openai',
+      providerName: 'openai',
+      defaultModel: cloudModel,
+      transport: httpTransport,
+      wireFormat: 'openai',
+      endpoint: cloudEndpoint,
+    });
+
+    const budgetAwareAdapter = new BudgetAwareLlmAdapter(baseAdapter, budgetManager);
+
+    const runtime = new DirectorRuntime({
+      llmProvider: budgetAwareAdapter,
+      sessionStore,
+      sessionEngine,
+      historyManager,
+      isProduction: false,
+      defaultMaxTokens: 4000,
+    });
+
+    // 8. Trigger Real OpenAI Cloud Reasoning Request
+    const reasoningResult = await runtime.reason({
+      projectId,
+      directorSessionId: session.directorSessionId,
+      taskId: cloudTaskId,
+      objective: `Select task ${cloudTaskId} for implementation to create ${cloudTargetFilename} with exact content "${cloudExpectedContent}".`,
+      trigger: 'TASK_READY',
+      snapshot,
+    });
+
+    assert.ok(reasoningResult.reasoningId, 'Must produce non-empty reasoningId');
+    assert.strictEqual(reasoningResult.provider, 'openai');
+    assert.strictEqual(reasoningResult.action.basedOnContextFingerprint, snapshot.logicalFingerprint);
+    assert.strictEqual(reasoningResult.finishReason, 'STOP');
+    assert.ok(reasoningResult.usage, 'Usage telemetry must be captured');
+    assert.ok(reasoningResult.usage.reported_input_tokens > 0);
+    assert.ok(reasoningResult.usage.reported_output_tokens > 0);
+
+    // Verify Budget HOLD -> SETTLE
+    const accountAfter = budgetManager.getGlobalAccount()!;
+    assert.strictEqual(accountAfter.reservedSpendNanoUsd, 0n, 'Hold must be completely settled');
+    assert.ok(accountAfter.committedSpendNanoUsd > 0n, 'Committed spend must be recorded');
+
+    // 9. Policy Authorization Check (ALLOW)
+    const actionEnvelope: DirectorActionEnvelope = {
+      protocolVersion: 'P19-01',
+      schemaVersion: 1,
+      actionId: computeDeterministicActionId({
+        projectId,
+        directorSessionId: session.directorSessionId,
+        actionType: 'IMPLEMENT_TASK',
+        idempotencyKey: `idem-cloud-${Date.now()}`,
+      }),
+      idempotencyKey: `idem-cloud-${Date.now()}`,
+      directorSessionId: session.directorSessionId,
+      projectId,
+      actionType: 'IMPLEMENT_TASK',
+      actor: 'DIRECTOR',
+      actorRole: 'DIRECTOR',
+      correlationId: `corr-cloud-${Date.now()}`,
+      payload: {
+        taskId: cloudTaskId,
+        targetFiles: [cloudTargetFilename],
+        implementationScope: [cloudTargetFilename],
+      },
+      actionPayload: {
+        taskId: cloudTaskId,
+        targetFiles: [cloudTargetFilename],
+        implementationScope: [cloudTargetFilename],
+      },
+      basedOnContextFingerprint: snapshot.logicalFingerprint,
+      issuedAt: new Date().toISOString(),
+      expiresAt: new Date(Date.now() + 60000).toISOString(),
+    };
+
+    const policyAuth = await policyEngine.evaluateAction(actionEnvelope, {
+      workspaceRoot: tempDir,
+      directorSessionId: session.directorSessionId,
+      expectedMandateRevision: 1,
+    });
+    assert.strictEqual(policyAuth.decisionResult, AuthorizationDecisionResult.ALLOW);
+
+    // 10. Register Decision
+    const decision = {
+      decisionId: `dec-cloud-om09b-${Date.now()}`,
+      directorSessionId: session.directorSessionId,
+      projectId,
+      protocolVersion: 'P9-03',
+      schemaVersion: 1,
+      actor: 'DIRECTOR' as const,
+      decisionType: 'IMPLEMENT_TASK',
+      rationale: reasoningResult.action.rationale,
+      basedOnContextFingerprint: snapshot.logicalFingerprint,
+      basedOnApprovalRevision: pkg.revision,
+      basedOnUnderstandingRevision: 1,
+      createdAt: new Date().toISOString(),
+      metadata: {},
+      hasImplementationAuthority: false as const,
+    };
+    await decisionStore.saveDecision(decision);
+
+    // 11. Authorize Execution Intent
+    const authorizationResult = await authorizer.validateExecutionIntent({
+      workspaceRoot: tempDir,
+      projectId,
+      directorSessionId: session.directorSessionId,
+      directorDecisionId: decision.decisionId,
+      taskId: cloudTaskId,
+      taskRevision: 1,
+      contextFingerprint: snapshot.logicalFingerprint,
+      understandingRevision: 1,
+      approvalPackageRevision: pkg.revision,
+      operationType: 'IMPLEMENT_TASK',
+    });
+    assert.strictEqual(authorizationResult.isValid, true);
+    assert.ok(authorizationResult.intent);
+
+    // 12. Build Execution Request
+    const request = await requestBuilder.buildExecutionRequest({
+      intent: authorizationResult.intent!,
+      instruction: {
+        objective: `In this repository, create a new file named "${cloudTargetFilename}" with exactly one line of content: "${cloudExpectedContent}". Touch no other files.`,
+        targetFiles: [cloudTargetFilename],
+        acceptanceCriteria: [`File ${cloudTargetFilename} must exist with exact content "${cloudExpectedContent}"`],
+        implementationScope: [cloudTargetFilename],
+      },
+      executionLimits: {
+        timeoutMs: 60000,
+        maxFileModifications: 2,
+      },
+    });
+
+    const validatedRequest = ExecutorGuard.validateExecutionPreconditions(request, {
+      workingDirectory: tempDir,
+    });
+
+    const targetFilePath = path.join(tempDir, cloudTargetFilename);
+    assert.strictEqual(fs.existsSync(targetFilePath), false, 'Target file must not exist before execution');
+
+    // 13. Dispatch to REAL agy.exe
+    const adapter = new AntigravityAdapter({
+      workspaceRoot: tempDir,
+      binaryPath: realAgyPath,
+      processRunner: new NodeAntigravityProcessRunner(),
+      skipCompatibilityProbe: false,
+    });
+
+    const rawOutcome = await adapter.execute(validatedRequest);
+    assertNotVerifiedEvidence(rawOutcome);
+    assert.strictEqual(rawOutcome.status, 'SUCCESS');
+    assert.strictEqual(rawOutcome.exitCode, 0);
+
+    // 14. Zero Executor Trust Independent Verification
+    assert.strictEqual(fs.existsSync(targetFilePath), true, `File ${cloudTargetFilename} must exist physically`);
+    const actualContent = fs.readFileSync(targetFilePath, 'utf8').trim();
+    assert.strictEqual(actualContent, cloudExpectedContent);
+
+    const expectedSha = crypto.createHash('sha256').update(actualContent).digest('hex');
+    const diskSha = crypto.createHash('sha256').update(fs.readFileSync(targetFilePath, 'utf8').trim()).digest('hex');
+    assert.strictEqual(diskSha, expectedSha);
+
+    const gitState = await gitPort.inspectState(tempDir);
+    assert.strictEqual(gitState.working_tree_clean, false);
+    const affectedFiles = [...gitState.unstaged_changes, ...gitState.untracked_files];
+    const hasTarget = affectedFiles.some((f) => f.includes(cloudTargetFilename));
+    assert.strictEqual(hasTarget, true);
+
+    const unexpectedFiles = affectedFiles.filter(
+      (f) => !f.includes(cloudTargetFilename) && !f.includes('.ai-manager')
+    );
+    assert.strictEqual(unexpectedFiles.length, 0);
+
+    // 15. Independent System Evidence Collection
+    const evidence = await collector.collectAndVerify(request, rawOutcome, {
+      workingDirectory: tempDir,
+    });
+    assert.strictEqual(evidence.verificationDecision, 'ACCEPT');
+
+    // 16. State Integration
+    const integrationOutcome = await integrator.integrate(evidence);
+    assert.strictEqual(integrationOutcome.success, true);
+    assert.strictEqual(integrationOutcome.taskStatus, TaskStatus.ACCEPTED);
+
+    const specTasks = await specStore.loadTasks();
+    const finalTask = specTasks.find((t) => t.task_id === cloudTaskId);
+    assert.strictEqual(finalTask?.status, TaskStatus.ACCEPTED);
+
+    budgetManager.close();
+  });
+
+  // ==========================================================================
+  // OM-09B NEGATIVE TESTS
+  // ==========================================================================
+  it('F08: OM-09B Invalid OpenAI Credential (HTTP 401) fails closed without executing AGY', async () => {
+    let agyInvoked = false;
+    const invalidTransport = new HttpLlmTransport<ReferenceWireRequest, ReferenceWireResponse>({
+      endpoint: 'https://api.openai.com/v1/chat/completions',
+      apiKey: 'sk-invalid-nonexistent-key-00000000000000000000000000',
+      defaultTimeoutMs: 15000,
+    });
+
+    const invalidAdapter = new ReferenceLlmAdapter({
+      providerId: 'openai-invalid',
+      providerName: 'openai',
+      defaultModel: 'gpt-4o',
+      transport: invalidTransport,
+      wireFormat: 'openai',
+    });
+
+    await assert.rejects(
+      async () => {
+        await invalidAdapter.generate({
+          correlation: { correlation_id: 'corr-f08', project_id: projectId },
+          messages: [{ role: 'user', content: 'test invalid key' }],
+        });
+        agyInvoked = true;
+      },
+      (err: any) => {
+        assert.ok(err.message.includes('401') || err.message.includes('Unauthorized') || err.message.includes('API key'), `Expected 401/Unauthorized, got: ${err.message}`);
+        return true;
+      }
+    );
+
+    assert.strictEqual(agyInvoked, false, 'AGY must NEVER be invoked on invalid credential');
+  });
+
+  it('F09: OM-09B Invalid OpenAI Model (HTTP 404/400) fails closed without executing AGY', async () => {
+    let agyInvoked = false;
+    const realApiKey = process.env.AIDM_LLM_API_KEY || process.env.OPENAI_API_KEY || 'sk-test';
+
+    const invalidModelTransport = new HttpLlmTransport<ReferenceWireRequest, ReferenceWireResponse>({
+      endpoint: 'https://api.openai.com/v1/chat/completions',
+      apiKey: realApiKey,
+      defaultTimeoutMs: 15000,
+    });
+
+    const invalidModelAdapter = new ReferenceLlmAdapter({
+      providerId: 'openai',
+      providerName: 'openai',
+      defaultModel: 'nonexistent-model-xyz-999',
+      transport: invalidModelTransport,
+      wireFormat: 'openai',
+    });
+
+    await assert.rejects(
+      async () => {
+        await invalidModelAdapter.generate({
+          correlation: { correlation_id: 'corr-f09', project_id: projectId },
+          messages: [{ role: 'user', content: 'test invalid model' }],
+          model: 'nonexistent-model-xyz-999',
+        });
+        agyInvoked = true;
+      },
+      (err: any) => {
+        assert.ok(err.message.length > 0);
+        return true;
+      }
+    );
+
+    assert.strictEqual(agyInvoked, false, 'AGY must NEVER be invoked on invalid model');
+  });
+
+  it('F10: OM-09B Budget Failure (Insufficient spend) halts before OpenAI/AGY dispatch', async () => {
+    let agyInvoked = false;
+    let networkDispatched = false;
+
+    const budgetManager = new BudgetManager({ dbPath: ':memory:' });
+    budgetManager.open();
+    // Microscopic budget: 1 nano-USD ($0.000000001) - insufficient for any token reservation
+    budgetManager.createGlobalAccount(0.000000001);
+
+    const transport = new HttpLlmTransport<ReferenceWireRequest, ReferenceWireResponse>({
+      endpoint: 'https://api.openai.com/v1/chat/completions',
+      apiKey: process.env.AIDM_LLM_API_KEY || process.env.OPENAI_API_KEY || 'sk-test',
+      defaultTimeoutMs: 15000,
+    });
+
+    const baseAdapter = new ReferenceLlmAdapter({
+      providerId: 'openai',
+      providerName: 'openai',
+      defaultModel: process.env.OPENAI_MODEL || 'gpt-4o',
+      transport,
+      wireFormat: 'openai',
+    });
+
+    const budgetAwareAdapter = new BudgetAwareLlmAdapter(baseAdapter, budgetManager);
+
+    await assert.rejects(
+      async () => {
+        await budgetAwareAdapter.generate({
+          correlation: { correlation_id: 'corr-f10', project_id: projectId },
+          messages: [{ role: 'user', content: 'test budget failure' }],
+          max_tokens: 1000,
+        });
+        networkDispatched = true;
+        agyInvoked = true;
+      },
+      (err: any) => {
+        assert.ok(err.code === 'ERR_INSUFFICIENT_FUNDS' || err.message.includes('Insufficient') || err.message.includes('budget'));
+        return true;
+      }
+    );
+
+    assert.strictEqual(networkDispatched, false, 'OpenAI network request must NOT be dispatched when budget insufficient');
+    assert.strictEqual(agyInvoked, false, 'AGY must NOT be invoked when budget insufficient');
+    budgetManager.close();
   });
 });

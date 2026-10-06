@@ -242,15 +242,20 @@ export class ReferenceLlmAdapter implements LLMProvider {
    * Strips out internal orchestrator metadata from JSON body to prevent HTTP 400 Bad Request.
    */
   translateToOpenAiWire(wire: ReferenceWireRequest): Record<string, unknown> {
+    const isReasoningModel = /^(o[0-9]|gpt-5|gpt-6)/i.test(wire.model);
     const body: Record<string, unknown> = {
       model: wire.model,
       messages: wire.messages,
     };
-    if (typeof wire.temperature === 'number' && Number.isFinite(wire.temperature)) {
+    if (!isReasoningModel && typeof wire.temperature === 'number' && Number.isFinite(wire.temperature)) {
       body.temperature = wire.temperature;
     }
     if (typeof wire.max_tokens === 'number' && Number.isFinite(wire.max_tokens)) {
-      body.max_tokens = wire.max_tokens;
+      if (isReasoningModel) {
+        body.max_completion_tokens = wire.max_tokens;
+      } else {
+        body.max_tokens = wire.max_tokens;
+      }
     }
     if (wire.response_format) {
       if (wire.response_format.type === 'json_schema') {
@@ -258,7 +263,7 @@ export class ReferenceLlmAdapter implements LLMProvider {
           type: 'json_schema',
           json_schema: {
             name: wire.response_format.schema_name || 'director_decision',
-            strict: wire.response_format.strict ?? true,
+            strict: isReasoningModel ? false : (wire.response_format.strict ?? true),
             schema: wire.response_format.schema ?? {},
           },
         };
