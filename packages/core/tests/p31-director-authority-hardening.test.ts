@@ -1601,4 +1601,360 @@ describe('Phase 31 (P31): Director Authority Hardening & Real Lifecycle Boundary
       assert.strictEqual(nextAction.taskCompleted, true);
     });
   });
+
+  // ==========================================================================
+  // P31-FIX: MCP DIRECTOR ACTION AUTHORITATIVE SNAPSHOT BOUNDARY (Tests 43-52)
+  // ==========================================================================
+  describe('7. MCP Authoritative Snapshot Boundary (P31-FIX)', () => {
+    it('T43_mcp_act_missing_snapshot_fails_closed: aidm.director.act fails closed when latest snapshot is missing', async () => {
+      const freshSessionId = `dir-session-no-snap-${Date.now()}`;
+      await sessionStore.saveSession({
+        directorSessionId: freshSessionId,
+        projectId: validProjectId,
+        projectRoot: tempDir,
+        status: 'ACTIVE',
+        createdAt: new Date().toISOString(),
+        lastActivityAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        understandingRevision: 1,
+        protocolVersion: 'P9-01',
+        schemaVersion: 1,
+        actor: 'DIRECTOR',
+        actorRole: 'DIRECTOR',
+        hasImplementationAuthority: false,
+        decisionCount: 0,
+        metadata: {},
+      });
+
+      const handler = createDirectorActHandler(tempDir);
+      const res = await handler(
+        {
+          workspaceRoot: tempDir,
+          directorSessionId: freshSessionId,
+          actionType: 'REQUEST_PLANNING',
+          payload: {
+            objective: 'Analyze requirements',
+            requestedBy: 'DIRECTOR',
+          },
+        },
+        { correlation: { correlationId: 'c-43', projectId: validProjectId } } as any
+      );
+
+      assert.strictEqual(res.isError, true);
+      const data = JSON.parse(res.content[0].text);
+      assert.strictEqual(data.error.code, 'CONTEXT_UNAVAILABLE');
+    });
+
+    it('T44_caller_supplied_fingerprint_cannot_bypass_missing_snapshot: action cannot dispatch without current snapshot even if caller sends fingerprint', async () => {
+      const freshSessionId = `dir-session-no-snap-2-${Date.now()}`;
+      await sessionStore.saveSession({
+        directorSessionId: freshSessionId,
+        projectId: validProjectId,
+        projectRoot: tempDir,
+        status: 'ACTIVE',
+        createdAt: new Date().toISOString(),
+        lastActivityAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        understandingRevision: 1,
+        protocolVersion: 'P9-01',
+        schemaVersion: 1,
+        actor: 'DIRECTOR',
+        actorRole: 'DIRECTOR',
+        hasImplementationAuthority: false,
+        decisionCount: 0,
+        metadata: {},
+      });
+
+      const handler = createDirectorActHandler(tempDir);
+      const res = await handler(
+        {
+          workspaceRoot: tempDir,
+          directorSessionId: freshSessionId,
+          actionType: 'SELECT_TASK',
+          basedOnContextFingerprint: 'fp-caller-claimed-fingerprint',
+          payload: {
+            taskId: 'task-02-auth',
+            reason: 'Caller attempting to supply synthetic fingerprint',
+          },
+        },
+        { correlation: { correlationId: 'c-44', projectId: validProjectId } } as any
+      );
+
+      assert.strictEqual(res.isError, true);
+      const data = JSON.parse(res.content[0].text);
+      assert.strictEqual(data.error.code, 'CONTEXT_UNAVAILABLE');
+    });
+
+    it('T45_caller_stale_fingerprint_rejected_for_non_execution_action: non-execution action fails when caller fingerprint is stale', async () => {
+      const handler = createDirectorActHandler(tempDir);
+      const res = await handler(
+        {
+          workspaceRoot: tempDir,
+          directorSessionId: validSessionId,
+          actionType: 'REVIEW_EVIDENCE',
+          basedOnContextFingerprint: 'fp-stale-different-fingerprint',
+          payload: {
+            evidenceId: 'evi-1',
+            taskId: 'task-02-auth',
+            verificationNotes: 'Testing stale fingerprint rejection',
+          },
+        },
+        { correlation: { correlationId: 'c-45', projectId: validProjectId } } as any
+      );
+
+      assert.strictEqual(res.isError, true);
+      const data = JSON.parse(res.content[0].text);
+      assert.match(data.error.message, /fingerprint mismatch|stale/i);
+    });
+
+    it('T46_caller_stale_understanding_revision_rejected: action fails when caller understanding revision does not match session', async () => {
+      const handler = createDirectorActHandler(tempDir);
+      const res = await handler(
+        {
+          workspaceRoot: tempDir,
+          directorSessionId: validSessionId,
+          actionType: 'REQUEST_PLANNING',
+          understandingRevision: 999, // Mismatched (session is rev 1)
+          payload: {
+            objective: 'Planning with wrong revision',
+            requestedBy: 'DIRECTOR',
+          },
+        },
+        { correlation: { correlationId: 'c-46', projectId: validProjectId } } as any
+      );
+
+      assert.strictEqual(res.isError, true);
+      const data = JSON.parse(res.content[0].text);
+      assert.match(data.error.message, /Understanding revision mismatch/i);
+    });
+
+    it('T47_caller_fingerprint_matching_incomplete_snapshot_rejected: incomplete snapshot fails closed with CONTEXT_UNAVAILABLE', async () => {
+      const sessionIncompleteId = `dir-session-incomplete-${Date.now()}`;
+      await sessionStore.saveSession({
+        directorSessionId: sessionIncompleteId,
+        projectId: validProjectId,
+        projectRoot: tempDir,
+        status: 'ACTIVE',
+        createdAt: new Date().toISOString(),
+        lastActivityAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        understandingRevision: 1,
+        protocolVersion: 'P9-01',
+        schemaVersion: 1,
+        actor: 'DIRECTOR',
+        actorRole: 'DIRECTOR',
+        hasImplementationAuthority: false,
+        decisionCount: 0,
+        metadata: {},
+      });
+
+      await sessionStore.saveSnapshot({
+        ...activeSnapshot,
+        directorSessionId: sessionIncompleteId,
+        logicalFingerprint: 'fp-incomplete-snap',
+        isComplete: false, // Incomplete!
+        unavailableSections: ['requirements'],
+      });
+
+      const handler = createDirectorActHandler(tempDir);
+      const res = await handler(
+        {
+          workspaceRoot: tempDir,
+          directorSessionId: sessionIncompleteId,
+          actionType: 'SELECT_TASK',
+          basedOnContextFingerprint: 'fp-incomplete-snap',
+          payload: {
+            taskId: 'task-02-auth',
+          },
+        },
+        { correlation: { correlationId: 'c-47', projectId: validProjectId } } as any
+      );
+
+      assert.strictEqual(res.isError, true);
+      const data = JSON.parse(res.content[0].text);
+      assert.strictEqual(data.error.code, 'CONTEXT_UNAVAILABLE');
+    });
+
+    it('T48_synthetic_snapshot_cannot_grant_authority: snapshot with -auto fingerprint fails closed with CONTEXT_UNAVAILABLE', async () => {
+      const sessionSyntheticId = `dir-session-synthetic-${Date.now()}`;
+      await sessionStore.saveSession({
+        directorSessionId: sessionSyntheticId,
+        projectId: validProjectId,
+        projectRoot: tempDir,
+        status: 'ACTIVE',
+        createdAt: new Date().toISOString(),
+        lastActivityAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        understandingRevision: 1,
+        protocolVersion: 'P9-01',
+        schemaVersion: 1,
+        actor: 'DIRECTOR',
+        actorRole: 'DIRECTOR',
+        hasImplementationAuthority: false,
+        decisionCount: 0,
+        metadata: {},
+      });
+
+      await sessionStore.saveSnapshot({
+        ...activeSnapshot,
+        directorSessionId: sessionSyntheticId,
+        logicalFingerprint: `fp-${validProjectId}-auto`,
+      });
+
+      const handler = createDirectorActHandler(tempDir);
+      const res = await handler(
+        {
+          workspaceRoot: tempDir,
+          directorSessionId: sessionSyntheticId,
+          actionType: 'REQUEST_PLANNING',
+          basedOnContextFingerprint: `fp-${validProjectId}-auto`,
+          payload: {
+            objective: 'Planning with synthetic snapshot',
+            requestedBy: 'DIRECTOR',
+          },
+        },
+        { correlation: { correlationId: 'c-48', projectId: validProjectId } } as any
+      );
+
+      assert.strictEqual(res.isError, true);
+      const data = JSON.parse(res.content[0].text);
+      assert.strictEqual(data.error.code, 'CONTEXT_UNAVAILABLE');
+    });
+
+    it('T49_review_evidence_cannot_dispatch_without_authoritative_snapshot: REVIEW_EVIDENCE without snapshot fails closed', async () => {
+      const sessionReviewId = `dir-session-review-${Date.now()}`;
+      await sessionStore.saveSession({
+        directorSessionId: sessionReviewId,
+        projectId: validProjectId,
+        projectRoot: tempDir,
+        status: 'ACTIVE',
+        createdAt: new Date().toISOString(),
+        lastActivityAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        understandingRevision: 1,
+        protocolVersion: 'P9-01',
+        schemaVersion: 1,
+        actor: 'DIRECTOR',
+        actorRole: 'DIRECTOR',
+        hasImplementationAuthority: false,
+        decisionCount: 0,
+        metadata: {},
+      });
+
+      const handler = createDirectorActHandler(tempDir);
+      const res = await handler(
+        {
+          workspaceRoot: tempDir,
+          directorSessionId: sessionReviewId,
+          actionType: 'REVIEW_EVIDENCE',
+          payload: {
+            evidenceId: 'evi-test',
+            taskId: 'task-02-auth',
+            verificationNotes: 'Review without snapshot',
+          },
+        },
+        { correlation: { correlationId: 'c-49', projectId: validProjectId } } as any
+      );
+
+      assert.strictEqual(res.isError, true);
+      const data = JSON.parse(res.content[0].text);
+      assert.strictEqual(data.error.code, 'CONTEXT_UNAVAILABLE');
+    });
+
+    it('T50_declare_project_complete_cannot_dispatch_without_authoritative_snapshot: DECLARE_PROJECT_COMPLETE without snapshot fails closed', async () => {
+      const sessionDeclareId = `dir-session-declare-${Date.now()}`;
+      await sessionStore.saveSession({
+        directorSessionId: sessionDeclareId,
+        projectId: validProjectId,
+        projectRoot: tempDir,
+        status: 'ACTIVE',
+        createdAt: new Date().toISOString(),
+        lastActivityAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        understandingRevision: 1,
+        protocolVersion: 'P9-01',
+        schemaVersion: 1,
+        actor: 'DIRECTOR',
+        actorRole: 'DIRECTOR',
+        hasImplementationAuthority: false,
+        decisionCount: 0,
+        metadata: {},
+      });
+
+      const handler = createDirectorActHandler(tempDir);
+      const res = await handler(
+        {
+          workspaceRoot: tempDir,
+          directorSessionId: sessionDeclareId,
+          actionType: 'DECLARE_PROJECT_COMPLETE',
+          payload: {
+            completionRationale: 'Attempting completion without context',
+            finalVerificationRequested: true,
+            requirementCoverage: [],
+          },
+        },
+        { correlation: { correlationId: 'c-50', projectId: validProjectId } } as any
+      );
+
+      assert.strictEqual(res.isError, true);
+      const data = JSON.parse(res.content[0].text);
+      assert.strictEqual(data.error.code, 'CONTEXT_UNAVAILABLE');
+    });
+
+    it('T51_request_human_decision_caller_fingerprint_cannot_bypass_drift: drifted snapshot rejects action even with caller-supplied fingerprint', async () => {
+      const driftedFingerprint = `fp-drifted-${Date.now()}`;
+      await sessionStore.saveSnapshot({
+        ...activeSnapshot,
+        logicalFingerprint: driftedFingerprint,
+      });
+
+      const handler = createDirectorActHandler(tempDir);
+      const res = await handler(
+        {
+          workspaceRoot: tempDir,
+          directorSessionId: validSessionId,
+          actionType: 'REQUEST_HUMAN_DECISION',
+          basedOnContextFingerprint: validFingerprint, // Old fingerprint!
+          payload: {
+            decisionType: 'SECURITY_APPROVAL',
+            question: 'Authorize release?',
+            options: ['APPROVE', 'REJECT'],
+            blocking: true,
+          },
+        },
+        { correlation: { correlationId: 'c-51', projectId: validProjectId } } as any
+      );
+
+      assert.strictEqual(res.isError, true);
+      const data = JSON.parse(res.content[0].text);
+      assert.match(data.error.message, /fingerprint mismatch|stale/i);
+    });
+
+    it('T52_non_execution_actions_validated_against_authoritative_snapshot: non-execution action passes validation with current snapshot fingerprint', async () => {
+      // Restore valid authoritative snapshot after T51 drift test
+      await sessionStore.saveSnapshot(activeSnapshot);
+
+      const handler = createDirectorActHandler(tempDir);
+      const res = await handler(
+        {
+          workspaceRoot: tempDir,
+          directorSessionId: validSessionId,
+          actionType: 'SELECT_TASK',
+          basedOnContextFingerprint: validFingerprint,
+          understandingRevision: validRevision,
+          payload: {
+            taskId: 'task-02-auth',
+            reason: 'Valid task selection with authoritative context',
+          },
+        },
+        { correlation: { correlationId: 'c-52', projectId: validProjectId } } as any
+      );
+
+      assert.strictEqual(res.isError, false);
+      const data = JSON.parse(res.content[0].text);
+      assert.strictEqual(data.success, true);
+      assert.strictEqual(data.actionType, 'SELECT_TASK');
+      assert.strictEqual(data.directorSessionId, validSessionId);
+    });
+  });
 });

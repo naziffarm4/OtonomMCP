@@ -41,6 +41,11 @@ import {
   DirectorInstructionSessionMismatchError,
   DirectorInstructionProjectMismatchError,
 } from '../../director-loop/director-loop-errors.js';
+import { DirectorContextUnavailableError } from '../../director/director-runtime-errors.js';
+import { HistoryManager } from '../../storage/history-manager.js';
+import { ApprovalStore } from '../../approval/approval-store.js';
+import { ProjectMandateStore } from '../../authorization/project-mandate-store.js';
+import { AuthorizationPolicyEngine } from '../../authorization/authorization-policy-engine.js';
 import {
   computeDeterministicActionId,
   DirectorActionEnvelopeZodSchema,
@@ -203,19 +208,30 @@ function getCoordinator(
   if (delegate?.closedLoopCoordinator) {
     return delegate.closedLoopCoordinator;
   }
+  const historyManager = delegate?.historyManager ?? new HistoryManager({ baseDir: resolvedRoot });
+  const approvalStore =
+    delegate?.approvalStore ?? new ApprovalStore({ baseDir: resolvedRoot, historyManager });
+  const mandateStore = new ProjectMandateStore({ baseDir: resolvedRoot });
+  const authEngine =
+    delegate?.authorizationPolicyEngine ??
+    new AuthorizationPolicyEngine({
+      historyManager,
+      mandateStore,
+    });
+
   return new ClosedLoopCoordinator({
     workspaceRoot: resolvedRoot,
     sessionStore: delegate?.directorSessionStore,
     decisionStore: delegate?.directorDecisionStore,
-    approvalStore: delegate?.approvalStore,
+    approvalStore,
     approvalPackageEngine: delegate?.approvalPackageEngine,
     specStore: delegate?.specStore,
     dagEngine: delegate?.dagEngine,
     durableStateManager: delegate?.durableStateManager,
-    historyManager: delegate?.historyManager,
+    historyManager,
     executorPort: delegate?.executorPort,
     directorRuntime: delegate?.directorRuntime,
-    authorizationPolicyEngine: delegate?.authorizationPolicyEngine,
+    authorizationPolicyEngine: authEngine,
   });
 }
 
@@ -643,13 +659,48 @@ export function createDirectorActHandler(
         );
       }
 
-      // 3. Stale context & revision verification
+      // 3. Stale context & revision verification (Authoritative complete context snapshot strictly required)
       const latestSnapshot = await coordinator.sessionStore.loadLatestSnapshot(directorSessionId);
+
+      if (
+        !latestSnapshot ||
+        !latestSnapshot.logicalFingerprint ||
+        latestSnapshot.isComplete !== true ||
+        latestSnapshot.projectId !== canonical.projectId ||
+        latestSnapshot.directorSessionId !== directorSessionId ||
+        latestSnapshot.logicalFingerprint.endsWith('-auto') ||
+        latestSnapshot.logicalFingerprint.endsWith('-recovery') ||
+        (Array.isArray(latestSnapshot.unavailableSections) && latestSnapshot.unavailableSections.length > 0)
+      ) {
+        throw new DirectorContextUnavailableError(
+          'CONTEXT_UNAVAILABLE: Authoritative complete context snapshot is unavailable or synthetic for director action.',
+          {
+            code: 'CONTEXT_UNAVAILABLE',
+            directorSessionId,
+            projectId: canonical.projectId,
+          }
+        );
+      }
+
+      if (
+        (latestSnapshot as any).isStale === true ||
+        (Array.isArray(latestSnapshot.staleSections) && latestSnapshot.staleSections.length > 0)
+      ) {
+        throw new DirectorInstructionStaleError(
+          `Context snapshot is stale: current snapshot contains stale sections (${(latestSnapshot.staleSections ?? []).join(', ')}).`,
+          {
+            expected: latestSnapshot.logicalFingerprint,
+            actual: latestSnapshot.logicalFingerprint,
+            staleSections: latestSnapshot.staleSections,
+          }
+        );
+      }
+
       const expectedFingerprint =
         (rawArgs.basedOnContextFingerprint as string | undefined) ??
         (rawArgs.contextFingerprint as string | undefined);
 
-      if (expectedFingerprint && latestSnapshot && latestSnapshot.logicalFingerprint !== expectedFingerprint) {
+      if (expectedFingerprint && latestSnapshot.logicalFingerprint !== expectedFingerprint) {
         throw new DirectorInstructionStaleError(
           `Context snapshot fingerprint mismatch: action was based on '${expectedFingerprint}', but current fingerprint is '${latestSnapshot.logicalFingerprint}'. Context has drifted; action is stale.`,
           { expected: expectedFingerprint, actual: latestSnapshot.logicalFingerprint }
@@ -693,8 +744,8 @@ export function createDirectorActHandler(
         actor: 'DIRECTOR',
         actorRole: 'DIRECTOR',
         timestamp: new Date().toISOString(),
-        basedOnContextFingerprint: expectedFingerprint ?? latestSnapshot?.logicalFingerprint ?? '',
-        understandingRevision: expectedRevision ?? session.understandingRevision ?? 1,
+        basedOnContextFingerprint: expectedFingerprint ?? latestSnapshot.logicalFingerprint,
+        understandingRevision: expectedRevision ?? currentRevision,
         payload: rawPayload,
       };
 
@@ -704,6 +755,16 @@ export function createDirectorActHandler(
           `Action envelope schema validation failed: ${parseResult.error.message}`,
           { errors: parseResult.error.issues }
         );
+      }
+
+      // Check DECLARE_PROJECT_COMPLETE prerequisites
+      if (actionType === 'DECLARE_PROJECT_COMPLETE') {
+        if (rawPayload.finalVerificationRequested !== true) {
+          throw new DirectorInstructionValidationError(
+            'DECLARE_PROJECT_COMPLETE must explicitly request final verification (finalVerificationRequested: true).',
+            { actionType, payload: rawPayload }
+          );
+        }
       }
 
       // 5. Execution vs Non-execution dispatch
@@ -760,12 +821,25 @@ export function createDirectorActHandler(
         };
       }
 
-      // Non-execution action: validate and dispatch through action pipeline
+      // Non-execution action: validate and dispatch through authoritative action pipeline
+      const activePkg = await coordinator.approvalStore.getActivePackage(canonical.projectId);
+      const mandate = await (coordinator.authorizationPolicyEngine as any)?.mandateStore?.loadMandate?.();
+
       const validationContext = {
-        currentFingerprint: envelopeData.basedOnContextFingerprint,
-        currentUnderstandingRevision: envelopeData.understandingRevision,
+        currentFingerprint: latestSnapshot.logicalFingerprint,
+        currentUnderstandingRevision: currentRevision,
         currentDirectorSessionId: directorSessionId,
         currentProjectId: canonical.projectId,
+        expectedApprovalRevision:
+          typeof rawPayload.expectedApprovalRevision === 'number'
+            ? (rawPayload.expectedApprovalRevision as number)
+            : undefined,
+        actualApprovalRevision: activePkg?.revision,
+        expectedMandateRevision:
+          typeof rawPayload.expectedMandateRevision === 'number'
+            ? (rawPayload.expectedMandateRevision as number)
+            : undefined,
+        actualMandateRevision: mandate?.mandateRevision,
       };
 
       const validation = await coordinator.actionValidator.validateAsync(envelopeData, validationContext);
@@ -784,11 +858,7 @@ export function createDirectorActHandler(
           } as any,
           isDuplicate: validation.isDuplicate,
         },
-        snapshot: latestSnapshot ?? ({
-          projectId: canonical.projectId,
-          directorSessionId,
-          logicalFingerprint: envelopeData.basedOnContextFingerprint,
-        } as any),
+        snapshot: latestSnapshot,
         correlationId,
       });
 
