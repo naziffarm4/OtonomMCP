@@ -28,6 +28,8 @@ export interface PolicyDecisionRecord {
   decisionTime: string;
   authorizationScope: string[];
   requiredHumanApproval?: string;
+  actionType?: string;
+  mandateRevision?: number;
   policyVersion: number;
 }
 

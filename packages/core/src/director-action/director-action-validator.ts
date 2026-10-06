@@ -359,10 +359,19 @@ export class DirectorActionValidator {
         p.actor === 'USER' ||
         p.actorRole === 'PRODUCT_OWNER' ||
         p.selfApproved !== undefined ||
-        p.claimImplementationAuthority !== undefined
+        p.claimImplementationAuthority !== undefined ||
+        p.autoExecutable !== undefined ||
+        p.isAutoExecutable !== undefined ||
+        p.taskClass !== undefined ||
+        p.taskCategory !== undefined ||
+        p.trusted !== undefined ||
+        p.approved !== undefined ||
+        p.isSystemVerified !== undefined ||
+        p.syntheticEvidence !== undefined ||
+        p.mockEvidence !== undefined
       ) {
         throw new DirectorActionValidationError(
-          'Payload contains prohibited authority claim fields (isDevelopmentAuthorized / hasImplementationAuthority / isTrustedHumanAuth / authStatus / selfApproved).'
+          'Payload contains prohibited authority claim fields (isDevelopmentAuthorized / hasImplementationAuthority / isTrustedHumanAuth / authStatus / selfApproved / autoExecutable / taskClass / isSystemVerified).'
         );
       }
     }
