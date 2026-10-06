@@ -1,4 +1,6 @@
 import * as crypto from 'node:crypto';
+import * as path from 'node:path';
+import * as fs from 'node:fs';
 import { HistoryManager } from '../storage/history-manager.js';
 import { DirectorActionEnvelope, DirectorActionType } from '../director-action/director-action-types.js';
 import {
@@ -15,21 +17,58 @@ import { SystemExecutionEvidenceStore } from '../storage/evidence-store.js';
 export interface AuthorizationPolicyEngineOptions {
   historyManager: HistoryManager;
   mandateStore: ProjectMandateStore;
-  specStore?: SpecStore;
-  evidenceStore?: SystemExecutionEvidenceStore;
+  specStore?: SpecStore | null;
+  evidenceStore?: SystemExecutionEvidenceStore | null;
+  identityManager?: unknown;
 }
 
 export class AuthorizationPolicyEngine {
   private readonly historyManager: HistoryManager;
   private readonly mandateStore: ProjectMandateStore;
-  private readonly specStore?: SpecStore;
-  private readonly evidenceStore?: SystemExecutionEvidenceStore;
+  private readonly explicitSpecStore?: SpecStore | null;
+  private readonly explicitEvidenceStore?: SystemExecutionEvidenceStore | null;
 
   constructor(options: AuthorizationPolicyEngineOptions) {
     this.historyManager = options.historyManager;
     this.mandateStore = options.mandateStore;
-    this.specStore = options.specStore;
-    this.evidenceStore = options.evidenceStore;
+    this.explicitSpecStore = options.specStore;
+    this.explicitEvidenceStore = options.evidenceStore;
+  }
+
+  get specStore(): SpecStore | undefined {
+    if (this.explicitSpecStore === null) {
+      return undefined;
+    }
+    if (this.explicitSpecStore !== undefined) {
+      return this.explicitSpecStore;
+    }
+    const baseDir = this.mandateStore?.baseDir;
+    if (baseDir) {
+      const specTasks = path.join(baseDir, '.ai-manager', 'spec', 'tasks.json');
+      const stateTasks = path.join(baseDir, '.ai-manager', 'state', 'tasks.json');
+      const specDir = path.join(baseDir, '.ai-manager', 'spec');
+      if (fs.existsSync(specTasks) || fs.existsSync(stateTasks) || fs.existsSync(specDir)) {
+        return new SpecStore({ baseDir });
+      }
+    }
+    return undefined;
+  }
+
+  get evidenceStore(): SystemExecutionEvidenceStore | undefined {
+    if (this.explicitEvidenceStore === null) {
+      return undefined;
+    }
+    if (this.explicitEvidenceStore !== undefined) {
+      return this.explicitEvidenceStore;
+    }
+    const baseDir = this.mandateStore?.baseDir;
+    if (baseDir) {
+      const evidenceDirPath = path.join(baseDir, '.ai-manager', 'evidence');
+      if (fs.existsSync(evidenceDirPath)) {
+        return new SystemExecutionEvidenceStore({ baseDir });
+      }
+    }
+    return undefined;
   }
 
   /**
@@ -549,39 +588,59 @@ export class AuthorizationPolicyEngine {
       action.actionType === 'RETRY_TASK' ||
       action.actionType === 'CORRECT_TASK'
     ) {
+      if (!this.specStore) {
+        return {
+          result: AuthorizationDecisionResult.DENY,
+          appliedRules: ['AUTHORITATIVE_TASK_STORE_REQUIRED'],
+          reason: 'Execution-capable actions require an authoritative SpecStore. Fail-closed.',
+        };
+      }
+
+      const taskId = typeof payloadObj.taskId === 'string' ? payloadObj.taskId.trim() : '';
+      if (!taskId) {
+        return {
+          result: AuthorizationDecisionResult.DENY,
+          appliedRules: ['AUTHORITATIVE_TASK_LOOKUP_FAILED'],
+          reason: 'Execution-capable actions require a valid taskId to inspect authoritative task state. Fail-closed.',
+        };
+      }
+
+      let tasks;
+      try {
+        tasks = await this.specStore.loadTasks();
+      } catch {
+        return {
+          result: AuthorizationDecisionResult.DENY,
+          appliedRules: ['AUTHORITATIVE_TASK_LOOKUP_FAILED'],
+          reason: 'Failed to load authoritative task definitions from SpecStore. Fail-closed.',
+        };
+      }
+
+      const found = tasks.find((t) => t.task_id === taskId);
+      if (!found) {
+        return {
+          result: AuthorizationDecisionResult.DENY,
+          appliedRules: ['AUTHORITATIVE_TASK_LOOKUP_FAILED'],
+          reason: `Task '${taskId}' not found in authoritative SpecStore. Fail-closed.`,
+        };
+      }
+
+      const rawClass =
+        found.metadata?.taskClass ??
+        found.metadata?.category ??
+        'IMPLEMENTATION';
+      const taskClass = typeof rawClass === 'string' ? rawClass.trim() : 'IMPLEMENTATION';
+
       if (mandate.autoExecutableTaskClasses !== undefined) {
-        if (mandate.autoExecutableTaskClasses.length === 0) {
+        if (
+          mandate.autoExecutableTaskClasses.length === 0 ||
+          !taskClass ||
+          !mandate.autoExecutableTaskClasses.includes(taskClass)
+        ) {
           return {
             result: AuthorizationDecisionResult.DENY,
             appliedRules: ['TASK_CLASS_NOT_AUTO_EXECUTABLE'],
-            reason: 'mandate.autoExecutableTaskClasses is empty. No automated execution permitted.',
-          };
-        }
-
-        let taskClass = 'IMPLEMENTATION';
-        const taskId = String(payloadObj.taskId ?? '');
-
-        if (this.specStore && taskId) {
-          try {
-            const tasks = await this.specStore.loadTasks();
-            const found = tasks.find((t) => t.task_id === taskId);
-            if (found) {
-              taskClass = String(found.metadata?.taskClass ?? found.metadata?.category ?? 'IMPLEMENTATION');
-            }
-          } catch {
-            return {
-              result: AuthorizationDecisionResult.DENY,
-              appliedRules: ['AUTHORITATIVE_TASK_LOOKUP_FAILED'],
-              reason: 'Failed to load authoritative task definition from SpecStore. Fail-closed.',
-            };
-          }
-        }
-
-        if (!mandate.autoExecutableTaskClasses.includes(taskClass)) {
-          return {
-            result: AuthorizationDecisionResult.DENY,
-            appliedRules: ['TASK_CLASS_NOT_AUTO_EXECUTABLE'],
-            reason: `Task class '${taskClass}' is not in mandate autoExecutableTaskClasses: [${mandate.autoExecutableTaskClasses.join(', ')}].`,
+            reason: `Task class '${taskClass || 'UNKNOWN'}' is not in mandate autoExecutableTaskClasses: [${mandate.autoExecutableTaskClasses.join(', ')}].`,
           };
         }
       }
@@ -589,8 +648,16 @@ export class AuthorizationPolicyEngine {
 
     // 6. REVIEW_EVIDENCE Independent Verification Check
     if (action.actionType === 'REVIEW_EVIDENCE') {
+      if (!this.evidenceStore) {
+        return {
+          result: AuthorizationDecisionResult.DENY,
+          appliedRules: ['AUTHORITATIVE_EVIDENCE_STORE_REQUIRED'],
+          reason: 'REVIEW_EVIDENCE requires an authoritative SystemExecutionEvidenceStore. Fail-closed.',
+        };
+      }
+
       const evidenceIds = payloadObj.evidenceIds;
-      const targetTaskId = String(payloadObj.taskId ?? '');
+      const targetTaskId = typeof payloadObj.taskId === 'string' ? payloadObj.taskId.trim() : '';
 
       if (!Array.isArray(evidenceIds) || evidenceIds.length === 0 || !targetTaskId) {
         return {
@@ -600,63 +667,61 @@ export class AuthorizationPolicyEngine {
         };
       }
 
-      if (this.evidenceStore) {
-        for (const evId of evidenceIds) {
-          if (typeof evId !== 'string' || !evId.trim()) {
-            return {
-              result: AuthorizationDecisionResult.DENY,
-              appliedRules: ['INVALID_EVIDENCE_REFERENCE'],
-              reason: 'Invalid or empty evidenceId in REVIEW_EVIDENCE.',
-            };
-          }
+      for (const evId of evidenceIds) {
+        if (typeof evId !== 'string' || !evId.trim()) {
+          return {
+            result: AuthorizationDecisionResult.DENY,
+            appliedRules: ['INVALID_EVIDENCE_REFERENCE'],
+            reason: 'Invalid or empty evidenceId in REVIEW_EVIDENCE.',
+          };
+        }
 
-          let evidence;
-          try {
-            evidence = await this.evidenceStore.loadEvidence(evId.trim());
-          } catch {
-            return {
-              result: AuthorizationDecisionResult.DENY,
-              appliedRules: ['INVALID_EVIDENCE_REFERENCE'],
-              reason: `Evidence '${evId}' could not be loaded from EvidenceStore. Fail-closed.`,
-            };
-          }
+        let evidence;
+        try {
+          evidence = await this.evidenceStore.loadEvidence(evId.trim());
+        } catch {
+          return {
+            result: AuthorizationDecisionResult.DENY,
+            appliedRules: ['INVALID_EVIDENCE_REFERENCE'],
+            reason: `Evidence '${evId}' could not be loaded from EvidenceStore. Fail-closed.`,
+          };
+        }
 
-          if (!evidence) {
-            return {
-              result: AuthorizationDecisionResult.DENY,
-              appliedRules: ['INVALID_EVIDENCE_REFERENCE'],
-              reason: `Evidence '${evId}' does not exist in authoritative EvidenceStore. Missing evidence rejected fail-closed.`,
-            };
-          }
+        if (!evidence) {
+          return {
+            result: AuthorizationDecisionResult.DENY,
+            appliedRules: ['INVALID_EVIDENCE_REFERENCE'],
+            reason: `Evidence '${evId}' does not exist in authoritative EvidenceStore. Missing evidence rejected fail-closed.`,
+          };
+        }
 
-          if (evidence.projectId !== action.projectId) {
-            return {
-              result: AuthorizationDecisionResult.DENY,
-              appliedRules: ['PROJECT_ISOLATION_VIOLATION'],
-              reason: `Cross-project evidence reference rejected. Evidence project: '${evidence.projectId}', Action project: '${action.projectId}'.`,
-            };
-          }
+        if (evidence.projectId !== action.projectId) {
+          return {
+            result: AuthorizationDecisionResult.DENY,
+            appliedRules: ['PROJECT_ISOLATION_VIOLATION'],
+            reason: `Cross-project evidence reference rejected. Evidence project: '${evidence.projectId}', Action project: '${action.projectId}'.`,
+          };
+        }
 
-          if (evidence.taskId !== targetTaskId) {
-            return {
-              result: AuthorizationDecisionResult.DENY,
-              appliedRules: ['EVIDENCE_TASK_MISMATCH'],
-              reason: `Evidence '${evId}' belongs to task '${evidence.taskId}', but action targets task '${targetTaskId}'.`,
-            };
-          }
+        if (evidence.taskId !== targetTaskId) {
+          return {
+            result: AuthorizationDecisionResult.DENY,
+            appliedRules: ['EVIDENCE_TASK_MISMATCH'],
+            reason: `Evidence '${evId}' belongs to task '${evidence.taskId}', but action targets task '${targetTaskId}'.`,
+          };
+        }
 
-          const isVerified =
-            (evidence as any).isSystemVerified === true ||
-            evidence.verificationDecision === 'ACCEPT' ||
-            evidence.verificationDecision === 'REJECT' ||
-            evidence.verificationDecision === 'BLOCK';
-          if (!isVerified) {
-            return {
-              result: AuthorizationDecisionResult.DENY,
-              appliedRules: ['UNVERIFIED_EVIDENCE_REJECTED'],
-              reason: `Evidence '${evId}' is not independently system-verified.`,
-            };
-          }
+        const isVerified =
+          (evidence as any).isSystemVerified === true ||
+          evidence.verificationDecision === 'ACCEPT' ||
+          evidence.verificationDecision === 'REJECT' ||
+          evidence.verificationDecision === 'BLOCK';
+        if (!isVerified || (evidence as any).isSystemVerified === false) {
+          return {
+            result: AuthorizationDecisionResult.DENY,
+            appliedRules: ['UNVERIFIED_EVIDENCE_REJECTED'],
+            reason: `Evidence '${evId}' is not independently system-verified.`,
+          };
         }
       }
     }
@@ -754,45 +819,67 @@ export class AuthorizationPolicyEngine {
       };
     }
 
-    // 4. Auto executable task class check
+    // 4. Auto executable task class check & authoritative task lookup
+    if (!this.specStore) {
+      return {
+        result: AuthorizationDecisionResult.DENY,
+        appliedRules: ['AUTHORITATIVE_TASK_STORE_REQUIRED'],
+        reason: 'Execution intent requires an authoritative SpecStore to inspect task state. Fail-closed.',
+      };
+    }
+
+    const taskId = typeof intent.taskId === 'string' ? intent.taskId.trim() : '';
+    if (!taskId) {
+      return {
+        result: AuthorizationDecisionResult.DENY,
+        appliedRules: ['AUTHORITATIVE_TASK_LOOKUP_FAILED'],
+        reason: 'Execution intent requires a valid taskId to inspect authoritative task state. Fail-closed.',
+      };
+    }
+
+    let tasks;
+    try {
+      tasks = await this.specStore.loadTasks();
+    } catch {
+      return {
+        result: AuthorizationDecisionResult.DENY,
+        appliedRules: ['AUTHORITATIVE_TASK_LOOKUP_FAILED'],
+        reason: 'Failed to load authoritative task state from SpecStore. Fail-closed.',
+      };
+    }
+
+    const found = tasks.find((t) => t.task_id === taskId);
+    if (!found) {
+      return {
+        result: AuthorizationDecisionResult.DENY,
+        appliedRules: ['AUTHORITATIVE_TASK_LOOKUP_FAILED'],
+        reason: `Task '${taskId}' not found in authoritative SpecStore for execution intent. Fail-closed.`,
+      };
+    }
+
+    const rawClass =
+      found.metadata?.taskClass ??
+      found.metadata?.category ??
+      'IMPLEMENTATION';
+    const taskClass = typeof rawClass === 'string' ? rawClass.trim() : 'IMPLEMENTATION';
+
     if (mandate.autoExecutableTaskClasses !== undefined) {
-      if (mandate.autoExecutableTaskClasses.length === 0) {
+      if (
+        mandate.autoExecutableTaskClasses.length === 0 ||
+        !taskClass ||
+        !mandate.autoExecutableTaskClasses.includes(taskClass)
+      ) {
         return {
           result: AuthorizationDecisionResult.DENY,
           appliedRules: ['TASK_CLASS_NOT_AUTO_EXECUTABLE'],
-          reason: 'mandate.autoExecutableTaskClasses is empty; automated intent execution is not permitted.',
-        };
-      }
-
-      let taskClass = 'IMPLEMENTATION';
-      if (this.specStore && intent.taskId) {
-        try {
-          const tasks = await this.specStore.loadTasks();
-          const found = tasks.find((t) => t.task_id === intent.taskId);
-          if (found) {
-            taskClass = String(found.metadata?.taskClass ?? found.metadata?.category ?? 'IMPLEMENTATION');
-          }
-        } catch {
-          return {
-            result: AuthorizationDecisionResult.DENY,
-            appliedRules: ['AUTHORITATIVE_TASK_LOOKUP_FAILED'],
-            reason: 'Failed to load authoritative task state from SpecStore. Fail-closed.',
-          };
-        }
-      }
-
-      if (!mandate.autoExecutableTaskClasses.includes(taskClass)) {
-        return {
-          result: AuthorizationDecisionResult.DENY,
-          appliedRules: ['TASK_CLASS_NOT_AUTO_EXECUTABLE'],
-          reason: `Task class '${taskClass}' is not in mandate autoExecutableTaskClasses: [${mandate.autoExecutableTaskClasses.join(', ')}].`,
+          reason: `Task class '${taskClass || 'UNKNOWN'}' is not in mandate autoExecutableTaskClasses: [${mandate.autoExecutableTaskClasses.join(', ')}].`,
         };
       }
     }
 
     return {
       result: AuthorizationDecisionResult.ALLOW,
-      appliedRules: ['MANDATE_OPERATION_AUTHORIZED', 'ROUTINE_TECHNICAL_OPERATION_ALLOWED'],
+      appliedRules: ['MANDATE_OPERATION_AUTHORIZED'],
       reason: 'Execution intent is authorized under the current project mandate.',
     };
   }

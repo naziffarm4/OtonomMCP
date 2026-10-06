@@ -140,6 +140,28 @@ describe('P32 — Authorization Policy Hardening & Explicit Mandate Enforcement'
       evidenceStore,
     });
     identityManager = new IdentityManager({ baseDir: testDir });
+
+    // Seed authoritative task-1 for implementation tests
+    await specStore.saveTasks([
+      {
+        task_id: 'task-1',
+        parent_feature_id: 'feat-1',
+        title: 'Core feature',
+        description: 'Implement core logic',
+        traceability_sources: ['REQ-01'],
+        dependencies: [],
+        acceptanceCriteria: ['AC1'],
+        status: 'READY',
+        attempt: 0,
+        max_attempts: 3,
+        priority: 'HIGH',
+        risk_level: 'SAFE',
+        created_at: new Date().toISOString(),
+        started_at: null,
+        completed_at: null,
+        metadata: { taskClass: 'IMPLEMENTATION' },
+      } as any,
+    ]);
   });
 
   afterEach(async () => {
@@ -769,5 +791,306 @@ describe('P32 — Authorization Policy Hardening & Explicit Mandate Enforcement'
     assert.equal(result.status, ActionDispatchStatus.REJECTED);
     assert.equal(result.code, 'ERR_POLICY_ENGINE_DENIED');
     assert.equal((result as any).autoContinue, undefined);
+  });
+
+  // ==========================================================================
+  // SECTION 9: P32-FIX — Authorization Fail-Closed Hardening (T33 - T46)
+  // ==========================================================================
+  describe('P32-FIX — Authorization Fail-Closed Hardening', () => {
+    it('T33 — REVIEW_EVIDENCE + missing EvidenceStore -> DENY (AUTHORITATIVE_EVIDENCE_STORE_REQUIRED)', async () => {
+      await saveTestMandate(baseMandate);
+      const engineWithoutEvidenceStore = new AuthorizationPolicyEngine({
+        historyManager,
+        mandateStore,
+        specStore,
+        evidenceStore: null,
+      });
+
+      const envelope = createMockEnvelope('REVIEW_EVIDENCE', {
+        taskId: 'task-1',
+        evidenceIds: ['evi-valid-01'],
+      });
+
+      const decision = await engineWithoutEvidenceStore.evaluateAction(envelope);
+      assert.equal(decision.decisionResult, AuthorizationDecisionResult.DENY);
+      assert.ok(decision.appliedRules.includes('AUTHORITATIVE_EVIDENCE_STORE_REQUIRED'));
+    });
+
+    it('T34 — REVIEW_EVIDENCE + EvidenceStore var + evidence missing -> DENY (INVALID_EVIDENCE_REFERENCE)', async () => {
+      await saveTestMandate(baseMandate);
+      const envelope = createMockEnvelope('REVIEW_EVIDENCE', {
+        taskId: 'task-1',
+        evidenceIds: ['evi-missing-from-store'],
+      });
+
+      const decision = await engine.evaluateAction(envelope);
+      assert.equal(decision.decisionResult, AuthorizationDecisionResult.DENY);
+      assert.ok(decision.appliedRules.includes('INVALID_EVIDENCE_REFERENCE'));
+    });
+
+    it('T35 — REVIEW_EVIDENCE + cross-project evidence -> DENY (PROJECT_ISOLATION_VIOLATION)', async () => {
+      await saveTestMandate(baseMandate);
+      const foreignEvidence = createValidEvidence({
+        evidenceId: 'evi-foreign-project-01',
+        projectId: 'other-foreign-project',
+        taskId: 'task-1',
+      });
+      await evidenceStore.saveEvidence(foreignEvidence);
+
+      const envelope = createMockEnvelope('REVIEW_EVIDENCE', {
+        taskId: 'task-1',
+        evidenceIds: ['evi-foreign-project-01'],
+      });
+
+      const decision = await engine.evaluateAction(envelope);
+      assert.equal(decision.decisionResult, AuthorizationDecisionResult.DENY);
+      assert.ok(decision.appliedRules.includes('PROJECT_ISOLATION_VIOLATION'));
+    });
+
+    it('T36 — REVIEW_EVIDENCE + task mismatch -> DENY (EVIDENCE_TASK_MISMATCH)', async () => {
+      await saveTestMandate(baseMandate);
+      const mismatchEvidence = createValidEvidence({
+        evidenceId: 'evi-mismatch-task-01',
+        projectId: validProjectId,
+        taskId: 'task-other-99',
+      });
+      await evidenceStore.saveEvidence(mismatchEvidence);
+
+      const envelope = createMockEnvelope('REVIEW_EVIDENCE', {
+        taskId: 'task-1',
+        evidenceIds: ['evi-mismatch-task-01'],
+      });
+
+      const decision = await engine.evaluateAction(envelope);
+      assert.equal(decision.decisionResult, AuthorizationDecisionResult.DENY);
+      assert.ok(decision.appliedRules.includes('EVIDENCE_TASK_MISMATCH'));
+    });
+
+    it('T37 — REVIEW_EVIDENCE + unverified evidence -> DENY (UNVERIFIED_EVIDENCE_REJECTED)', async () => {
+      await saveTestMandate(baseMandate);
+      const unverifiedEvidenceStore = {
+        loadEvidence: async (id: string) => ({
+          evidenceId: id,
+          projectId: validProjectId,
+          taskId: 'task-1',
+          taskRevision: 1,
+          verificationDecision: 'UNVERIFIED' as any,
+          isSystemVerified: false,
+        }),
+      } as unknown as SystemExecutionEvidenceStore;
+
+      const engineWithUnverified = new AuthorizationPolicyEngine({
+        historyManager,
+        mandateStore,
+        specStore,
+        evidenceStore: unverifiedEvidenceStore,
+      });
+
+      const envelope = createMockEnvelope('REVIEW_EVIDENCE', {
+        taskId: 'task-1',
+        evidenceIds: ['evi-unverified-01'],
+      });
+
+      const decision = await engineWithUnverified.evaluateAction(envelope);
+      assert.equal(decision.decisionResult, AuthorizationDecisionResult.DENY);
+      assert.ok(decision.appliedRules.includes('UNVERIFIED_EVIDENCE_REJECTED'));
+    });
+
+    it('T38 — IMPLEMENT_TASK + missing SpecStore -> DENY (AUTHORITATIVE_TASK_STORE_REQUIRED)', async () => {
+      await saveTestMandate(baseMandate);
+      const engineWithoutSpecStore = new AuthorizationPolicyEngine({
+        historyManager,
+        mandateStore,
+        evidenceStore,
+        specStore: null,
+      });
+
+      const envelope = createMockEnvelope('IMPLEMENT_TASK', { taskId: 'task-1' });
+      const decision = await engineWithoutSpecStore.evaluateAction(envelope);
+      assert.equal(decision.decisionResult, AuthorizationDecisionResult.DENY);
+      assert.ok(decision.appliedRules.includes('AUTHORITATIVE_TASK_STORE_REQUIRED'));
+    });
+
+    it('T39 — IMPLEMENT_TASK + missing taskId -> DENY (AUTHORITATIVE_TASK_LOOKUP_FAILED)', async () => {
+      await saveTestMandate(baseMandate);
+      const envelope = createMockEnvelope('IMPLEMENT_TASK', { taskId: '' });
+      const decision = await engine.evaluateAction(envelope);
+      assert.equal(decision.decisionResult, AuthorizationDecisionResult.DENY);
+      assert.ok(decision.appliedRules.includes('AUTHORITATIVE_TASK_LOOKUP_FAILED'));
+    });
+
+    it('T40 — IMPLEMENT_TASK + task not found -> DENY (AUTHORITATIVE_TASK_LOOKUP_FAILED)', async () => {
+      await saveTestMandate(baseMandate);
+      const envelope = createMockEnvelope('IMPLEMENT_TASK', { taskId: 'task-does-not-exist-in-store' });
+      const decision = await engine.evaluateAction(envelope);
+      assert.equal(decision.decisionResult, AuthorizationDecisionResult.DENY);
+      assert.ok(decision.appliedRules.includes('AUTHORITATIVE_TASK_LOOKUP_FAILED'));
+    });
+
+    it('T41 — IMPLEMENT_TASK + SpecStore throws -> DENY (AUTHORITATIVE_TASK_LOOKUP_FAILED)', async () => {
+      await saveTestMandate(baseMandate);
+      const throwingSpecStore = {
+        loadTasks: async () => {
+          throw new Error('Disk IO failure reading tasks.json');
+        },
+      } as unknown as SpecStore;
+
+      const engineWithThrowingSpec = new AuthorizationPolicyEngine({
+        historyManager,
+        mandateStore,
+        specStore: throwingSpecStore,
+        evidenceStore,
+      });
+
+      const envelope = createMockEnvelope('IMPLEMENT_TASK', { taskId: 'task-1' });
+      const decision = await engineWithThrowingSpec.evaluateAction(envelope);
+      assert.equal(decision.decisionResult, AuthorizationDecisionResult.DENY);
+      assert.ok(decision.appliedRules.includes('AUTHORITATIVE_TASK_LOOKUP_FAILED'));
+    });
+
+    it('T42 — IMPLEMENT_TASK + task class not permitted -> DENY (TASK_CLASS_NOT_AUTO_EXECUTABLE)', async () => {
+      await saveTestMandate({
+        ...baseMandate,
+        autoExecutableTaskClasses: ['IMPLEMENTATION'],
+      });
+
+      await specStore.saveTasks([
+        {
+          task_id: 'task-unpermitted-class',
+          parent_feature_id: 'feat-1',
+          title: 'Manual review task',
+          description: 'Requires human manual review',
+          traceability_sources: ['REQ-01'],
+          dependencies: [],
+          acceptanceCriteria: ['AC1'],
+          status: 'READY',
+          attempt: 0,
+          max_attempts: 3,
+          priority: 'LOW',
+          risk_level: 'SAFE',
+          created_at: new Date().toISOString(),
+          started_at: null,
+          completed_at: null,
+          metadata: { taskClass: 'MANUAL_REVIEW' },
+        } as any,
+      ]);
+
+      const envelope = createMockEnvelope('IMPLEMENT_TASK', { taskId: 'task-unpermitted-class' });
+      const decision = await engine.evaluateAction(envelope);
+      assert.equal(decision.decisionResult, AuthorizationDecisionResult.DENY);
+      assert.ok(decision.appliedRules.includes('TASK_CLASS_NOT_AUTO_EXECUTABLE'));
+    });
+
+    it('T43 — Valid task + valid mandate + valid operation permissions -> ALLOW', async () => {
+      await saveTestMandate(baseMandate);
+      const envelope = createMockEnvelope('IMPLEMENT_TASK', { taskId: 'task-1' });
+      const decision = await engine.evaluateAction(envelope);
+      assert.equal(decision.decisionResult, AuthorizationDecisionResult.ALLOW);
+      assert.ok(decision.appliedRules.includes('MANDATE_OPERATION_AUTHORIZED'));
+    });
+
+    it('T44 — Execution intent + missing SpecStore -> DENY (ExecutionBridge/Executor unreachable)', async () => {
+      await saveTestMandate(baseMandate);
+      const engineWithoutSpecStore = new AuthorizationPolicyEngine({
+        historyManager,
+        mandateStore,
+        evidenceStore,
+        specStore: null,
+      });
+
+      const intent: BridgeExecutionIntent = {
+        executionIntentId: 'intent-fail-no-spec',
+        actionId: 'act-test-01',
+        idempotencyKey: 'idem-test-01',
+        projectId: validProjectId,
+        directorSessionId: 'session-p32',
+        taskId: 'task-1',
+        taskRevision: 1,
+        basedOnContextFingerprint: 'ctx-p32-fp',
+        understandingRevision: 1,
+        authorizationReference: {
+          packageRevision: 1,
+          isDevelopmentAuthorized: true,
+        },
+        createdAt: new Date().toISOString(),
+        executionPlan: 'Implement core functionality in src/index.ts',
+      };
+
+      const decision = await engineWithoutSpecStore.evaluateExecutionIntent(intent);
+      assert.equal(decision.decisionResult, AuthorizationDecisionResult.DENY);
+      assert.ok(decision.appliedRules.includes('AUTHORITATIVE_TASK_STORE_REQUIRED'));
+
+      // Verify ExecutionBridge rejects and halts before Executor
+      const bridge = new ExecutionBridge({
+        workspaceRoot: testDir,
+        authorizationPolicyEngine: engineWithoutSpecStore,
+        evidenceStore,
+      });
+
+      const preResult = await bridge.validatePreconditions(intent);
+      assert.equal(preResult.isValid, false);
+      const check10 = preResult.allChecks.find((c) => c.checkName === '10_POLICY_ENGINE_AUTHORIZATION');
+      assert.ok(check10);
+      assert.equal(check10?.passed, false);
+    });
+
+    it('T45 — Execution intent + task lookup failure -> DENY (Executor unreachable)', async () => {
+      await saveTestMandate(baseMandate);
+      const intent: BridgeExecutionIntent = {
+        executionIntentId: 'intent-fail-task-lookup',
+        actionId: 'act-test-02',
+        idempotencyKey: 'idem-test-02',
+        projectId: validProjectId,
+        directorSessionId: 'session-p32',
+        taskId: 'task-non-existent-999',
+        taskRevision: 1,
+        basedOnContextFingerprint: 'ctx-p32-fp',
+        understandingRevision: 1,
+        authorizationReference: {
+          packageRevision: 1,
+          isDevelopmentAuthorized: true,
+        },
+        createdAt: new Date().toISOString(),
+        executionPlan: 'Implement core functionality in src/index.ts',
+      };
+
+      const decision = await engine.evaluateExecutionIntent(intent);
+      assert.equal(decision.decisionResult, AuthorizationDecisionResult.DENY);
+      assert.ok(decision.appliedRules.includes('AUTHORITATIVE_TASK_LOOKUP_FAILED'));
+
+      // Verify ExecutionBridge rejects and halts before Executor
+      const bridge = new ExecutionBridge({
+        workspaceRoot: testDir,
+        authorizationPolicyEngine: engine,
+        evidenceStore,
+        specStore,
+      });
+
+      const preResult = await bridge.validatePreconditions(intent);
+      assert.equal(preResult.isValid, false);
+      const check10 = preResult.allChecks.find((c) => c.checkName === '10_POLICY_ENGINE_AUTHORIZATION');
+      assert.ok(check10);
+      assert.equal(check10?.passed, false);
+    });
+
+    it('T46 — Valid REVIEW_EVIDENCE + authoritative evidence -> ALLOW', async () => {
+      await saveTestMandate(baseMandate);
+      const validEvidence = createValidEvidence({
+        evidenceId: 'evi-authoritative-p32-46',
+        taskId: 'task-1',
+        projectId: validProjectId,
+        verificationDecision: 'ACCEPT',
+      });
+      await evidenceStore.saveEvidence(validEvidence);
+
+      const envelope = createMockEnvelope('REVIEW_EVIDENCE', {
+        taskId: 'task-1',
+        evidenceIds: ['evi-authoritative-p32-46'],
+      });
+
+      const decision = await engine.evaluateAction(envelope);
+      assert.equal(decision.decisionResult, AuthorizationDecisionResult.ALLOW);
+      assert.ok(decision.appliedRules.includes('MANDATE_OPERATION_AUTHORIZED'));
+    });
   });
 });
