@@ -64,6 +64,10 @@ OtonomMCP çekirdeğinde aşağıdaki güvenlik değişmezleri mutlak olarak uyg
 8. **Çalışma Alanı ve Oturum İzolasyonu:**
    Sistem `.ai-manager/runtime.lock` dosyası ile tekil PID kilidi uygular; eşzamanlı iki sürecin çalışma alanına müdahalesi engellenir.
 
+9. **Otoriter Bağımlılık Eksikliğinde Kesin Kapanma (P34 Fail-Closed Boundaries):**
+   - **`REVIEW_EVIDENCE` Güvenlik Sınırı:** İnceleme eylemlerinde `evidenceStore` tanımlı değilse, otoriter delil mevcut değilse veya delil doğrulama kararı belirsiz (`UNKNOWN`) ise sistem hiçbir koşulda `ALLOW` üretmez; doğrudan `DENY` ile fail-closed kapanır. Uygulayıcı veya istemci tarafından enjekte edilen bant içi deliller (`payload.evidence`, `executorEvidence`, `agyEvidence`) doğrudan sahtecilik girişimi sayılarak reddedilir.
+   - **Otoriter `taskClass` Çözümlemesi:** Yürütme yetkilendirmesinde (`autoExecutableTaskClasses`), görev sınıfı yalnızca otoriter `SpecStore`'daki kayıtlı görev tanımından çözümlenir. `SpecStore` eksikse, görev bulunamıyorsa veya görevin `taskClass` değeri tanımsız/belirsizse sistem asla varsayılan `'IMPLEMENTATION'` fallback'ine sığınmaz; kesin olarak fail-closed (`DENY`) üretir. İstemci veya Director tarafından sunulan sözel `taskClass` yükleri yetkilendirme kanıtı sayılamaz.
+
 ---
 
 ## 3. Güvenilir İnsan Onayı ve Check 6 Güvenlik Engeli (OM-04 / P18-04 ve OM-05 / P20)

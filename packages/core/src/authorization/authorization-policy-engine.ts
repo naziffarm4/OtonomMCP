@@ -200,12 +200,16 @@ export class AuthorizationPolicyEngine {
         payload.approved === true ||
         payload.isSystemVerified === true ||
         payload.syntheticEvidence !== undefined ||
-        payload.mockEvidence !== undefined
+        payload.mockEvidence !== undefined ||
+        payload.evidence !== undefined ||
+        payload.executorEvidence !== undefined ||
+        payload.agyEvidence !== undefined ||
+        payload.authoritativeEvidence !== undefined
       ) {
         return this.createDecision({
           action,
           decisionResult: AuthorizationDecisionResult.DENY,
-          reason: 'Spoofed authority, unverified human claim, or synthetic evidence detected in action payload. Rejected fail-closed.',
+          reason: 'Spoofed authority, unverified human claim, synthetic evidence, or direct evidence injection detected in action payload. Rejected fail-closed.',
           appliedRules: ['ANTI_SPOOFING_AUTHORITY_VIOLATION'],
           riskLevel: RiskLevel.CRITICAL,
           policyVersion: mandate.policyVersion,
@@ -323,12 +327,19 @@ export class AuthorizationPolicyEngine {
         metadata.taskClass !== undefined ||
         metadata.taskCategory !== undefined ||
         metadata.trusted === true ||
-        metadata.approved === true
+        metadata.approved === true ||
+        metadata.isSystemVerified === true ||
+        metadata.syntheticEvidence !== undefined ||
+        metadata.mockEvidence !== undefined ||
+        metadata.evidence !== undefined ||
+        metadata.executorEvidence !== undefined ||
+        metadata.agyEvidence !== undefined ||
+        metadata.authoritativeEvidence !== undefined
       ) {
         return this.createDecisionFromIntent({
           intent,
           decisionResult: AuthorizationDecisionResult.DENY,
-          reason: 'Spoofed authority or unverified human claim detected in execution intent metadata. Rejected fail-closed.',
+          reason: 'Spoofed authority, unverified human claim, synthetic evidence, or direct evidence injection detected in execution intent metadata. Rejected fail-closed.',
           appliedRules: ['ANTI_SPOOFING_AUTHORITY_VIOLATION'],
           riskLevel: RiskLevel.CRITICAL,
           policyVersion: mandate.policyVersion,
@@ -554,7 +565,13 @@ export class AuthorizationPolicyEngine {
           reason: `Action type '${action.actionType}' requires 'FILE_CREATE' or 'TASK_CREATE' permission not granted in allowedOperationTypes.`,
         };
       }
-    } else if (action.actionType === 'REVIEW_EVIDENCE') {
+    } else if (
+      action.actionType === 'REVIEW_EVIDENCE' ||
+      payloadObj.operationType === 'REVIEW_EVIDENCE' ||
+      payloadObj.operationType === 'EVIDENCE_REVIEW' ||
+      requiredOperations.includes('REVIEW_EVIDENCE') ||
+      requiredOperations.includes('EVIDENCE_REVIEW')
+    ) {
       const hasReviewPerm =
         mandate.allowedOperationTypes.includes('FILE_READ') ||
         mandate.allowedOperationTypes.includes('READ_ONLY_INSPECTION') ||
@@ -564,7 +581,7 @@ export class AuthorizationPolicyEngine {
         return {
           result: AuthorizationDecisionResult.DENY,
           appliedRules: ['OPERATION_NOT_ALLOWED'],
-          reason: `Action type 'REVIEW_EVIDENCE' requires 'FILE_READ' or 'READ_ONLY_INSPECTION' permission not granted in allowedOperationTypes.`,
+          reason: `Action type '${action.actionType}' requires 'FILE_READ' or 'READ_ONLY_INSPECTION' permission not granted in allowedOperationTypes.`,
         };
       }
     } else {
@@ -625,29 +642,58 @@ export class AuthorizationPolicyEngine {
         };
       }
 
+      if (
+        found.status === ('UNKNOWN' as any) ||
+        (found as any).taskClass === 'UNKNOWN' ||
+        found.metadata?.taskClass === 'UNKNOWN' ||
+        found.metadata?.category === 'UNKNOWN'
+      ) {
+        return {
+          result: AuthorizationDecisionResult.DENY,
+          appliedRules: ['UNKNOWN_DEPENDENCY_STATE_DENIED'],
+          reason: `Authoritative task '${taskId}' has UNKNOWN state or task class. Fail-closed.`,
+        };
+      }
+
       const rawClass =
         found.metadata?.taskClass ??
+        (found as any).taskClass ??
+        found.metadata?.task_class ??
+        (found as any).task_class ??
         found.metadata?.category ??
-        'IMPLEMENTATION';
-      const taskClass = typeof rawClass === 'string' ? rawClass.trim() : 'IMPLEMENTATION';
+        (found as any).category;
+      const taskClass = typeof rawClass === 'string' ? rawClass.trim() : '';
 
-      if (mandate.autoExecutableTaskClasses !== undefined) {
-        if (
-          mandate.autoExecutableTaskClasses.length === 0 ||
-          !taskClass ||
-          !mandate.autoExecutableTaskClasses.includes(taskClass)
-        ) {
-          return {
-            result: AuthorizationDecisionResult.DENY,
-            appliedRules: ['TASK_CLASS_NOT_AUTO_EXECUTABLE'],
-            reason: `Task class '${taskClass || 'UNKNOWN'}' is not in mandate autoExecutableTaskClasses: [${mandate.autoExecutableTaskClasses.join(', ')}].`,
-          };
-        }
+      if (!taskClass || taskClass === 'UNKNOWN') {
+        return {
+          result: AuthorizationDecisionResult.DENY,
+          appliedRules: ['AUTHORITATIVE_TASK_CLASS_UNRESOLVED'],
+          reason: `Task '${taskId}' has no authoritative taskClass defined in SpecStore. Cannot resolve task class without default fallback. Fail-closed.`,
+        };
+      }
+
+      if (
+        !mandate.autoExecutableTaskClasses ||
+        mandate.autoExecutableTaskClasses.length === 0 ||
+        !mandate.autoExecutableTaskClasses.includes(taskClass)
+      ) {
+        return {
+          result: AuthorizationDecisionResult.DENY,
+          appliedRules: ['TASK_CLASS_NOT_AUTO_EXECUTABLE'],
+          reason: `Task class '${taskClass}' is not in mandate autoExecutableTaskClasses: [${(mandate.autoExecutableTaskClasses ?? []).join(', ')}].`,
+        };
       }
     }
 
     // 6. REVIEW_EVIDENCE Independent Verification Check
-    if (action.actionType === 'REVIEW_EVIDENCE') {
+    const isReviewEvidenceOp =
+      action.actionType === 'REVIEW_EVIDENCE' ||
+      payloadObj.operationType === 'REVIEW_EVIDENCE' ||
+      payloadObj.operationType === 'EVIDENCE_REVIEW' ||
+      requiredOperations.includes('REVIEW_EVIDENCE') ||
+      requiredOperations.includes('EVIDENCE_REVIEW');
+
+    if (isReviewEvidenceOp) {
       if (!this.evidenceStore) {
         return {
           result: AuthorizationDecisionResult.DENY,
@@ -695,6 +741,20 @@ export class AuthorizationPolicyEngine {
           };
         }
 
+        const rawDecision = (evidence as any).verificationDecision ?? (evidence as any).verificationStatus;
+        if (
+          (evidence as any).status === 'UNKNOWN' ||
+          rawDecision === 'UNKNOWN' ||
+          rawDecision === 'INCONCLUSIVE' ||
+          (evidence as any).verificationState === 'UNKNOWN'
+        ) {
+          return {
+            result: AuthorizationDecisionResult.DENY,
+            appliedRules: ['UNKNOWN_DEPENDENCY_STATE_DENIED'],
+            reason: `Authoritative evidence '${evId}' has UNKNOWN or indeterminate verification state. Fail-closed.`,
+          };
+        }
+
         if (evidence.projectId !== action.projectId) {
           return {
             result: AuthorizationDecisionResult.DENY,
@@ -713,9 +773,9 @@ export class AuthorizationPolicyEngine {
 
         const isVerified =
           (evidence as any).isSystemVerified === true ||
-          evidence.verificationDecision === 'ACCEPT' ||
-          evidence.verificationDecision === 'REJECT' ||
-          evidence.verificationDecision === 'BLOCK';
+          rawDecision === 'ACCEPT' ||
+          rawDecision === 'REJECT' ||
+          rawDecision === 'BLOCK';
         if (!isVerified || (evidence as any).isSystemVerified === false) {
           return {
             result: AuthorizationDecisionResult.DENY,
@@ -728,7 +788,7 @@ export class AuthorizationPolicyEngine {
 
     return {
       result: AuthorizationDecisionResult.ALLOW,
-      appliedRules: ['MANDATE_OPERATION_AUTHORIZED'],
+      appliedRules: ['MANDATE_OPERATION_AUTHORIZED', 'ROUTINE_TECHNICAL_OPERATION_ALLOWED'],
       reason: `Action type '${action.actionType}' is authorized under the current project mandate.`,
     };
   }
@@ -857,24 +917,46 @@ export class AuthorizationPolicyEngine {
       };
     }
 
+    if (
+      found.status === ('UNKNOWN' as any) ||
+      (found as any).taskClass === 'UNKNOWN' ||
+      found.metadata?.taskClass === 'UNKNOWN' ||
+      found.metadata?.category === 'UNKNOWN'
+    ) {
+      return {
+        result: AuthorizationDecisionResult.DENY,
+        appliedRules: ['UNKNOWN_DEPENDENCY_STATE_DENIED'],
+        reason: `Authoritative task '${taskId}' has UNKNOWN state or task class. Fail-closed.`,
+      };
+    }
+
     const rawClass =
       found.metadata?.taskClass ??
+      (found as any).taskClass ??
+      found.metadata?.task_class ??
+      (found as any).task_class ??
       found.metadata?.category ??
-      'IMPLEMENTATION';
-    const taskClass = typeof rawClass === 'string' ? rawClass.trim() : 'IMPLEMENTATION';
+      (found as any).category;
+    const taskClass = typeof rawClass === 'string' ? rawClass.trim() : '';
 
-    if (mandate.autoExecutableTaskClasses !== undefined) {
-      if (
-        mandate.autoExecutableTaskClasses.length === 0 ||
-        !taskClass ||
-        !mandate.autoExecutableTaskClasses.includes(taskClass)
-      ) {
-        return {
-          result: AuthorizationDecisionResult.DENY,
-          appliedRules: ['TASK_CLASS_NOT_AUTO_EXECUTABLE'],
-          reason: `Task class '${taskClass || 'UNKNOWN'}' is not in mandate autoExecutableTaskClasses: [${mandate.autoExecutableTaskClasses.join(', ')}].`,
-        };
-      }
+    if (!taskClass || taskClass === 'UNKNOWN') {
+      return {
+        result: AuthorizationDecisionResult.DENY,
+        appliedRules: ['AUTHORITATIVE_TASK_CLASS_UNRESOLVED'],
+        reason: `Task '${taskId}' has no authoritative taskClass defined in SpecStore for execution intent. Cannot resolve task class without default fallback. Fail-closed.`,
+      };
+    }
+
+    if (
+      !mandate.autoExecutableTaskClasses ||
+      mandate.autoExecutableTaskClasses.length === 0 ||
+      !mandate.autoExecutableTaskClasses.includes(taskClass)
+    ) {
+      return {
+        result: AuthorizationDecisionResult.DENY,
+        appliedRules: ['TASK_CLASS_NOT_AUTO_EXECUTABLE'],
+        reason: `Task class '${taskClass}' is not in mandate autoExecutableTaskClasses: [${(mandate.autoExecutableTaskClasses ?? []).join(', ')}].`,
+      };
     }
 
     return {

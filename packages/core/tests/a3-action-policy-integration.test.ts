@@ -243,6 +243,7 @@ describe('A3: Director Action Protocol & Authorization Policy Integration', () =
         hierarchy_level: 'TASK',
         metadata: {
           revision: 1,
+          taskClass: 'IMPLEMENTATION',
           projectId: validProjectId,
           contextFingerprint: validFingerprint,
           scope: {

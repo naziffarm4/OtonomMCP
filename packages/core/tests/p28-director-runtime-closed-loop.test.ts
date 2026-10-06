@@ -541,7 +541,7 @@ describe('Phase 28 (P28): DirectorRuntime Closed-Loop Integration', { concurrenc
       risk_level: 'LOW',
       dependencies: ['task-01-core'],
       created_at: new Date().toISOString(),
-      metadata: { targetFiles: ['src/auth.ts'], revision: 1 },
+      metadata: { targetFiles: ['src/auth.ts'], revision: 1, taskClass: 'IMPLEMENTATION' },
     };
     await specStore.saveTasks([featCore, t1, t2]);
 

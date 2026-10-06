@@ -419,7 +419,7 @@ describe('P33 — MCP Integration Contract Hardening', { concurrency: 1 }, () =>
       started_at: null,
       completed_at: null,
       hierarchy_level: 'TASK',
-      metadata: { targetFiles: ['src/index.ts'], revision: 1 },
+      metadata: { targetFiles: ['src/index.ts'], revision: 1, taskClass: 'CODE_IMPLEMENTATION' },
     };
     await specStore.saveTasks([featCore, testTask]);
 

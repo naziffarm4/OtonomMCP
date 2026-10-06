@@ -212,6 +212,10 @@ OtonomMCP'de yetkilendirme motoru (`AuthorizationPolicyEngine`) her eylem için 
 - İstemci payload'ında veya model çıktısında yer alan `isTrustedHumanAuth: true`, `actor: "USER"` veya `authStatus: "VERIFIED_HUMAN"` gibi sözel beyanlar sıfır güven (zero-trust) ilkesi gereği **doğrudan reddedilir**.
 - Bu nedenle, insan onayı gerektiren bir durum oluştuğunda OtonomMCP eylemi **kesin olarak engeller ve fail-closed olarak `BLOCKED_ON_AUTH_CONTEXT` durumunda bekletir**.
 
+### P34 Otoriter Bağımlılık ve Fail-Closed Garantisi
+- **`REVIEW_EVIDENCE`:** Delil değerlendirmesi yalnızca otoriter `EvidenceStore` üzerinden yapılır. `evidenceStore` eksikse, delil doğrulanamıyorsa, delil bulunamıyorsa veya delil kararı belirsiz (`UNKNOWN`) ise asla `ALLOW` verilmez (`DENY`). İstemci veya uygulayıcı tarafından sağlanan bant içi delil yükleri sahtecilik olarak reddedilir.
+- **`taskClass` Çözümlemesi:** Yürütme yetkilendirmesi (`autoExecutableTaskClasses`), görev sınıfını yalnızca otoriter `SpecStore`'dan çözer. `SpecStore` eksikse, görev bulunamıyorsa veya `taskClass` çözümlenemiyorsa sistem varsayılan `'IMPLEMENTATION'` fallback'i çalıştırmaz; doğrudan fail-closed (`DENY`) üretir. İstemci payload'undaki `taskClass` enjeksiyonları geçersiz sayılır.
+
 ---
 
 ## 6. Hata Kodları

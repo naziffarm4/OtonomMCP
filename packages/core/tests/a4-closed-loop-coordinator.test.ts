@@ -475,7 +475,7 @@ describe('Phase A4: Closed-Loop Coordinator Integration', { concurrency: 1 }, ()
       dependencies: ['task-01-core'],
       created_at: new Date().toISOString(),
       hierarchy_level: 'TASK',
-      metadata: { targetFiles: ['src/auth.ts'], revision: 1 },
+      metadata: { targetFiles: ['src/auth.ts'], revision: 1, taskClass: 'IMPLEMENTATION' },
     };
 
     await specStore.saveTasks([featCore, task1, task2]);

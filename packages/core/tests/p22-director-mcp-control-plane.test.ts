@@ -402,7 +402,7 @@ describe('Phase 22 (P22): Director MCP Control Plane', { concurrency: 1 }, () =>
       started_at: null,
       completed_at: null,
       hierarchy_level: 'TASK',
-      metadata: { targetFiles: ['src/control_plane.ts'], revision: 1 },
+      metadata: { targetFiles: ['src/control_plane.ts'], revision: 1, taskClass: 'IMPLEMENTATION' },
     };
     await specStore.saveTasks([featCore, testTask]);
 
