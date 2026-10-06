@@ -82,6 +82,7 @@ import { registerRecoveryEvaluateTools } from './tools/recovery-evaluate-tool.js
 import { registerExecutorContextTools } from './tools/executor-context-tool.js';
 import { registerDirectorLoopTools } from './tools/director-loop-tools.js';
 import { registerDriverTools } from './tools/driver-tools.js';
+import { classifyMcpTool } from './tool-policy-classifier.js';
 
 
 export class McpServer {
@@ -530,11 +531,44 @@ export class McpServer {
 
         // Policy boundary check if policyEngine is injected
         if (this.policyEngine) {
+          const classification = classifyMcpTool(toolName);
+          const resolvedRoot =
+            (args.workspaceRoot as string | undefined) ??
+            this.delegate?.projectRoot ??
+            process.cwd();
+          const targetPaths =
+            (args.targetFiles as string[] | undefined) ??
+            (args.targetPath ? [String(args.targetPath)] : undefined);
+          const humanToken = (args.humanApprovalToken ??
+            args.token ??
+            args.human_approval_token) as string | undefined;
+
           const policyDecision = this.policyEngine.evaluate({
             command: `mcp tools/call ${toolName}`,
-            action_type: 'READ_ONLY_INSPECTION',
-            is_read_only: true,
-            metadata: { toolName, correlationId: correlation.correlationId },
+            action_type: classification.actionType,
+            actionType: classification.actionType,
+            is_read_only: classification.isReadOnly,
+            isReadOnly: classification.isReadOnly,
+            mutates_source: classification.mutatesSource,
+            mutatesSource: classification.mutatesSource,
+            requested_risk_level: classification.requestedRiskLevel,
+            requestedRiskLevel: classification.requestedRiskLevel,
+            project_root: resolvedRoot,
+            projectRoot: resolvedRoot,
+            target_path: targetPaths,
+            targetPath: targetPaths,
+            human_approval_token: humanToken,
+            humanApprovalToken: humanToken,
+            metadata: {
+              toolName,
+              category: classification.category,
+              correlationId: correlation.correlationId,
+              projectId: typeof args.projectId === 'string' ? args.projectId : undefined,
+              directorSessionId:
+                typeof args.directorSessionId === 'string'
+                  ? args.directorSessionId
+                  : undefined,
+            },
           });
 
           if (!policyDecision.allowed) {
@@ -542,6 +576,7 @@ export class McpServer {
               `Tool call "${toolName}" blocked by policy: ${policyDecision.reason}`,
               {
                 toolName,
+                category: classification.category,
                 code: policyDecision.code,
                 reason: policyDecision.reason,
                 violations: policyDecision.violations,

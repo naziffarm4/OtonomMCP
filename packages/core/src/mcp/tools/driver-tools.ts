@@ -152,12 +152,63 @@ export function createDriverStartHandler(
       delegate?.projectRoot ??
       process.cwd();
 
+    const canonical = resolveCanonicalProjectIdentity(resolvedRoot);
+    if (rawArgs.projectId && rawArgs.projectId !== canonical.projectId) {
+      const payload = {
+        success: false,
+        error: {
+          code: 'ERR_PROJECT_MISMATCH',
+          message: `Canonical project identity mismatch: expected '${canonical.projectId}', got '${rawArgs.projectId}' at '${canonical.projectRoot}'. Accidental cross-project driver execution rejected.`,
+          details: { canonicalProjectId: canonical.projectId, requestedProjectId: rawArgs.projectId },
+          correlationId: context.correlation.correlationId,
+        },
+      };
+      return {
+        content: [{ type: 'text', text: JSON.stringify(payload, null, 2) }],
+        isError: true,
+      };
+    }
+
+    if (rawArgs.directorSessionId && delegate?.directorSessionStore) {
+      const session = await delegate.directorSessionStore.loadSession(String(rawArgs.directorSessionId));
+      if (!session || session.status !== 'ACTIVE') {
+        const payload = {
+          success: false,
+          error: {
+            code: 'ERR_SESSION_NOT_ACTIVE',
+            message: `Director session '${rawArgs.directorSessionId}' is ${session?.status ?? 'MISSING'}. Driver execution requires an ACTIVE session.`,
+            details: { directorSessionId: rawArgs.directorSessionId, status: session?.status },
+            correlationId: context.correlation.correlationId,
+          },
+        };
+        return {
+          content: [{ type: 'text', text: JSON.stringify(payload, null, 2) }],
+          isError: true,
+        };
+      }
+      if (session.projectId !== canonical.projectId) {
+        const payload = {
+          success: false,
+          error: {
+            code: 'ERR_PROJECT_MISMATCH',
+            message: `Director session '${rawArgs.directorSessionId}' belongs to project '${session.projectId}', not '${canonical.projectId}'.`,
+            details: { sessionProjectId: session.projectId, canonicalProjectId: canonical.projectId },
+            correlationId: context.correlation.correlationId,
+          },
+        };
+        return {
+          content: [{ type: 'text', text: JSON.stringify(payload, null, 2) }],
+          isError: true,
+        };
+      }
+    }
+
     const runtime = getRuntime(resolvedRoot, delegate);
 
     try {
       const summary = await runtime.start({
         workspaceRoot: resolvedRoot,
-        projectId: rawArgs.projectId as string | undefined,
+        projectId: canonical.projectId,
         directorSessionId: rawArgs.directorSessionId as string | undefined,
         targetTaskId: rawArgs.targetTaskId as string | undefined,
         maxIterations:
@@ -302,13 +353,30 @@ export function createDriverResumeHandler(
       delegate?.projectRoot ??
       process.cwd();
 
+    const canonical = resolveCanonicalProjectIdentity(resolvedRoot);
+    if (rawArgs.projectId && rawArgs.projectId !== canonical.projectId) {
+      const payload = {
+        success: false,
+        error: {
+          code: 'ERR_PROJECT_MISMATCH',
+          message: `Canonical project identity mismatch: expected '${canonical.projectId}', got '${rawArgs.projectId}' at '${canonical.projectRoot}'. Accidental cross-project driver resume rejected.`,
+          details: { canonicalProjectId: canonical.projectId, requestedProjectId: rawArgs.projectId },
+          correlationId: context.correlation.correlationId,
+        },
+      };
+      return {
+        content: [{ type: 'text', text: JSON.stringify(payload, null, 2) }],
+        isError: true,
+      };
+    }
+
     const runtime = getRuntime(resolvedRoot, delegate);
 
     try {
       await runtime.recover();
       const summary = await runtime.resume({
         workspaceRoot: resolvedRoot,
-        projectId: rawArgs.projectId as string | undefined,
+        projectId: canonical.projectId,
         targetTaskId: rawArgs.targetTaskId as string | undefined,
         maxIterations:
           typeof rawArgs.maxIterations === 'number'

@@ -285,7 +285,21 @@ export class AuthorizationPolicyEngine {
       };
     }
 
-    // 4. Recognized Director Action Types
+    // 4. Routine Technical Operations (automatically allowed under mandate)
+    if (
+      actionType === 'IMPLEMENT_TASK' ||
+      actionType === 'CREATE_CORRECTIVE_TASK' ||
+      actionType === 'CREATE_TASK' ||
+      actionType === 'REVIEW_EVIDENCE'
+    ) {
+      return {
+        result: AuthorizationDecisionResult.ALLOW,
+        rule: 'ROUTINE_TECHNICAL_OPERATION_ALLOWED',
+        reason: 'Routine technical operations are automatically allowed under the current mandate.'
+      };
+    }
+
+    // 5. Recognized Director Action Types
     const recognizedActionTypes = new Set<string>([
       'ANALYZE_PROJECT',
       'DISCOVER_PROJECT',
@@ -297,12 +311,8 @@ export class AuthorizationPolicyEngine {
       'UPDATE_PLAN',
       'REPLAN',
       'DEFER',
-      'IMPLEMENT_TASK',
       'RETRY_TASK',
       'CORRECT_TASK',
-      'CREATE_TASK',
-      'CREATE_CORRECTIVE_TASK',
-      'REVIEW_EVIDENCE',
       'ACCEPT_TASK',
       'REJECT_TASK',
       'BLOCK',

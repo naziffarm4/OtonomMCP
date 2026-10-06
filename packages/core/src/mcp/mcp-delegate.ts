@@ -47,6 +47,10 @@ import { ProjectSpecStore } from '../discovery/project-spec-store.js';
 import { ApprovalPackageEngine } from '../approval/approval-package-engine.js';
 import type { ExecutorPort } from '../executor-bridge/executor-port.js';
 import type { ExecutorContextService } from '../executor-bridge/executor-context-service.js';
+import { ClosedLoopCoordinator } from '../director-loop/closed-loop-coordinator.js';
+import type { DirectorRuntime } from '../director/director-runtime.js';
+import { AuthorizationPolicyEngine } from '../authorization/authorization-policy-engine.js';
+import { ProjectMandateStore } from '../authorization/project-mandate-store.js';
 
 // ============================================================================
 // 1. STATUS CONTRACTS
@@ -196,6 +200,26 @@ export interface McpOrchestratorDelegate {
   readonly contextService?: ExecutorContextService;
 
   /**
+   * Authoritative ClosedLoopCoordinator instance (Phase 28/29 authoritative closed-loop bridge).
+   */
+  readonly closedLoopCoordinator?: ClosedLoopCoordinator;
+
+  /**
+   * Authoritative DirectorRuntime instance (Phase 27/28 Director reasoning runtime).
+   */
+  readonly directorRuntime?: DirectorRuntime;
+
+  /**
+   * Authoritative AuthorizationPolicyEngine instance.
+   */
+  readonly authorizationPolicyEngine?: AuthorizationPolicyEngine;
+
+  /**
+   * Resolves or instantiates the authoritative ClosedLoopCoordinator for a given workspace root.
+   */
+  getClosedLoopCoordinator?(workspaceRoot?: string): ClosedLoopCoordinator;
+
+  /**
    * Query system-verified evidence through the orchestrator.
    */
   getEvidence?(
@@ -250,6 +274,9 @@ export interface DefaultMcpOrchestratorDelegateOptions {
   readonly approvalPackageEngine?: ApprovalPackageEngine;
   readonly executorPort?: ExecutorPort;
   readonly contextService?: ExecutorContextService;
+  readonly closedLoopCoordinator?: ClosedLoopCoordinator;
+  readonly directorRuntime?: DirectorRuntime;
+  readonly authorizationPolicyEngine?: AuthorizationPolicyEngine;
   readonly evidenceProvider?: (
     params: {
       taskId?: string;
@@ -314,6 +341,52 @@ export class DefaultMcpOrchestratorDelegate implements McpOrchestratorDelegate {
   readonly approvalPackageEngine?: ApprovalPackageEngine;
   readonly executorPort?: ExecutorPort;
   readonly contextService?: ExecutorContextService;
+  readonly closedLoopCoordinator?: ClosedLoopCoordinator;
+  readonly directorRuntime?: DirectorRuntime;
+  readonly authorizationPolicyEngine?: AuthorizationPolicyEngine;
+  private _cachedCoordinator?: ClosedLoopCoordinator;
+
+  getClosedLoopCoordinator(workspaceRoot?: string): ClosedLoopCoordinator {
+    const resolvedRoot = workspaceRoot ?? this.projectRoot ?? process.cwd();
+    if (this.closedLoopCoordinator && (!workspaceRoot || workspaceRoot === this.projectRoot)) {
+      return this.closedLoopCoordinator;
+    }
+    if (this._cachedCoordinator && (!workspaceRoot || workspaceRoot === this.projectRoot)) {
+      return this._cachedCoordinator;
+    }
+
+    const authEngine =
+      this.authorizationPolicyEngine ??
+      (this.historyManager
+        ? new AuthorizationPolicyEngine({
+            historyManager: this.historyManager,
+            mandateStore: new ProjectMandateStore({
+              baseDir: resolvedRoot,
+            }),
+          })
+        : undefined);
+
+    const coordinator = new ClosedLoopCoordinator({
+      workspaceRoot: resolvedRoot,
+      sessionStore: this.directorSessionStore,
+      decisionStore: this.directorDecisionStore,
+      approvalStore: this.approvalStore,
+      approvalPackageEngine: this.approvalPackageEngine,
+      specStore: this.specStore,
+      dagEngine: this.dagEngine,
+      durableStateManager: this.durableStateManager,
+      historyManager: this.historyManager,
+      executorPort: this.executorPort,
+      directorRuntime: this.directorRuntime,
+      authorizationPolicyEngine: authEngine,
+    });
+
+    if (!workspaceRoot || workspaceRoot === this.projectRoot) {
+      this._cachedCoordinator = coordinator;
+    }
+    return coordinator;
+  }
+
   private readonly evidenceProvider?: (
     params: {
       taskId?: string;
@@ -575,6 +648,9 @@ export class DefaultMcpOrchestratorDelegate implements McpOrchestratorDelegate {
     this.evidenceProvider = options.evidenceProvider;
     this.executorPort = options.executorPort;
     this.contextService = options.contextService;
+    this.closedLoopCoordinator = options.closedLoopCoordinator;
+    this.directorRuntime = options.directorRuntime;
+    this.authorizationPolicyEngine = options.authorizationPolicyEngine;
   }
 
   async isHealthy(): Promise<boolean> {

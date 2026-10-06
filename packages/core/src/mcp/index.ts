@@ -44,4 +44,5 @@ export * from './tools/executor-context-tool.js';
 export * from './tools/risk-human-decision-tool.js';
 export * from './tools/director-loop-tools.js';
 export * from './tools/driver-tools.js';
+export * from './tool-policy-classifier.js';
 

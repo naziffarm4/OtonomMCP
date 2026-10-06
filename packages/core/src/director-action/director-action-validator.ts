@@ -313,6 +313,19 @@ export class DirectorActionValidator {
     actionType: DirectorActionType,
     rawPayload: unknown
   ): unknown {
+    if (rawPayload && typeof rawPayload === 'object' && !Array.isArray(rawPayload)) {
+      const p = rawPayload as Record<string, unknown>;
+      if (
+        p.isDevelopmentAuthorized !== undefined ||
+        p.hasImplementationAuthority !== undefined ||
+        p.isTrustedHumanAuth !== undefined
+      ) {
+        throw new DirectorActionValidationError(
+          'Payload contains prohibited authority claim fields (isDevelopmentAuthorized / hasImplementationAuthority / isTrustedHumanAuth).'
+        );
+      }
+    }
+
     let result: { success: boolean; data?: unknown; error?: { message: string; issues: unknown[] } };
 
     switch (actionType) {
