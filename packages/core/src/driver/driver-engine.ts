@@ -579,12 +579,18 @@ export class DriverEngine {
     }
 
     if (!instruction) {
+      const taskAny = task as any;
+      const metaAny = (task.metadata ?? {}) as any;
       const targetFiles: readonly string[] =
-        ((task as any).target_files && (task as any).target_files.length > 0)
-          ? (task as any).target_files
-          : (Array.isArray(task.metadata?.target_files) && (task.metadata!.target_files as string[]).length > 0)
-            ? (task.metadata!.target_files as string[])
-            : ['src/index.ts'];
+        Array.isArray(taskAny.targetFiles) && taskAny.targetFiles.length > 0
+          ? taskAny.targetFiles
+          : Array.isArray(taskAny.target_files) && taskAny.target_files.length > 0
+            ? taskAny.target_files
+            : Array.isArray(metaAny.targetFiles) && metaAny.targetFiles.length > 0
+              ? metaAny.targetFiles
+              : Array.isArray(metaAny.target_files) && metaAny.target_files.length > 0
+                ? metaAny.target_files
+                : ['src/index.ts'];
 
       instruction = await this.directorLoopEngine.ingestInstruction({
         workspaceRoot: workingDir,

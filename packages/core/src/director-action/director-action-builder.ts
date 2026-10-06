@@ -26,10 +26,13 @@ import {
 import { DirectorActionValidationError } from './director-action-errors.js';
 import type { ParsedDirectorDecision } from '../director-reasoning/director-reasoning-types.js';
 import type { DirectorContextSnapshot } from '../director/director-context-types.js';
+import type { DirectorAction } from '../director/director-action-types.js';
 
 export interface BuildDirectorActionEnvelopeParams {
-  /** The validated parsed decision from DirectorReasoningEngine */
-  readonly decision: ParsedDirectorDecision;
+  /** The validated parsed decision from DirectorReasoningEngine (legacy) */
+  readonly decision?: ParsedDirectorDecision;
+  /** The authoritative DirectorAction from DirectorRuntime (P26/P27) */
+  readonly action?: DirectorAction;
   /** The authoritative context snapshot the decision was based on */
   readonly snapshot: DirectorContextSnapshot;
   /** Optional explicit idempotency key. If omitted, a deterministic key is generated */
@@ -47,7 +50,7 @@ export class DirectorActionBuilder {
    * Constructs an authoritative DirectorActionEnvelope bound strictly to the snapshot context.
    */
   buildEnvelope(params: BuildDirectorActionEnvelopeParams): DirectorActionEnvelope {
-    const { decision, snapshot } = params;
+    const { decision, action, snapshot } = params;
 
     // 1. Validate snapshot presence and basic integrity
     if (!snapshot || !snapshot.logicalFingerprint) {
@@ -58,6 +61,85 @@ export class DirectorActionBuilder {
       throw new DirectorActionValidationError(
         'Cannot build action envelope: snapshot must contain valid projectId and directorSessionId.'
       );
+    }
+
+    // Branch A: Direct P26/P27 DirectorAction provided
+    if (action) {
+      // 2. Validate context fingerprint alignment
+      if (action.basedOnContextFingerprint !== snapshot.logicalFingerprint) {
+        throw new DirectorActionValidationError(
+          `Action fingerprint mismatch: action was based on '${action.basedOnContextFingerprint}', but snapshot fingerprint is '${snapshot.logicalFingerprint}'.`
+        );
+      }
+
+      if (action.projectId !== snapshot.projectId) {
+        throw new DirectorActionValidationError(
+          `Project ID mismatch: action bound to '${action.projectId}', but snapshot project is '${snapshot.projectId}'.`
+        );
+      }
+
+      if (action.directorSessionId !== snapshot.directorSessionId) {
+        throw new DirectorActionValidationError(
+          `Director session mismatch: action bound to session '${action.directorSessionId}', but snapshot session is '${snapshot.directorSessionId}'.`
+        );
+      }
+
+      // 3. Resolve understanding revision
+      const understandingRevision =
+        (typeof snapshot.sectionMetadata?.requirements?.revision === 'number' &&
+          snapshot.sectionMetadata.requirements.revision > 0)
+          ? snapshot.sectionMetadata.requirements.revision
+          : (action.basedOnUnderstandingRevision ?? 1);
+
+      // 4. Action Type
+      const actionType = (params.explicitActionType || action.actionType) as DirectorActionType;
+
+      // 5. Construct Typed Payload
+      const payload = this.constructPayloadFromAction(actionType, action, snapshot, params.customPayload);
+
+      // 6. Generate Deterministic Idempotency Key
+      const idempotencyKey =
+        params.idempotencyKey ??
+        this.generateDefaultIdempotencyKeyFromAction(
+          snapshot.projectId,
+          snapshot.directorSessionId,
+          actionType,
+          action,
+          payload
+        );
+
+      // 7. Generate Deterministic Action ID
+      const actionId = computeDeterministicActionId({
+        projectId: snapshot.projectId,
+        directorSessionId: snapshot.directorSessionId,
+        actionType,
+        idempotencyKey,
+      });
+
+      // 8. Assemble Immutable Envelope
+      const envelope: DirectorActionEnvelope = Object.freeze({
+        protocolVersion: action.protocolVersion || 'AIDM-DIRECTOR-ACTION-1',
+        schemaVersion: action.schemaVersion || DIRECTOR_ACTION_SCHEMA_VERSION,
+        actionId,
+        idempotencyKey,
+        projectId: snapshot.projectId,
+        directorSessionId: snapshot.directorSessionId,
+        cycleId: params.cycleId,
+        basedOnContextFingerprint: snapshot.logicalFingerprint,
+        understandingRevision,
+        actionType,
+        actor: DIRECTOR_ACTION_ACTOR,
+        actorRole: DIRECTOR_ACTION_ACTOR_ROLE,
+        timestamp: new Date().toISOString(),
+        payload,
+      });
+
+      return envelope;
+    }
+
+    // Branch B: Legacy ParsedDirectorDecision provided
+    if (!decision) {
+      throw new DirectorActionValidationError('Cannot build action envelope: either action or decision must be provided.');
     }
 
     // 2. Validate context fingerprint alignment
@@ -339,6 +421,250 @@ export class DirectorActionBuilder {
       default:
         throw new DirectorActionValidationError(`Unsupported actionType '${actionType}'.`);
     }
+  }
+
+  private constructPayloadFromAction(
+    actionType: DirectorActionType,
+    action: DirectorAction,
+    snapshot: DirectorContextSnapshot,
+    customPayload?: Record<string, unknown>
+  ): Record<string, unknown> {
+    if (customPayload) {
+      return customPayload;
+    }
+
+    const a = action as any;
+
+    switch (actionType) {
+      case 'IMPLEMENT_TASK': {
+        const taskId = a.taskId || String(a.metadata?.taskId ?? '');
+        if (!taskId) {
+          throw new DirectorActionValidationError('IMPLEMENT_TASK action requires a taskId.');
+        }
+
+        let expectedTaskRevision = 1;
+        if (snapshot.sections?.taskList?.tasks) {
+          const matching = snapshot.sections.taskList.tasks.find((t) => t.taskId === taskId);
+          if (matching && (matching as any).revision) {
+            expectedTaskRevision = (matching as any).revision;
+          }
+        }
+
+        return {
+          taskId,
+          expectedTaskRevision,
+          executionPlan: a.objective || a.rationale || `Implement task ${taskId}`,
+          targetFiles: Array.isArray(a.targetFiles) ? a.targetFiles : ['src/index.ts'],
+          acceptanceCriteria: Array.isArray(a.acceptanceCriteria) ? a.acceptanceCriteria : [],
+          constraints: Array.isArray(a.constraints) ? a.constraints : [],
+          implementationScope: typeof a.implementationScope === 'string' && (a.implementationScope.includes('/') || a.implementationScope.endsWith('*'))
+            ? a.implementationScope
+            : undefined,
+          rationale: a.rationale,
+          confidence: a.confidence,
+          inputContext: a.metadata || {},
+        };
+      }
+
+      case 'RETRY_TASK': {
+        const taskId = a.taskId || String(a.metadata?.taskId ?? '');
+        if (!taskId) {
+          throw new DirectorActionValidationError('RETRY_TASK action requires a taskId.');
+        }
+
+        return {
+          taskId,
+          previousExecutionId: a.previousExecutionId || `prev-exec-${taskId}`,
+          reason: a.reason || a.rationale,
+          correctionStrategy: a.correctionStrategy,
+          acceptanceCriteria: Array.isArray(a.acceptanceCriteria) ? a.acceptanceCriteria : [],
+          executionPlan: a.reason ? `Retry task ${taskId}: ${a.reason}` : a.rationale,
+          rationale: a.rationale,
+          confidence: a.confidence,
+        };
+      }
+
+      case 'CORRECT_TASK': {
+        const taskId = a.taskId || String(a.metadata?.taskId ?? '');
+        if (!taskId) {
+          throw new DirectorActionValidationError('CORRECT_TASK action requires a taskId.');
+        }
+
+        return {
+          taskId,
+          parentTaskId: taskId,
+          failedTaskId: taskId,
+          failureAnalysis: a.failureAnalysis || a.rationale,
+          correctionPlan: a.correctionPlan || a.rationale,
+          targetFiles: Array.isArray(a.targetFiles) ? a.targetFiles : undefined,
+          acceptanceCriteria: Array.isArray(a.acceptanceCriteria) ? a.acceptanceCriteria : [],
+          executionPlan: a.correctionPlan || a.rationale,
+          rationale: a.rationale,
+          confidence: a.confidence,
+        };
+      }
+
+      case 'REQUEST_CLARIFICATION': {
+        return {
+          question: a.question || a.rationale,
+          reason: a.reason || a.rationale,
+          blocking: a.blocking ?? true,
+          options: a.options ?? [],
+          rationale: a.rationale,
+          confidence: a.confidence,
+        };
+      }
+
+      case 'BLOCK': {
+        return {
+          reason: a.reason || a.rationale,
+          rationale: a.rationale,
+          confidence: a.confidence,
+        };
+      }
+
+      case 'REQUEST_HUMAN_DECISION': {
+        return {
+          decisionId: a.actionId || a.decisionId || `hdp-${Date.now()}`,
+          question: a.question || a.rationale || a.decisionTopic || 'Human decision required',
+          reason: a.reason || a.rationale || 'Human decision required',
+          decisionTopic: a.decisionTopic,
+          options: a.options || ['Approve and proceed', 'Reject with alternative'],
+          recommendedOption: a.recommendedOption || a.recommendation,
+          riskLevel: a.riskLevel || 'HIGH',
+          affectedAreas: a.affectedAreas || ['architecture', 'implementation'],
+          rationale: a.rationale,
+          confidence: a.confidence,
+        };
+      }
+
+      case 'DECLARE_PROJECT_COMPLETE': {
+        return {
+          completionRationale: a.completionRationale || a.rationale,
+          requirementCoverage: a.requirementCoverage ?? [],
+          unresolvedRisks: a.unresolvedRisks ?? [],
+          remainingTasks: a.remainingTasks ?? [],
+          finalVerificationRequested: a.finalVerificationRequested ?? true,
+          completionChecklist: a.completionChecklist,
+          rationale: a.rationale,
+          confidence: a.confidence,
+        };
+      }
+
+      case 'REVIEW_EVIDENCE': {
+        const taskId = a.taskId || (snapshot.sections?.taskList?.tasks?.[0]?.taskId ?? 'task-01');
+        let evidenceIds: string[] = [];
+        if (Array.isArray(a.evidenceIds) && a.evidenceIds.length > 0) {
+          evidenceIds = a.evidenceIds;
+        } else if (snapshot.sections?.evidence?.items) {
+          evidenceIds = snapshot.sections.evidence.items
+            .filter((e) => e.taskId === taskId)
+            .map((e) => e.evidenceId);
+        }
+        if (evidenceIds.length === 0) {
+          evidenceIds = [`ev-${taskId}-baseline`];
+        }
+
+        return {
+          taskId,
+          evidenceIds,
+          reviewObjective: a.reviewObjective || a.rationale,
+          verdict: a.verdict || 'VERIFIED_SUCCESS',
+          findings: a.rationale,
+          rationale: a.rationale,
+          confidence: a.confidence,
+        };
+      }
+
+      case 'CREATE_TASK':
+      case 'REQUEST_PLANNING': {
+        return {
+          title: a.title || a.planningScope || `Plan task based on ${a.rationale?.substring(0, 60)}`,
+          description: a.rationale,
+          parentTaskId: a.parentTaskId,
+          dependencies: a.dependencies ?? [],
+          acceptanceCriteria: a.acceptanceCriteria ?? [`AC: ${a.rationale}`],
+          planningScope: a.planningScope,
+          rationale: a.rationale,
+          confidence: a.confidence,
+        };
+      }
+
+      case 'CREATE_CORRECTIVE_TASK': {
+        return {
+          parentTaskId: a.parentTaskId || a.taskId || 'root',
+          failedTaskId: a.failedTaskId || a.taskId || 'failed',
+          failureReason: a.failureReason || a.rationale,
+          remediationType: a.remediationType || 'CODE_FIX',
+          correctivePlan: a.correctivePlan || a.rationale,
+          targetFiles: a.targetFiles,
+          rationale: a.rationale,
+          confidence: a.confidence,
+        };
+      }
+
+      case 'REPLAN': {
+        const affectedTaskIds = Array.isArray(a.affectedTaskIds)
+          ? a.affectedTaskIds
+          : snapshot.sections?.taskList?.tasks?.[0]?.taskId
+          ? [snapshot.sections.taskList.tasks[0].taskId]
+          : [];
+
+        return {
+          replanReason: a.reason || a.replanReason || a.rationale,
+          affectedTaskIds,
+          planningObjective: a.planningObjective || a.rationale,
+          constraints: a.constraints ?? [],
+          proposedModifications: a.proposedModifications ?? [
+            {
+              taskId: affectedTaskIds[0] ?? 'task-01',
+              action: 'DEFER',
+              justification: a.rationale,
+            },
+          ],
+          rationale: a.rationale,
+          confidence: a.confidence,
+        };
+      }
+
+      case 'SELECT_TASK':
+      case 'UPDATE_PLAN':
+      case 'DEFER':
+      case 'ACCEPT_TASK':
+      case 'REJECT_TASK':
+      case 'ANALYZE_PROJECT':
+      case 'DISCOVER_PROJECT':
+      case 'ACCEPT_CONTEXT':
+      case 'REJECT_CONTEXT':
+      case 'RESUME':
+      case 'PROJECT_COMPLETE':
+      case 'PAUSE':
+      case 'STOP': {
+        return {
+          ...a,
+          reason: a.reason || a.rationale,
+          rationale: a.rationale,
+          confidence: a.confidence,
+        };
+      }
+
+      default:
+        throw new DirectorActionValidationError(`Unsupported actionType '${actionType}'.`);
+    }
+  }
+
+  private generateDefaultIdempotencyKeyFromAction(
+    projectId: string,
+    sessionId: string,
+    actionType: string,
+    action: DirectorAction,
+    payload: Record<string, unknown>
+  ): string {
+    const serializedPayload = JSON.stringify(payload, Object.keys(payload).sort());
+    const targetId = (action as any).taskId ?? (payload as any).taskId ?? '';
+    const raw = `${projectId}:${sessionId}:${actionType}:${targetId}:${serializedPayload}`;
+    const hash = crypto.createHash('sha256').update(raw, 'utf8').digest('hex').substring(0, 16);
+    return `key-${actionType.toLowerCase().replace(/_/g, '-')}-${hash}`;
   }
 
   private generateDefaultIdempotencyKey(

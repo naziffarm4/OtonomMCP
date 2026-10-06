@@ -237,9 +237,7 @@ export class AuthorizationPolicyEngine {
   }
 
   private evaluateActionType(actionType: DirectorActionType | 'IMPLEMENT_TASK', mandate: ProjectMandate): { result: AuthorizationDecisionResult; rule: string; reason: string } {
-    // Some actions are strictly DENY by nature of their definition if they break invariants (none in director action types natively except if explicitly forbidden)
-    
-    // Check forbidden operations
+    // 1. Explicitly forbidden operation
     if (mandate.forbiddenOperations.includes(actionType)) {
       return {
         result: AuthorizationDecisionResult.DENY,
@@ -248,6 +246,37 @@ export class AuthorizationPolicyEngine {
       };
     }
 
+    // 2. Implementation actions requiring file modifications
+    if (
+      actionType === 'IMPLEMENT_TASK' ||
+      actionType === 'RETRY_TASK' ||
+      actionType === 'CORRECT_TASK'
+    ) {
+      if (
+        mandate.forbiddenOperations.includes('FILE_MODIFY') ||
+        mandate.forbiddenOperations.includes('IMPLEMENTATION')
+      ) {
+        return {
+          result: AuthorizationDecisionResult.DENY,
+          rule: 'EXPLICITLY_FORBIDDEN_OPERATION',
+          reason: `Action type '${actionType}' requires file modifications, which are forbidden by the project mandate.`
+        };
+      }
+
+      if (
+        mandate.allowedOperationTypes.length > 0 &&
+        !mandate.allowedOperationTypes.includes('FILE_MODIFY') &&
+        !mandate.allowedOperationTypes.includes('IMPLEMENTATION')
+      ) {
+        return {
+          result: AuthorizationDecisionResult.DENY,
+          rule: 'OPERATION_NOT_ALLOWED',
+          reason: `Action type '${actionType}' requires file modification permissions not granted in allowedOperationTypes.`
+        };
+      }
+    }
+
+    // 3. Human approval required by mandate
     if (mandate.humanApprovalRequiredOperations.includes(actionType)) {
       return {
         result: AuthorizationDecisionResult.REQUIRE_HUMAN_APPROVAL,
@@ -256,19 +285,40 @@ export class AuthorizationPolicyEngine {
       };
     }
 
-    if (actionType === 'IMPLEMENT_TASK' || actionType === 'CREATE_CORRECTIVE_TASK' || actionType === 'CREATE_TASK' || actionType === 'REVIEW_EVIDENCE') {
+    // 4. Recognized Director Action Types
+    const recognizedActionTypes = new Set<string>([
+      'ANALYZE_PROJECT',
+      'DISCOVER_PROJECT',
+      'REQUEST_CLARIFICATION',
+      'ACCEPT_CONTEXT',
+      'REJECT_CONTEXT',
+      'REQUEST_PLANNING',
+      'SELECT_TASK',
+      'UPDATE_PLAN',
+      'REPLAN',
+      'DEFER',
+      'IMPLEMENT_TASK',
+      'RETRY_TASK',
+      'CORRECT_TASK',
+      'CREATE_TASK',
+      'CREATE_CORRECTIVE_TASK',
+      'REVIEW_EVIDENCE',
+      'ACCEPT_TASK',
+      'REJECT_TASK',
+      'BLOCK',
+      'REQUEST_HUMAN_DECISION',
+      'RESUME',
+      'DECLARE_PROJECT_COMPLETE',
+      'PROJECT_COMPLETE',
+      'PAUSE',
+      'STOP',
+    ]);
+
+    if (recognizedActionTypes.has(actionType)) {
       return {
         result: AuthorizationDecisionResult.ALLOW,
-        rule: 'ROUTINE_TECHNICAL_OPERATION_ALLOWED',
-        reason: 'Routine technical operations are automatically allowed under the current mandate.'
-      };
-    }
-
-    if (actionType === 'REPLAN' || actionType === 'REQUEST_HUMAN_DECISION' || actionType === 'PROJECT_COMPLETE' || actionType === 'PAUSE' || actionType === 'STOP') {
-      return {
-        result: AuthorizationDecisionResult.REQUIRE_HUMAN_APPROVAL,
-        rule: 'STRATEGIC_OPERATION_REQUIRES_APPROVAL',
-        reason: 'Strategic lifecycle and scope changes require human approval.'
+        rule: 'RECOGNIZED_ACTION_ROUTED_TO_GATE',
+        reason: `Action type '${actionType}' routed to authoritative dispatcher gate.`
       };
     }
 

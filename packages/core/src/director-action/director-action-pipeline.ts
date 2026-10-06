@@ -28,8 +28,9 @@
 import { DirectorReasoningEngine } from '../director-reasoning/director-reasoning-engine.js';
 import type {
   DirectorReasoningInput,
-  DirectorReasoningResult,
+  DirectorReasoningResult as LegacyDirectorReasoningResult,
 } from '../director-reasoning/director-reasoning-types.js';
+import { DirectorRuntime, type DirectorReasoningResult as P27DirectorReasoningResult } from '../director/director-runtime.js';
 import {
   type DirectorActionEnvelope,
   type DirectorActionType,
@@ -43,12 +44,14 @@ import {
 } from './director-action-validator.js';
 
 export interface DirectorActionPipelineConfig {
-  readonly reasoningEngine: DirectorReasoningEngine;
+  readonly reasoningEngine?: DirectorReasoningEngine;
+  readonly directorRuntime?: DirectorRuntime;
   readonly actionBuilder?: DirectorActionBuilder;
   readonly actionValidator?: DirectorActionValidator;
 }
 
-export interface RunDirectorActionPipelineInput extends DirectorReasoningInput {
+export interface RunDirectorActionPipelineInput extends Partial<DirectorReasoningInput> {
+  readonly snapshot: any;
   /** Optional custom idempotency key to enforce deterministic deduplication */
   readonly idempotencyKey?: string;
   /** Optional active execution cycle ID */
@@ -59,11 +62,15 @@ export interface RunDirectorActionPipelineInput extends DirectorReasoningInput {
   readonly customPayload?: Record<string, unknown>;
   /** Optional Task DAG state for deep lineage validation */
   readonly existingTasks?: readonly TaskSummaryInfo[];
+  /** Optional target task ID */
+  readonly taskId?: string;
+  /** Optional user instructions */
+  readonly userInstructions?: string;
 }
 
 export interface DirectorActionPipelineResult {
   readonly success: true;
-  readonly reasoningResult: DirectorReasoningResult;
+  readonly reasoningResult: LegacyDirectorReasoningResult | P27DirectorReasoningResult;
   readonly envelope: DirectorActionEnvelope;
   readonly validationResult: DirectorActionValidationResult;
   readonly isDuplicate: boolean;
@@ -82,11 +89,13 @@ export type ValidatedDirectorActionResult =
 
 
 export class DirectorActionPipeline {
-  readonly reasoningEngine: DirectorReasoningEngine;
+  readonly reasoningEngine?: DirectorReasoningEngine;
+  readonly directorRuntime?: DirectorRuntime;
   readonly actionBuilder: DirectorActionBuilder;
   readonly actionValidator: DirectorActionValidator;
 
   constructor(config: DirectorActionPipelineConfig) {
+    this.directorRuntime = config.directorRuntime;
     this.reasoningEngine = config.reasoningEngine;
     this.actionBuilder = config.actionBuilder ?? new DirectorActionBuilder();
     this.actionValidator = config.actionValidator ?? new DirectorActionValidator();
@@ -94,53 +103,101 @@ export class DirectorActionPipeline {
 
   /**
    * Executes the full Director reasoning to validated action envelope pipeline.
+   * Authoritative production flow uses P27 DirectorRuntime.
    *
-   * @throws LlmTimeoutError | MalformedLlmResponseError | LlmExecutionError | TokenBudgetError if reasoning fails
-   * @throws DirectorActionValidationError | DirectorActionStaleContextError | DirectorActionImpersonationError if validation fails
+   * @throws DirectorRuntimeError | DirectorLlmRequestFailedError if DirectorRuntime reasoning fails
+   * @throws DirectorActionValidationError | DirectorActionStaleContextError if validation fails
    */
   async execute(
     input: RunDirectorActionPipelineInput
   ): Promise<DirectorActionPipelineResult> {
-    // 1. Dispatch reasoning through DirectorReasoningEngine
-    // If the provider fails, times out, or produces malformed output, it throws here (FAIL CLOSED).
-    const reasoningResult = await this.reasoningEngine.reason(input);
+    // 1. Authoritative path: DirectorRuntime (P27)
+    if (this.directorRuntime) {
+      const trigger = (input as any).trigger ?? (input.taskId ? 'TASK_READY' : 'PERIODIC_REVIEW');
+      const reasoningResult = await this.directorRuntime.reason({
+        projectId: input.snapshot.projectId,
+        directorSessionId: input.snapshot.directorSessionId,
+        trigger,
+        snapshot: input.snapshot,
+        objective: input.userInstructions,
+        taskId: input.taskId,
+      });
 
-    // 2. Build Structured Action Envelope from Parsed Decision & Snapshot
-    const envelope = this.actionBuilder.buildEnvelope({
-      decision: reasoningResult.decision,
-      snapshot: input.snapshot,
-      idempotencyKey: input.idempotencyKey,
-      cycleId: input.cycleId,
-      explicitActionType: input.explicitActionType,
-      customPayload: input.customPayload,
-    });
+      // 2. Build Structured Action Envelope directly from typed DirectorAction & Snapshot
+      const envelope = this.actionBuilder.buildEnvelope({
+        action: reasoningResult.action,
+        snapshot: input.snapshot,
+        idempotencyKey: input.idempotencyKey,
+        cycleId: input.cycleId,
+        explicitActionType: input.explicitActionType,
+        customPayload: input.customPayload,
+      });
 
-    // 3. Construct Validation Context from Snapshot
-    const understandingRevision =
-      (typeof input.snapshot.sectionMetadata?.requirements?.revision === 'number' &&
-        input.snapshot.sectionMetadata.requirements.revision > 0)
-        ? input.snapshot.sectionMetadata.requirements.revision
-        : (reasoningResult.decision.basedOnUnderstandingRevision ?? 1);
+      // 3. Construct Validation Context from Snapshot
+      const understandingRevision =
+        (typeof input.snapshot.sectionMetadata?.requirements?.revision === 'number' &&
+          input.snapshot.sectionMetadata.requirements.revision > 0)
+          ? input.snapshot.sectionMetadata.requirements.revision
+          : (reasoningResult.action.basedOnUnderstandingRevision ?? 1);
 
-    const validationContext: DirectorActionValidationContext = {
-      currentFingerprint: input.snapshot.logicalFingerprint,
-      currentUnderstandingRevision: understandingRevision,
-      currentDirectorSessionId: input.snapshot.directorSessionId,
-      currentProjectId: input.snapshot.projectId,
-      existingTasks: input.existingTasks,
-    };
+      const validationContext: DirectorActionValidationContext = {
+        currentFingerprint: input.snapshot.logicalFingerprint,
+        currentUnderstandingRevision: understandingRevision,
+        currentDirectorSessionId: input.snapshot.directorSessionId,
+        currentProjectId: input.snapshot.projectId,
+        existingTasks: input.existingTasks,
+      };
 
-    // 4. Validate Action Envelope Semantics and Idempotency
-    const validationResult = await this.actionValidator.validateAsync(envelope, validationContext);
+      // 4. Validate Action Envelope Semantics and Idempotency
+      const validationResult = await this.actionValidator.validateAsync(envelope, validationContext);
 
-    // 5. Return Validated Action Proposal
-    // NOTE: DriverEngine or AGY execution is strictly NOT called here.
-    return {
-      success: true,
-      reasoningResult,
-      envelope,
-      validationResult,
-      isDuplicate: validationResult.isDuplicate,
-    };
+      return {
+        success: true,
+        reasoningResult,
+        envelope,
+        validationResult,
+        isDuplicate: validationResult.isDuplicate,
+      };
+    }
+
+    // 2. Legacy fallback path: DirectorReasoningEngine
+    if (this.reasoningEngine) {
+      const reasoningResult = await this.reasoningEngine.reason(input as any);
+
+      const envelope = this.actionBuilder.buildEnvelope({
+        decision: reasoningResult.decision,
+        snapshot: input.snapshot,
+        idempotencyKey: input.idempotencyKey,
+        cycleId: input.cycleId,
+        explicitActionType: input.explicitActionType,
+        customPayload: input.customPayload,
+      });
+
+      const understandingRevision =
+        (typeof input.snapshot.sectionMetadata?.requirements?.revision === 'number' &&
+          input.snapshot.sectionMetadata.requirements.revision > 0)
+          ? input.snapshot.sectionMetadata.requirements.revision
+          : (reasoningResult.decision.basedOnUnderstandingRevision ?? 1);
+
+      const validationContext: DirectorActionValidationContext = {
+        currentFingerprint: input.snapshot.logicalFingerprint,
+        currentUnderstandingRevision: understandingRevision,
+        currentDirectorSessionId: input.snapshot.directorSessionId,
+        currentProjectId: input.snapshot.projectId,
+        existingTasks: input.existingTasks,
+      };
+
+      const validationResult = await this.actionValidator.validateAsync(envelope, validationContext);
+
+      return {
+        success: true,
+        reasoningResult,
+        envelope,
+        validationResult,
+        isDuplicate: validationResult.isDuplicate,
+      };
+    }
+
+    throw new Error('DirectorActionPipeline: neither directorRuntime nor reasoningEngine is configured.');
   }
 }

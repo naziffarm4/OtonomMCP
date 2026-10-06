@@ -30,12 +30,41 @@ export const DIRECTOR_ACTION_ACTOR = 'DIRECTOR' as const;
 export const DIRECTOR_ACTION_ACTOR_ROLE = 'DIRECTOR' as const;
 
 export const DIRECTOR_ACTION_TYPES = [
+  // P26 Understanding
+  'ANALYZE_PROJECT',
+  'DISCOVER_PROJECT',
+  'REQUEST_CLARIFICATION',
+  'ACCEPT_CONTEXT',
+  'REJECT_CONTEXT',
+
+  // P26 Planning
+  'REQUEST_PLANNING',
+  'SELECT_TASK',
+  'UPDATE_PLAN',
+  'REPLAN',
+  'DEFER',
+
+  // P26 Execution
   'IMPLEMENT_TASK',
+  'RETRY_TASK',
+  'CORRECT_TASK',
+
+  // P26 Evaluation
+  'REVIEW_EVIDENCE',
+  'ACCEPT_TASK',
+  'REJECT_TASK',
+
+  // P26 Control
+  'BLOCK',
+  'REQUEST_HUMAN_DECISION',
+  'RESUME',
+
+  // P26 Completion
+  'DECLARE_PROJECT_COMPLETE',
+
+  // Legacy P19 compatibility
   'CREATE_TASK',
   'CREATE_CORRECTIVE_TASK',
-  'REPLAN',
-  'REVIEW_EVIDENCE',
-  'REQUEST_HUMAN_DECISION',
   'PROJECT_COMPLETE',
   'PAUSE',
   'STOP',
@@ -56,10 +85,78 @@ export const ImplementTaskPayloadSchema = z
     expectedTaskRevision: z.number().int().positive().optional(),
     executionPlan: z.string().min(1, 'executionPlan is required'),
     inputContext: z.record(z.string(), z.unknown()).optional(),
+    targetFiles: z.array(z.string()).optional(),
+    acceptanceCriteria: z.array(z.string()).optional(),
+    constraints: z.array(z.string()).optional(),
+    objective: z.string().optional(),
+    implementationScope: z.string().optional(),
   })
-  .strict();
+  .passthrough();
 
 export type ImplementTaskPayload = z.infer<typeof ImplementTaskPayloadSchema>;
+
+/**
+ * RETRY_TASK: Director proposes retrying a previously failed task.
+ */
+export const RetryTaskPayloadSchema = z
+  .object({
+    taskId: z.string().min(1, 'taskId is required'),
+    previousExecutionId: z.string().optional(),
+    reason: z.string().min(1, 'reason is required'),
+    correctionStrategy: z.string().optional(),
+    acceptanceCriteria: z.array(z.string()).optional(),
+    executionPlan: z.string().optional(),
+  })
+  .passthrough();
+
+export type RetryTaskPayload = z.infer<typeof RetryTaskPayloadSchema>;
+
+/**
+ * CORRECT_TASK: Director proposes correcting an implementation after failure analysis.
+ */
+export const CorrectTaskPayloadSchema = z
+  .object({
+    taskId: z.string().min(1, 'taskId is required'),
+    parentTaskId: z.string().optional(),
+    failedTaskId: z.string().optional(),
+    failureAnalysis: z.string().optional(),
+    correctionPlan: z.string().optional(),
+    targetFiles: z.array(z.string()).optional(),
+    acceptanceCriteria: z.array(z.string()).optional(),
+    executionPlan: z.string().optional(),
+  })
+  .passthrough();
+
+export type CorrectTaskPayload = z.infer<typeof CorrectTaskPayloadSchema>;
+
+/**
+ * REQUEST_CLARIFICATION: Director requests clarification from human stakeholder.
+ */
+export const RequestClarificationPayloadSchema = z
+  .object({
+    question: z.string().min(1, 'question is required'),
+    reason: z.string().min(1, 'reason is required'),
+    blocking: z.boolean().default(true),
+    options: z.array(z.any()).optional(),
+  })
+  .passthrough();
+
+export type RequestClarificationPayload = z.infer<typeof RequestClarificationPayloadSchema>;
+
+/**
+ * DECLARE_PROJECT_COMPLETE: Director proposes project completion and requests final verification.
+ */
+export const DeclareProjectCompletePayloadSchema = z
+  .object({
+    completionRationale: z.string().optional(),
+    requirementCoverage: z.array(z.any()).optional(),
+    unresolvedRisks: z.array(z.string()).optional(),
+    remainingTasks: z.array(z.string()).optional(),
+    finalVerificationRequested: z.boolean().optional(),
+  })
+  .passthrough();
+
+export type DeclareProjectCompletePayload = z.infer<typeof DeclareProjectCompletePayloadSchema>;
 
 /**
  * CREATE_TASK: Director proposes adding a new forward task to the DAG.
@@ -108,9 +205,11 @@ export const ReplanPayloadSchema = z
         newDependencies: z.array(z.string()).optional(),
         justification: z.string().min(1),
       })
-    ),
+    ).optional(),
+    planningObjective: z.string().optional(),
+    constraints: z.array(z.string()).optional(),
   })
-  .strict();
+  .passthrough();
 
 export type ReplanPayload = z.infer<typeof ReplanPayloadSchema>;
 
@@ -121,11 +220,12 @@ export const ReviewEvidencePayloadSchema = z
   .object({
     taskId: z.string().min(1, 'taskId is required'),
     evidenceIds: z.array(z.string()).min(1, 'At least one evidenceId is required'),
-    verdict: z.enum(['VERIFIED_SUCCESS', 'INCONCLUSIVE', 'REJECTED_FAILURE']),
-    findings: z.string().min(1, 'findings is required'),
+    verdict: z.enum(['VERIFIED_SUCCESS', 'INCONCLUSIVE', 'REJECTED_FAILURE']).optional(),
+    findings: z.string().optional(),
     suggestedRemediation: z.string().optional(),
+    reviewObjective: z.string().optional(),
   })
-  .strict();
+  .passthrough();
 
 export type ReviewEvidencePayload = z.infer<typeof ReviewEvidencePayloadSchema>;
 
@@ -134,14 +234,14 @@ export type ReviewEvidencePayload = z.infer<typeof ReviewEvidencePayloadSchema>;
  */
 export const RequestHumanDecisionPayloadSchema = z
   .object({
-    decisionId: z.string().min(1, 'decisionId is required'),
+    decisionId: z.string().optional(),
     question: z.string().min(1, 'question is required'),
-    options: z.array(z.string()).min(2, 'At least two options are required'),
+    options: z.array(z.any()).min(2, 'At least two options are required'),
     recommendedOption: z.string().optional(),
     riskLevel: z.enum(['LOW', 'MEDIUM', 'HIGH', 'CRITICAL']).default('HIGH'),
     affectedAreas: z.array(z.string()).default([]),
   })
-  .strict();
+  .passthrough();
 
 export type RequestHumanDecisionPayload = z.infer<typeof RequestHumanDecisionPayloadSchema>;
 
@@ -164,8 +264,8 @@ export type LifecyclePayload = z.infer<typeof LifecyclePayloadSchema>;
 
 export const DirectorActionEnvelopeZodSchema = z
   .object({
-    protocolVersion: z.literal(DIRECTOR_ACTION_PROTOCOL_VERSION),
-    schemaVersion: z.literal(DIRECTOR_ACTION_SCHEMA_VERSION).default(DIRECTOR_ACTION_SCHEMA_VERSION),
+    protocolVersion: z.string().min(1, 'protocolVersion is required'),
+    schemaVersion: z.number().int().positive().default(DIRECTOR_ACTION_SCHEMA_VERSION),
     actionId: z.string().min(1, 'actionId is required'),
     idempotencyKey: z.string().min(1, 'idempotencyKey is required'),
     projectId: z.string().min(1, 'projectId is required'),
@@ -222,6 +322,7 @@ export const ActionDispatchStatus = {
   PENDING_AUTHORIZATION: 'PENDING_AUTHORIZATION',
   REJECTED: 'REJECTED',
   DUPLICATE: 'DUPLICATE',
+  COMPLETED: 'COMPLETED',
 } as const;
 
 export type ActionDispatchStatus =

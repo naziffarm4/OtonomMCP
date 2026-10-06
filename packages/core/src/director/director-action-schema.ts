@@ -197,6 +197,9 @@ export const RequestHumanDecisionActionZodSchema = DirectorActionEnvelopeZodSche
   actionType: z.literal('REQUEST_HUMAN_DECISION'),
   question: z.string().min(1, 'question cannot be empty'),
   reason: z.string().min(1, 'reason cannot be empty'),
+  decisionTopic: z.string().optional(),
+  options: z.array(z.any()).optional(),
+  recommendation: z.string().optional(),
   blocking: z.literal(true),
 });
 
@@ -209,17 +212,18 @@ export const ResumeActionZodSchema = DirectorActionEnvelopeZodSchema.extend({
 
 export const DeclareProjectCompleteActionZodSchema = DirectorActionEnvelopeZodSchema.extend({
   actionType: z.literal('DECLARE_PROJECT_COMPLETE'),
-  completionRationale: z.string().min(1, 'completionRationale cannot be empty'),
+  completionRationale: z.string().optional(),
   requirementCoverage: z.array(
     z.object({
       requirementId: z.string().min(1, 'requirementId cannot be empty'),
       satisfied: z.boolean(),
       evidenceIds: z.array(z.string()),
     })
-  ),
-  unresolvedRisks: z.array(z.string()),
-  remainingTasks: z.array(z.string()),
+  ).or(z.array(z.any())),
+  unresolvedRisks: z.array(z.string()).optional().default([]),
+  remainingTasks: z.array(z.string()).optional().default([]),
   finalVerificationRequested: z.literal(true),
+  completionChecklist: z.record(z.string(), z.boolean()).optional(),
 });
 
 // ============================================================================

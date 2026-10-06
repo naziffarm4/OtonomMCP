@@ -432,10 +432,36 @@ export class DirectorActionDispatcher {
 
     switch (envelope.actionType) {
       case 'IMPLEMENT_TASK':
+      case 'RETRY_TASK':
+      case 'CORRECT_TASK':
         dispatchResult = await this.handleImplementTask(envelope, snapshot, dispatchId, now);
         break;
 
+      case 'REQUEST_CLARIFICATION':
+      case 'BLOCK':
+      case 'REQUEST_HUMAN_DECISION':
+        dispatchResult = {
+          dispatchId,
+          actionId: envelope.actionId,
+          actionType: envelope.actionType,
+          status: ActionDispatchStatus.PENDING_AUTHORIZATION,
+          isAuthorized: false,
+          requiresHumanApproval: true,
+          reason: `Action '${envelope.actionType}' is a human gate action and requires human decision/approval.`,
+          code: 'PENDING_HUMAN_GATE',
+          dispatchedAt: now,
+        };
+        break;
+
+      case 'DECLARE_PROJECT_COMPLETE':
+        dispatchResult = await this.handleDeclareProjectComplete(envelope, snapshot, dispatchId, now);
+        break;
+
       case 'CREATE_TASK':
+      case 'REQUEST_PLANNING':
+      case 'SELECT_TASK':
+      case 'UPDATE_PLAN':
+      case 'DEFER':
         dispatchResult = await this.handleCreateTask(envelope, snapshot, dispatchId, now);
         break;
 
@@ -448,6 +474,8 @@ export class DirectorActionDispatcher {
         break;
 
       case 'REVIEW_EVIDENCE':
+      case 'ACCEPT_TASK':
+      case 'REJECT_TASK':
         dispatchResult = await this.handleReviewEvidence(envelope, snapshot, dispatchId, now);
         break;
 
@@ -540,7 +568,7 @@ export class DirectorActionDispatcher {
       };
     }
 
-    if (task.status === 'COMPLETED') {
+    if (task.status === 'COMPLETED' && envelope.actionType === 'IMPLEMENT_TASK') {
       return {
         dispatchId,
         actionId: envelope.actionId,
@@ -903,6 +931,96 @@ export class DirectorActionDispatcher {
       isAuthorized: true,
       requiresHumanApproval: false,
       reason: `All ${payload.evidenceIds.length} evidence items independently verified; review finding recorded.`,
+      dispatchedAt: now,
+    };
+  }
+
+  /**
+   * DECLARE_PROJECT_COMPLETE Handler:
+   * Validates that final verification is explicitly requested and all requirement coverage
+   * has independently verified evidence. Never directly transitions to terminal state.
+   */
+  private async handleDeclareProjectComplete(
+    envelope: DirectorActionEnvelope,
+    snapshot: DirectorContextSnapshot,
+    dispatchId: string,
+    now: string
+  ): Promise<ActionDispatchResult> {
+    const payload = envelope.payload as {
+      completionRationale?: string;
+      requirementCoverage?: Array<{ requirementId: string; satisfied: boolean; evidenceIds: string[] }>;
+      unresolvedRisks?: string[];
+      remainingTasks?: string[];
+      finalVerificationRequested?: boolean;
+    };
+
+    if (payload.finalVerificationRequested !== true) {
+      return {
+        dispatchId,
+        actionId: envelope.actionId,
+        actionType: envelope.actionType,
+        status: ActionDispatchStatus.REJECTED,
+        isAuthorized: false,
+        requiresHumanApproval: false,
+        reason: 'DECLARE_PROJECT_COMPLETE must explicitly request final verification (finalVerificationRequested: true).',
+        code: 'ERR_FINAL_VERIFICATION_REQUIRED',
+        dispatchedAt: now,
+      };
+    }
+
+    // Check requirement coverage & verified evidence
+    const coverage = payload.requirementCoverage ?? [];
+    const snapshotEvidence = snapshot.sections.evidence.items ?? [];
+    let allEvidenceVerified = true;
+    let missingOrUnverifiedCount = 0;
+
+    for (const req of coverage) {
+      if (!req.satisfied) {
+        allEvidenceVerified = false;
+        missingOrUnverifiedCount++;
+        continue;
+      }
+      for (const evId of req.evidenceIds ?? []) {
+        let isVerified = snapshotEvidence.some((e) => e.evidenceId === evId && e.isSystemVerified);
+        if (!isVerified && this.evidenceStore) {
+          try {
+            const loaded = await this.evidenceStore.loadEvidence(evId);
+            if (loaded && loaded.verificationDecision === 'ACCEPT') {
+              isVerified = true;
+            }
+          } catch {
+            // ignore
+          }
+        }
+        if (!isVerified) {
+          allEvidenceVerified = false;
+          missingOrUnverifiedCount++;
+        }
+      }
+    }
+
+    if (!allEvidenceVerified || coverage.length === 0) {
+      return {
+        dispatchId,
+        actionId: envelope.actionId,
+        actionType: envelope.actionType,
+        status: ActionDispatchStatus.PENDING_AUTHORIZATION,
+        isAuthorized: false,
+        requiresHumanApproval: true,
+        reason: `Project completion proposed with ${missingOrUnverifiedCount} unverified or unsatisfied requirements. Final verification requires human approval.`,
+        code: 'PENDING_FINAL_VERIFICATION',
+        dispatchedAt: now,
+      };
+    }
+
+    return {
+      dispatchId,
+      actionId: envelope.actionId,
+      actionType: envelope.actionType,
+      status: ActionDispatchStatus.AUTHORIZED_PENDING_EXECUTION,
+      isAuthorized: true,
+      requiresHumanApproval: false,
+      reason: 'Project completion proposed and all requirement evidence items independently verified; staged for final PO terminal verification.',
       dispatchedAt: now,
     };
   }

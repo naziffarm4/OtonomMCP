@@ -15,11 +15,15 @@ import {
   type DirectorActionType,
   DirectorActionEnvelopeZodSchema,
   ImplementTaskPayloadSchema,
+  RetryTaskPayloadSchema,
+  CorrectTaskPayloadSchema,
   CreateTaskPayloadSchema,
   CreateCorrectiveTaskPayloadSchema,
   ReplanPayloadSchema,
   ReviewEvidencePayloadSchema,
   RequestHumanDecisionPayloadSchema,
+  RequestClarificationPayloadSchema,
+  DeclareProjectCompletePayloadSchema,
   LifecyclePayloadSchema,
   computePayloadHash,
   computeDeterministicActionId,
@@ -315,6 +319,12 @@ export class DirectorActionValidator {
       case 'IMPLEMENT_TASK':
         result = ImplementTaskPayloadSchema.safeParse(rawPayload);
         break;
+      case 'RETRY_TASK':
+        result = RetryTaskPayloadSchema.safeParse(rawPayload);
+        break;
+      case 'CORRECT_TASK':
+        result = CorrectTaskPayloadSchema.safeParse(rawPayload);
+        break;
       case 'CREATE_TASK':
         result = CreateTaskPayloadSchema.safeParse(rawPayload);
         break;
@@ -330,10 +340,37 @@ export class DirectorActionValidator {
       case 'REQUEST_HUMAN_DECISION':
         result = RequestHumanDecisionPayloadSchema.safeParse(rawPayload);
         break;
+      case 'REQUEST_CLARIFICATION':
+        result = RequestClarificationPayloadSchema.safeParse(rawPayload);
+        break;
+      case 'DECLARE_PROJECT_COMPLETE':
+        result = DeclareProjectCompletePayloadSchema.safeParse(rawPayload);
+        break;
       case 'PROJECT_COMPLETE':
       case 'PAUSE':
       case 'STOP':
         result = LifecyclePayloadSchema.safeParse(rawPayload);
+        break;
+      case 'BLOCK':
+      case 'RESUME':
+      case 'REQUEST_PLANNING':
+      case 'SELECT_TASK':
+      case 'UPDATE_PLAN':
+      case 'DEFER':
+      case 'ACCEPT_TASK':
+      case 'REJECT_TASK':
+      case 'ANALYZE_PROJECT':
+      case 'DISCOVER_PROJECT':
+      case 'ACCEPT_CONTEXT':
+      case 'REJECT_CONTEXT':
+        if (rawPayload && typeof rawPayload === 'object' && !Array.isArray(rawPayload)) {
+          result = { success: true, data: rawPayload };
+        } else {
+          result = {
+            success: false,
+            error: { message: `Payload must be an object for action type '${actionType}'`, issues: [] },
+          };
+        }
         break;
       default:
         throw new DirectorActionValidationError(`Unsupported action type '${actionType}'.`);
@@ -369,12 +406,20 @@ export class DirectorActionValidator {
       // Check dependencies are completed
       for (const depId of task.dependencies) {
         const dep = taskMap.get(depId);
-        if (dep && dep.status !== 'COMPLETED' && dep.status !== 'RESOLVED') {
+        if (dep && dep.status !== 'COMPLETED' && dep.status !== 'RESOLVED' && dep.status !== 'ACCEPTED') {
           throw new DirectorActionLineageError(
             `Cannot implement task '${p.taskId}': dependency '${depId}' is not completed (current status: '${dep.status}').`,
             { taskId: p.taskId, uncompletedDependency: depId, dependencyStatus: dep.status }
           );
         }
+      }
+    } else if (actionType === 'RETRY_TASK' || actionType === 'CORRECT_TASK') {
+      const p = payload as { taskId: string };
+      if (!taskMap.has(p.taskId)) {
+        throw new DirectorActionLineageError(
+          `Cannot execute ${actionType} for '${p.taskId}': task does not exist in the project Task DAG.`,
+          { taskId: p.taskId }
+        );
       }
     } else if (actionType === 'CREATE_CORRECTIVE_TASK') {
       const p = payload as { parentTaskId: string; failedTaskId: string };
@@ -400,11 +445,11 @@ export class DirectorActionValidator {
           );
         }
       }
-    } else if (actionType === 'REVIEW_EVIDENCE') {
-      const p = payload as { taskId: string };
-      if (!taskMap.has(p.taskId)) {
+    } else if (actionType === 'REVIEW_EVIDENCE' || actionType === 'ACCEPT_TASK' || actionType === 'REJECT_TASK') {
+      const p = payload as { taskId?: string };
+      if (p.taskId && !taskMap.has(p.taskId)) {
         throw new DirectorActionLineageError(
-          `Cannot review evidence for task '${p.taskId}': task does not exist in the Task DAG.`,
+          `Cannot evaluate evidence/outcome for task '${p.taskId}': task does not exist in the Task DAG.`,
           { taskId: p.taskId }
         );
       }

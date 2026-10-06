@@ -56,6 +56,8 @@ import { SystemEvidenceCollector } from '../evidence/execution-evidence-collecto
 import type { SystemExecutionEvidence } from '../evidence/system-execution-evidence.js';
 import { TaskDagEngine } from '../task-engine/dag-engine.js';
 import type { TaskDefinition } from '../task-engine/task-types.js';
+import { DirectorRuntime, type DirectorReasoningResult as P27DirectorReasoningResult } from '../director/director-runtime.js';
+import type { DirectorAction } from '../director/director-action-types.js';
 import { DirectorReasoningEngine } from '../director-reasoning/director-reasoning-engine.js';
 import type { DirectorReasoningResult, DirectorDecisionContract } from '../director-reasoning/director-reasoning-types.js';
 import { DirectorActionPipeline, type ValidatedDirectorActionResult } from '../director-action/director-action-pipeline.js';
@@ -103,6 +105,7 @@ export interface ClosedLoopCoordinatorOptions {
   readonly evidenceStore?: SystemExecutionEvidenceStore;
   readonly evidenceCollector?: SystemEvidenceCollector;
   readonly runtimeStateManager?: LocalRuntimeStateManager;
+  readonly directorRuntime?: DirectorRuntime;
   readonly reasoningEngine?: DirectorReasoningEngine;
   readonly actionPipeline?: DirectorActionPipeline;
   readonly actionBuilder?: DirectorActionBuilder;
@@ -133,6 +136,7 @@ export class ClosedLoopCoordinator {
   readonly evidenceStore: SystemExecutionEvidenceStore;
   readonly evidenceCollector: SystemEvidenceCollector;
   readonly runtimeStateManager?: LocalRuntimeStateManager;
+  readonly directorRuntime?: DirectorRuntime;
   readonly reasoningEngine?: DirectorReasoningEngine;
   readonly actionPipeline?: DirectorActionPipeline;
   readonly actionBuilder: DirectorActionBuilder;
@@ -283,10 +287,17 @@ export class ClosedLoopCoordinator {
         authorizationPolicyEngine: this.authorizationPolicyEngine,
       });
 
+    this.directorRuntime = options.directorRuntime;
     this.reasoningEngine = options.reasoningEngine;
     this.actionPipeline =
       options.actionPipeline ??
-      (this.reasoningEngine
+      (this.directorRuntime
+        ? new DirectorActionPipeline({
+            directorRuntime: this.directorRuntime,
+            actionBuilder: this.actionBuilder,
+            actionValidator: this.actionValidator,
+          })
+        : this.reasoningEngine
         ? new DirectorActionPipeline({
             reasoningEngine: this.reasoningEngine,
             actionBuilder: this.actionBuilder,
@@ -405,20 +416,46 @@ export class ClosedLoopCoordinator {
     const currentUnderstandingRevision = session.understandingRevision ?? 1;
 
     // ------------------------------------------------------------------------
-    // Step 2: Reasoning (LLM or Contract)
+    // Step 2: Reasoning (P27 DirectorRuntime or Legacy Engine or Direct Action)
     // ------------------------------------------------------------------------
-    let reasoningResult: DirectorReasoningResult | undefined;
+    let p27ReasoningResult: P27DirectorReasoningResult | undefined;
+    let legacyReasoningResult: DirectorReasoningResult | undefined;
+    let directorAction: DirectorAction | undefined = input.customAction;
     let decisionContract: DirectorDecisionContract | undefined = input.customDecision;
     let actionEnvelope: DirectorActionEnvelope | undefined = input.customEnvelope;
 
-    if (!actionEnvelope && !decisionContract) {
-      if (this.reasoningEngine) {
+    if (!actionEnvelope && !directorAction && !decisionContract) {
+      if (this.directorRuntime) {
         try {
-          reasoningResult = await this.reasoningEngine.reason({
+          p27ReasoningResult = await this.directorRuntime.reason({
+            projectId,
+            directorSessionId: session.directorSessionId,
+            snapshot,
+            objective: typeof input.instruction === 'string' ? input.instruction : undefined,
+            trigger: input.targetTaskId ? 'TASK_READY' : 'PERIODIC_REVIEW',
+            taskId: input.targetTaskId,
+          } as any);
+          directorAction = p27ReasoningResult.action;
+        } catch (err: any) {
+          return {
+            cycleId: `cycle-${Date.now()}-reasoning-err`,
+            projectId,
+            directorSessionId: session.directorSessionId,
+            status: 'EXECUTION_FAILED',
+            isSuccess: false,
+            summary: `Director reasoning failed: ${err.message}`,
+            stepReached: 'REASONING',
+            humanDecisionRequired: false,
+            completedAt: new Date().toISOString(),
+          };
+        }
+      } else if (this.reasoningEngine) {
+        try {
+          legacyReasoningResult = await this.reasoningEngine.reason({
             snapshot,
             userInstructions: typeof input.instruction === 'string' ? input.instruction : undefined,
           });
-          decisionContract = reasoningResult.decision;
+          decisionContract = legacyReasoningResult.decision;
         } catch (err: any) {
           return {
             cycleId: `cycle-${Date.now()}-reasoning-err`,
@@ -433,7 +470,24 @@ export class ClosedLoopCoordinator {
           };
         }
       } else {
-        // Resolve target task from input or SpecStore
+        // Fallback safety (Section 15):
+        // In production, closed-loop reasoning MUST fail closed if no authoritative runtime is configured.
+        const isProduction = process.env.NODE_ENV === 'production';
+        if (isProduction) {
+          return {
+            cycleId: `cycle-${Date.now()}-no-runtime`,
+            projectId,
+            directorSessionId: session.directorSessionId,
+            status: 'EXECUTION_FAILED',
+            isSuccess: false,
+            summary: 'Fail closed: No authoritative DirectorRuntime configured in production environment.',
+            stepReached: 'REASONING',
+            humanDecisionRequired: false,
+            completedAt: new Date().toISOString(),
+          };
+        }
+
+        // Test/compatibility fallback only when targetTaskId or eligible task exists:
         let targetTaskId = input.targetTaskId;
         const allTasks = await this.specStore.loadTasks();
 
@@ -466,7 +520,7 @@ export class ClosedLoopCoordinator {
       }
     }
 
-    // Handle No-op or Clarification decisions from reasoning
+    // Handle legacy No-op or Clarification decisions from legacy reasoning if present
     if (decisionContract) {
       if (
         (decisionContract.decisionType as string) === 'NO_OP' ||
@@ -480,7 +534,7 @@ export class ClosedLoopCoordinator {
           isSuccess: true,
           summary: decisionContract.rationale ?? 'Reasoning concluded no implementation action required.',
           stepReached: 'REASONING',
-          reasoningResult,
+          reasoningResult: legacyReasoningResult,
           humanDecisionRequired: (decisionContract.decisionType as string) === 'REQUEST_CLARIFICATION',
           humanDecisionPoint:
             (decisionContract.decisionType as string) === 'REQUEST_CLARIFICATION'
@@ -491,19 +545,20 @@ export class ClosedLoopCoordinator {
       }
     }
 
+    const reasoningResult = (p27ReasoningResult ?? legacyReasoningResult) as any;
+
     // ------------------------------------------------------------------------
     // Step 3: Action Packaging & Envelope Validation
     // ------------------------------------------------------------------------
     let validatedActionResult: ValidatedDirectorActionResult;
+    const validationContext = {
+      currentFingerprint: snapshot.logicalFingerprint,
+      currentUnderstandingRevision,
+      currentDirectorSessionId: session.directorSessionId,
+      currentProjectId: projectId,
+    };
 
     if (actionEnvelope) {
-      const validationContext = {
-        currentFingerprint: snapshot.logicalFingerprint,
-        currentUnderstandingRevision,
-        currentDirectorSessionId: session.directorSessionId,
-        currentProjectId: projectId,
-      };
-
       try {
         const val = await this.actionValidator.validate(actionEnvelope, validationContext);
         validatedActionResult = {
@@ -511,7 +566,7 @@ export class ClosedLoopCoordinator {
           envelope: actionEnvelope,
           validationResult: val,
           isDuplicate: false,
-          reasoningResult: reasoningResult as any,
+          reasoningResult: (p27ReasoningResult ?? legacyReasoningResult) as any,
         };
       } catch (err: any) {
         return {
@@ -523,6 +578,38 @@ export class ClosedLoopCoordinator {
           summary: `Action envelope validation failed: ${err.message}`,
           stepReached: 'ACTION_PACKAGING',
           actionEnvelope,
+          directorAction,
+          humanDecisionRequired: false,
+          completedAt: new Date().toISOString(),
+        };
+      }
+    } else if (directorAction) {
+      try {
+        const envelope = this.actionBuilder.buildEnvelope({
+          action: directorAction,
+          snapshot,
+          idempotencyKey: input.idempotencyKey,
+        });
+        actionEnvelope = envelope;
+
+        const val = await this.actionValidator.validate(envelope, validationContext);
+        validatedActionResult = {
+          success: true,
+          envelope,
+          validationResult: val,
+          isDuplicate: false,
+          reasoningResult: (p27ReasoningResult ?? legacyReasoningResult) as any,
+        };
+      } catch (err: any) {
+        return {
+          cycleId: `cycle-${Date.now()}-action-packaging-err`,
+          projectId,
+          directorSessionId: session.directorSessionId,
+          status: 'EXECUTION_FAILED',
+          isSuccess: false,
+          summary: `Action envelope packaging or validation failed: ${err.message}`,
+          stepReached: 'ACTION_PACKAGING',
+          directorAction,
           humanDecisionRequired: false,
           completedAt: new Date().toISOString(),
         };
@@ -536,19 +623,13 @@ export class ClosedLoopCoordinator {
         });
         actionEnvelope = envelope;
 
-        const val = await this.actionValidator.validate(envelope, {
-          currentFingerprint: snapshot.logicalFingerprint,
-          currentUnderstandingRevision,
-          currentDirectorSessionId: session.directorSessionId,
-          currentProjectId: projectId,
-        });
-
+        const val = await this.actionValidator.validate(envelope, validationContext);
         validatedActionResult = {
           success: true,
           envelope,
           validationResult: val,
           isDuplicate: false,
-          reasoningResult: reasoningResult as any,
+          reasoningResult: legacyReasoningResult as any,
         };
       } catch (err: any) {
         return {
@@ -596,6 +677,24 @@ export class ClosedLoopCoordinator {
         summary: `Action dispatch exception: ${err.message}`,
         stepReached: 'POLICY_EVALUATION',
         actionEnvelope,
+        directorAction,
+        humanDecisionRequired: false,
+        completedAt: new Date().toISOString(),
+      };
+    }
+
+    if (dispatchResult.status === ActionDispatchStatus.COMPLETED) {
+      return {
+        cycleId: `cycle-${Date.now()}-completed`,
+        projectId,
+        directorSessionId: session.directorSessionId,
+        status: 'COMPLETED_SUCCESS',
+        isSuccess: true,
+        summary: dispatchResult.reason ?? 'Action completed successfully.',
+        stepReached: 'STATE_INTEGRATION_RECOVERY',
+        actionEnvelope,
+        directorAction,
+        dispatchResult,
         humanDecisionRequired: false,
         completedAt: new Date().toISOString(),
       };
@@ -611,6 +710,7 @@ export class ClosedLoopCoordinator {
         summary: dispatchResult.reason,
         stepReached: 'POLICY_EVALUATION',
         actionEnvelope,
+        directorAction,
         dispatchResult,
         humanDecisionRequired: false,
         completedAt: new Date().toISOString(),
@@ -627,6 +727,7 @@ export class ClosedLoopCoordinator {
         summary: dispatchResult.reason,
         stepReached: 'POLICY_EVALUATION',
         actionEnvelope,
+        directorAction,
         dispatchResult,
         humanDecisionRequired: true,
         humanDecisionPoint: {
@@ -653,6 +754,7 @@ export class ClosedLoopCoordinator {
         stepReached: 'STATE_INTEGRATION_RECOVERY',
         taskId: targetId,
         actionEnvelope,
+        directorAction,
         dispatchResult,
         humanDecisionRequired: !isTaskAlreadyCompleted,
         completedAt: new Date().toISOString(),
@@ -669,6 +771,7 @@ export class ClosedLoopCoordinator {
         summary: `Action not authorized for execution: status is ${dispatchResult.status} (${dispatchResult.reason})`,
         stepReached: 'POLICY_EVALUATION',
         actionEnvelope,
+        directorAction,
         dispatchResult,
         humanDecisionRequired: false,
         completedAt: new Date().toISOString(),
@@ -680,6 +783,7 @@ export class ClosedLoopCoordinator {
     // ------------------------------------------------------------------------
     const targetTaskId =
       ((actionEnvelope.payload as any)?.taskId ??
+        (actionEnvelope.payload as any)?.selectedTaskId ??
         decisionContract?.selectedTaskId ??
         input.targetTaskId) as string;
 
@@ -704,7 +808,9 @@ export class ClosedLoopCoordinator {
       },
       createdAt: new Date().toISOString(),
       executionPlan:
-        (actionEnvelope.payload as any)?.executionPlan ?? `Implement task ${targetTaskId}`,
+        (actionEnvelope.payload as any)?.executionPlan ??
+        (actionEnvelope.payload as any)?.objective ??
+        `Implement task ${targetTaskId}`,
       metadata: { actionId: actionEnvelope.actionId },
     });
 
@@ -757,6 +863,7 @@ export class ClosedLoopCoordinator {
         taskId: intent.taskId,
         reasoningResult,
         actionEnvelope,
+        directorAction,
         dispatchResult,
         bridgeResult,
         cycleResult: bridgeResult.cycleResult,
@@ -786,6 +893,7 @@ export class ClosedLoopCoordinator {
         taskId: intent.taskId,
         reasoningResult,
         actionEnvelope,
+        directorAction,
         dispatchResult,
         bridgeResult,
         humanDecisionRequired: false,
@@ -808,6 +916,7 @@ export class ClosedLoopCoordinator {
           taskId: intent.taskId,
           reasoningResult,
           actionEnvelope,
+          directorAction,
           dispatchResult,
           bridgeResult,
           humanDecisionRequired: false,
@@ -865,6 +974,7 @@ export class ClosedLoopCoordinator {
         taskId: intent.taskId,
         reasoningResult,
         actionEnvelope,
+        directorAction,
         dispatchResult,
         bridgeResult,
         cycleResult: bridgeResult.cycleResult,
@@ -937,6 +1047,7 @@ export class ClosedLoopCoordinator {
         taskId: intent.taskId,
         reasoningResult,
         actionEnvelope,
+        directorAction,
         dispatchResult,
         bridgeResult,
         cycleResult: bridgeResult.cycleResult,
@@ -989,6 +1100,7 @@ export class ClosedLoopCoordinator {
             taskId: intent.taskId,
             reasoningResult,
             actionEnvelope,
+            directorAction,
             dispatchResult,
             bridgeResult,
             cycleResult: bridgeResult.cycleResult,
@@ -1015,6 +1127,7 @@ export class ClosedLoopCoordinator {
       taskId: intent.taskId,
       reasoningResult,
       actionEnvelope,
+      directorAction,
       dispatchResult,
       bridgeResult,
       cycleResult: bridgeResult.cycleResult,

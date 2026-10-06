@@ -26,6 +26,8 @@
 
 import { z } from 'zod';
 import type { DirectorContextSnapshot } from '../director/director-context-types.js';
+import type { DirectorAction } from '../director/director-action-types.js';
+import type { DirectorReasoningResult as P27DirectorReasoningResult } from '../director/director-runtime.js';
 import type { DirectorReasoningResult, DirectorDecisionContract } from '../director-reasoning/director-reasoning-types.js';
 import type { DirectorActionEnvelope, ActionDispatchResult } from '../director-action/director-action-types.js';
 import type { BridgeExecutionResult } from '../execution-bridge/execution-bridge-types.js';
@@ -86,7 +88,9 @@ export interface ClosedLoopCycleInput {
   readonly maxRecoveryAttempts?: number;
   /** Optional pre-built DirectorActionEnvelope to bypass reasoning */
   readonly customEnvelope?: DirectorActionEnvelope;
-  /** Optional pre-built DirectorDecisionContract */
+  /** Optional pre-built DirectorAction (P26/P27) to bypass reasoning */
+  readonly customAction?: DirectorAction;
+  /** Optional pre-built DirectorDecisionContract (legacy) */
   readonly customDecision?: DirectorDecisionContract;
   /** Custom idempotency key for the cycle */
   readonly idempotencyKey?: string;
@@ -106,6 +110,7 @@ export const ClosedLoopCycleInputZodSchema = z.object({
   actor: z.string().optional(),
   maxRecoveryAttempts: z.number().int().nonnegative().optional(),
   customEnvelope: z.record(z.string(), z.unknown()).optional(),
+  customAction: z.record(z.string(), z.unknown()).optional(),
   customDecision: z.record(z.string(), z.unknown()).optional(),
   idempotencyKey: z.string().optional(),
   reasoningBudgetLimit: z.number().optional(),
@@ -133,7 +138,9 @@ export interface ClosedLoopCycleResult {
   /** Target task ID */
   readonly taskId?: string;
   /** Result from Director reasoning engine (if executed) */
-  readonly reasoningResult?: DirectorReasoningResult;
+  readonly reasoningResult?: DirectorReasoningResult | P27DirectorReasoningResult;
+  /** DirectorAction proposed by reasoning (P26/P27) */
+  readonly directorAction?: DirectorAction;
   /** Sealed Director action envelope (if built) */
   readonly actionEnvelope?: DirectorActionEnvelope;
   /** Result from policy gate & dispatcher (if dispatched) */

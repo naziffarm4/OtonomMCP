@@ -175,10 +175,13 @@ describe('Phase A4: Closed-Loop Coordinator Integration', { concurrency: 1 }, ()
         };
       }
 
+      const reqAny = request as any;
       const files =
-        request.targetFiles && request.targetFiles.length > 0
-          ? request.targetFiles
-          : ['src/index.ts'];
+        Array.isArray(reqAny.targetFiles) && reqAny.targetFiles.length > 0
+          ? reqAny.targetFiles
+          : Array.isArray(reqAny.instruction?.targetFiles) && reqAny.instruction.targetFiles.length > 0
+            ? reqAny.instruction.targetFiles
+            : ['src/index.ts'];
 
       if (!this.simulateSelfClaimOnly) {
         for (const f of files) {
