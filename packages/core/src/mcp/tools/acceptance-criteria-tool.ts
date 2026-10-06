@@ -15,19 +15,24 @@ import { z } from 'zod';
 import type { McpToolDefinition, McpToolHandler, McpRequestContext } from '../mcp-types.js';
 import type { McpOrchestratorDelegate } from '../mcp-delegate.js';
 import { sanitizeMcpPayload } from '../mcp-errors.js';
+import { resolveTargetProjectRoot } from '../project-root-resolver.js';
 import { AcceptanceCriteriaEngine } from '../../discovery/acceptance-criteria-engine.js';
 import {
   AcceptanceCriterionZodSchema,
   AcceptanceCriteriaHumanDecisionZodSchema,
   AcceptanceCriteriaConflictZodSchema,
 } from '../../discovery/acceptance-criteria-types.js';
+import {
+  resolveCanonicalProjectIdentity,
+  validateCanonicalProjectId,
+} from '../../director/project-identity-resolver.js';
 
 export const AIDM_ACCEPTANCE_CRITERIA_DEFINE_TOOL_NAME = 'aidm.acceptance-criteria.define';
 export const AIDM_ACCEPTANCE_CRITERIA_GET_TOOL_NAME = 'aidm.acceptance-criteria.get';
 
 // Input schema for DEFINE
 const defineInputSchema = z.object({
-  projectId: z.string().min(1, 'projectId cannot be empty'),
+  projectId: z.string().min(1, 'projectId cannot be empty').optional(),
   requirementsRevision: z.number().int().positive().optional(),
   expectedRequirementsFingerprint: z.string().optional(),
   architectureRevision: z.number().int().positive().optional(),
@@ -51,11 +56,10 @@ export const acceptanceCriteriaDefineToolDefinition: McpToolDefinition = {
     'Transforms authoritative Requirements / Scope (P15-03), Architecture / Technology (P15-04), Business Rules (P15-05), and Discovery (P15-01) into an explicit, structured, revisioned Acceptance Criteria specification for project initiation. Defines observable behaviors, verification methods, human decision boundaries, coverage metrics, and requirement/rule/architecture traceability without implementation tasks or autonomous execution.',
   inputSchema: {
     type: 'object',
-    required: ['projectId'],
     properties: {
       projectId: {
         type: 'string',
-        description: 'Canonical project identifier.',
+        description: 'Optional canonical project identifier. Defaults to active context or resolved target project root identity.',
       },
       requirementsRevision: {
         type: 'integer',
@@ -143,24 +147,35 @@ export function createAcceptanceCriteriaDefineTool(
     handler: async (args: Record<string, unknown>, context: McpRequestContext) => {
       const parsed = defineInputSchema.parse(args ?? {});
       const activeDelegate = context.delegate ?? defaultDelegate;
-      const resolvedRoot = parsed.workspaceRoot ?? activeDelegate?.projectRoot ?? process.cwd();
+      const resolvedRoot = resolveTargetProjectRoot({
+        explicitRoot: parsed.workspaceRoot,
+        delegate: activeDelegate,
+        targetProjectId: parsed.projectId,
+      });
+      const canonicalProjectId =
+        parsed.projectId ??
+        activeDelegate?.activeContext?.projectId ??
+        resolveCanonicalProjectIdentity(resolvedRoot).projectId;
+      validateCanonicalProjectId(canonicalProjectId);
+      const isSameRoot = activeDelegate?.projectRoot === resolvedRoot;
 
       const engine =
-        activeDelegate?.acceptanceCriteriaEngine ??
-        new AcceptanceCriteriaEngine({
-          workspaceRoot: resolvedRoot,
-          discoveryStore: activeDelegate?.adaptiveDiscoveryStore,
-          completenessStore: activeDelegate?.completenessGateStore,
-          requirementsStore: activeDelegate?.requirementsScopeStore,
-          architectureStore: activeDelegate?.architectureTechnologyStore,
-          businessRulesStore: activeDelegate?.businessRulesStore,
-          acceptanceCriteriaStore: activeDelegate?.acceptanceCriteriaStore,
-          historyManager: activeDelegate?.historyManager,
-          specStore: activeDelegate?.specStore,
-        });
+        (isSameRoot && activeDelegate?.acceptanceCriteriaEngine)
+          ? activeDelegate.acceptanceCriteriaEngine
+          : new AcceptanceCriteriaEngine({
+              workspaceRoot: resolvedRoot,
+              discoveryStore: (isSameRoot && activeDelegate?.adaptiveDiscoveryStore) ? activeDelegate.adaptiveDiscoveryStore : undefined,
+              completenessStore: (isSameRoot && activeDelegate?.completenessGateStore) ? activeDelegate.completenessGateStore : undefined,
+              requirementsStore: (isSameRoot && activeDelegate?.requirementsScopeStore) ? activeDelegate.requirementsScopeStore : undefined,
+              architectureStore: (isSameRoot && activeDelegate?.architectureTechnologyStore) ? activeDelegate.architectureTechnologyStore : undefined,
+              businessRulesStore: (isSameRoot && activeDelegate?.businessRulesStore) ? activeDelegate.businessRulesStore : undefined,
+              acceptanceCriteriaStore: (isSameRoot && activeDelegate?.acceptanceCriteriaStore) ? activeDelegate.acceptanceCriteriaStore : undefined,
+              historyManager: (isSameRoot && activeDelegate?.historyManager) ? activeDelegate.historyManager : undefined,
+              specStore: (isSameRoot && activeDelegate?.specStore) ? activeDelegate.specStore : undefined,
+            });
 
       const result = await engine.derive({
-        projectId: parsed.projectId,
+        projectId: canonicalProjectId,
         requirementsRevision: parsed.requirementsRevision,
         expectedRequirementsFingerprint: parsed.expectedRequirementsFingerprint,
         architectureRevision: parsed.architectureRevision,
@@ -192,7 +207,7 @@ export function createAcceptanceCriteriaDefineTool(
 
 // Input schema for GET
 const getInputSchema = z.object({
-  projectId: z.string().min(1, 'projectId cannot be empty'),
+  projectId: z.string().min(1, 'projectId cannot be empty').optional(),
   revision: z.number().int().positive().optional(),
   workspaceRoot: z.string().optional(),
 });
@@ -205,11 +220,10 @@ export const acceptanceCriteriaGetToolDefinition: McpToolDefinition = {
     'Retrieves authoritative Acceptance Criteria specification by project ID and optional revision number (defaults to latest). Exposes criteria, verification methods, coverage statistics, pending human decisions, and traceability.',
   inputSchema: {
     type: 'object',
-    required: ['projectId'],
     properties: {
       projectId: {
         type: 'string',
-        description: 'Canonical project identifier.',
+        description: 'Optional canonical project identifier. Defaults to active context or resolved target project root identity.',
       },
       revision: {
         type: 'integer',
@@ -231,28 +245,39 @@ export function createAcceptanceCriteriaGetTool(
     handler: async (args: Record<string, unknown>, context: McpRequestContext) => {
       const parsed = getInputSchema.parse(args ?? {});
       const activeDelegate = context.delegate ?? defaultDelegate;
-      const resolvedRoot = parsed.workspaceRoot ?? activeDelegate?.projectRoot ?? process.cwd();
+      const resolvedRoot = resolveTargetProjectRoot({
+        explicitRoot: parsed.workspaceRoot,
+        delegate: activeDelegate,
+        targetProjectId: parsed.projectId,
+      });
+      const canonicalProjectId =
+        parsed.projectId ??
+        activeDelegate?.activeContext?.projectId ??
+        resolveCanonicalProjectIdentity(resolvedRoot).projectId;
+      validateCanonicalProjectId(canonicalProjectId);
+      const isSameRoot = activeDelegate?.projectRoot === resolvedRoot;
 
       const engine =
-        activeDelegate?.acceptanceCriteriaEngine ??
-        new AcceptanceCriteriaEngine({
-          workspaceRoot: resolvedRoot,
-          discoveryStore: activeDelegate?.adaptiveDiscoveryStore,
-          completenessStore: activeDelegate?.completenessGateStore,
-          requirementsStore: activeDelegate?.requirementsScopeStore,
-          architectureStore: activeDelegate?.architectureTechnologyStore,
-          businessRulesStore: activeDelegate?.businessRulesStore,
-          acceptanceCriteriaStore: activeDelegate?.acceptanceCriteriaStore,
-          historyManager: activeDelegate?.historyManager,
-          specStore: activeDelegate?.specStore,
-        });
+        (isSameRoot && activeDelegate?.acceptanceCriteriaEngine)
+          ? activeDelegate.acceptanceCriteriaEngine
+          : new AcceptanceCriteriaEngine({
+              workspaceRoot: resolvedRoot,
+              discoveryStore: (isSameRoot && activeDelegate?.adaptiveDiscoveryStore) ? activeDelegate.adaptiveDiscoveryStore : undefined,
+              completenessStore: (isSameRoot && activeDelegate?.completenessGateStore) ? activeDelegate.completenessGateStore : undefined,
+              requirementsStore: (isSameRoot && activeDelegate?.requirementsScopeStore) ? activeDelegate.requirementsScopeStore : undefined,
+              architectureStore: (isSameRoot && activeDelegate?.architectureTechnologyStore) ? activeDelegate.architectureTechnologyStore : undefined,
+              businessRulesStore: (isSameRoot && activeDelegate?.businessRulesStore) ? activeDelegate.businessRulesStore : undefined,
+              acceptanceCriteriaStore: (isSameRoot && activeDelegate?.acceptanceCriteriaStore) ? activeDelegate.acceptanceCriteriaStore : undefined,
+              historyManager: (isSameRoot && activeDelegate?.historyManager) ? activeDelegate.historyManager : undefined,
+              specStore: (isSameRoot && activeDelegate?.specStore) ? activeDelegate.specStore : undefined,
+            });
 
       const result =
         parsed.revision !== undefined
-          ? await engine.getRevision(parsed.projectId, parsed.revision)
-          : await engine.getLatest(parsed.projectId);
+          ? await engine.getRevision(canonicalProjectId, parsed.revision)
+          : await engine.getLatest(canonicalProjectId);
 
-      const sanitized = sanitizeMcpPayload(result ?? { error: 'NOT_FOUND', projectId: parsed.projectId });
+      const sanitized = sanitizeMcpPayload(result ?? { error: 'NOT_FOUND', projectId: canonicalProjectId });
 
       return {
         content: [

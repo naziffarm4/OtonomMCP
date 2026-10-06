@@ -26,12 +26,18 @@ import type { DurableStateManager } from '../storage/durable-state.js';
 import { ProjectDiscoveryEngine } from './discovery-engine.js';
 import { AdaptiveDiscoveryStore } from './adaptive-discovery-store.js';
 import {
+  resolveCanonicalProjectIdentity,
+  normalizeCanonicalProjectId,
+  validateCanonicalProjectId,
+} from '../director/project-identity-resolver.js';
+import {
   AdaptiveDiscoveryInputZodSchema,
   type AdaptiveDiscoveryInput,
   type ProjectDiscoveryRevision,
   type DiscoverySections,
   type FunctionalRequirementItem,
   type HumanDecisionPoint,
+  type HumanDecisionStatus,
   type DiscoveryQuestion,
   type DiscoveryRisk,
   type DiscoveryCompletenessInfo,
@@ -49,6 +55,7 @@ import {
   createDeterministicDecisionId,
   createDeterministicRequirementId,
   computeDeterministicFingerprint,
+  isUndecidedChoice,
 } from './adaptive-discovery-normalizer.js';
 
 export interface AdaptiveDiscoveryEngineOptions {
@@ -148,7 +155,17 @@ export class AdaptiveDiscoveryEngine {
     }
     if (previousRevision) {
       for (const d of previousRevision.decisions) {
-        allDecisionsMap.set(d.id, d);
+        const chosen = input.decidedHumanDecisions?.[d.id] ?? d.selectedOption;
+        if (chosen) {
+          const isUndecided = isUndecidedChoice(chosen);
+          allDecisionsMap.set(d.id, {
+            ...d,
+            status: isUndecided ? 'UNDECIDED' : 'CONFIRMED',
+            selectedOption: isUndecided ? undefined : chosen,
+          });
+        } else {
+          allDecisionsMap.set(d.id, d);
+        }
       }
     }
     for (const d of decisions) {
@@ -168,6 +185,18 @@ export class AdaptiveDiscoveryEngine {
 
     // 10. Compute Changed Sections
     const changedSections = this.computeChangedSections(previousRevision, finalSections);
+
+    // Idempotency invariant: if baseline discovery runs on an existing revision with no new inputs or changes, return existing revision
+    if (
+      previousRevision &&
+      !rawPrompt &&
+      (!input.resolvedAnswers || Object.keys(input.resolvedAnswers).length === 0) &&
+      (!input.decidedHumanDecisions || Object.keys(input.decidedHumanDecisions).length === 0) &&
+      !input.explicitSections &&
+      changedSections.length === 0
+    ) {
+      return previousRevision;
+    }
 
     // 11. Compile Aggregate Requirements, Risks, and Decisions Lists
     const allRequirements = deduplicateRequirements(
@@ -223,13 +252,13 @@ export class AdaptiveDiscoveryEngine {
    */
   private resolveProjectId(input: AdaptiveDiscoveryInput): string {
     if (input.projectId && input.projectId.trim().length > 0) {
-      return input.projectId.trim();
+      return validateCanonicalProjectId(input.projectId);
     }
     if (input.explicitSections?.projectIdentity?.name) {
-      return input.explicitSections.projectIdentity.name.trim();
+      return normalizeCanonicalProjectId(input.explicitSections.projectIdentity.name.trim());
     }
     if (this.workspaceRoot) {
-      return path.basename(this.workspaceRoot);
+      return resolveCanonicalProjectIdentity(this.workspaceRoot).projectId;
     }
     return 'unnamed-project';
   }
@@ -281,6 +310,8 @@ export class AdaptiveDiscoveryEngine {
    * Inspects existing repository artifacts if available.
    */
   private async inspectExistingRepositoryIfAvailable(): Promise<{
+    name?: string;
+    purposeSummary?: string;
     ecosystem?: string;
     languages?: readonly string[];
   } | null> {
@@ -288,6 +319,8 @@ export class AdaptiveDiscoveryEngine {
     try {
       const report = await this.existingDiscoveryEngine.discover();
       return {
+        name: report.projectIdentity?.name,
+        purposeSummary: report.purpose?.summary,
         ecosystem: report.projectIdentity?.ecosystem,
         languages: report.technologyStack?.primaryLanguages,
       };
@@ -308,15 +341,15 @@ export class AdaptiveDiscoveryEngine {
     decidedHumanDecisions?: Readonly<Record<string, string>>;
     existingSpecRequirements: FunctionalRequirementItem[];
     existingSpecDecisions: HumanDecisionPoint[];
-    existingRepoFindings: { ecosystem?: string; languages?: readonly string[] } | null;
+    existingRepoFindings: { name?: string; purposeSummary?: string; ecosystem?: string; languages?: readonly string[] } | null;
   }): DiscoverySections {
     const prev = params.previousRevision?.sections;
     const ext = params.extracted;
     const exp = params.explicitSections;
 
     // 1. PROJECT_IDENTITY
-    const name = exp?.projectIdentity?.name ?? ext?.projectIdentity.name ?? prev?.projectIdentity.name ?? params.projectId;
-    const purpose = exp?.projectIdentity?.purpose ?? ext?.projectIdentity.purpose ?? prev?.projectIdentity.purpose ?? 'Pending purpose discovery.';
+    const name = exp?.projectIdentity?.name ?? ext?.projectIdentity.name ?? prev?.projectIdentity.name ?? params.existingRepoFindings?.name ?? params.projectId;
+    const purpose = exp?.projectIdentity?.purpose ?? ext?.projectIdentity.purpose ?? prev?.projectIdentity.purpose ?? params.existingRepoFindings?.purposeSummary ?? 'Pending purpose discovery.';
     const desiredOutcome = exp?.projectIdentity?.desiredOutcome ?? ext?.projectIdentity.desiredOutcome ?? prev?.projectIdentity.desiredOutcome ?? 'Pending desired outcome.';
 
     // 2. PRODUCT_SCOPE
@@ -362,41 +395,54 @@ export class AdaptiveDiscoveryEngine {
     ]);
 
     // 4. NON_FUNCTIONAL_REQUIREMENTS
-    const performance = deduplicateStrings([
-      ...(prev?.nonFunctionalRequirements.performance ?? []),
-      ...(ext?.nonFunctional.performance ?? []),
-      ...(exp?.nonFunctionalRequirements?.performance ?? []),
-    ]);
-    const security = deduplicateStrings([
-      ...(prev?.nonFunctionalRequirements.security ?? []),
-      ...(ext?.nonFunctional.security ?? []),
-      ...(exp?.nonFunctionalRequirements?.security ?? []),
-    ]);
-    const reliability = deduplicateStrings([
-      ...(prev?.nonFunctionalRequirements.reliability ?? []),
-      ...(ext?.nonFunctional.reliability ?? []),
-      ...(exp?.nonFunctionalRequirements?.reliability ?? []),
-    ]);
-    const scalability = deduplicateStrings([
-      ...(prev?.nonFunctionalRequirements.scalability ?? []),
-      ...(ext?.nonFunctional.scalability ?? []),
-      ...(exp?.nonFunctionalRequirements?.scalability ?? []),
-    ]);
-    const availability = deduplicateStrings([
-      ...(prev?.nonFunctionalRequirements.availability ?? []),
-      ...(ext?.nonFunctional.availability ?? []),
-      ...(exp?.nonFunctionalRequirements?.availability ?? []),
-    ]);
-    const usability = deduplicateStrings([
-      ...(prev?.nonFunctionalRequirements.usability ?? []),
-      ...(ext?.nonFunctional.usability ?? []),
-      ...(exp?.nonFunctionalRequirements?.usability ?? []),
-    ]);
-    const compatibility = deduplicateStrings([
-      ...(prev?.nonFunctionalRequirements.compatibility ?? []),
-      ...(ext?.nonFunctional.compatibility ?? []),
-      ...(exp?.nonFunctionalRequirements?.compatibility ?? []),
-    ]);
+    const mergeNfrWithRefinement = (prevItems: string[] = [], newItems: string[] = [], expItems: string[] = []): string[] => {
+      const allNew = [...newItems, ...expItems];
+      const filteredPrev = prevItems.filter((prevItem) => {
+        const isSuperseded = allNew.some((newItem) => {
+          const p = prevItem.toLowerCase().trim();
+          const n = newItem.toLowerCase().trim();
+          return n !== p && n.startsWith(p);
+        });
+        return !isSuperseded;
+      });
+      return deduplicateStrings([...filteredPrev, ...allNew]);
+    };
+
+    const performance = mergeNfrWithRefinement(
+      prev?.nonFunctionalRequirements.performance,
+      ext?.nonFunctional.performance,
+      exp?.nonFunctionalRequirements?.performance
+    );
+    const security = mergeNfrWithRefinement(
+      prev?.nonFunctionalRequirements.security,
+      ext?.nonFunctional.security,
+      exp?.nonFunctionalRequirements?.security
+    );
+    const reliability = mergeNfrWithRefinement(
+      prev?.nonFunctionalRequirements.reliability,
+      ext?.nonFunctional.reliability,
+      exp?.nonFunctionalRequirements?.reliability
+    );
+    const scalability = mergeNfrWithRefinement(
+      prev?.nonFunctionalRequirements.scalability,
+      ext?.nonFunctional.scalability,
+      exp?.nonFunctionalRequirements?.scalability
+    );
+    const availability = mergeNfrWithRefinement(
+      prev?.nonFunctionalRequirements.availability,
+      ext?.nonFunctional.availability,
+      exp?.nonFunctionalRequirements?.availability
+    );
+    const usability = mergeNfrWithRefinement(
+      prev?.nonFunctionalRequirements.usability,
+      ext?.nonFunctional.usability,
+      exp?.nonFunctionalRequirements?.usability
+    );
+    const compatibility = mergeNfrWithRefinement(
+      prev?.nonFunctionalRequirements.compatibility,
+      ext?.nonFunctional.compatibility,
+      exp?.nonFunctionalRequirements?.compatibility
+    );
 
     // 5. TECHNOLOGY
     const requiredTechnologies = deduplicateStrings([
@@ -415,11 +461,43 @@ export class AdaptiveDiscoveryEngine {
       ...(ext?.technology.prohibitedTechnologies ?? []),
       ...(exp?.technology?.prohibitedTechnologies ?? []),
     ]);
-    const platformConstraints = deduplicateStrings([
+    // Ingest confirmed platforms from answers or decisions if present
+    const additionalPlatforms: string[] = [];
+    if (params.resolvedAnswers) {
+      for (const ans of Object.values(params.resolvedAnswers)) {
+        if (!isUndecidedChoice(ans)) {
+          const lowerAns = ans.toLowerCase();
+          if (lowerAns.includes('web')) additionalPlatforms.push('Web / Browser');
+          else if (lowerAns.includes('mobile')) additionalPlatforms.push('Mobile (iOS/Android responsive or native)');
+          else if (lowerAns.includes('desktop')) additionalPlatforms.push('Desktop');
+          else if (lowerAns.includes('cli') || lowerAns.includes('command line')) additionalPlatforms.push('CLI / Terminal');
+        }
+      }
+    }
+    if (params.decidedHumanDecisions) {
+      for (const choice of Object.values(params.decidedHumanDecisions)) {
+        if (!isUndecidedChoice(choice)) {
+          const lowerChoice = choice.toLowerCase();
+          if (lowerChoice.includes('web')) additionalPlatforms.push('Web / Browser');
+          else if (lowerChoice.includes('mobile')) additionalPlatforms.push('Mobile (iOS/Android responsive or native)');
+          else if (lowerChoice.includes('desktop')) additionalPlatforms.push('Desktop');
+          else if (lowerChoice.includes('cli') || lowerChoice.includes('command line')) additionalPlatforms.push('CLI / Terminal');
+        }
+      }
+    }
+
+    const hasUndecidedPlatformAnswer =
+      Object.entries(params.resolvedAnswers ?? {}).some(([k, v]) => (k.toLowerCase().includes('platform') || k.toLowerCase().includes('tech')) && isUndecidedChoice(v)) ||
+      Object.entries(params.decidedHumanDecisions ?? {}).some(([k, v]) => (k.toLowerCase().includes('platform') || k.toLowerCase().includes('tech')) && isUndecidedChoice(v));
+
+    const rawPlatformConstraints = deduplicateStrings([
       ...(prev?.technology.platformConstraints ?? []),
       ...(ext?.technology.platformConstraints ?? []),
       ...(exp?.technology?.platformConstraints ?? []),
+      ...additionalPlatforms,
     ]);
+
+    const platformConstraints = hasUndecidedPlatformAnswer ? [] : rawPlatformConstraints;
 
     // 6. ARCHITECTURE
     const architecturalConstraints = deduplicateStrings([
@@ -565,6 +643,7 @@ export class AdaptiveDiscoveryEngine {
         params.dependentSection
       );
       const answer = resolvedAnswers[id];
+      const isUndecided = isUndecidedChoice(answer);
       questions.push({
         id,
         question: params.question,
@@ -575,9 +654,9 @@ export class AdaptiveDiscoveryEngine {
         requiredDecision: params.requiredDecision,
         dependentSection: params.dependentSection,
         impact: params.impact,
-        options: params.options,
+        options: params.options ? (params.options.includes('Other') ? params.options : [...params.options, 'Other']) : undefined,
         resolvedAnswer: answer,
-        status: answer ? 'RESOLVED' : 'OPEN',
+        status: answer ? (isUndecided ? 'UNDECIDED' : 'RESOLVED') : 'OPEN',
       });
     };
 
@@ -592,6 +671,20 @@ export class AdaptiveDiscoveryEngine {
     }) => {
       const id = createDeterministicDecisionId(params.title, params.alternatives);
       const chosen = decidedHumanDecisions[id];
+      const isUndecided = isUndecidedChoice(chosen);
+      const isConfirmed = Boolean(chosen && !isUndecided && (params.alternatives.includes(chosen) || !isUndecidedChoice(chosen)));
+
+      let status: HumanDecisionStatus = 'PENDING_DECISION';
+      if (isConfirmed) {
+        status = 'CONFIRMED';
+      } else if (chosen && isUndecided) {
+        status = 'UNDECIDED';
+      } else if (params.recommendedOption) {
+        status = 'PROPOSED';
+      } else {
+        status = 'OPEN';
+      }
+
       decisions.push({
         id,
         title: params.title,
@@ -601,8 +694,8 @@ export class AdaptiveDiscoveryEngine {
         recommendedOption: params.recommendedOption,
         rationale: params.rationale,
         authority: 'USER',
-        status: chosen ? 'DECIDED' : 'PENDING_DECISION',
-        selectedOption: chosen,
+        status,
+        selectedOption: isConfirmed ? chosen : undefined,
       });
     };
 
@@ -623,6 +716,20 @@ export class AdaptiveDiscoveryEngine {
     // 2. Platform / Runtime Constraints
     // RULE: If platform is already specified, do NOT ask for it!
     if (sections.technology.platformConstraints.length === 0) {
+      addDecision({
+        title: 'Target Platform & Interface Selection',
+        description: 'Choose the primary target runtime platform and application interface.',
+        affectedAreas: ['technology choice', 'architecture', 'implementation scope'],
+        alternatives: [
+          'Web Application',
+          'Mobile Application (iOS/Android)',
+          'Desktop Application',
+          'Command Line Tool (CLI)',
+        ],
+        recommendedOption: 'Web Application',
+        rationale: 'Provides broadest cross-platform accessibility with zero client installation.',
+      });
+
       addQuestion({
         category: 'TECHNOLOGY',
         question: 'What is the primary target runtime platform (e.g. Web, Mobile, Desktop, CLI)?',
@@ -632,7 +739,7 @@ export class AdaptiveDiscoveryEngine {
         requiredDecision: 'Select target platform',
         dependentSection: 'technology',
         impact: 'Cannot determine client stack or test targets without platform specification.',
-        options: ['Web Application', 'Mobile Application (iOS/Android)', 'Desktop Application', 'Command Line Tool (CLI)'],
+        options: ['Web Application', 'Mobile Application (iOS/Android)', 'Desktop Application', 'Command Line Tool (CLI)', 'Other'],
       });
     }
 
@@ -812,11 +919,11 @@ export class AdaptiveDiscoveryEngine {
    */
   private computeCompleteness(sections: DiscoverySections): DiscoveryCompletenessInfo {
     const blockingQuestions = sections.openQuestions.filter(
-      (q) => q.classification === 'BLOCKING' && q.status === 'OPEN'
+      (q) => q.classification === 'BLOCKING' && (q.status === 'OPEN' || q.status === 'UNDECIDED')
     );
     const resolvedQuestions = sections.openQuestions.filter((q) => q.status === 'RESOLVED');
     const pendingDecisions = sections.humanDecisions.filter(
-      (d) => d.status === 'PENDING_DECISION'
+      (d) => d.status === 'PENDING_DECISION' || d.status === 'UNDECIDED' || d.status === 'PROPOSED' || d.status === 'OPEN'
     );
 
     const missingMaterial: string[] = [];

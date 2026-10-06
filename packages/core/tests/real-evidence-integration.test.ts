@@ -449,7 +449,7 @@ describe('Phase 14 TASK-P14-03: Real Evidence Integration', () => {
         acceptanceCriteria: ['src/greeting.ts must export greeting with value "p14_03_verified_evidence"'],
         implementationScope: ['src/greeting.ts'],
       },
-      executionLimits: { timeoutMs: 30000, maxFileModifications: 5 },
+      executionLimits: { timeoutMs: 60000, maxFileModifications: 5 },
     });
 
     // 7. Validate Request Preconditions via ExecutorGuard

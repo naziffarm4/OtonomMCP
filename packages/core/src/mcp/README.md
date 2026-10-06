@@ -1,142 +1,111 @@
-# AIDM MCP Server Foundation (P8-01)
+# OtonomMCP — MCP Modülü Teknik Şartnamesi (MCP Server)
 
-The **AIDM Model Context Protocol (MCP) Server** establishes an authoritative, standard JSON-RPC 2.0 control plane boundary for the AI Development Manager (AIDM). It enables external Director models (such as ChatGPT Director) to interact with AIDM as the authoritative state and orchestration authority.
-
----
-
-## 1. Target Architecture & Director Loop
-
-The system supports the following authoritative autonomous Director loop:
-
-```
-  USER
-    ↓
-  CHATGPT — Director / Architect / Reviewer
-    ↓ MCP (JSON-RPC 2.0)
-  AIDM MCP SERVER — Control Boundary & Protocol Adapter
-    ↓
-  AIDM ORCHESTRATOR — State Authority (FSM, Task DAG, Context, Policy, Git)
-    ↓
-  ANTIGRAVITY — Implementer
-    ↓
-  CODE / TESTS / BUILD
-    ↓
-  SYSTEM-VERIFIED EVIDENCE
-    ↓
-  AIDM ORCHESTRATOR
-    ↓ MCP
-  CHATGPT — Analyzes Result & Decides Next Step
-```
-
-The loop continues until:
-- The project goals are met and verified,
-- The user requests a stop,
-- Or an operation requires a human decision and AIDM enters `BLOCKED_ON_HUMAN`.
+**Modül Yolu:** `packages/core/src/mcp/`
+**Protokol:** Model Context Protocol (MCP `2024-11-05`), JSON-RPC 2.0
+**Amaç:** OtonomMCP çekirdeği için dış karar vericilere (ChatGPT Director) ve IDE istemcilerine standart JSON-RPC 2.0 kontrol arayüzü sunmak.
 
 ---
 
-## 2. Core Architectural Invariant: MCP Is Not a Second Orchestrator
+## 1. Mimari İlke: MCP İkinci Bir Orkestratör Değildir
 
-The MCP layer sits strictly **above** the Orchestrator as an external adapter and control boundary.
+MCP katmanı, AIDM Orkestrasyon Çekirdeği üzerinde yer alan bir **protokol adaptörü ve kontrol düzlemidir (Control Plane)**.
 
-The MCP Server **never**:
-- directly mutates FSM lifecycle state,
-- bypasses the `TaskDagEngine`,
-- bypasses the `PolicyEngine`,
-- accepts agent claims as system evidence,
-- directly manipulates Git or runs Git commands,
-- directly executes arbitrary OS/shell commands,
-- implements a competing QA review engine,
-- implements independent retry or recovery logic,
-- creates a competing task scheduler.
+MCP Sunucusu kesinlikle:
+- FSM durum makinesini doğrudan değiştiremez,
+- `TaskDagEngine` kurallarını baypas edemez,
+- `PolicyEngine` yetkilendirme denetimini atlatamaz,
+- Uygulayıcının sözel başarı iddialarını delil kabul edemez,
+- Doğrudan Git veya kabuk komutları çalıştıramaz,
+- Kendi başına bağımsız bir görev planlayıcı veya yeniden deneme mekanizması işletemez.
 
-All mutations and domain evaluations are delegated into authoritative AIDM services via the `McpOrchestratorDelegate`.
+Tüm işlemler, `McpOrchestratorDelegate` ve politika süzgeci üzerinden yetkili AIDM servislerine iletilir.
 
 ---
 
-## 3. Protocol & Transport Neutrality
+## 2. Desteklenen Taşıyıcılar (Transports)
 
-The MCP boundary adheres to the Model Context Protocol specification (`2024-11-05`) and standard JSON-RPC 2.0.
+MCP sunucusu taşıyıcıdan bağımsız (transport-agnostic) olarak tasarlanmıştır ve `McpTransport` arayüzünü uygular:
 
-### Supported Transports:
-- **`InMemoryMcpTransport`**: Zero-overhead in-process communication for testing, programmatic subagent loops, and internal benchmarks.
-- **`StreamMcpTransport`**: Generalized streaming transport using newline-delimited JSON (NDJSON) framing over arbitrary Node.js duplex streams.
-- **`StdioMcpTransport`**: Standard I/O transport for production integration with standard MCP hosts (Cursor, Claude Desktop, ChatGPT desktop agent, CLI).
-
-Transports implement the `McpTransport` interface (`start()`, `send()`, `onMessage()`, `onError()`, `onClose()`, `close()`), ensuring total decoupling of protocol dispatch from transport mechanics.
+1. **`StdioMcpTransport`:** Antigravity IDE ile canlı entegrasyonda kullanılan, standart girdi/çıktı boruları üzerinden satır sonu ayrılmış JSON (`NDJSON`) framing taşıyıcısı.
+2. **`StreamMcpTransport`:** Herhangi bir Node.js `Duplex` stream üzerinden NDJSON framing ile çalışan genel akış taşıyıcısı.
+3. **`InMemoryMcpTransport`:** Birim testler, alt süreç döngüleri ve performans ölçümleri için sıfır maliyetli bellek içi süreç içi taşıyıcı.
 
 ---
 
-## 4. Request Correlation Boundary
+## 3. İstek İzleme ve Bağlam (Request Correlation)
 
-Every message crossing the MCP boundary is assigned a structured `McpRequestCorrelation` context:
+Her MCP isteği çekirdek motorlara iletilirken `McpRequestCorrelation` nesnesi ile izlenir (`packages/core/src/mcp/mcp-correlation.ts`):
 
-| Identifier | Purpose | Phase Defined |
-| :--- | :--- | :--- |
-| `correlationId` | Unique trace ID for AIDM logging, telemetry, and evidence | Phase 8 (P8-01) |
-| `mcpRequestId` | JSON-RPC message ID from client envelope | Phase 8 (P8-01) |
-| `directorSessionId` | ChatGPT Director session identifier | Reserved for Phase 9 |
-| `projectId` | Target project workspace identifier | Existing Phase 1–7 |
-| `taskId` | Target task identifier in the Task DAG | Existing Phase 2 |
-| `executionIterationId` | Current iteration cycle counter | Existing Phase 7 |
+- `correlationId`: AIDM günlük kaydı ve telemetri için benzersiz izleme kimliği (`aidm-corr-...`).
+- `mcpRequestId`: İstemcinin JSON-RPC istek zarfındaki `id` değeri.
+- `directorSessionId`: İlgili Director oturum kimliği.
+- `projectId`: Çalışma alanı / proje kimliği.
+- `taskId`: Hedef Task DAG görev kimliği.
 
 ---
 
-## 5. Security & Policy Enforcement
+## 4. Kayıtlı MCP Araçları
 
-The MCP boundary prevents any bypass of AIDM security and governance:
+MCP sunucusu yapılandırılan modüllere göre aşağıdaki araçları kaydeder:
 
-1. **No Arbitrary Execution**: No generic command execution, shell execution, or arbitrary file system mutation tools are exposed.
-2. **Policy Evaluation**: Tool invocations pass through `PolicyEngine.evaluate()` before dispatch.
-3. **Secret Redaction**: All error messages, stack traces, and details are sanitized through `McpErrorNormalizer` and `sanitizeSecrets` to prevent token/credential exfiltration.
-4. **Workspace Confinement**: Operations remain bound to the configured `projectRoot`.
+### 4.1. Sağlık ve Durum
+- `aidm_health`: Sunucu çalışma durumu, orkestratör bağlantısı ve yetenekleri.
+- `aidm_project_status`: Proje yaşam döngüsü durumu ve aktif faz.
+- `aidm_project_requirements`: Kayıtlı gereksinimler listesi.
+- `aidm_project_decisions`: Kayıtlı mimari kararlar.
+- `aidm_tasks_list`: Task DAG görev listesi.
+- `aidm_tasks_current`: Mevcut aktif veya yürütülmeye hazır görevler.
+- `aidm_context_get`: Taze sistem context snapshot'ı ve parmak izi.
+- `aidm_git_status`: Yerel Git durumu ve çalışma ağacı diff'i.
+
+### 4.2. Keşif, Kapsam ve Şartname
+- `aidm_project_discover`: Çalışma alanı keşfi başlatma.
+- `aidm_specification_completeness_evaluate`: Şartname tamlık değerlendirmesi.
+- `aidm_requirements_scope_define` / `aidm_requirements_scope_get`: Kapsam yönetimi.
+- `aidm_architecture_technology_define` / `aidm_architecture_technology_get`: Mimari tanımları.
+- `aidm_business-rules_define` / `aidm_business-rules_get`: İş kuralları.
+- `aidm_acceptance-criteria_define` / `aidm_acceptance-criteria_get`: Kabul kriterleri.
+- `aidm_risks_define` / `aidm_risks_get`: Risk tanımları.
+- `aidm_project-spec_generate` / `aidm_project-spec_get`: Proje şartname projeksiyonu.
+
+### 4.3. Onay Paketi Yönetimi
+- `aidm_approval_package_create`: Yeni onay paketi üretimi.
+- `aidm_approval_package_get`: Onay paketi sorgulama.
+- `aidm_approval_package_readiness`: Onaya hazır olma kontrolü.
+- `aidm_approval_package_approve`: Açık insan onayı kaydı (`ProjectApprovalRecord`).
+- `aidm_approval_package_reject`: Açık ret kaydı (`ProjectRejectionRecord`).
+
+### 4.4. Director Oturum ve Eylem Yönetimi
+- `aidm_director_session_create` / `get` / `suspend` / `resume` / `close`: Director oturum yaşam döngüsü.
+- `aidm_director_context_sync`: Context snapshot senkronizasyonu ve parmak izi mühürleme.
+- `aidm_director_decision_create` / `validate` / `list`: Director kararlarının kaydedilmesi ve doğrulanması.
+
+### 4.5. Yürütme ve Delil Doğrulama
+- `aidm_execution_intent_validate`: İcra niyetinin 6 güvenlik kontrolünden geçirilmesi.
+- `aidm_execution_request_build` / `aidm_execution_request_create`: İcra isteği oluşturma.
+- `aidm_executor_execute`: Eylemi Driver ve uygulayıcıya devretme.
+- `aidm_evidence_verify`: Eylem tamamlandığında bağımsız delilleri (`SystemExecutionEvidence`) doğrulama.
+
+### 4.6. Kapalı Döngü ve Driver
+- `director_ingestInstruction`: Kullanıcı doğal dil talimatı alma.
+- `director_executeCycle`: Kapalı döngü adımı icra etme.
+- `director_getCycleResult`: Döngü sonuçlarını alma.
+- `driver_start` / `driver_status` / `driver_pause` / `driver_resume` / `driver_stop`: FSM durum makinesi sürücüsü.
 
 ---
 
-## 6. Error Normalization Boundary
+## 5. Hata Normalizasyonu ve Güvenlik
 
-Errors are normalized into standard JSON-RPC 2.0 error responses with machine-readable application codes:
+Sunucu tüm hataları standart JSON-RPC 2.0 hata formatına ve makine kodlarına dönüştürür:
 
-| Error Type | JSON-RPC Code | Machine Code | Description |
-| :--- | :--- | :--- | :--- |
-| Parse Error | `-32700` | `ERR_MCP_PARSE_ERROR` | Malformed JSON payload |
-| Invalid Request | `-32600` | `ERR_MCP_INVALID_REQUEST` | Missing or invalid JSON-RPC fields |
-| Unsupported Operation | `-32601` | `ERR_MCP_UNSUPPORTED_OPERATION` | Unknown method or unregistered tool |
-| Orchestrator Unavailable | `-32001` | `ERR_MCP_ORCHESTRATOR_UNAVAILABLE` | AIDM orchestrator uninitialized or offline |
-| Policy Blocked | `-32002` | `ERR_MCP_POLICY_BLOCKED` | Action rejected by `PolicyEngine` |
-| Human Blocked | `-32003` | `ERR_MCP_HUMAN_BLOCKED` | Action requires human decision/token |
-| Internal Failure | `-32603` | `ERR_MCP_INTERNAL_FAILURE` | Unexpected internal exception |
+| JSON-RPC Kodu | Makine Kodu | Açıklama |
+|---|---|---|
+| `-32700` | `ERR_MCP_PARSE_ERROR` | Geçersiz veya bozuk JSON yükü. |
+| `-32600` | `ERR_MCP_INVALID_REQUEST` | Eksik veya hatalı istek alanları. |
+| `-32601` | `ERR_MCP_UNSUPPORTED_OPERATION` | Tanımsız metot veya araç. |
+| `-32603` | `ERR_MCP_INTERNAL_FAILURE` | İç sistem hatası. |
+| `-32001` | `ERR_MCP_ORCHESTRATOR_UNAVAILABLE` | Orkestratör erişilemez. |
+| `-32002` | `ERR_MCP_POLICY_BLOCKED` | `PolicyEngine` tarafından reddedildi (`DENY`). |
+| `-32003` | `ERR_MCP_HUMAN_BLOCKED` | Güvenilir insan onayı gerekiyor (`BLOCKED_ON_AUTH_CONTEXT`). |
 
----
-
-## 7. Minimal Health & Discovery: `aidm.health`
-
-In P8-01, the server exposes the minimal read-only tool `aidm.health` to prove server lifecycle and orchestrator connectivity without state mutation:
-
-```json
-{
-  "jsonrpc": "2.0",
-  "id": 1,
-  "method": "tools/call",
-  "params": {
-    "name": "aidm.health"
-  }
-}
-```
-
-Response:
-```json
-{
-  "jsonrpc": "2.0",
-  "id": 1,
-  "result": {
-    "content": [
-      {
-        "type": "text",
-        "text": "{\n  \"status\": \"healthy\",\n  \"server\": {\n    \"name\": \"aidm-mcp-server\",\n    \"version\": \"0.1.0\",\n    \"foundationVersion\": \"P8-01\",\n    \"protocolVersion\": \"2024-11-05\",\n    \"aidmVersion\": \"0.1.0\"\n  },\n  \"supportedCapabilities\": [\"tools\", \"discovery\", \"health\"],\n  \"orchestrator\": {\n    \"connected\": true,\n    \"initialized\": true,\n    \"currentLifecycleState\": \"IDLE\",\n    \"isBlocked\": false\n  },\n  \"correlationId\": \"aidm-corr-1774400000000-1-x8k2j1\",\n  \"timestamp\": \"2026-09-24T01:05:00.000Z\"\n}"
-      }
-    ],
-    "isError": false
-  }
-}
-```
+Tüm hata yanıtları ve loglar, sırlar ve token'lardan deterministik regex ile arındırılır (`sanitizeSecrets`).

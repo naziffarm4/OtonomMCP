@@ -312,7 +312,33 @@ export class NodeAntigravityProcessRunner implements AntigravityProcessRunner {
           return true;
         });
 
-        child = child_process.spawn(options.executable, spawnArgs, {
+        let spawnExe = options.executable;
+        let finalSpawnArgs = spawnArgs;
+
+        if (
+          process.platform === 'win32' &&
+          !spawnExe.toLowerCase().endsWith('.exe') &&
+          !spawnExe.toLowerCase().endsWith('.cmd') &&
+          !spawnExe.toLowerCase().endsWith('.bat')
+        ) {
+          try {
+            if (fs.existsSync(spawnExe)) {
+              const fd = fs.openSync(spawnExe, 'r');
+              const buf = Buffer.alloc(128);
+              const bytesRead = fs.readSync(fd, buf, 0, 128, 0);
+              fs.closeSync(fd);
+              const header = buf.toString('utf8', 0, bytesRead);
+              if (header.startsWith('#!') && header.includes('node')) {
+                spawnExe = process.execPath;
+                finalSpawnArgs = [options.executable, ...spawnArgs];
+              }
+            }
+          } catch {
+            // fallback to original
+          }
+        }
+
+        child = child_process.spawn(spawnExe, finalSpawnArgs, {
           cwd: options.cwd,
           env: childEnv,
           windowsHide: true,

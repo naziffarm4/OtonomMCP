@@ -29,6 +29,60 @@ export function computeDeterministicHash(input: string, length = 12): string {
 }
 
 /**
+ * Detects whether a customer response represents an undecided choice,
+ * uncertainty, or a request for explanation rather than a confirmed selection.
+ */
+export function isUndecidedChoice(value?: unknown, selectedOptions?: readonly string[]): boolean {
+  if (value === null || value === undefined) {
+    if (Array.isArray(selectedOptions) && selectedOptions.length > 0) {
+      return selectedOptions.some((opt) => /^(other|diğer|none|undecided|pending)$/i.test(opt.trim()));
+    }
+    return false;
+  }
+
+  // Check selectedOptions array if provided
+  if (Array.isArray(selectedOptions) && selectedOptions.length > 0) {
+    const hasOther = selectedOptions.some((opt) =>
+      /^(other|diğer|none|undecided|pending)$/i.test(opt.trim())
+    );
+    if (hasOther) {
+      return true;
+    }
+  }
+
+  if (typeof value === 'object' && value !== null) {
+    const obj = value as Record<string, unknown>;
+    if (obj.status === 'UNDECIDED' || obj.answerType === 'UNDECIDED') return true;
+    if (typeof obj.freeFormResponse === 'string' && isUndecidedChoice(obj.freeFormResponse, obj.selectedOptions as string[])) {
+      return true;
+    }
+    if (Array.isArray(obj.selectedOptions) && isUndecidedChoice(undefined, obj.selectedOptions as string[])) {
+      return true;
+    }
+  }
+
+  const str = String(value).trim().toLowerCase();
+  if (str.length === 0) return false;
+
+  if (str === 'undecided' || str === 'pending' || str === 'open' || str === 'other' || str === 'diğer') {
+    return true;
+  }
+
+  const undecidedPatterns = [
+    /\b(haven'?t\s+decided|have\s+not\s+decided|not\s+decided\s+yet|undecided|not\s+sure\s+yet|not\s+sure|unsure)\b/i,
+    /\b(karar\s+vermedim|henüz\s+karar\s+vermedim|kararsızım|belirsiz)\b/i,
+    /\b(explain\s+(?:the\s+)?alternatives|describe\s+(?:the\s+)?options|explain\s+options|alternatifleri\s+açıkla)\b/i,
+    /\b(need\s+(?:an?\s+)?(?:explanation|more\s+information)|tell\s+me\s+the\s+options|help\s+me\s+decide|help\s+me\s+choose)\b/i,
+    /\b(what\s+are\s+the\s+trade-?offs|trade-?offs)\b/i,
+    /\b(before\s+(?:i|we)\s+(?:can\s+)?(?:choose|decide))\b/i,
+    /\bother\s*[:\-]/i,
+  ];
+
+  return undecidedPatterns.some((pattern) => pattern.test(str));
+}
+
+
+/**
  * Computes deterministic canonical ID for a requirement.
  */
 export function createDeterministicRequirementId(title: string, description: string): string {
@@ -84,7 +138,7 @@ export function canonicalizeForFingerprint(val: unknown): string {
   }
   if (typeof val === 'object') {
     const obj = val as Record<string, unknown>;
-    const sortedKeys = Object.keys(obj).sort();
+    const sortedKeys = Object.keys(obj).filter((k) => obj[k] !== undefined).sort();
     const entries = sortedKeys.map(
       (k) => `${JSON.stringify(k)}:${canonicalizeForFingerprint(obj[k])}`
     );
@@ -226,23 +280,29 @@ export function extractStructuredDiscoveryFromIntent(
     outOfScope.push(match.trim());
   }
 
-  // Detect platforms
+  // Detect platforms (strictly when not marked undecided or requesting alternatives)
   const platformConstraints: string[] = [];
-  if (lower.includes('mobile')) {
-    platformConstraints.push('Mobile (iOS/Android responsive or native)');
-    inScope.push('Mobile device support');
-  }
-  if (lower.includes('web') || lower.includes('browser')) {
-    platformConstraints.push('Web / Browser');
-    inScope.push('Web application interface');
-  }
-  if (lower.includes('desktop')) {
-    platformConstraints.push('Desktop');
-    inScope.push('Desktop application support');
-  }
-  if (lower.includes('cli') || lower.includes('command line')) {
-    platformConstraints.push('CLI / Terminal');
-    inScope.push('Command line interface');
+  const isPlatformUndecided =
+    isUndecidedChoice(text) ||
+    /(?:between|or|whether|undecided|not decided|explain)\s+(?:web|mobile|desktop|cli)/i.test(text);
+
+  if (!isPlatformUndecided) {
+    if (lower.includes('mobile')) {
+      platformConstraints.push('Mobile (iOS/Android responsive or native)');
+      inScope.push('Mobile device support');
+    }
+    if (lower.includes('web') || lower.includes('browser')) {
+      platformConstraints.push('Web / Browser');
+      inScope.push('Web application interface');
+    }
+    if (lower.includes('desktop')) {
+      platformConstraints.push('Desktop');
+      inScope.push('Desktop application support');
+    }
+    if (lower.includes('cli') || lower.includes('command line')) {
+      platformConstraints.push('CLI / Terminal');
+      inScope.push('Command line interface');
+    }
   }
 
   // Detect users & players
@@ -344,14 +404,36 @@ export function extractStructuredDiscoveryFromIntent(
   const usability: string[] = [];
   const compatibility: string[] = [];
 
-  if (lower.includes('online') || lower.includes('realtime') || lower.includes('game') || lower.includes('4-player')) {
-    performance.push('Low-latency state synchronization (< 150ms round-trip under normal conditions)');
-    reliability.push('Resilient connection handling with automated heartbeat ping/pong');
-    availability.push('Graceful handling of dropped socket connections');
+  if (lower.includes('online') || lower.includes('realtime') || lower.includes('game') || lower.includes('4-player') || lower.includes('performance') || lower.includes('latency') || lower.includes('response time')) {
+    const latencyMatch = text.match(/(?:latency|round-trip|response\s*time)[^,\.;\n]*?([<>]=?\s*\d+\s*(?:ms|s)(?:\s*round-trip)?|\d+\s*(?:ms|s)(?:\s*round-trip)?)/i);
+    if (latencyMatch) {
+      performance.push(`Low-latency state synchronization (${latencyMatch[1].trim()})`);
+    } else {
+      performance.push('Low-latency state synchronization');
+    }
+
+    const heartbeatMatch = text.match(/(\d+\s*(?:s|ms|seconds?)\s*(?:heartbeat\s*)?interval)/i);
+    if (heartbeatMatch) {
+      reliability.push(`Resilient connection handling with automated heartbeat ping/pong (${heartbeatMatch[1].trim()})`);
+    } else if (lower.includes('online') || lower.includes('realtime') || lower.includes('game') || lower.includes('4-player')) {
+      reliability.push('Resilient connection handling with automated heartbeat ping/pong');
+    }
+
+    const uptimeMatch = text.match(/(\d{1,3}(?:\.\d+)?%\s*uptime(?:\s*target)?)/i);
+    if (uptimeMatch) {
+      availability.push(`Graceful handling of dropped socket connections (${uptimeMatch[1].trim()})`);
+    } else if (lower.includes('online') || lower.includes('realtime') || lower.includes('game') || lower.includes('4-player')) {
+      availability.push('Graceful handling of dropped socket connections');
+    }
   }
 
   if (lower.includes('account') || lower.includes('auth')) {
-    security.push('Secure password hashing or OAuth token verification; protection against unauthorized access');
+    const tokenMatch = text.match(/(\d{1,3}(?:\.\d+)?%\s*token\s*verification(?:\s*rate)?)/i);
+    if (tokenMatch) {
+      security.push(`Secure password hashing or OAuth token verification; protection against unauthorized access (${tokenMatch[1].trim()})`);
+    } else {
+      security.push('Secure password hashing or OAuth token verification; protection against unauthorized access');
+    }
   }
 
   if (platformConstraints.includes('Mobile (iOS/Android responsive or native)')) {
@@ -394,7 +476,12 @@ export function extractStructuredDiscoveryFromIntent(
   if (lower.includes('cloud') || lower.includes('aws') || lower.includes('gcp')) {
     deploymentModel = 'Cloud Hosted';
   } else if (lower.includes('local') || lower.includes('self-hosted')) {
-    deploymentModel = 'Local / Self-Hosted';
+    const deployMatch = text.match(/(?:local|self-hosted|deployment)[^,\.;\n]*?([<>]=?\s*\d+\s*(?:ms|s|seconds?)(?:\s*healthcheck\s*response)?|\d+\s*(?:ms|s|seconds?))/i);
+    if (deployMatch) {
+      deploymentModel = `Local / Self-Hosted (${deployMatch[1].trim()})`;
+    } else {
+      deploymentModel = 'Local / Self-Hosted';
+    }
   }
 
   // 7. Acceptance

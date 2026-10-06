@@ -1,4 +1,5 @@
 import type { LlmRequest, LlmResponse } from './llm-types.js';
+import type { LlmTransport } from './llm-transport.js';
 
 // ============================================================================
 // 1. LLM CAPABILITIES & AVAILABILITY
@@ -63,6 +64,12 @@ export interface LLMProvider {
 
   /** List of capabilities supported by this provider adapter */
   readonly supportedCapabilities: readonly LlmCapability[];
+
+  /** Optional underlying transport injected into this adapter */
+  readonly transport?: unknown;
+
+  /** Explicit indicator whether this provider operates in mock/simulated mode */
+  readonly isMock?: boolean;
 
   /**
    * Probes environment / configuration to verify whether the provider is configured,

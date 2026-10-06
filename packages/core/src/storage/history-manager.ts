@@ -47,6 +47,8 @@ export interface HistoryManagerOptions {
  */
 export class HistoryManager {
   readonly historyPath: string;
+  private seenEventIds: Set<string> | null = null;
+  private existingEventsCache: Map<string, HistoryEvent> | null = null;
 
   constructor(options?: HistoryManagerOptions) {
     if (options?.historyPath) {
@@ -57,10 +59,38 @@ export class HistoryManager {
     }
   }
 
+  private async ensureIndex(): Promise<void> {
+    if (this.seenEventIds !== null && this.existingEventsCache !== null) {
+      return;
+    }
+    this.seenEventIds = new Set<string>();
+    this.existingEventsCache = new Map<string, HistoryEvent>();
+
+    try {
+      if (fs.existsSync(this.historyPath)) {
+        const events = await this.readEvents();
+        for (const ev of events) {
+          this.seenEventIds.add(ev.eventId);
+          this.existingEventsCache.set(ev.eventId, ev);
+        }
+      }
+    } catch {
+      // If file doesn't exist or is currently being initialized, ignore
+    }
+  }
+
   /**
    * Append a validated event record to the append-only history stream.
+   * Idempotent: If an event with the same eventId already exists, returns the existing record without duplicating.
    */
   async appendEvent(input: HistoryEventInput): Promise<HistoryEvent> {
+    if (input.eventId) {
+      await this.ensureIndex();
+      if (this.seenEventIds!.has(input.eventId)) {
+        return this.existingEventsCache!.get(input.eventId)!;
+      }
+    }
+
     const rawRecord = {
       eventId: input.eventId ?? crypto.randomUUID(),
       timestamp: input.timestamp ?? new Date().toISOString(),
@@ -100,6 +130,11 @@ export class HistoryManager {
       handle = await fs.promises.open(this.historyPath, 'a');
       await handle.appendFile(line, 'utf8');
       await handle.sync();
+
+      if (this.seenEventIds) {
+        this.seenEventIds.add(event.eventId);
+        this.existingEventsCache?.set(event.eventId, event);
+      }
     } catch (err) {
       throw new StorageError(`Failed to append event to history file '${this.historyPath}'`, {
         filePath: this.historyPath,

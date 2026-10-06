@@ -42,6 +42,8 @@ import {
   UnsupportedLlmCapabilityError,
   sanitizeSecrets,
 } from '../errors/llm-error.js';
+import { BudgetError } from '../errors/budget-error.js';
+import type { BudgetManager } from '../budget/budget-manager.js';
 import {
   createEstimatedTelemetry,
   normalizeTelemetry,
@@ -103,6 +105,16 @@ export interface ReferenceWireUsage {
   readonly completion_tokens?: number | null;
   readonly cached_tokens?: number | null;
   readonly total_tokens?: number | null;
+  readonly prompt_tokens_details?: {
+    readonly cached_tokens?: number | null;
+    readonly audio_tokens?: number | null;
+  } | null;
+  readonly completion_tokens_details?: {
+    readonly reasoning_tokens?: number | null;
+    readonly audio_tokens?: number | null;
+    readonly accepted_prediction_tokens?: number | null;
+    readonly rejected_prediction_tokens?: number | null;
+  } | null;
 }
 
 export interface ReferenceWireResponse {
@@ -143,6 +155,17 @@ export interface ReferenceLlmAdapterConfig {
   readonly timeoutMs?: number;
   /** Optional endpoint URL */
   readonly endpoint?: string;
+  /** Whether to enforce budget authorization on direct generate calls (P18-03) */
+  readonly enforceBudget?: boolean;
+  /** Optional authoritative BudgetManager to verify reservations in SQLite (P18-03) */
+  readonly budgetManager?: BudgetManager;
+  /**
+   * Wire format mode:
+   * - 'openai': Standard OpenAI Chat Completions payload format (clean JSON body, nested json_schema)
+   * - 'reference': Internal AIDM reference format (includes top-level director_context and metadata)
+   * - 'auto': Uses 'openai' when endpoint includes 'openai.com' or provider is 'openai', otherwise 'reference'. Defaults to 'auto'.
+   */
+  readonly wireFormat?: 'reference' | 'openai' | 'auto';
 }
 
 // ============================================================================
@@ -155,8 +178,11 @@ export class ReferenceLlmAdapter implements LLMProvider {
   readonly defaultModel: string;
   readonly supportedModels: readonly string[];
   readonly supportedCapabilities: readonly LlmCapability[];
+  readonly enforceBudget: boolean;
+  readonly wireFormat: 'reference' | 'openai' | 'auto';
+  budgetManager?: BudgetManager;
 
-  private readonly transport: LlmTransport<ReferenceWireRequest, ReferenceWireResponse>;
+  readonly transport: LlmTransport<ReferenceWireRequest, ReferenceWireResponse>;
   private readonly defaultTimeoutMs: number;
   private readonly endpoint?: string;
 
@@ -168,6 +194,8 @@ export class ReferenceLlmAdapter implements LLMProvider {
     this.providerId = config.providerId ?? 'llm:reference-adapter';
     this.providerName = config.providerName ?? 'reference-llm';
     this.defaultModel = config.defaultModel ?? 'ref-model-v1';
+    this.enforceBudget = config.enforceBudget ?? false;
+    this.budgetManager = config.budgetManager;
     this.supportedModels = Object.freeze(
       config.supportedModels && config.supportedModels.length > 0
         ? [...config.supportedModels]
@@ -186,6 +214,66 @@ export class ReferenceLlmAdapter implements LLMProvider {
     this.transport = config.transport;
     this.defaultTimeoutMs = config.timeoutMs ?? 30000;
     this.endpoint = config.endpoint;
+    this.wireFormat = config.wireFormat ?? 'auto';
+
+    if (this.budgetManager && this.transport && typeof (this.transport as any).setBudgetManager === 'function') {
+      (this.transport as any).setBudgetManager(this.budgetManager);
+    }
+  }
+
+  /**
+   * Evaluates whether OpenAI Chat Completions wire format should be used.
+   */
+  isOpenAiFormat(): boolean {
+    if (this.wireFormat === 'openai') return true;
+    if (this.wireFormat === 'reference') return false;
+    const endpoint = this.endpoint || (this.transport as any)?.endpoint || '';
+    if (typeof endpoint === 'string' && endpoint.includes('openai.com')) {
+      return true;
+    }
+    if (this.providerName.toLowerCase().includes('openai')) {
+      return true;
+    }
+    return false;
+  }
+
+  /**
+   * Formats wire request for standard OpenAI Chat Completions API.
+   * Strips out internal orchestrator metadata from JSON body to prevent HTTP 400 Bad Request.
+   */
+  translateToOpenAiWire(wire: ReferenceWireRequest): Record<string, unknown> {
+    const body: Record<string, unknown> = {
+      model: wire.model,
+      messages: wire.messages,
+    };
+    if (typeof wire.temperature === 'number' && Number.isFinite(wire.temperature)) {
+      body.temperature = wire.temperature;
+    }
+    if (typeof wire.max_tokens === 'number' && Number.isFinite(wire.max_tokens)) {
+      body.max_tokens = wire.max_tokens;
+    }
+    if (wire.response_format) {
+      if (wire.response_format.type === 'json_schema') {
+        body.response_format = {
+          type: 'json_schema',
+          json_schema: {
+            name: wire.response_format.schema_name || 'director_decision',
+            strict: wire.response_format.strict ?? true,
+            schema: wire.response_format.schema ?? {},
+          },
+        };
+      } else if (wire.response_format.type === 'json_object') {
+        body.response_format = { type: 'json_object' };
+      }
+    }
+    return Object.freeze(body);
+  }
+
+  setBudgetManager(budgetManager: BudgetManager): void {
+    this.budgetManager = budgetManager;
+    if (this.transport && typeof (this.transport as any).setBudgetManager === 'function') {
+      (this.transport as any).setBudgetManager(budgetManager);
+    }
   }
 
   /**
@@ -296,6 +384,37 @@ export class ReferenceLlmAdapter implements LLMProvider {
   async generate<TStructured = unknown>(
     request: LlmRequest
   ): Promise<LlmResponse<TStructured>> {
+    // 0. Budget Enforcement Check (P18-03)
+    if (this.enforceBudget) {
+      const isBudgetAuthorized = Boolean(request.metadata?.__aidm_budget_authorized);
+      const reservationId = request.metadata?.__aidm_reservation_id
+        ? String(request.metadata.__aidm_reservation_id)
+        : undefined;
+
+      if (!isBudgetAuthorized || !reservationId) {
+        throw new BudgetError(
+          `Direct call to provider "${this.providerId}" without valid budget reservation is strictly prohibited. Wrap provider with BudgetAwareLlmAdapter.`,
+          'ERR_BUDGET_REQUIRED',
+          { providerId: this.providerId, reason: 'DIRECT_CALL_PROHIBITED' }
+        );
+      }
+
+      if (this.budgetManager) {
+        const expectedModel = request.model?.trim() || this.defaultModel;
+        const expectedProjectId = request.correlation?.project_id;
+        const dispatchClaimId = request.metadata?.__aidm_dispatch_claim_id
+          ? String(request.metadata.__aidm_dispatch_claim_id)
+          : undefined;
+
+        this.budgetManager.verifyReservation({
+          reservationId,
+          dispatchClaimId,
+          expectedModelId: expectedModel,
+          expectedProjectId,
+        });
+      }
+    }
+
     // 1. Validate request structure and invariants
     const validatedRequest = validateLlmRequest(request);
 
@@ -369,6 +488,10 @@ export class ReferenceLlmAdapter implements LLMProvider {
       }, timeoutMs);
     });
 
+    const effectiveBody = this.isOpenAiFormat()
+      ? (this.translateToOpenAiWire(wireRequest) as unknown as ReferenceWireRequest)
+      : wireRequest;
+
     const transportReq: LlmTransportRequest<ReferenceWireRequest> = Object.freeze({
       endpoint: this.endpoint,
       method: 'POST',
@@ -376,8 +499,16 @@ export class ReferenceLlmAdapter implements LLMProvider {
         'content-type': 'application/json',
         'x-correlation-id': rawRequest.correlation.correlation_id,
         'x-project-id': rawRequest.correlation.project_id,
+        'x-budget-provider-id': this.providerId,
+        'x-budget-model-id': wireRequest.model,
+        ...(rawRequest.metadata?.__aidm_account_id
+          ? { 'x-budget-account-id': String(rawRequest.metadata.__aidm_account_id) }
+          : {}),
+        ...(rawRequest.metadata?.__aidm_reservation_id
+          ? { 'x-budget-reservation-id': String(rawRequest.metadata.__aidm_reservation_id) }
+          : {}),
       }),
-      body: wireRequest,
+      body: effectiveBody,
       timeoutMs,
       signal: abortController.signal,
     });
@@ -554,10 +685,15 @@ export class ReferenceLlmAdapter implements LLMProvider {
         typeof wire.usage.prompt_tokens === 'number' ||
         typeof wire.usage.completion_tokens === 'number';
 
+      const cachedTokens =
+        wire.usage.cached_tokens ??
+        wire.usage.prompt_tokens_details?.cached_tokens ??
+        null;
+
       usage = normalizeTelemetry({
         reported_input_tokens: wire.usage.prompt_tokens ?? null,
         reported_output_tokens: wire.usage.completion_tokens ?? null,
-        reported_cached_tokens: wire.usage.cached_tokens ?? null,
+        reported_cached_tokens: cachedTokens,
         estimated_tokens:
           wire.usage.total_tokens ??
           ((wire.usage.prompt_tokens ?? 0) + (wire.usage.completion_tokens ?? 0)),
@@ -566,6 +702,13 @@ export class ReferenceLlmAdapter implements LLMProvider {
         model,
         is_exact_provider_metric: hasExactMetrics,
       });
+
+      if (wire.usage.completion_tokens_details) {
+        (usage as any).completion_tokens_details = wire.usage.completion_tokens_details;
+      }
+      if (wire.usage.prompt_tokens_details) {
+        (usage as any).prompt_tokens_details = wire.usage.prompt_tokens_details;
+      }
     } else {
       // When provider metrics are unavailable, reported values remain strictly null
       usage = createEstimatedTelemetry({
@@ -577,14 +720,24 @@ export class ReferenceLlmAdapter implements LLMProvider {
 
     // 5. Structured output parsing & validation
     let structuredOutput: TStructured | null = null;
-    if (
-      request.response_format === LlmResponseFormat.JSON_OBJECT ||
-      request.response_format === LlmResponseFormat.JSON_SCHEMA
-    ) {
-      structuredOutput = validateStructuredOutput<TStructured>(
-        content,
-        request.json_schema
-      );
+    try {
+      if (
+        request.response_format === LlmResponseFormat.JSON_OBJECT ||
+        request.response_format === LlmResponseFormat.JSON_SCHEMA
+      ) {
+        structuredOutput = validateStructuredOutput<TStructured>(
+          content,
+          request.json_schema
+        );
+      }
+    } catch (err) {
+      if (err instanceof MalformedLlmResponseError) {
+        (err as any).usage = usage;
+        if ((err as any).details && typeof (err as any).details === 'object') {
+          (err as any).details.usage = usage;
+        }
+      }
+      throw err;
     }
 
     // 6. Error state normalization

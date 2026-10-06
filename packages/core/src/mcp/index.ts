@@ -9,7 +9,10 @@ export * from './mcp-correlation.js';
 export * from './mcp-errors.js';
 export * from './mcp-transport.js';
 export * from './mcp-delegate.js';
+export * from './project-root-resolver.js';
+export * from './tool-name-mapper.js';
 export * from './mcp-server.js';
+
 export * from './tools/health-tool.js';
 export * from './tools/project-status-tool.js';
 export * from './tools/project-requirements-tool.js';

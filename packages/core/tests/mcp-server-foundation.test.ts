@@ -76,7 +76,7 @@ describe('Phase 8 MCP Server Foundation (TASK-P8-01)', () => {
 
     const tools = server.getRegisteredTools();
     assert.equal(tools.length, 1);
-    assert.equal(tools[0].name, AIDM_HEALTH_TOOL_NAME);
+    assert.ok(tools[0].name === 'aidm_health' || tools[0].name === AIDM_HEALTH_TOOL_NAME);
   });
 
   it('T01_construction_custom: accepts custom configuration parameters', () => {
@@ -191,7 +191,7 @@ describe('Phase 8 MCP Server Foundation (TASK-P8-01)', () => {
 
     const result = res.result as { tools: Array<{ name: string; description: string; inputSchema: unknown }> };
     assert.ok(Array.isArray(result.tools));
-    const healthTool = result.tools.find((t) => t.name === AIDM_HEALTH_TOOL_NAME);
+    const healthTool = result.tools.find((t) => t.name === 'aidm_health' || t.name === AIDM_HEALTH_TOOL_NAME);
     assert.ok(healthTool);
     assert.ok(healthTool.description.includes('health status'));
   });

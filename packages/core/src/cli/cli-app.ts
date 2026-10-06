@@ -7,6 +7,8 @@ import { executeStatus } from './commands/status.js';
 import { executeCheckpoint } from './commands/checkpoint.js';
 import { executeRun } from './commands/run.js';
 import { executeDriver } from './commands/driver.js';
+import { executeMcp } from './commands/mcp.js';
+
 
 export const AIDM_VERSION = '0.1.0';
 
@@ -20,6 +22,7 @@ Commands:
   init                           Initialize an AIDM project/workspace
   run                            Start autonomous lifecycle execution
   driver [run|status|stop]       Manage and run governed Autonomous Driver runtime
+  mcp                            Start authoritative AIDM MCP server (alias: server)
   status                         Read current project lifecycle and Git state
   checkpoint <action>            Manage Git checkpoints (list, create, rollback)
 
@@ -219,6 +222,20 @@ export async function executeCli(
           appOptions
         );
       }
+
+      case 'mcp':
+      case 'server': {
+        return await executeMcp(
+          {
+            projectRoot,
+            transport: (flags['transport'] as 'stdio' | 'stream') ?? 'stdio',
+            verbose,
+          },
+          writer,
+          appOptions
+        );
+      }
+
 
       default: {
         const msg = `Unknown command "${command}". Run "aidm --help" for available commands.`;

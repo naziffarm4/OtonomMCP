@@ -779,7 +779,7 @@ describe('Phase 9 — Director Context Synchronization (TASK-P9-02)', () => {
     const listRes = await server.handleMessage(listReq);
     assert.ok(listRes && 'result' in listRes);
     const tools = (listRes.result as { tools: Array<{ name: string }> }).tools;
-    assert.ok(tools.some((t) => t.name === AIDM_DIRECTOR_CONTEXT_SYNC_TOOL_NAME));
+    assert.ok(tools.some((t) => t.name === AIDM_DIRECTOR_CONTEXT_SYNC_TOOL_NAME || t.name === 'aidm_director_context_sync'));
 
     const callReq = {
       jsonrpc: '2.0' as const,

@@ -82,12 +82,21 @@ export class LlmTransportUnavailableError extends Error {
 }
 
 // ============================================================================
-// 3. LLM TRANSPORT INTERFACE
-// ============================================================================
+export type LlmTransportKind =
+  | 'network_http'
+  | 'mock_deterministic'
+  | 'in_memory'
+  | 'custom';
 
 export interface LlmTransport<TWirePayload = unknown, TWireResponse = unknown> {
   /** Unique name or identifier of the transport implementation */
   readonly transportName: string;
+
+  /** Architectural classification of transport mechanism */
+  readonly transportKind?: LlmTransportKind;
+
+  /** Explicitly marks whether this transport executes over live network sockets */
+  readonly isLiveNetworkTransport?: boolean;
 
   /**
    * Checks whether the transport is available and ready for dispatch.
@@ -132,6 +141,8 @@ export class DeterministicMockTransport<
   TWireResponse = unknown
 > implements LlmTransport<TWirePayload, TWireResponse> {
   readonly transportName: string;
+  readonly transportKind: LlmTransportKind = 'mock_deterministic';
+  readonly isLiveNetworkTransport = false;
   private available: boolean;
   private _unavailableReason?: string;
   private responseDelayMs: number;

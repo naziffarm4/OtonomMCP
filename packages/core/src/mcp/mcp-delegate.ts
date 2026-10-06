@@ -14,6 +14,7 @@
 import * as path from 'node:path';
 import type { PolicyEngine } from '../policy/policy-engine.js';
 import type { McpRequestCorrelation } from './mcp-correlation.js';
+import { resolveTargetProjectRoot } from './project-root-resolver.js';
 import { DurableStateManager } from '../storage/durable-state.js';
 import { SpecStore } from '../storage/spec-store.js';
 import { HistoryManager } from '../storage/history-manager.js';
@@ -61,11 +62,32 @@ export interface McpOrchestratorStatus {
   readonly metadata?: Readonly<Record<string, unknown>>;
 }
 
+export interface ActiveProjectContext {
+  readonly directorSessionId?: string;
+  readonly projectId: string;
+  readonly projectRoot: string;
+}
+
 // ============================================================================
 // 2. ORCHESTRATOR DELEGATE INTERFACE
 // ============================================================================
 
 export interface McpOrchestratorDelegate {
+  /**
+   * Currently active project/session context, if any.
+   */
+  readonly activeContext?: ActiveProjectContext;
+
+  /**
+   * Set or clear active project/session context.
+   */
+  setActiveContext?(context?: ActiveProjectContext): void;
+
+  /**
+   * Resolve target project root using canonical 4-tier priority.
+   */
+  resolveProjectRoot?(explicitRoot?: string): string;
+
   /**
    * Check if the orchestrator and its underlying state authority are healthy and available.
    */
@@ -242,6 +264,23 @@ export interface DefaultMcpOrchestratorDelegateOptions {
 }
 
 export class DefaultMcpOrchestratorDelegate implements McpOrchestratorDelegate {
+  private _activeContext?: ActiveProjectContext;
+
+  get activeContext(): ActiveProjectContext | undefined {
+    return this._activeContext;
+  }
+
+  setActiveContext(context?: ActiveProjectContext): void {
+    this._activeContext = context;
+  }
+
+  resolveProjectRoot(explicitRoot?: string): string {
+    return resolveTargetProjectRoot({
+      explicitRoot,
+      delegate: this,
+    });
+  }
+
   readonly projectRoot?: string;
   readonly policyEngine?: PolicyEngine;
   readonly durableStateManager?: DurableStateManager;

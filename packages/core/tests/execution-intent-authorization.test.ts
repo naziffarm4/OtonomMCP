@@ -1015,9 +1015,9 @@ describe('Phase 10 — Execution Intent Authorization Boundary (TASK-P10-01)', (
 
     // Tool must be registered
     const tools = server.getRegisteredTools();
-    const intentTool = tools.find((t: any) => t.name === AIDM_EXECUTION_INTENT_VALIDATE_TOOL_NAME);
+    const intentTool = tools.find((t: any) => t.name === AIDM_EXECUTION_INTENT_VALIDATE_TOOL_NAME || t.internalName === AIDM_EXECUTION_INTENT_VALIDATE_TOOL_NAME);
     assert.ok(intentTool, 'aidm.execution.intent.validate tool must be registered');
-    assert.equal(intentTool.name, 'aidm.execution.intent.validate');
+    assert.ok(intentTool.name === 'aidm_execution_intent_validate' || intentTool.name === AIDM_EXECUTION_INTENT_VALIDATE_TOOL_NAME);
 
     // Call the tool with valid input through MCP handleMessage
     const resp = await server.handleMessage({

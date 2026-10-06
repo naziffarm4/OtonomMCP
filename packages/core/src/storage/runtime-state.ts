@@ -55,6 +55,7 @@ export type LocalRuntimeStateInput = Omit<LocalRuntimeState, 'schemaVersion' | '
 export interface LocalRuntimeStateManagerOptions {
   filePath?: string;
   baseDir?: string;
+  workspaceRoot?: string;
 }
 
 export class LocalRuntimeStateManager {
@@ -64,7 +65,7 @@ export class LocalRuntimeStateManager {
     if (options?.filePath) {
       this.filePath = options.filePath;
     } else {
-      const baseDir = options?.baseDir ?? process.cwd();
+      const baseDir = options?.baseDir ?? options?.workspaceRoot ?? process.cwd();
       this.filePath = path.join(baseDir, '.ai-manager', 'state', 'local-runtime.json');
     }
   }
@@ -175,14 +176,123 @@ export class LocalRuntimeStateManager {
     return parseResult.data as LocalRuntimeState;
   }
 
-  async clear(): Promise<void> {
+  async clear(processId?: number): Promise<void> {
     try {
+      const existing = await this.load();
+      if (processId !== undefined && existing && existing.acquiredLock && existing.processId !== processId) {
+        throw new InstanceConcurrencyError(
+          `Cannot delete workspace lock file: lock is held by another instance (PID: ${existing.processId}). Non-owner processes cannot delete the lock file.`,
+          { currentPid: processId, ownerPid: existing.processId, filePath: this.filePath }
+        );
+      }
       await fs.promises.unlink(this.filePath);
     } catch (err: unknown) {
+      if (err instanceof InstanceConcurrencyError) {
+        throw err;
+      }
       const nodeErr = err as NodeJS.ErrnoException;
       if (nodeErr.code !== 'ENOENT') {
         throw err;
       }
     }
   }
+
+  /**
+   * Checks if a process ID is currently alive on the host OS.
+   */
+  isProcessAlive(pid: number): boolean {
+    if (typeof pid !== 'number' || isNaN(pid) || pid <= 0) {
+      return false;
+    }
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch (err: any) {
+      return err.code === 'EPERM';
+    }
+  }
+
+  /**
+   * Atomically acquires the single-active-instance lock for the workspace.
+   * Throws InstanceConcurrencyError if another process holds the lock.
+   * Zombie takeover, force unlock, and automatic stale lock clearing are strictly prohibited.
+   */
+  async acquireInstanceLock(options?: {
+    processId?: number;
+  }): Promise<LocalRuntimeState> {
+    const currentPid = options?.processId ?? process.pid;
+    const existing = await this.load();
+
+    if (existing && existing.acquiredLock) {
+      if (existing.processId === currentPid) {
+        // Idempotent re-acquisition by the same process
+        return await this.save({
+          ...existing,
+          lastHeartbeat: new Date().toISOString(),
+        });
+      }
+
+      // STRICT LOCK POLICY:
+      // If a lock file exists with acquiredLock === true and belongs to a different PID:
+      // It is NEVER automatically taken over, regardless of whether the PID appears alive or dead,
+      // or whether the heartbeat has expired. Zombie takeover, force-unlock, and automatic
+      // deletion are strictly prohibited.
+      const processAlive = this.isProcessAlive(existing.processId);
+      throw new InstanceConcurrencyError(
+        `Cannot acquire workspace instance lock. An existing AIDM instance (PID: ${existing.processId}, isAlive: ${processAlive}) holds the lock for '${this.filePath}'. Only one active instance is permitted per workspace. Automatic takeover, stale lock clearing, and force-unlock are strictly disabled.`,
+        {
+          currentPid,
+          existingPid: existing.processId,
+          isExistingPidAlive: processAlive,
+          lastHeartbeat: existing.lastHeartbeat,
+          filePath: this.filePath,
+        }
+      );
+    }
+
+    return await this.save({
+      schemaVersion: CURRENT_LOCAL_RUNTIME_SCHEMA_VERSION,
+      processId: currentPid,
+      acquiredLock: true,
+      activeAttempt: (existing?.activeAttempt ?? 0) + 1,
+      startedAt: existing?.startedAt ?? new Date().toISOString(),
+      lastHeartbeat: new Date().toISOString(),
+      blockedState: existing?.blockedState ?? null,
+    });
+  }
+
+  /**
+   * Releases the single-active-instance lock cleanly.
+   * Only the owning process can release the lock.
+   */
+  async releaseInstanceLock(processId?: number): Promise<void> {
+    const currentPid = processId ?? process.pid;
+    const existing = await this.load();
+    if (!existing || !existing.acquiredLock) {
+      return;
+    }
+    if (existing.processId !== currentPid) {
+      throw new InstanceConcurrencyError(
+        `Cannot release workspace instance lock: caller PID (${currentPid}) is not the lock owner (owner PID: ${existing.processId}). Non-owner processes cannot release or mutate the lock.`,
+        { currentPid, ownerPid: existing.processId }
+      );
+    }
+    await this.save({
+      ...existing,
+      acquiredLock: false,
+      lastHeartbeat: new Date().toISOString(),
+    });
+  }
 }
+
+export class InstanceConcurrencyError extends Error {
+  readonly details?: Readonly<Record<string, unknown>>;
+
+  constructor(message: string, details?: Record<string, unknown>) {
+    super(message);
+    this.name = 'InstanceConcurrencyError';
+    this.details = details ? Object.freeze({ ...details }) : undefined;
+    Object.setPrototypeOf(this, new.target.prototype);
+  }
+}
+

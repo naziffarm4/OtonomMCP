@@ -115,13 +115,19 @@ export class ExecutionAuthorizer {
         historyManager: this.historyManager,
       });
 
-    this.approvalPackageEngine =
-      options.approvalPackageEngine ?? new ApprovalPackageEngine();
-
     this.specStore =
       options.specStore ??
       options.delegate?.specStore ??
       new SpecStore({ baseDir: this.workspaceRoot });
+
+    this.approvalPackageEngine =
+      options.approvalPackageEngine ??
+      new ApprovalPackageEngine({
+        workspaceRoot: this.workspaceRoot,
+        historyManager: this.historyManager,
+        specStore: this.specStore,
+        approvalStore: this.approvalStore,
+      });
 
     this.dagEngine =
       options.dagEngine ?? options.delegate?.dagEngine ?? new TaskDagEngine();
@@ -462,13 +468,13 @@ export class ExecutionAuthorizer {
       };
     }
 
-    // Authoritative development authorization check
-    const isAuthorized = this.approvalPackageEngine.isDevelopmentAuthorized(pkg);
+    // Authoritative development authorization check (freshness-aware)
+    const isAuthorized = await this.approvalPackageEngine.isDevelopmentAuthorizedAsync(pkg);
     if (!isAuthorized) {
       return {
         isValid: false,
         code: 'APPROVAL_NOT_AUTHORIZED',
-        message: 'Development is not authorized under authoritative isDevelopmentAuthorized() boundary.',
+        message: 'Development is not authorized under authoritative isDevelopmentAuthorized() boundary (package is not approved, not human authorized, or upstream bindings are stale).',
       };
     }
 

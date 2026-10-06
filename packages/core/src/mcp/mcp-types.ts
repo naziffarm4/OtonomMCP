@@ -191,6 +191,7 @@ export interface McpToolDefinition {
   readonly name: string;
   readonly description: string;
   readonly inputSchema: McpToolInputSchema;
+  readonly internalName?: string;
 }
 
 export interface McpToolContent {
@@ -220,6 +221,8 @@ export type McpToolHandler = (
 export interface McpToolRegistration {
   readonly definition: McpToolDefinition;
   readonly handler: McpToolHandler;
+  readonly internalName?: string;
+  readonly exposedName?: string;
 }
 
 // ============================================================================

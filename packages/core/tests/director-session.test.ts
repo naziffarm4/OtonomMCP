@@ -731,7 +731,7 @@ describe('Phase 9 Director Session Identity (TASK-P9-01)', () => {
     });
 
     const tools = server.getRegisteredTools();
-    const toolNames = tools.map((t) => t.name);
+    const toolNames = tools.flatMap((t: any) => [t.name, t.internalName].filter(Boolean));
 
     assert.ok(toolNames.includes(AIDM_DIRECTOR_SESSION_CREATE_TOOL_NAME));
     assert.ok(toolNames.includes(AIDM_DIRECTOR_SESSION_GET_TOOL_NAME));

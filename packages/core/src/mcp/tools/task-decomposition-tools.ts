@@ -20,6 +20,7 @@ import { TaskDecompositionEngine } from '../../task-decomposition/task-decomposi
 import {
   DecomposePlanInputZodSchema,
 } from '../../task-decomposition/task-decomposition-types.js';
+import { resolveTargetProjectRoot } from '../project-root-resolver.js';
 import { TaskDecompositionError } from '../../task-decomposition/task-decomposition-errors.js';
 
 export const AIDM_TASK_DECOMPOSE_TOOL_NAME = 'aidm.task.decompose';
@@ -28,14 +29,15 @@ function getDecompositionEngine(
   resolvedRoot: string,
   delegate?: McpOrchestratorDelegate
 ): TaskDecompositionEngine {
+  const isSameRoot = delegate?.projectRoot === resolvedRoot;
   return new TaskDecompositionEngine({
     workspaceRoot: resolvedRoot,
-    delegate,
-    specStore: delegate?.specStore,
-    dagEngine: delegate?.dagEngine,
-    approvalStore: delegate?.approvalStore,
-    sessionStore: delegate?.directorSessionStore,
-    historyManager: delegate?.historyManager,
+    delegate: isSameRoot ? delegate : undefined,
+    specStore: (isSameRoot && delegate?.specStore) ? delegate.specStore : undefined,
+    dagEngine: (isSameRoot && delegate?.dagEngine) ? delegate.dagEngine : undefined,
+    approvalStore: (isSameRoot && delegate?.approvalStore) ? delegate.approvalStore : undefined,
+    sessionStore: (isSameRoot && delegate?.directorSessionStore) ? delegate.directorSessionStore : undefined,
+    historyManager: (isSameRoot && delegate?.historyManager) ? delegate.historyManager : undefined,
   });
 }
 
@@ -111,7 +113,10 @@ export function createTaskDecomposeTool(
       }
 
       const delegate = context.delegate ?? defaultDelegate;
-      const resolvedRoot = parsed.workspaceRoot ?? delegate?.projectRoot ?? process.cwd();
+      const resolvedRoot = resolveTargetProjectRoot({
+        explicitRoot: parsed.workspaceRoot,
+        delegate,
+      });
       const engine = getDecompositionEngine(resolvedRoot, delegate);
 
       try {

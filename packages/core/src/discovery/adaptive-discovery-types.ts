@@ -49,7 +49,7 @@ export const DiscoveryQuestionZodSchema = z.object({
   impact: z.string().min(1, 'impact cannot be empty'),
   options: z.array(z.string()).optional(),
   resolvedAnswer: z.string().optional(),
-  status: z.enum(['OPEN', 'RESOLVED']).default('OPEN'),
+  status: z.enum(['OPEN', 'RESOLVED', 'UNDECIDED', 'PROPOSED']).default('OPEN'),
 });
 
 export type DiscoveryQuestion = z.infer<typeof DiscoveryQuestionZodSchema>;
@@ -58,7 +58,15 @@ export type DiscoveryQuestion = z.infer<typeof DiscoveryQuestionZodSchema>;
 // 2. HUMAN DECISION POINTS
 // ============================================================================
 
-export const HUMAN_DECISION_STATUSES = ['PENDING_DECISION', 'DECIDED'] as const;
+export const HUMAN_DECISION_STATUSES = [
+  'PENDING_DECISION',
+  'DECIDED',
+  'CONFIRMED',
+  'UNDECIDED',
+  'PROPOSED',
+  'OPEN',
+  'REJECTED',
+] as const;
 export type HumanDecisionStatus = (typeof HUMAN_DECISION_STATUSES)[number];
 
 export const HumanDecisionPointZodSchema = z.object({

@@ -15,11 +15,16 @@ import { z } from 'zod';
 import type { McpToolDefinition, McpToolHandler, McpRequestContext } from '../mcp-types.js';
 import type { McpOrchestratorDelegate } from '../mcp-delegate.js';
 import { sanitizeMcpPayload } from '../mcp-errors.js';
+import { resolveTargetProjectRoot } from '../project-root-resolver.js';
 import { RiskHumanDecisionEngine } from '../../discovery/risk-human-decision-engine.js';
 import {
   ProjectRiskZodSchema,
   HumanDecisionPointZodSchema,
 } from '../../discovery/risk-human-decision-types.js';
+import {
+  resolveCanonicalProjectIdentity,
+  validateCanonicalProjectId,
+} from '../../director/project-identity-resolver.js';
 import type { McpServer } from '../mcp-server.js';
 
 export const AIDM_RISKS_DEFINE_TOOL_NAME = 'aidm.risks.define';
@@ -28,7 +33,7 @@ export const AIDM_HUMAN_DECISIONS_GET_TOOL_NAME = 'aidm.human-decisions.get';
 
 // Input schema for DEFINE
 const defineInputSchema = z.object({
-  projectId: z.string().min(1, 'projectId cannot be empty'),
+  projectId: z.string().min(1, 'projectId cannot be empty').optional(),
   discoveryRevision: z.number().int().positive().optional(),
   expectedDiscoveryFingerprint: z.string().optional(),
   requirementsRevision: z.number().int().positive().optional(),
@@ -52,11 +57,10 @@ export const risksDefineToolDefinition: McpToolDefinition = {
     'Transforms authoritative Discovery (P15-01), Requirements (P15-03), Architecture (P15-04), Business Rules (P15-05), and Acceptance Criteria (P15-06) into an explicit, revisioned project Risk and Human Decision Point specification for project initiation. Models risks, severity, probability, impact, response, traceability, and Product Owner decisions without implementation execution.',
   inputSchema: {
     type: 'object',
-    required: ['projectId'],
     properties: {
       projectId: {
         type: 'string',
-        description: 'Canonical project identifier.',
+        description: 'Optional canonical project identifier. Defaults to active context or resolved target project root identity.',
       },
       discoveryRevision: {
         type: 'integer',
@@ -128,24 +132,35 @@ export function createRisksDefineTool(
     handler: async (args: Record<string, unknown>, context: McpRequestContext) => {
       const parsed = defineInputSchema.parse(args ?? {});
       const activeDelegate = context.delegate ?? defaultDelegate;
-      const resolvedRoot = parsed.workspaceRoot ?? activeDelegate?.projectRoot ?? process.cwd();
+      const resolvedRoot = resolveTargetProjectRoot({
+        explicitRoot: parsed.workspaceRoot,
+        delegate: activeDelegate,
+        targetProjectId: parsed.projectId,
+      });
+      const canonicalProjectId =
+        parsed.projectId ??
+        activeDelegate?.activeContext?.projectId ??
+        resolveCanonicalProjectIdentity(resolvedRoot).projectId;
+      validateCanonicalProjectId(canonicalProjectId);
+      const isSameRoot = activeDelegate?.projectRoot === resolvedRoot;
 
       const engine =
-        activeDelegate?.riskHumanDecisionEngine ??
-        new RiskHumanDecisionEngine({
-          workspaceRoot: resolvedRoot,
-          discoveryStore: activeDelegate?.adaptiveDiscoveryStore,
-          requirementsStore: activeDelegate?.requirementsScopeStore,
-          architectureStore: activeDelegate?.architectureTechnologyStore,
-          businessRulesStore: activeDelegate?.businessRulesStore,
-          acceptanceCriteriaStore: activeDelegate?.acceptanceCriteriaStore,
-          riskStore: activeDelegate?.riskHumanDecisionStore,
-          historyManager: activeDelegate?.historyManager,
-          specStore: activeDelegate?.specStore,
-        });
+        (isSameRoot && activeDelegate?.riskHumanDecisionEngine)
+          ? activeDelegate.riskHumanDecisionEngine
+          : new RiskHumanDecisionEngine({
+              workspaceRoot: resolvedRoot,
+              discoveryStore: (isSameRoot && activeDelegate?.adaptiveDiscoveryStore) ? activeDelegate.adaptiveDiscoveryStore : undefined,
+              requirementsStore: (isSameRoot && activeDelegate?.requirementsScopeStore) ? activeDelegate.requirementsScopeStore : undefined,
+              architectureStore: (isSameRoot && activeDelegate?.architectureTechnologyStore) ? activeDelegate.architectureTechnologyStore : undefined,
+              businessRulesStore: (isSameRoot && activeDelegate?.businessRulesStore) ? activeDelegate.businessRulesStore : undefined,
+              acceptanceCriteriaStore: (isSameRoot && activeDelegate?.acceptanceCriteriaStore) ? activeDelegate.acceptanceCriteriaStore : undefined,
+              riskStore: (isSameRoot && activeDelegate?.riskHumanDecisionStore) ? activeDelegate.riskHumanDecisionStore : undefined,
+              historyManager: (isSameRoot && activeDelegate?.historyManager) ? activeDelegate.historyManager : undefined,
+              specStore: (isSameRoot && activeDelegate?.specStore) ? activeDelegate.specStore : undefined,
+            });
 
       const result = await engine.derive({
-        projectId: parsed.projectId,
+        projectId: canonicalProjectId,
         discoveryRevision: parsed.discoveryRevision,
         expectedDiscoveryFingerprint: parsed.expectedDiscoveryFingerprint,
         requirementsRevision: parsed.requirementsRevision,
@@ -177,7 +192,7 @@ export function createRisksDefineTool(
 
 // Input schema for GET
 const getInputSchema = z.object({
-  projectId: z.string().min(1, 'projectId cannot be empty'),
+  projectId: z.string().min(1, 'projectId cannot be empty').optional(),
   revision: z.number().int().positive().optional(),
   workspaceRoot: z.string().optional(),
 });
@@ -190,11 +205,10 @@ export const risksGetToolDefinition: McpToolDefinition = {
     'Retrieves authoritative Project Risks specification by project ID and optional revision number (defaults to latest). Exposes risks, severity, probability, impact, response, coverage statistics, and traceability.',
   inputSchema: {
     type: 'object',
-    required: ['projectId'],
     properties: {
       projectId: {
         type: 'string',
-        description: 'Canonical project identifier.',
+        description: 'Optional canonical project identifier. Defaults to active context or resolved target project root identity.',
       },
       revision: {
         type: 'integer',
@@ -216,28 +230,39 @@ export function createRisksGetTool(
     handler: async (args: Record<string, unknown>, context: McpRequestContext) => {
       const parsed = getInputSchema.parse(args ?? {});
       const activeDelegate = context.delegate ?? defaultDelegate;
-      const resolvedRoot = parsed.workspaceRoot ?? activeDelegate?.projectRoot ?? process.cwd();
+      const resolvedRoot = resolveTargetProjectRoot({
+        explicitRoot: parsed.workspaceRoot,
+        delegate: activeDelegate,
+        targetProjectId: parsed.projectId,
+      });
+      const canonicalProjectId =
+        parsed.projectId ??
+        activeDelegate?.activeContext?.projectId ??
+        resolveCanonicalProjectIdentity(resolvedRoot).projectId;
+      validateCanonicalProjectId(canonicalProjectId);
+      const isSameRoot = activeDelegate?.projectRoot === resolvedRoot;
 
       const engine =
-        activeDelegate?.riskHumanDecisionEngine ??
-        new RiskHumanDecisionEngine({
-          workspaceRoot: resolvedRoot,
-          discoveryStore: activeDelegate?.adaptiveDiscoveryStore,
-          requirementsStore: activeDelegate?.requirementsScopeStore,
-          architectureStore: activeDelegate?.architectureTechnologyStore,
-          businessRulesStore: activeDelegate?.businessRulesStore,
-          acceptanceCriteriaStore: activeDelegate?.acceptanceCriteriaStore,
-          riskStore: activeDelegate?.riskHumanDecisionStore,
-          historyManager: activeDelegate?.historyManager,
-          specStore: activeDelegate?.specStore,
-        });
+        (isSameRoot && activeDelegate?.riskHumanDecisionEngine)
+          ? activeDelegate.riskHumanDecisionEngine
+          : new RiskHumanDecisionEngine({
+              workspaceRoot: resolvedRoot,
+              discoveryStore: (isSameRoot && activeDelegate?.adaptiveDiscoveryStore) ? activeDelegate.adaptiveDiscoveryStore : undefined,
+              requirementsStore: (isSameRoot && activeDelegate?.requirementsScopeStore) ? activeDelegate.requirementsScopeStore : undefined,
+              architectureStore: (isSameRoot && activeDelegate?.architectureTechnologyStore) ? activeDelegate.architectureTechnologyStore : undefined,
+              businessRulesStore: (isSameRoot && activeDelegate?.businessRulesStore) ? activeDelegate.businessRulesStore : undefined,
+              acceptanceCriteriaStore: (isSameRoot && activeDelegate?.acceptanceCriteriaStore) ? activeDelegate.acceptanceCriteriaStore : undefined,
+              riskStore: (isSameRoot && activeDelegate?.riskHumanDecisionStore) ? activeDelegate.riskHumanDecisionStore : undefined,
+              historyManager: (isSameRoot && activeDelegate?.historyManager) ? activeDelegate.historyManager : undefined,
+              specStore: (isSameRoot && activeDelegate?.specStore) ? activeDelegate.specStore : undefined,
+            });
 
       const result =
         parsed.revision !== undefined
-          ? await engine.getRevision(parsed.projectId, parsed.revision)
-          : await engine.getLatest(parsed.projectId);
+          ? await engine.getRevision(canonicalProjectId, parsed.revision)
+          : await engine.getLatest(canonicalProjectId);
 
-      const sanitized = sanitizeMcpPayload(result ?? { error: 'NOT_FOUND', projectId: parsed.projectId });
+      const sanitized = sanitizeMcpPayload(result ?? { error: 'NOT_FOUND', projectId: canonicalProjectId });
 
       return {
         content: [
@@ -257,11 +282,10 @@ export const humanDecisionsGetToolDefinition: McpToolDefinition = {
     'Retrieves authoritative Human Decision Points requiring Product Owner input prior to project approval. Strictly read-only inspection.',
   inputSchema: {
     type: 'object',
-    required: ['projectId'],
     properties: {
       projectId: {
         type: 'string',
-        description: 'Canonical project identifier.',
+        description: 'Optional canonical project identifier. Defaults to active context or resolved target project root identity.',
       },
       revision: {
         type: 'integer',
@@ -283,26 +307,37 @@ export function createHumanDecisionsGetTool(
     handler: async (args: Record<string, unknown>, context: McpRequestContext) => {
       const parsed = getInputSchema.parse(args ?? {});
       const activeDelegate = context.delegate ?? defaultDelegate;
-      const resolvedRoot = parsed.workspaceRoot ?? activeDelegate?.projectRoot ?? process.cwd();
+      const resolvedRoot = resolveTargetProjectRoot({
+        explicitRoot: parsed.workspaceRoot,
+        delegate: activeDelegate,
+        targetProjectId: parsed.projectId,
+      });
+      const canonicalProjectId =
+        parsed.projectId ??
+        activeDelegate?.activeContext?.projectId ??
+        resolveCanonicalProjectIdentity(resolvedRoot).projectId;
+      validateCanonicalProjectId(canonicalProjectId);
+      const isSameRoot = activeDelegate?.projectRoot === resolvedRoot;
 
       const engine =
-        activeDelegate?.riskHumanDecisionEngine ??
-        new RiskHumanDecisionEngine({
-          workspaceRoot: resolvedRoot,
-          discoveryStore: activeDelegate?.adaptiveDiscoveryStore,
-          requirementsStore: activeDelegate?.requirementsScopeStore,
-          architectureStore: activeDelegate?.architectureTechnologyStore,
-          businessRulesStore: activeDelegate?.businessRulesStore,
-          acceptanceCriteriaStore: activeDelegate?.acceptanceCriteriaStore,
-          riskStore: activeDelegate?.riskHumanDecisionStore,
-          historyManager: activeDelegate?.historyManager,
-          specStore: activeDelegate?.specStore,
-        });
+        (isSameRoot && activeDelegate?.riskHumanDecisionEngine)
+          ? activeDelegate.riskHumanDecisionEngine
+          : new RiskHumanDecisionEngine({
+              workspaceRoot: resolvedRoot,
+              discoveryStore: (isSameRoot && activeDelegate?.adaptiveDiscoveryStore) ? activeDelegate.adaptiveDiscoveryStore : undefined,
+              requirementsStore: (isSameRoot && activeDelegate?.requirementsScopeStore) ? activeDelegate.requirementsScopeStore : undefined,
+              architectureStore: (isSameRoot && activeDelegate?.architectureTechnologyStore) ? activeDelegate.architectureTechnologyStore : undefined,
+              businessRulesStore: (isSameRoot && activeDelegate?.businessRulesStore) ? activeDelegate.businessRulesStore : undefined,
+              acceptanceCriteriaStore: (isSameRoot && activeDelegate?.acceptanceCriteriaStore) ? activeDelegate.acceptanceCriteriaStore : undefined,
+              riskStore: (isSameRoot && activeDelegate?.riskHumanDecisionStore) ? activeDelegate.riskHumanDecisionStore : undefined,
+              historyManager: (isSameRoot && activeDelegate?.historyManager) ? activeDelegate.historyManager : undefined,
+              specStore: (isSameRoot && activeDelegate?.specStore) ? activeDelegate.specStore : undefined,
+            });
 
       const result =
         parsed.revision !== undefined
-          ? await engine.getRevision(parsed.projectId, parsed.revision)
-          : await engine.getLatest(parsed.projectId);
+          ? await engine.getRevision(canonicalProjectId, parsed.revision)
+          : await engine.getLatest(canonicalProjectId);
 
       const output = result
         ? {
@@ -319,7 +354,7 @@ export function createHumanDecisionsGetTool(
               acceptanceCriteriaRevision: result.sourceAcceptanceCriteriaRevision,
             },
           }
-        : { error: 'NOT_FOUND', projectId: parsed.projectId };
+        : { error: 'NOT_FOUND', projectId: canonicalProjectId };
 
       const sanitized = sanitizeMcpPayload(output);
 

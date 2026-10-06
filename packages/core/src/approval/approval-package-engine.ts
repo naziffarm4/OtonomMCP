@@ -323,14 +323,14 @@ export class ApprovalPackageEngine {
     const unresolvedHDPs: any[] = [];
     if (risks?.humanDecisionPoints) {
       for (const hdp of risks.humanDecisionPoints) {
-        if (hdp.status === 'PENDING_DECISION') {
+        if (['PENDING_DECISION', 'UNDECIDED', 'PROPOSED', 'OPEN'].includes(hdp.status)) {
           unresolvedHDPs.push(hdp);
         }
       }
     }
     if (completenessResult?.humanDecisions) {
       for (const hd of completenessResult.humanDecisions) {
-        if (hd.status === 'PENDING_DECISION' && !unresolvedHDPs.some((x) => x.decisionId === hd.decisionId)) {
+        if (['PENDING_DECISION', 'UNDECIDED', 'PROPOSED', 'OPEN'].includes(hd.status) && !unresolvedHDPs.some((x) => x.decisionId === hd.decisionId)) {
           unresolvedHDPs.push(hd);
         }
       }
@@ -1368,6 +1368,10 @@ export class ApprovalPackageEngine {
       ...(input.understandingRevision !== undefined ? { understandingRevision: input.understandingRevision } : {}),
       ...(input.protocolVersion ? { protocolVersion: input.protocolVersion } : {}),
       ...(input.schemaVersion ? { schemaVersion: input.schemaVersion } : {}),
+      ...(input.provenanceSource ? { provenanceSource: input.provenanceSource } : {}),
+      ...(input.isTrustedHumanAuth !== undefined ? { isTrustedHumanAuth: input.isTrustedHumanAuth } : {}),
+      ...(input.authStatus ? { authStatus: input.authStatus } : {}),
+      ...(input.authContext ? { authContext: input.authContext } : {}),
     });
 
     const approvedPkg: ApprovalPackage = Object.freeze({
@@ -1814,6 +1818,30 @@ export class ApprovalPackageEngine {
   }
 
   /**
+   * Authoritative asynchronous check for development authorization.
+   * Verifies that the package is APPROVED, human PO approval record is valid,
+   * not explicitly marked stale, AND that upstream authoritative store bindings
+   * are fresh and match current project state.
+   */
+  async isDevelopmentAuthorizedAsync(pkg: ApprovalPackage): Promise<boolean> {
+    if (!this.isDevelopmentAuthorized(pkg)) {
+      return false;
+    }
+    if (pkg.sourceBindings) {
+      try {
+        const staleReport = await this.checkStaleness(pkg);
+        if (staleReport.isStale) {
+          return false;
+        }
+      } catch {
+        // Fail closed on store inspection failure
+        return false;
+      }
+    }
+    return true;
+  }
+
+  /**
    * Validates that the actor claiming approval authority is strictly human Product Owner.
    */
   validateApprovalActor(actor: string, actorRole: string): void {
@@ -1857,4 +1885,15 @@ export class ApprovalPackageEngine {
  */
 export function isDevelopmentAuthorized(pkg: ApprovalPackage): boolean {
   return new ApprovalPackageEngine().isDevelopmentAuthorized(pkg);
+}
+
+/**
+ * Convenience helper to asynchronously check development authorization against authoritative freshness.
+ */
+export async function isDevelopmentAuthorizedAsync(
+  pkg: ApprovalPackage,
+  engine?: ApprovalPackageEngine
+): Promise<boolean> {
+  const effectiveEngine = engine ?? new ApprovalPackageEngine();
+  return effectiveEngine.isDevelopmentAuthorizedAsync(pkg);
 }

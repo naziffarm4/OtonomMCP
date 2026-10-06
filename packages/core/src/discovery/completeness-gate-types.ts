@@ -91,7 +91,7 @@ export const BlockingHumanDecisionZodSchema = z.object({
   availableOptions: z.array(z.string()).default([]),
   consequenceOfEachOption: z.record(z.string(), z.string()).optional(),
   authority: z.literal(Actor.USER).default(Actor.USER),
-  status: z.literal('PENDING_DECISION').default('PENDING_DECISION'),
+  status: z.enum(['PENDING_DECISION', 'UNDECIDED', 'PROPOSED', 'OPEN', 'CONFIRMED', 'DECIDED', 'REJECTED']).default('PENDING_DECISION'),
 });
 
 export type BlockingHumanDecision = z.infer<typeof BlockingHumanDecisionZodSchema>;

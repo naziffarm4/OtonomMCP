@@ -370,7 +370,7 @@ export const SpecHumanDecisionPointZodSchema = z.object({
   recommendedInformation: z.string().default(''),
   consequences: z.array(z.string()).default([]),
   authority: z.enum(['PRODUCT_OWNER', 'USER']).default('PRODUCT_OWNER'),
-  status: z.enum(['PENDING_DECISION', 'RESOLVED', 'REJECTED']).default('PENDING_DECISION'),
+  status: z.enum(['PENDING_DECISION', 'RESOLVED', 'CONFIRMED', 'UNDECIDED', 'PROPOSED', 'OPEN', 'REJECTED']).default('PENDING_DECISION'),
 });
 
 // --- 2.14 Traceability Matrix ---

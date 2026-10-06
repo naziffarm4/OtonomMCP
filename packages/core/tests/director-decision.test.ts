@@ -1129,7 +1129,7 @@ describe('Phase 9 — Typed Director Decision Protocol (TASK-P9-03)', () => {
       directorDecisionTools: true,
     });
 
-    const toolNames = server.getRegisteredTools().map((t) => t.name);
+    const toolNames = server.getRegisteredTools().flatMap((t: any) => [t.name, t.internalName].filter(Boolean));
     assert.ok(toolNames.includes(AIDM_DIRECTOR_DECISION_CREATE_TOOL_NAME));
     assert.ok(toolNames.includes(AIDM_DIRECTOR_DECISION_GET_TOOL_NAME));
     assert.ok(toolNames.includes(AIDM_DIRECTOR_DECISION_VALIDATE_TOOL_NAME));

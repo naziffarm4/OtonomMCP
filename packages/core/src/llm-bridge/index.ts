@@ -5,3 +5,5 @@ export * from './llm-transport.js';
 export * from './reference-llm-adapter.js';
 export * from './secondary-llm-adapter.js';
 export * from './llm-registry.js';
+export * from './http-llm-transport.js';
+export * from './transport-security-registry.js';

@@ -24,10 +24,12 @@ import { SpecStore } from '../../storage/spec-store.js';
 import { DurableStateManager } from '../../storage/durable-state.js';
 import { TaskDagEngine } from '../../task-engine/dag-engine.js';
 import { type TaskDefinition, TaskStatus } from '../../task-engine/task-types.js';
+import { resolveTargetProjectRoot } from '../project-root-resolver.js';
 
 export const AIDM_TASKS_LIST_TOOL_NAME = 'aidm.tasks.list';
 
 export const TasksListInputZodSchema = z.object({
+  workspaceRoot: z.string().optional(),
   hierarchyLevel: z.enum(['EPIC', 'FEATURE', 'TASK', 'SUBTASK']).optional(),
   status: z.string().optional(),
   parentId: z.string().optional(),
@@ -76,6 +78,10 @@ export const tasksListToolDefinition: McpToolDefinition = Object.freeze({
   inputSchema: {
     type: 'object' as const,
     properties: {
+      workspaceRoot: {
+        type: 'string',
+        description: 'Target workspace root directory.',
+      },
       hierarchyLevel: {
         type: 'string',
         enum: ['EPIC', 'FEATURE', 'TASK', 'SUBTASK'],
@@ -125,13 +131,17 @@ export function createTasksListTool(): McpToolRegistration {
 
       const input = parseResult.data;
       const delegate = context.delegate;
-      const projectRoot = delegate?.projectRoot ? path.resolve(delegate.projectRoot) : process.cwd();
+      const resolvedRoot = resolveTargetProjectRoot({
+        explicitRoot: input.workspaceRoot,
+        delegate: delegate,
+      });
+      const isSameRoot = delegate?.projectRoot === resolvedRoot;
 
       // 1. Authoritative sources
-      const specStore = delegate?.specStore ?? new SpecStore({ baseDir: projectRoot });
-      const dagEngine = delegate?.dagEngine ?? new TaskDagEngine();
+      const specStore = (isSameRoot && delegate?.specStore) ? delegate.specStore : new SpecStore({ baseDir: resolvedRoot });
+      const dagEngine = (isSameRoot && delegate?.dagEngine) ? delegate.dagEngine : new TaskDagEngine();
       const durableManager =
-        delegate?.durableStateManager ?? new DurableStateManager({ baseDir: projectRoot });
+        (isSameRoot && delegate?.durableStateManager) ? delegate.durableStateManager : new DurableStateManager({ baseDir: resolvedRoot });
 
       // 2. Load tasks
       let loadedTasks: TaskDefinition[] = [];

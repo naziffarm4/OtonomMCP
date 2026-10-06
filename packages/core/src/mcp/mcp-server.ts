@@ -34,7 +34,7 @@ import {
   isMcpNotification,
 } from './mcp-types.js';
 import type { McpTransport } from './mcp-transport.js';
-import type { McpOrchestratorDelegate } from './mcp-delegate.js';
+import { DefaultMcpOrchestratorDelegate, type McpOrchestratorDelegate } from './mcp-delegate.js';
 import type { PolicyEngine } from '../policy/policy-engine.js';
 import {
   McpErrorNormalizer,
@@ -48,6 +48,11 @@ import {
   createRequestCorrelation,
   type McpRequestCorrelation,
 } from './mcp-correlation.js';
+import {
+  createCollisionSafeToolName,
+  isValidMcpToolName,
+  MCP_TOOL_NAME_REGEX,
+} from './tool-name-mapper.js';
 import { createHealthTool } from './tools/health-tool.js';
 import {
   registerDirectorReadTools,
@@ -92,6 +97,7 @@ export class McpServer {
 
   private state: McpServerState = McpServerState.CREATED;
   private readonly toolRegistry = new Map<string, McpToolRegistration>();
+  private readonly exposedTools = new Map<string, McpToolRegistration>();
   private readonly correlationGenerator?: () => string;
   private clientInitialized = false;
 
@@ -318,11 +324,39 @@ export class McpServer {
     if (!definition || !definition.name) {
       throw new McpInvalidRequestError('Tool definition must specify a valid name');
     }
-    this.toolRegistry.set(definition.name, { definition, handler });
+
+    const internalName = definition.name;
+    const existingExposedNames = new Set(this.exposedTools.keys());
+    const exposedName = createCollisionSafeToolName(internalName, existingExposedNames);
+
+    if (!isValidMcpToolName(exposedName)) {
+      throw new McpInvalidRequestError(
+        `Normalized tool name "${exposedName}" violates MCP naming specification ${MCP_TOOL_NAME_REGEX}`
+      );
+    }
+
+    const exposedDefinition: McpToolDefinition = Object.freeze({
+      ...definition,
+      name: exposedName,
+      internalName,
+    });
+
+    const registration: McpToolRegistration = Object.freeze({
+      definition: exposedDefinition,
+      handler,
+      internalName,
+      exposedName,
+    });
+
+    this.exposedTools.set(exposedName, registration);
+    this.toolRegistry.set(exposedName, registration);
+    if (internalName !== exposedName) {
+      this.toolRegistry.set(internalName, registration);
+    }
   }
 
   getRegisteredTools(): readonly McpToolDefinition[] {
-    return Array.from(this.toolRegistry.values()).map((r) => r.definition);
+    return Array.from(this.exposedTools.values()).map((r) => r.definition);
   }
 
   getTool(name: string): McpToolRegistration | undefined {
@@ -482,7 +516,7 @@ export class McpServer {
           });
         }
 
-        const registration = this.toolRegistry.get(toolName);
+        const registration = this.getTool(toolName);
         if (!registration) {
           throw new McpUnsupportedOperationError(`Unsupported tool: "${toolName}"`, {
             toolName,
@@ -536,3 +570,57 @@ export class McpServer {
     }
   }
 }
+
+export interface AuthoritativeMcpServerOptions {
+  readonly transport: McpTransport;
+  readonly projectRoot?: string;
+  readonly delegate?: McpOrchestratorDelegate;
+  readonly policyEngine?: PolicyEngine;
+  readonly name?: string;
+  readonly version?: string;
+  readonly instructions?: string;
+}
+
+export function createAuthoritativeMcpServer(options: AuthoritativeMcpServerOptions): McpServer {
+  const delegate = options.delegate ?? new DefaultMcpOrchestratorDelegate({
+    projectRoot: options.projectRoot,
+    policyEngine: options.policyEngine,
+  });
+
+  return new McpServer({
+    name: options.name ?? 'aidm-mcp-server',
+    version: options.version ?? '0.1.0',
+    transport: options.transport,
+    delegate,
+    policyEngine: options.policyEngine ?? delegate.policyEngine,
+    instructions: options.instructions,
+    directorTools: true,
+    discoveryTools: true,
+    completenessTools: true,
+    requirementsScopeTools: true,
+    architectureTools: true,
+    businessRulesTools: true,
+    acceptanceCriteriaTools: true,
+    riskTools: true,
+    projectSpecTools: true,
+    clarificationTools: true,
+    approvalTools: true,
+    directorSessionTools: true,
+    directorDecisionTools: true,
+    humanApprovalTools: true,
+    executionIntentTools: true,
+    executionRequestTools: true,
+    executorTools: true,
+    evidenceVerifyTools: true,
+    phase11ContinuationTools: true,
+    taskDecompositionTools: true,
+    retryAuthorizeTools: true,
+    correctiveTaskTools: true,
+    executorContextTools: true,
+    recoveryTools: true,
+    recoveryEvaluateTools: true,
+    directorLoopTools: true,
+    driverTools: true,
+  });
+}
+

@@ -9,6 +9,7 @@ export * from './recovery/index.js';
 export * from './task-engine/index.js';
 export * from './context-engine/index.js';
 export * from './token-budget/index.js';
+export * from './budget/index.js';
 export * from './executor-bridge/index.js';
 export * from './llm-bridge/index.js';
 export * from './evidence/index.js';
@@ -27,6 +28,22 @@ export * from './director/index.js';
 export * from './execution-integration/index.js';
 export * from './task-decomposition/index.js';
 export * from './director-loop/index.js';
+export * from './director-reasoning/index.js';
+export * from './director-action/index.js';
 export * from './driver/index.js';
+export * from './execution-bridge/index.js';
 export type { GitState } from './git/index.js';
 export type { AcceptanceCriterion } from './qa-review/index.js';
+
+export {
+  DIRECTOR_ACTION_PROTOCOL_VERSION,
+  DIRECTOR_ACTION_SCHEMA_VERSION,
+  DIRECTOR_ACTION_TYPES,
+  type DirectorActionType,
+  type DirectorActionEnvelope,
+  DirectorActionEnvelopeZodSchema,
+  DirectorActionError,
+  DirectorActionValidationError,
+} from './director-action/index.js';
+
+export * from './authorization/index.js';

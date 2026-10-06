@@ -18,6 +18,63 @@ export interface CanonicalProjectIdentity {
 }
 
 /**
+ * Authoritative regular expression for valid project IDs across all AIDM stores.
+ * Disallows spaces, path traversal, backslashes, and control characters.
+ */
+export const CANONICAL_PROJECT_ID_REGEX = /^[a-zA-Z0-9_\-\.@\/]+$/;
+
+/**
+ * Normalizes an arbitrary raw project name or directory basename into a valid canonical projectId.
+ * Rules:
+ * - Trims whitespace
+ * - Replaces backslashes with slashes
+ * - Strips path traversal '..'
+ * - Replaces spaces and whitespace sequences with hyphens '-'
+ * - Replaces characters outside [a-zA-Z0-9_\-\.@\/] with hyphens '-'
+ * - Strips leading/trailing hyphens and slashes
+ * - Collapses consecutive hyphens
+ * - Falls back to 'unnamed-project' if empty
+ */
+export function normalizeCanonicalProjectId(rawName: string): string {
+  if (!rawName || typeof rawName !== 'string') {
+    return 'unnamed-project';
+  }
+  let normalized = rawName.trim();
+  normalized = normalized.replace(/\\/g, '/');
+  normalized = normalized.replace(/\.\.+/g, '');
+  normalized = normalized.replace(/\s+/g, '-');
+  normalized = normalized.replace(/[^a-zA-Z0-9_\-\.@\/]/g, '-');
+  normalized = normalized.replace(/^[\-\/]+/, '').replace(/[\-\/]+$/, '');
+  normalized = normalized.replace(/\-+/g, '-');
+  if (normalized.length === 0) {
+    return 'unnamed-project';
+  }
+  return normalized;
+}
+
+/**
+ * Validates that an explicit projectId strictly conforms to the canonical contract.
+ * Throws an Error if invalid.
+ */
+export function validateCanonicalProjectId(projectId: string): string {
+  if (!projectId || typeof projectId !== 'string') {
+    throw new Error('projectId cannot be empty.');
+  }
+  const trimmed = projectId.trim();
+  if (
+    !CANONICAL_PROJECT_ID_REGEX.test(trimmed) ||
+    trimmed.includes('..') ||
+    trimmed.startsWith('/') ||
+    trimmed.startsWith('\\')
+  ) {
+    throw new Error(
+      `Invalid projectId '${projectId}': contains illegal characters or path traversal.`
+    );
+  }
+  return trimmed.replace(/\//g, '__');
+}
+
+/**
  * Resolves the canonical project identity for a workspace root.
  * Reads package manifests or falls back deterministically to directory basename.
  */
@@ -68,9 +125,12 @@ export function resolveCanonicalProjectIdentity(workspaceRoot: string): Canonica
     }
   }
 
+  const rawName = name;
+  const canonicalId = normalizeCanonicalProjectId(rawName);
+
   return {
-    projectId: name,
-    projectName: name,
+    projectId: canonicalId,
+    projectName: rawName,
     projectRoot: resolvedRoot,
     ecosystem,
   };

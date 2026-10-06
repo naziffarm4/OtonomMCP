@@ -61,3 +61,10 @@ export interface RunCommandOptions {
   readonly json: boolean;
   readonly verbose: boolean;
 }
+
+export interface McpCommandOptions {
+  readonly projectRoot: string;
+  readonly transport?: 'stdio' | 'stream';
+  readonly verbose?: boolean;
+}
+

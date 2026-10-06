@@ -15,15 +15,20 @@ import { z } from 'zod';
 import type { McpToolDefinition, McpToolHandler, McpRequestContext } from '../mcp-types.js';
 import type { McpOrchestratorDelegate } from '../mcp-delegate.js';
 import { sanitizeMcpPayload } from '../mcp-errors.js';
+import { resolveTargetProjectRoot } from '../project-root-resolver.js';
 import { ArchitectureTechnologyEngine } from '../../discovery/architecture-technology-engine.js';
 import { ArchitectureDecisionItemZodSchema } from '../../discovery/architecture-technology-types.js';
+import {
+  resolveCanonicalProjectIdentity,
+  validateCanonicalProjectId,
+} from '../../director/project-identity-resolver.js';
 
 export const AIDM_ARCHITECTURE_TECHNOLOGY_DEFINE_TOOL_NAME = 'aidm.architecture.technology.define';
 export const AIDM_ARCHITECTURE_TECHNOLOGY_GET_TOOL_NAME = 'aidm.architecture.technology.get';
 
 // Input schema for DEFINE
 const defineInputSchema = z.object({
-  projectId: z.string().min(1, 'projectId cannot be empty'),
+  projectId: z.string().min(1, 'projectId cannot be empty').optional(),
   requirementsRevision: z.number().int().positive().optional(),
   expectedRequirementsFingerprint: z.string().optional(),
   discoveryRevision: z.number().int().positive().optional(),
@@ -40,11 +45,10 @@ export const architectureTechnologyDefineToolDefinition: McpToolDefinition = {
     'Transforms authoritative Requirements / Scope (P15-03) and Discovery (P15-01) into an explicit, structured, revisioned Architecture / Technology specification for project initiation. Defines architectural style, logical components, data architecture, communication architecture, technology stack, platform constraints, security architecture, integrations, deployment architecture, decision records, and requirement traceability.',
   inputSchema: {
     type: 'object',
-    required: ['projectId'],
     properties: {
       projectId: {
         type: 'string',
-        description: 'Canonical project identifier.',
+        description: 'Optional canonical project identifier. Defaults to active context or resolved target project root identity.',
       },
       requirementsRevision: {
         type: 'integer',
@@ -100,22 +104,49 @@ export function createArchitectureTechnologyDefineTool(
     handler: async (args: Record<string, unknown>, context: McpRequestContext) => {
       const parsed = defineInputSchema.parse(args ?? {});
       const activeDelegate = context.delegate ?? defaultDelegate;
-      const resolvedRoot = parsed.workspaceRoot ?? activeDelegate?.projectRoot ?? process.cwd();
+      const resolvedRoot = resolveTargetProjectRoot({
+        explicitRoot: parsed.workspaceRoot,
+        delegate: activeDelegate,
+        targetProjectId: parsed.projectId,
+      });
+
+      // Canonical Project Identity resolution and validation
+      let canonicalProjectId: string;
+      if (parsed.projectId && parsed.projectId.trim().length > 0) {
+        canonicalProjectId = validateCanonicalProjectId(parsed.projectId);
+      } else if (activeDelegate?.activeContext?.projectId) {
+        canonicalProjectId = activeDelegate.activeContext.projectId;
+      } else {
+        canonicalProjectId = resolveCanonicalProjectIdentity(resolvedRoot).projectId;
+      }
+
+      // Propagate Active Project Context to delegate
+      activeDelegate?.setActiveContext?.({
+        projectId: canonicalProjectId,
+        projectRoot: resolvedRoot,
+        directorSessionId:
+          activeDelegate.activeContext?.projectId === canonicalProjectId
+            ? activeDelegate.activeContext.directorSessionId
+            : undefined,
+      });
+
+      const isSameRoot = activeDelegate?.projectRoot === resolvedRoot;
 
       const engine =
-        activeDelegate?.architectureTechnologyEngine ??
-        new ArchitectureTechnologyEngine({
-          workspaceRoot: resolvedRoot,
-          discoveryStore: activeDelegate?.adaptiveDiscoveryStore,
-          completenessStore: activeDelegate?.completenessGateStore,
-          requirementsStore: activeDelegate?.requirementsScopeStore,
-          architectureStore: activeDelegate?.architectureTechnologyStore,
-          historyManager: activeDelegate?.historyManager,
-          specStore: activeDelegate?.specStore,
-        });
+        (isSameRoot && activeDelegate?.architectureTechnologyEngine)
+          ? activeDelegate.architectureTechnologyEngine
+          : new ArchitectureTechnologyEngine({
+              workspaceRoot: resolvedRoot,
+              discoveryStore: (isSameRoot && activeDelegate?.adaptiveDiscoveryStore) ? activeDelegate.adaptiveDiscoveryStore : undefined,
+              completenessStore: (isSameRoot && activeDelegate?.completenessGateStore) ? activeDelegate.completenessGateStore : undefined,
+              requirementsStore: (isSameRoot && activeDelegate?.requirementsScopeStore) ? activeDelegate.requirementsScopeStore : undefined,
+              architectureStore: (isSameRoot && activeDelegate?.architectureTechnologyStore) ? activeDelegate.architectureTechnologyStore : undefined,
+              historyManager: (isSameRoot && activeDelegate?.historyManager) ? activeDelegate.historyManager : undefined,
+              specStore: (isSameRoot && activeDelegate?.specStore) ? activeDelegate.specStore : undefined,
+            });
 
       const result = await engine.derive({
-        projectId: parsed.projectId,
+        projectId: canonicalProjectId,
         requirementsRevision: parsed.requirementsRevision,
         expectedRequirementsFingerprint: parsed.expectedRequirementsFingerprint,
         discoveryRevision: parsed.discoveryRevision,
@@ -140,7 +171,7 @@ export function createArchitectureTechnologyDefineTool(
 
 // Input schema for GET
 const getInputSchema = z.object({
-  projectId: z.string().min(1, 'projectId cannot be empty'),
+  projectId: z.string().min(1, 'projectId cannot be empty').optional(),
   revision: z.number().int().positive().optional(),
   workspaceRoot: z.string().optional(),
 });
@@ -153,11 +184,10 @@ export const architectureTechnologyGetToolDefinition: McpToolDefinition = {
     'Retrieves authoritative Architecture / Technology specification by project ID and optional revision number (defaults to latest).',
   inputSchema: {
     type: 'object',
-    required: ['projectId'],
     properties: {
       projectId: {
         type: 'string',
-        description: 'Canonical project identifier.',
+        description: 'Optional canonical project identifier.',
       },
       revision: {
         type: 'integer',
@@ -179,26 +209,43 @@ export function createArchitectureTechnologyGetTool(
     handler: async (args: Record<string, unknown>, context: McpRequestContext) => {
       const parsed = getInputSchema.parse(args ?? {});
       const activeDelegate = context.delegate ?? defaultDelegate;
-      const resolvedRoot = parsed.workspaceRoot ?? activeDelegate?.projectRoot ?? process.cwd();
+      const resolvedRoot = resolveTargetProjectRoot({
+        explicitRoot: parsed.workspaceRoot,
+        delegate: activeDelegate,
+        targetProjectId: parsed.projectId,
+      });
+
+      // Canonical Project Identity resolution and validation
+      let canonicalProjectId: string;
+      if (parsed.projectId && parsed.projectId.trim().length > 0) {
+        canonicalProjectId = validateCanonicalProjectId(parsed.projectId);
+      } else if (activeDelegate?.activeContext?.projectId) {
+        canonicalProjectId = activeDelegate.activeContext.projectId;
+      } else {
+        canonicalProjectId = resolveCanonicalProjectIdentity(resolvedRoot).projectId;
+      }
+
+      const isSameRoot = activeDelegate?.projectRoot === resolvedRoot;
 
       const engine =
-        activeDelegate?.architectureTechnologyEngine ??
-        new ArchitectureTechnologyEngine({
-          workspaceRoot: resolvedRoot,
-          discoveryStore: activeDelegate?.adaptiveDiscoveryStore,
-          completenessStore: activeDelegate?.completenessGateStore,
-          requirementsStore: activeDelegate?.requirementsScopeStore,
-          architectureStore: activeDelegate?.architectureTechnologyStore,
-          historyManager: activeDelegate?.historyManager,
-          specStore: activeDelegate?.specStore,
-        });
+        (isSameRoot && activeDelegate?.architectureTechnologyEngine)
+          ? activeDelegate.architectureTechnologyEngine
+          : new ArchitectureTechnologyEngine({
+              workspaceRoot: resolvedRoot,
+              discoveryStore: (isSameRoot && activeDelegate?.adaptiveDiscoveryStore) ? activeDelegate.adaptiveDiscoveryStore : undefined,
+              completenessStore: (isSameRoot && activeDelegate?.completenessGateStore) ? activeDelegate.completenessGateStore : undefined,
+              requirementsStore: (isSameRoot && activeDelegate?.requirementsScopeStore) ? activeDelegate.requirementsScopeStore : undefined,
+              architectureStore: (isSameRoot && activeDelegate?.architectureTechnologyStore) ? activeDelegate.architectureTechnologyStore : undefined,
+              historyManager: (isSameRoot && activeDelegate?.historyManager) ? activeDelegate.historyManager : undefined,
+              specStore: (isSameRoot && activeDelegate?.specStore) ? activeDelegate.specStore : undefined,
+            });
 
       const result =
         parsed.revision !== undefined
-          ? await engine.getRevision(parsed.projectId, parsed.revision)
-          : await engine.getLatest(parsed.projectId);
+          ? await engine.getRevision(canonicalProjectId, parsed.revision)
+          : await engine.getLatest(canonicalProjectId);
 
-      const sanitized = sanitizeMcpPayload(result ?? { error: 'NOT_FOUND', projectId: parsed.projectId });
+      const sanitized = sanitizeMcpPayload(result ?? { error: 'NOT_FOUND', projectId: canonicalProjectId });
 
       return {
         content: [

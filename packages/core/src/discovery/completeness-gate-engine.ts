@@ -151,7 +151,7 @@ export class CompletenessGateEngine {
     const blockingHumanDecisions: BlockingHumanDecision[] = [];
 
     for (const d of rawHumanDecisions) {
-      if (d.status === 'PENDING_DECISION') {
+      if (['PENDING_DECISION', 'UNDECIDED', 'PROPOSED', 'OPEN'].includes(d.status)) {
         blockingHumanDecisions.push({
           decisionId: d.id,
           question: d.title,

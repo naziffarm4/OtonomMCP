@@ -22,6 +22,7 @@ import type { McpToolDefinition, McpToolHandler, McpRequestContext } from '../mc
 import type { McpOrchestratorDelegate } from '../mcp-delegate.js';
 import type { McpServer } from '../mcp-server.js';
 import { sanitizeMcpPayload, McpInvalidRequestError, McpPolicyBlockedError } from '../mcp-errors.js';
+import { resolveTargetProjectRoot } from '../project-root-resolver.js';
 import { ProjectDiscoveryEngine } from '../../discovery/discovery-engine.js';
 import type { ProjectDiscoveryReport } from '../../discovery/discovery-types.js';
 import { ClarificationStore } from '../../clarification/clarification-store.js';
@@ -54,20 +55,21 @@ function getApprovalEngine(
   resolvedRoot: string,
   delegate?: McpOrchestratorDelegate
 ): ApprovalPackageEngine {
+  const isSameRoot = delegate?.projectRoot === resolvedRoot;
   return new ApprovalPackageEngine({
     workspaceRoot: resolvedRoot,
-    discoveryStore: delegate?.adaptiveDiscoveryStore,
-    requirementsStore: delegate?.requirementsScopeStore,
-    architectureStore: delegate?.architectureTechnologyStore,
-    businessRulesStore: delegate?.businessRulesStore,
-    acceptanceCriteriaStore: delegate?.acceptanceCriteriaStore,
-    riskStore: delegate?.riskHumanDecisionStore,
-    specProjectionStore: delegate?.projectSpecStore,
-    completenessStore: delegate?.completenessGateStore,
-    completenessEngine: delegate?.completenessGateEngine,
-    approvalStore: delegate?.approvalStore,
-    historyManager: delegate?.historyManager,
-    specStore: delegate?.specStore,
+    discoveryStore: (isSameRoot && delegate?.adaptiveDiscoveryStore) ? delegate.adaptiveDiscoveryStore : undefined,
+    requirementsStore: (isSameRoot && delegate?.requirementsScopeStore) ? delegate.requirementsScopeStore : undefined,
+    architectureStore: (isSameRoot && delegate?.architectureTechnologyStore) ? delegate.architectureTechnologyStore : undefined,
+    businessRulesStore: (isSameRoot && delegate?.businessRulesStore) ? delegate.businessRulesStore : undefined,
+    acceptanceCriteriaStore: (isSameRoot && delegate?.acceptanceCriteriaStore) ? delegate.acceptanceCriteriaStore : undefined,
+    riskStore: (isSameRoot && delegate?.riskHumanDecisionStore) ? delegate.riskHumanDecisionStore : undefined,
+    specProjectionStore: (isSameRoot && delegate?.projectSpecStore) ? delegate.projectSpecStore : undefined,
+    completenessStore: (isSameRoot && delegate?.completenessGateStore) ? delegate.completenessGateStore : undefined,
+    completenessEngine: (isSameRoot && delegate?.completenessGateEngine) ? delegate.completenessGateEngine : undefined,
+    approvalStore: (isSameRoot && delegate?.approvalStore) ? delegate.approvalStore : undefined,
+    historyManager: (isSameRoot && delegate?.historyManager) ? delegate.historyManager : undefined,
+    specStore: (isSameRoot && delegate?.specStore) ? delegate.specStore : undefined,
   });
 }
 
@@ -162,7 +164,10 @@ export function createApprovalPackageCreateTool(
     handler: async (args: Record<string, unknown>, context: McpRequestContext) => {
       const parsed = createPackageInputSchema.parse(args ?? {});
       const delegate = context.delegate ?? defaultDelegate;
-      const resolvedRoot = parsed.workspaceRoot ?? delegate?.projectRoot ?? process.cwd();
+      const resolvedRoot = resolveTargetProjectRoot({
+        explicitRoot: parsed.workspaceRoot,
+        delegate,
+      });
       const engine = getApprovalEngine(resolvedRoot, delegate);
 
       // Determine if P15 authoritative initiation state is available
@@ -224,8 +229,9 @@ export function createApprovalPackageCreateTool(
         clarificationSession: clarificationSession ?? undefined,
       });
 
+      const isSameRoot = delegate?.projectRoot === resolvedRoot;
       const approvalStore =
-        delegate?.approvalStore ?? new ApprovalStore({ baseDir: resolvedRoot });
+        (isSameRoot && delegate?.approvalStore) ? delegate.approvalStore : new ApprovalStore({ baseDir: resolvedRoot });
       await approvalStore.savePackage(pkg);
 
       return {
@@ -286,10 +292,14 @@ export function createApprovalPackageGetTool(
     handler: async (args: Record<string, unknown>, context: McpRequestContext) => {
       const parsed = getPackageInputSchema.parse(args ?? {});
       const delegate = context.delegate ?? defaultDelegate;
-      const resolvedRoot = parsed.workspaceRoot ?? delegate?.projectRoot ?? process.cwd();
+      const resolvedRoot = resolveTargetProjectRoot({
+        explicitRoot: parsed.workspaceRoot,
+        delegate,
+      });
 
+      const isSameRoot = delegate?.projectRoot === resolvedRoot;
       const approvalStore =
-        delegate?.approvalStore ?? new ApprovalStore({ baseDir: resolvedRoot });
+        (isSameRoot && delegate?.approvalStore) ? delegate.approvalStore : new ApprovalStore({ baseDir: resolvedRoot });
 
       let pkg: ApprovalPackage | null = null;
       if (parsed.packageId) {
@@ -375,10 +385,14 @@ export function createApprovalPackageReadinessTool(
     handler: async (args: Record<string, unknown>, context: McpRequestContext) => {
       const parsed = readinessInputSchema.parse(args ?? {});
       const delegate = context.delegate ?? defaultDelegate;
-      const resolvedRoot = parsed.workspaceRoot ?? delegate?.projectRoot ?? process.cwd();
+      const resolvedRoot = resolveTargetProjectRoot({
+        explicitRoot: parsed.workspaceRoot,
+        delegate,
+      });
 
+      const isSameRoot = delegate?.projectRoot === resolvedRoot;
       const approvalStore =
-        delegate?.approvalStore ?? new ApprovalStore({ baseDir: resolvedRoot });
+        (isSameRoot && delegate?.approvalStore) ? delegate.approvalStore : new ApprovalStore({ baseDir: resolvedRoot });
 
       let pkg: ApprovalPackage | null = null;
       if (parsed.packageId) {
@@ -421,7 +435,7 @@ export function createApprovalPackageReadinessTool(
         projectId: pkg.projectId,
         currentStatus: pkg.status,
         readiness,
-        isDevelopmentAuthorized: engine.isDevelopmentAuthorized(pkg),
+        isDevelopmentAuthorized: await engine.isDevelopmentAuthorizedAsync(pkg),
       };
 
       return {
@@ -508,7 +522,10 @@ export function createApprovalPackageApproveTool(
     handler: async (args: Record<string, unknown>, context: McpRequestContext) => {
       const parsed = approvePackageInputSchema.parse(args ?? {});
       const delegate = context.delegate ?? defaultDelegate;
-      const resolvedRoot = parsed.workspaceRoot ?? delegate?.projectRoot ?? process.cwd();
+      const resolvedRoot = resolveTargetProjectRoot({
+        explicitRoot: parsed.workspaceRoot,
+        delegate,
+      });
 
       // Authority policy enforcement: Reject forbidden actors early at the MCP boundary
       const actorRoleNormalized = parsed.actorRole.trim();
@@ -534,8 +551,9 @@ export function createApprovalPackageApproveTool(
         );
       }
 
+      const isSameRoot = delegate?.projectRoot === resolvedRoot;
       const approvalStore =
-        delegate?.approvalStore ?? new ApprovalStore({ baseDir: resolvedRoot });
+        (isSameRoot && delegate?.approvalStore) ? delegate.approvalStore : new ApprovalStore({ baseDir: resolvedRoot });
 
       let pkg = await approvalStore.loadPackage(parsed.packageId, undefined, parsed.projectId);
       if (!pkg) {
@@ -554,6 +572,9 @@ export function createApprovalPackageApproveTool(
         intent: parsed.intent as any,
         comment: parsed.comment,
         timestamp: parsed.timestamp,
+        provenanceSource: 'MCP_TOOL',
+        isTrustedHumanAuth: false,
+        authStatus: 'UNVERIFIED_CLIENT_INPUT',
       });
 
       await approvalStore.savePackage(approvedPkg);
@@ -642,7 +663,10 @@ export function createApprovalPackageRejectTool(
     handler: async (args: Record<string, unknown>, context: McpRequestContext) => {
       const parsed = rejectPackageInputSchema.parse(args ?? {});
       const delegate = context.delegate ?? defaultDelegate;
-      const resolvedRoot = parsed.workspaceRoot ?? delegate?.projectRoot ?? process.cwd();
+      const resolvedRoot = resolveTargetProjectRoot({
+        explicitRoot: parsed.workspaceRoot,
+        delegate,
+      });
 
       // Authority policy enforcement: Reject forbidden actors early at the MCP boundary
       const actorRoleNormalized = parsed.actorRole.trim();
@@ -668,8 +692,9 @@ export function createApprovalPackageRejectTool(
         );
       }
 
+      const isSameRoot = delegate?.projectRoot === resolvedRoot;
       const approvalStore =
-        delegate?.approvalStore ?? new ApprovalStore({ baseDir: resolvedRoot });
+        (isSameRoot && delegate?.approvalStore) ? delegate.approvalStore : new ApprovalStore({ baseDir: resolvedRoot });
 
       let pkg = await approvalStore.loadPackage(parsed.packageId, undefined, parsed.projectId);
       if (!pkg) {
