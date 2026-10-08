@@ -16,10 +16,11 @@ export class PricingEngine {
 
   /**
    * Registers a pricing rate. Validates that rates are strictly non-negative and denominators > 0.
+   * Wildcard model IDs are rejected to enforce explicit, verifiable model pricing.
    */
   registerRate(input: PricingRateInput): PricingRate {
-    if (!input.providerId || !input.modelId) {
-      throw new BudgetError('Provider and Model ID are required for pricing rate', 'ERR_INVALID_PRICING');
+    if (!input.providerId || !input.modelId || input.modelId.trim() === '*' || input.modelId.trim() === '') {
+      throw new BudgetError('Provider and a specific Model ID are required for pricing rate. Wildcards are not permitted.', 'ERR_INVALID_PRICING');
     }
     if (input.inputRateNum < 0n || input.outputRateNum < 0n) {
       throw new BudgetError('Rate numerators cannot be negative', 'ERR_INVALID_PRICING');
@@ -53,13 +54,11 @@ export class PricingEngine {
 
   /**
    * Retrieves registered pricing rate or throws if missing (fail-closed).
+   * Exact match only: no silent wildcard fallback for unknown models.
    */
   getRate(providerId: string, modelId: string): PricingRate {
     const key = this.makeKey(providerId, modelId);
-    let rate = this.rates.get(key);
-    if (!rate) {
-      rate = this.rates.get(this.makeKey(providerId, '*'));
-    }
+    const rate = this.rates.get(key);
     if (!rate) {
       throw new BudgetError(
         `Pricing rate not found for provider '${providerId}' and model '${modelId}'`,
@@ -72,11 +71,22 @@ export class PricingEngine {
 
   /**
    * Calculates exact integer Nano-USD cost for reported or estimated token usage.
-   * Fail-closed: missing pricing or negative tokens throw immediately.
+   * Fail-closed: missing pricing or negative/non-finite tokens throw immediately.
    */
   calculateCostNanoUsd(usage: TokenUsage, rate: PricingRate): bigint {
-    if (usage.inputTokens < 0 || usage.outputTokens < 0) {
-      throw new BudgetError('Token counts cannot be negative', 'ERR_INVALID_PRICING');
+    if (
+      typeof usage.inputTokens !== 'number' ||
+      typeof usage.outputTokens !== 'number' ||
+      !Number.isFinite(usage.inputTokens) ||
+      !Number.isFinite(usage.outputTokens) ||
+      usage.inputTokens < 0 ||
+      usage.outputTokens < 0
+    ) {
+      throw new BudgetError('Token counts must be non-negative finite numbers', 'ERR_INVALID_PRICING');
+    }
+
+    if (usage.cachedTokens !== undefined && (!Number.isFinite(usage.cachedTokens) || usage.cachedTokens < 0)) {
+      throw new BudgetError('Cached token count must be a non-negative finite number', 'ERR_INVALID_PRICING');
     }
 
     const cachedTokens = BigInt(Math.max(0, usage.cachedTokens ?? 0));

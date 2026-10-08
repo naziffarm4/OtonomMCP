@@ -318,6 +318,13 @@ describe('Phase 17 — Autonomous Driver', { concurrency: 1 }, () => {
     };
     await decisionStore.saveDecision(implementDecision);
 
+    const implementDecision2 = {
+      ...implementDecision,
+      decisionId: 'dec-p17-task-02',
+      metadata: { taskId: 'TASK-P17-02' },
+    };
+    await decisionStore.saveDecision(implementDecision2);
+
     // 6. Create Tasks in SpecStore with DAG dependency: task1 -> task2
     parentFeature = {
       task_id: 'FEAT-01',

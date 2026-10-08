@@ -48,17 +48,104 @@ export class BudgetManager {
     this.recoveryEngine = new BudgetRecoveryEngine(this.db);
     this.historyManager = options?.historyManager as HistoryManager | undefined;
 
-    // Register standard default pricing for openai provider models
-    this.pricingEngine.registerRate({
-      providerId: 'openai',
-      modelId: '*',
-      inputRateNum: 2_500_000_000n, // $2.50 / 1M input
-      inputRateDen: 1_000_000n,
-      outputRateNum: 10_000_000_000n, // $10.00 / 1M output
-      outputRateDen: 1_000_000n,
-      cachedInputRateNum: 1_250_000_000n,
-      cachedInputRateDen: 1_000_000n,
-    });
+    // Register verified standard pricing for known OpenAI models (Source: OpenAI Official API Pricing, Oct 2024 / Jan 2025)
+    // 1. gpt-4o: $2.50 / 1M input, $1.25 / 1M cached input, $10.00 / 1M output
+    for (const modelId of ['gpt-4o', 'gpt-4o-2024-08-06', 'gpt-4o-2024-05-13', 'gpt-4o-2024-11-20']) {
+      this.pricingEngine.registerRate({
+        providerId: 'openai',
+        modelId,
+        inputRateNum: 2_500_000_000n,
+        inputRateDen: 1_000_000n,
+        outputRateNum: 10_000_000_000n,
+        outputRateDen: 1_000_000n,
+        cachedInputRateNum: 1_250_000_000n,
+        cachedInputRateDen: 1_000_000n,
+      });
+    }
+
+    // 2. gpt-4o-mini: $0.150 / 1M input, $0.075 / 1M cached input, $0.600 / 1M output
+    for (const modelId of ['gpt-4o-mini', 'gpt-4o-mini-2024-07-18']) {
+      this.pricingEngine.registerRate({
+        providerId: 'openai',
+        modelId,
+        inputRateNum: 150_000_000n,
+        inputRateDen: 1_000_000n,
+        outputRateNum: 600_000_000n,
+        outputRateDen: 1_000_000n,
+        cachedInputRateNum: 75_000_000n,
+        cachedInputRateDen: 1_000_000n,
+      });
+    }
+
+    // 3. o1: $15.00 / 1M input, $7.50 / 1M cached input, $60.00 / 1M output
+    for (const modelId of ['o1', 'o1-2024-12-17', 'o1-preview']) {
+      this.pricingEngine.registerRate({
+        providerId: 'openai',
+        modelId,
+        inputRateNum: 15_000_000_000n,
+        inputRateDen: 1_000_000n,
+        outputRateNum: 60_000_000_000n,
+        outputRateDen: 1_000_000n,
+        cachedInputRateNum: 7_500_000_000n,
+        cachedInputRateDen: 1_000_000n,
+      });
+    }
+
+    // 4. o1-mini: $1.10 / 1M input, $0.55 / 1M cached input, $4.40 / 1M output
+    for (const modelId of ['o1-mini', 'o1-mini-2024-09-12']) {
+      this.pricingEngine.registerRate({
+        providerId: 'openai',
+        modelId,
+        inputRateNum: 1_100_000_000n,
+        inputRateDen: 1_000_000n,
+        outputRateNum: 4_400_000_000n,
+        outputRateDen: 1_000_000n,
+        cachedInputRateNum: 550_000_000n,
+        cachedInputRateDen: 1_000_000n,
+      });
+    }
+
+    // 5. o3-mini: $1.10 / 1M input, $0.55 / 1M cached input, $4.40 / 1M output
+    for (const modelId of ['o3-mini', 'o3-mini-2025-01-31']) {
+      this.pricingEngine.registerRate({
+        providerId: 'openai',
+        modelId,
+        inputRateNum: 1_100_000_000n,
+        inputRateDen: 1_000_000n,
+        outputRateNum: 4_400_000_000n,
+        outputRateDen: 1_000_000n,
+        cachedInputRateNum: 550_000_000n,
+        cachedInputRateDen: 1_000_000n,
+      });
+    }
+
+    // 6. gpt-4-turbo: $10.00 / 1M input, $5.00 / 1M cached input, $30.00 / 1M output
+    for (const modelId of ['gpt-4-turbo', 'gpt-4-turbo-2024-04-09']) {
+      this.pricingEngine.registerRate({
+        providerId: 'openai',
+        modelId,
+        inputRateNum: 10_000_000_000n,
+        inputRateDen: 1_000_000n,
+        outputRateNum: 30_000_000_000n,
+        outputRateDen: 1_000_000n,
+        cachedInputRateNum: 5_000_000_000n,
+        cachedInputRateDen: 1_000_000n,
+      });
+    }
+
+    // 7. gpt-3.5-turbo: $0.50 / 1M input, $1.50 / 1M output
+    for (const modelId of ['gpt-3.5-turbo', 'gpt-3.5-turbo-0125']) {
+      this.pricingEngine.registerRate({
+        providerId: 'openai',
+        modelId,
+        inputRateNum: 500_000_000n,
+        inputRateDen: 1_000_000n,
+        outputRateNum: 1_500_000_000n,
+        outputRateDen: 1_000_000n,
+        cachedInputRateNum: 0n,
+        cachedInputRateDen: 1_000_000n,
+      });
+    }
   }
 
   open(): void {

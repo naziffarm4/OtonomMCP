@@ -85,9 +85,9 @@ export function sanitizeMcpSecrets(text: string): string {
     // Redact private keys
     .replace(/-----BEGIN [A-Z ]*PRIVATE KEY-----[^]+?-----END [A-Z ]*PRIVATE KEY-----/gi, '***REDACTED***')
     // Redact Authorization headers and Bearer tokens (with any token length)
-    .replace(/(?:Authorization:\s*)?Bearer\s+[a-zA-Z0-9_.\-]+/gi, '***REDACTED***')
+    .replace(/(?:Authorization:\s*)?Bearer\s+[a-zA-Z0-9_.\-]+/gi, 'Bearer ***REDACTED_TOKEN***')
     // Redact OpenAI / Antigravity style sk- keys (e.g., sk-test-secret, sk-12345)
-    .replace(/\bsk-[a-zA-Z0-9_\-]{3,}/gi, '***REDACTED***')
+    .replace(/\bsk-[a-zA-Z0-9_\-]{3,}/gi, '***REDACTED_KEY***')
     // Redact key-value pairs (e.g., token=super-secret, humanApprovalToken=secret, password=..., secret=...)
     .replace(
       /\b(humanApprovalToken|human_approval_token|authToken|auth_token|token|key|secret|password)\s*(=|:)\s*([^\s,;&"]+)/gi,

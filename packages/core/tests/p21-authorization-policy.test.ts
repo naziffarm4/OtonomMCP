@@ -14,6 +14,7 @@ import {
   DirectorActionDispatcher,
   ActionDispatchStatus,
   IdentityManager,
+  SpecStore,
 } from '../dist/index.js';
 
 const expect = (actual: any) => ({
@@ -67,7 +68,30 @@ describe('P21 - Authorization Policy & Governance Enforcement', () => {
     await fs.promises.mkdir(testDir, { recursive: true });
     historyManager = new HistoryManager({ baseDir: testDir });
     mandateStore = new ProjectMandateStore({ baseDir: testDir });
-    engine = new AuthorizationPolicyEngine({ historyManager, mandateStore });
+    const specStore = new SpecStore({ baseDir: testDir });
+    await specStore.saveTasks([
+      {
+        task_id: 'task-1',
+        title: 'Task 1',
+        description: 'Test task',
+        status: 'READY',
+        metadata: {
+          taskClass: 'IMPLEMENTATION',
+          revision: 1,
+        },
+      } as any,
+      {
+        task_id: 'task1',
+        title: 'Task 1 alias',
+        description: 'Test task alias',
+        status: 'READY',
+        metadata: {
+          taskClass: 'IMPLEMENTATION',
+          revision: 1,
+        },
+      } as any,
+    ], { bypassValidation: true });
+    engine = new AuthorizationPolicyEngine({ historyManager, mandateStore, specStore });
     identityManager = new IdentityManager({ baseDir: testDir });
   });
 
