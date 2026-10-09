@@ -33,7 +33,11 @@
 - [x] **WP-4: Yinelenen Modüller ve Dışa Aktarımlar** (ADR-12, export temizliği, geriye dönük uyumluluk) — `FIXED`.
 - [x] **WP-5: Tür Güvenliği Borcu** (Kritik modüllerde any azaltımı, tip doğrulama) — `FIXED`.
 - [x] **WP-6: Yapılandırılmış Loglama** (MCP stdio protokol bütünlüğü, log seviyeleri, sır maskeleme, sıfır stdout kirliliği) — `FIXED` (Commit: `7109e39`).
-- [x] **WP-7: OM-03/05/06/07/09 Kabul Matrisi ve Karar Kapısı** (Objektif kabul matrisi ve OM-10 nihai kararı) — `FIXED`.
+- [x] **WP-7: OM-03/05/06/07/09 Kabul Matrisi ve Karar Kapısı** (Objektif kabul matrisi ve OM-10 nihai kararı) — `RE-EVALUATED`.
+- [x] **WP-8.1: Gerçek ESLint Kurulumu ve Doğrulaması** (eslint 10, typescript-eslint 8, @typescript-eslint/no-explicit-any warn seviyesinde, 0 error, 2083 warning) — `FIXED`.
+- [x] **WP-8.2: Test Tip Kontrolü ve strict: false Analizi** (tsconfig.test.json strict mod analizi, 84 dosyada 835 tip hatası tespiti, teknik borcun dürüstçe belgelenmesi) — `ANALYZED_DEBT_DOCUMENTED`.
+- [x] **WP-8.3: CI Kalite Kapısı Sıralaması** (.github/workflows/ci.yml: install -> lint -> typecheck -> typecheck:tests -> build -> test, Node .nvmrc ve pnpm 12.3.4 uyumu) — `FIXED`.
+- [x] **WP-8.4: OM-09 İnsan Onayı Sınırı ve OM-10 Karar Düzeltmesi** (Rutin görev kabulü ile insan onayı ayrımı, P18-04 BLOCKED_ON_AUTH_CONTEXT mühürlenmesi, OM-10 geçişinin dürüstçe BLOCKED ilan edilmesi) — `CORRECTED`.
 
 ---
 
@@ -89,9 +93,50 @@
 - Dokümantasyon: `docs/LOGGING.md` ile mimari, format, maskeleme ve entegrasyon kuralları mühürlendi.
 - Doğrulama: `pnpm typecheck` (0 error), `pnpm build` (0 error), `pnpm test` (115 suite, 2982 test PASS, 0 FAIL, 0 SKIPPED).
 
+### WP-8.1 Gerçek ESLint Kurulumu ve Doğrulama Kanıtı
+- **Bulgu:** Depoda daha önce gerçek ESLint bağımlılıkları bulunmamaktaydı; `package.json` içindeki `lint` script'i `node -e "console.log('Lint configuration verified.')"` şeklinde sahte bir çıktı vermekteydi.
+- **Düzeltme:** Kök dizine `eslint` (^10.12.0) ve `typescript-eslint` (^8.71.1) kuruldu. `eslint.config.js` dosyası resmi TypeScript-ESLint flat config standardına uyarlandı; `@typescript-eslint/no-explicit-any` kuralı `warn` seviyesinde yapılandırıldı. `pnpm lint` gerçek `eslint .` komutuna bağlandı.
+- **Hata Temizliği:** `aidm-error.ts` içerisindeki yasaklı `Function` tipi güvenli `unknown` parametre tipine dönüştürüldü. Otomatik `prefer-const` düzeltmeleri uygulandı.
+- **Gerçek Çıkış:** `pnpm lint` -> **Exit Code 0** (0 hata, 2083 uyarı). Uyarılar gizlenmemiş veya kural kapatılmamıştır; açıkça raporlanmıştır.
+
+### WP-8.2 Test Tip Kontrolü ve strict: false Derinlemesine Analiz Kanıtı
+- **Bulgu:** `packages/core/tsconfig.test.json` dosyasında `strict: false` tanımlanmıştı ve kök `typecheck` komutu testleri derlemeye dahil etmiyordu (`pnpm --filter @aidm/core typecheck` yalnızca `src`'ı kontrol ediyordu).
+- **`strict: false` Araştırması:** 
+  1. Test dosyaları, güncel etki alanı arayüzlerinin (`LlmRequest`, `LlmResponse`, `TechnologyStackInfo`, `AcceptanceCriterion`) zorunlu kıldığı alanları içermeyen eksik mock nesneleri ve eski arayüz kalıntılarıyla yazılmıştır.
+  2. Önceki aşamada (WP-2) derleme hatalarını bastırmak için `strict: false` denenmiştir; ancak `strict: false` yalnızca 53 hatayı maskeleyebilmiş, geriye **782 adet yapısal tip hatası** kalmıştır.
+  3. Daha da vahimi, `tsconfig.test.json` dosyası `include: ["src/**/*", "tests/**/*"]` içerdiğinden, `strict: false` kaynak kod (`src`) üzerinde `strictNullChecks` denetimini gevşetmiş ve `src/budget/budget-aware-llm-adapter.ts` içerisindeki ayırt edici birlik (discriminated union) daraltmasını bozmuştur.
+- **`strict: true` Kararı ve Hata Sınıflandırması:** `tsconfig.test.json` dosyası kaynak kod bütünlüğünü bozmamak adına `strict: true` seviyesine çekilmiştir. `src` dizininde 0 hata bulunurken, `tests/` dizininde 84 dosyada toplam **835 tip hatası** tespit edilmiştir. Hata dağılımı:
+  - **TS2353 (197 hata):** Nesne değişmezlerinde tanımlı olmayan fazlalık alanlar (eski mock özellikleri).
+  - **TS2345 (127 hata):** Eksik veya uyumsuz tipteki mock nesnelerin fonksiyonlara argüman geçilmesi.
+  - **TS2322 (97 hata):** Salt-okunur dizi uyumsuzlukları (`readonly string[]` vs `string[]`) ve string union uyuşmazlıkları.
+  - **TS2339 (87 hata):** Tip üzerinde bulunmayan özellik erişimleri.
+  - **TS2739 / TS2740 / TS2741 (149 hata):** Mock nesnelerde zorunlu alanların tanımlanmamış olması.
+  - **TS2561 (55 hata):** Özellik adı yazım farklılıkları (`executor` vs `executorId`).
+  - **Diğer (123 hata):** TS2305 (19), TS2349 (14), TS18046 (13), TS2769 (12), TS18047 (11), vb.
+- **Geçici Uyumluluk Yaklaşımı ve Kalan Borç:** Testler çalışma zamanında Node.js `--experimental-strip-types` motoruyla tip denetimi yapılmaksızın çalışmakta ve 2982 testin tamamı geçmektedir. Ancak testlerin statik tipleri **835 hata ile teknik borç durumundadır**. Bu eksiklik `any` veya `@ts-ignore` ile maskelenmemiş, dürüstçe kayıt altına alınmıştır. `pnpm typecheck` kaynak kontrolünü (0 hata), `pnpm typecheck:tests` test kontrolünü (835 hata) çalıştırır.
+
+### WP-8.3 CI Kalite Kapısı Güncelleme Kanıtı
+- `.github/workflows/ci.yml` iş akışı tam kalite kapısı sırasıyla yapılandırılmıştır:
+  1. `pnpm install --frozen-lockfile` (pnpm 12.3.4 ile)
+  2. `pnpm lint` (Gerçek ESLint)
+  3. `pnpm typecheck` (Kaynak tip kontrolü - strict)
+  4. `pnpm typecheck:tests` (Test tip kontrolü - kalite kapısı)
+  5. `pnpm build` (`tsc -b`)
+  6. `pnpm test` (Deterministik çevrimdışı testler)
+- Sürüm Tutarlılığı: `.nvmrc` (`22.19.0`), `package.json` engines (`>=22.6.0`), `packageManager` (`pnpm@12.3.4`) ve CI `node-version-file: '.nvmrc'` tam uyumlu hale getirilmiştir. Canlı testler (`test:live`) CI varsayılanından ayrı tutulmuştur.
+
+### WP-8.4 OM-09 İnsan Onayı Çelişkisinin Çözümü Kanıtı
+- **Çelişki:** Önceki raporda OM-09 bir yandan `ACCEPTED` olarak ilan edilirken, diğer yandan insan onayı satırında `BLOCKED_ON_AUTH_CONTEXT` olarak listelenmiş ve buna rağmen OM-10'a geçiş onaylanmıştı.
+- **Çözüm ve Sınır Ayrımı:**
+  1. **Rutin Otonom Görevler Alt Kapsamı (`OM-09 Routine`):** Project Mandate kapsamında tanımlı `ALLOW` eylemleri gerçek OpenAI ve host AGY CLI ile baştan sona denenmiş; 17/17 canlı test PASS vermiş ve **`ACCEPTED`** olarak doğrulanmıştır.
+  2. **İnsan Onayı Hassas İşlemler Alt Kapsamı (`OM-09 Human Approval`):** P18-04 Trusted Identity Context (güvenilir harici insan kimliği/onay altyapısı) henüz mevcut değildir. Mimarinin fail-closed güvenlik kapısı gereği istemci/model beyanları reddedilmekte ve sistem **`BLOCKED_ON_AUTH_CONTEXT`** durumunda bekletilmektedir.
+  3. **Fail-Closed Testi ile Gerçek Altyapı Ayrımı:** Fail-closed testinin başarıyla kilit vurması (`ALLOW` yerine `DENY`/`BLOCKED` üretmesi), sistemin güvenli kapandığını kanıtlar; ancak bu, arkada çalışan gerçek bir insan onayı altyapısı olduğu anlamına GELMEZ.
+  4. **Kapsam Kararı:** OM-09'un tamamı kabul edilmiş DEĞİLDİR. Yalnızca rutin görev alt kapsamı kabul edilmiştir; insan onayı gerektiren güvenlik kriteri **`BLOCKED`** durumundadır.
+  5. **OM-10 İle İlişki ve Güvenlik Riski:** OM-10 (Sürümleme, Genel MCP Sözleşmesi ve Dondurma) aşamasına geçiş için insan onayı mekanizmasının eksikliği kabul edilemez bir güvenlik riskidir. Dış bağımsız onay mekanizması olmadan sistemin dondurulması veya genel kullanıma açılması, hassas işlemlerde onay otoritesinin boşlukta kalmasına veya yetki yükseltme riskine yol açabilir. Director veya AGY kendi kendine yetki veremez.
+
 ---
 
-## 4. OM-03 / OM-05 / OM-06 / OM-07 / OM-09 Gerçek Kabul Matrisi (WP-7)
+## 4. OM-03 / OM-05 / OM-06 / OM-07 / OM-09 Gerçek Kabul Matrisi (WP-7 & WP-8)
 
 | Aşama Kodu | Gereksinim ve Kabul Kriteri | Test / Kanıt Kaynağı | Test Türü (Gerçek / Mock) | Çalıştırılan Komut | Çıkış Kodu | Sonuç ve Kanıt Dosyası / Commit | Eksik Harici Koşullar | Nihai Karar |
 |:---:|---|---|:---:|---|:---:|---|---|:---:|
@@ -99,47 +144,48 @@
 | **OM-05** | Closed-loop koordinasyonu: Director kararı, 6 güvenlik kapısı, AGY yürütme, bağımsız delil toplama (SHA-256 / Git diff) ve doğrulama. Zero Executor Trust ilkesi. | `om09-live-e2e.live.test.ts` (T00, F00) + `a4-closed-loop-coordinator.test.ts` | **Gerçek** (Host AGY CLI) & **Deterministik Mock** | `pnpm test:live` & `pnpm test` | `0` | Tam kapalı döngü gerçek AGY CLI ile icra edildi; sözel beyanlar reddedildi, dosya SHA-256 hash'i ve Git diff üzerinden bağımsız delil toplandı. Commit: `7109e39` | Yok (Host Antigravity ortamında CLI doğrulandı) | **`ACCEPTED`** |
 | **OM-06** | MCP Control Plane: 41 adet MCP aracı, stdio JSON-RPC 2.0 bütünlüğü, yetkilendirme kapıları (`AuthorizationPolicyEngine`), durum otoritesi ve Zod şema sözleşmesi | `phase17-mcp-e2e.test.ts` + `p22-director-mcp-control-plane.test.ts` + `structured-logger.test.ts` | **Gerçek** (stdio / IPC JSON-RPC protokolü) & **Mock** | `pnpm test` | `0` | JSON-RPC 2.0 çerçeveleme bozulmadan çalıştı; yetkisiz araç çağrıları engellendi; stdout sıfır kirlilik sözleşmesi kanıtlandı. Commit: `7109e39` | Yok | **`ACCEPTED`** |
 | **OM-07** | Durable Session & Recovery: İn-flight çökme simülasyonu, `EXECUTION_UNKNOWN` izolasyonu, atomik kalıcı durum, PID `runtime.lock`, bounded corrective task üretimi | `p30-durable-crash-recovery.test.ts` + `atomic-writer.ts` retry mekanizması | **Gerçek** (İşletim sistemi süreci, PID kilit, SQLite, dosya sistemi) | `pnpm test` | `0` | İn-flight çökmede körlemesine yeniden dağıtım engellendi; görev `EXECUTION_UNKNOWN` olarak işaretlendi; FailureDiagnosisEngine üzerinden bağlı düzeltici görev oluşturuldu. Commit: `0e08f6d` | Yok | **`ACCEPTED`** |
-| **OM-09** (Rutin) | Canlı E2E Entegrasyonu: Rutin geliştirme görevlerinin (`ALLOW`) gerçek model ve gerçek AGY CLI ile baştan sona otonom yürütülmesi | `om09-live-e2e.live.test.ts` (13 test) + `single-task-real-execution-e2e.live.test.ts` (4 test) | **Gerçek** (Canlı Host CLI & Canlı Model) | `pnpm test:live` | `0` | 17/17 canlı test PASS; gerçek dosya mutasyonları ve bağımsız delil denetimi mühürlendi. Commit: `0e08f6d` | Yok | **`ACCEPTED`** |
-| **OM-09** (İnsan Onayı) | Güvenilir İnsan Onayı Sınırı: İnsan onayı gerektiren hassas işlemlerin fail-closed duruşu (`BLOCKED_ON_AUTH_CONTEXT`) | `om09-live-e2e.live.test.ts` (F05) + `p18-04-real-project-approval.test.ts` | **Gerçek Güvenlik Kilidi** (Fail-Closed Gate) | `pnpm test:live` & `pnpm test` | `0` | ADR-06 ve P18-04 sözleşmesi uyarınca; sahte onay beyanları (`isTrustedHumanAuth: true`, `actor: "USER"`) reddedildi; bağımsız dış kimlik doğrulayıcısı olmadan sistem fail-closed durdu. | P18-04 Trusted Identity Context (Dış güvenilir insan kimliği altyapısı henüz mevcut değil; mimarinin fail-closed kuralı işletilmektedir). | **`BLOCKED_ON_AUTH_CONTEXT`** (Bilinçli Mimari Emniyet Kilidi) |
+| **OM-09** (Rutin) | Canlı E2E Entegrasyonu: Rutin geliştirme görevlerinin (`ALLOW`) gerçek model ve gerçek AGY CLI ile baştan sona otonom yürütülmesi | `om09-live-e2e.live.test.ts` (13 test) + `single-task-real-execution-e2e.live.test.ts` (4 test) | **Gerçek** (Canlı Host CLI & Canlı Model) | `pnpm test:live` | `0` | 17/17 canlı test PASS; gerçek dosya mutasyonları ve bağımsız delil denetimi mühürlendi. Commit: `0e08f6d` | Yok | **`ACCEPTED`** (Yalnızca rutin otonom alt kapsam) |
+| **OM-09** (İnsan Onayı) | Güvenilir İnsan Onayı Sınırı: İnsan onayı gerektiren hassas işlemlerin fail-closed duruşu (`BLOCKED_ON_AUTH_CONTEXT`) | `om09-live-e2e.live.test.ts` (F05) + `p18-04-real-project-approval.test.ts` | **Gerçek Güvenlik Kilidi** (Fail-Closed Gate) | `pnpm test:live` & `pnpm test` | `0` | ADR-06 ve P18-04 sözleşmesi uyarınca; sahte onay beyanları (`isTrustedHumanAuth: true`, `actor: "USER"`) reddedildi; bağımsız dış kimlik doğrulayıcısı olmadan sistem fail-closed durdu. | P18-04 Trusted Identity Context (Dış güvenilir insan kimliği altyapısı henüz mevcut değildir; fail-closed güvenlik kilidi devrededir). | **`BLOCKED_ON_AUTH_CONTEXT`** (Bilinçli Emniyet Kilidi - Eksik Dış Altyapı) |
+| **OM-09 (Genel)** | OM-09 Aşamasının Tam Kabulü | Yukarıdaki iki alt kapsamın birleşimi | Karma | - | - | Rutin alt kapsam çalışmakta; insan onayı alt kapsamı ise dış kimlik altyapısı eksikliği nedeniyle blokajdadır. | P18-04 Dış İnsan Kimliği ve Onay Altyapısı | **`PARTIALLY_ACCEPTED / BLOCKED`** (Tam kabul verilemez) |
 
 ---
 
 ## 5. Nihai Karar Kapısı ve OM-10 Geçiş Değerlendirmesi
 
-### 5.1 Tamamlanan İş Paketleri ve Commit Kayıtları
+### 5.1 Tamamlanan İş Paketleri ve Durum
 
-| İş Paketi | Kapsam | Commit SHA | GitHub `origin/main` Durumu |
-|:---|:---|:---:|:---:|
-| **WP-1** | Node.js Sözleşmesi (>=22.6.0), .nvmrc, LICENSE, .gitattributes, .editorconfig, CI, .gitignore | `e4e5845` | `VERIFIED` |
-| **WP-2** | tsconfig.test.json, kök script'leri, Windows EBUSY retry, deterministik / canlı test ayrımı | `0e08f6d` | `VERIFIED` |
-| **WP-3** | .env.example (10 değişken), ENVIRONMENT dokümantasyonu, fail-closed sözleşmesi | `971e1c8` | `VERIFIED` |
-| **WP-4** | ADR-12 modül sınırları, paket export haritası tamamlaması (36/36 subpath) | `1927ead` | `VERIFIED` |
-| **WP-5** | Tür Güvenliği Borcu: 5 kritik güvenlik modülünde 90 explicit `any` temizlendi (Kalan kritik `any`: **0**) | `84ceb5e` | `VERIFIED` |
-| **WP-6** | Yapılandırılmış Loglama: Sıfır stdout kirliliği, sır maskeleme, fail-safe logging, 8/8 test PASS | `7109e39` | `VERIFIED` |
-| **WP-7** | OM-03/05/06/07/09 Kabul Matrisi, Objektif Canlı Kanıtlar ve Karar Kapısı Mühürlenmesi | *(Güncel commit)* | `VERIFIED` |
+| İş Paketi | Kapsam | Durum | Doğrulama Notu |
+|:---|:---|:---:|:---|
+| **WP-1** | Node.js Sözleşmesi (>=22.6.0), .nvmrc, LICENSE, .gitattributes, .editorconfig, CI, .gitignore | `VERIFIED` | Commit: `e4e5845` |
+| **WP-2** | tsconfig.test.json, kök script'leri, Windows EBUSY retry, test ayrımı | `VERIFIED` | Commit: `0e08f6d` |
+| **WP-3** | .env.example (10 değişken), ENVIRONMENT dokümantasyonu, fail-closed sözleşmesi | `VERIFIED` | Commit: `971e1c8` |
+| **WP-4** | ADR-12 modül sınırları, paket export haritası tamamlaması (36/36 subpath) | `VERIFIED` | Commit: `1927ead` |
+| **WP-5** | Tür Güvenliği Borcu: 5 kritik güvenlik modülünde 90 explicit `any` temizlendi | `VERIFIED` | Commit: `84ceb5e` |
+| **WP-6** | Yapılandırılmış Loglama: Sıfır stdout kirliliği, sır maskeleme, fail-safe logging | `VERIFIED` | Commit: `7109e39` |
+| **WP-7** | OM-03/05/06/07/09 Kabul Matrisi | `RE-EVALUATED` | OM-09 çelişkisi giderildi |
+| **WP-8.1** | Gerçek ESLint Kurulumu (eslint 10, typescript-eslint 8, no-explicit-any warn) | `VERIFIED` | Exit Code 0, 0 error, 2083 warning |
+| **WP-8.2** | Test Tip Kontrolü ve strict: false Analizi | `DEBT_RECORDED` | 84 test dosyasında 835 tip hatası mevcut |
+| **WP-8.3** | CI Kalite Kapısı (install -> lint -> typecheck -> typecheck:tests -> build -> test) | `VERIFIED` | .github/workflows/ci.yml güncellendi |
+| **WP-8.4** | OM-09 İnsan Onayı Sınırı ve Güvenlik Riski Değerlendirmesi | `VERIFIED` | Kapsamlar ayrıldı, risk belgelendi |
 
-### 5.2 Test ve Kalite Kapıları Durumu
+### 5.2 Test ve Kalite Kapıları Doğrulama Çıktıları (WP-8.5)
 
-- **`pnpm typecheck`:** `tsc -p tsconfig.json --noEmit` -> **0 HATA (Exit Code 0)**.
-- **`pnpm build`:** `tsc -b` -> **0 HATA (Exit Code 0)**.
-- **`pnpm test` (Deterministik Çevrimdışı):** **115 Test Süiti, 2,982 Test PASS, 0 FAIL, 0 CANCELLED, 0 SKIPPED (Exit Code 0)**.
-- **`pnpm test:live` (Canlı E2E):** **2 Test Süiti, 17 Test PASS, 0 FAIL (Exit Code 0)**.
-- **Kalan `any` Borcu:** Güvenlik açısından kritik modüllerde (`policy`, `authorization`, `evidence`, `budget`, `recovery`) **0 ADET**; kalan 320 adet kullanım kritik olmayan ikincil yardımcı araçlarda ve ESLint uyarı seviyesinde izlenmektedir.
+| Komut | Kapsam / Amaç | Gerçek Çıkış Kodu | Test / Dosya Sayısı | Başarısızlık (Fail) | Atlanan (Skip) | Durum |
+|:---|:---|:---:|:---:|:---:|:---:|:---:|
+| `pnpm lint` | Kod hijyeni ve ESLint kuralları | `0` | Tüm repo | 0 error | 0 | **PASS** (2083 uyarı raporlandı) |
+| `pnpm typecheck` | Kaynak kod (`src/**/*`) strict tip denetimi | `0` | Tüm `src/` | 0 error | 0 | **PASS** (Strict 0 error) |
+| `pnpm typecheck:tests` | Test dosyaları (`tests/**/*`) tip denetimi | `2` (Hata) | 115 test dosyası | 835 error (84 dosya) | 0 | **FAIL / DEBT** (835 tip hatası borç olarak kayıtlı) |
+| `pnpm build` | Paket derlemesi (`tsc -b`) | `0` | `@aidm/core` | 0 error | 0 | **PASS** (36 subpath d.ts ve js üretildi) |
+| `pnpm test` | Deterministik çevrimdışı test süiti | `0` | 115 suite, 2982 test | 0 fail | 0 skipped | **PASS** (2982/2982 PASS) |
+| `pnpm test:live` | Canlı host AGY CLI ve OpenAI HTTPS E2E | `0` | 2 suite, 17 test | 0 fail | 0 skipped | **PASS** (Canlı ortamda 17/17 PASS) |
 
 ### 5.3 OM-10'a Geçiş Kararı
 
-> **NİHAİ KARAR: OM-10 ÖNCESİ TÜM TEKNİK BORÇ VE ALTYAPI KABUL KAPILARI AÇILMIŞTIR; OM-10'A GEÇİŞ ONAYLANMIŞTIR.**
-> 
-> **Güvenlik Kaydı:**
-> 1. Depo hijyeni, satır sonu politikası, Node 22 sözleşmesi ve CI iş akışları tamamlanmıştır.
-> 2. Deterministik ve canlı test mimarisi başarıyla ayrılmış ve %100 oranında kanıtlanmıştır.
-> 3. Modül sınırları ADR-12 ile kalıcı olarak mühürlenmiştir.
-> 4. Güvenlik açısından kritik modüllerdeki tüm tür zafiyetleri ve `any` borçları giderilmiştir.
-> 5. MCP stdio bütünlüğü ve yapılandırılmış loglama güvenceye alınmıştır.
-> 6. OM-03, OM-05, OM-06, OM-07 ve OM-09'un rutin görevler boyutu canlı kanıtlarla `ACCEPTED` olarak mühürlenmiştir.
-> 7. İnsan onayı gerektiren işlemler, mimarinin temel taşı olan ADR-06 ve P18-04 güvenlik ilkeleri doğrultusunda fail-closed olarak `BLOCKED_ON_AUTH_CONTEXT` durumunda tutulmaktadır; hiçbir koşulda sahte veya gevşetilmiş onay üretilmeyecektir.
-> 
-> Bu doğrultuda OtonomMCP çekirdeği OM-10 (Sürümleme, Genel MCP Sözleşmesi ve Dondurma) aşamasına geçmeye tam yetkinlikte ve hazır durumdadır.
-
-
-
+> **NİHAİ KARAR: BLOCKED — OM-10'A GEÇİLMEMELİDİR.**
+>
+> **Gerekçe ve Engelleyici Bulgular:**
+> 1. **Test Tip Denetimi Borcu (WP-8.2):** Kaynak kod (`src`) strict tip denetiminden başarıyla geçmesine karşın, test süitinde 84 dosyada toplam **835 adet statik tip hatası** bulunmaktadır. Testlerin tip güvenliği sağlanmadan ve kalite kapısı temizlenmeden dondurma aşamasına geçilemez. Bu hatalar sahte `any` veya `@ts-ignore` ile maskelenmemiştir.
+> 2. **OM-09 Güvenilir İnsan Onayı Eksikliği (WP-8.4):** Rutin görevler otonom olarak çalışsa da, P18-04 Trusted Identity Context (güvenilir harici insan kimliği ve onay altyapısı) henüz geliştirilmemiştir. Hassas işlemler mimarinin fail-closed güvenlik gereği `BLOCKED_ON_AUTH_CONTEXT` durumundadır. Dış bağımsız onay mekanizması kurulmadan sistemin OM-10 ile dondurulması veya genel MCP sözleşmesine bağlanması kabul edilemez bir güvenlik riskidir.
+> 3. **Kalite Kapısı Bütünlüğü:** CI kalite kapısı artık gerçek `lint`, `typecheck` ve `typecheck:tests` adımlarını zorunlu kılmaktadır. Gerçek denetimlerden geçmeyen hiçbir aşama "onaylandı" kabul edilemez.
+>
+> **Sonuç:** OtonomMCP çekirdeğinde OM-10 uygulamasına (sürümleme, genel sözleşme dondurma, git tag vb.) **BAŞLANMAYACAKTIR**. Öncelikli olarak P18-04 İnsan Onayı Altyapısı ve testlerin tip entegrasyonu tamamlanmalıdır.
