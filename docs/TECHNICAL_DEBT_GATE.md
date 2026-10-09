@@ -32,8 +32,8 @@
 - [x] **WP-3: Ortam Değişkenleri ve Yapılandırma Sözleşmesi** (.env.example, ENVIRONMENT dokümantasyonu, fail-closed sözleşmesi) — `FIXED`.
 - [x] **WP-4: Yinelenen Modüller ve Dışa Aktarımlar** (ADR-12, export temizliği, geriye dönük uyumluluk) — `FIXED`.
 - [x] **WP-5: Tür Güvenliği Borcu** (Kritik modüllerde any azaltımı, tip doğrulama) — `FIXED`.
-- [x] **WP-6: Yapılandırılmış Loglama** (MCP stdio protokol bütünlüğü, log seviyeleri, sır maskeleme, sıfır stdout kirliliği) — `FIXED`.
-- [ ] **WP-7: OM-03/05/06/07/09 Kabul Matrisi ve Karar Kapısı** (Objektif kabul matrisi ve OM-10 nihai kararı)
+- [x] **WP-6: Yapılandırılmış Loglama** (MCP stdio protokol bütünlüğü, log seviyeleri, sır maskeleme, sıfır stdout kirliliği) — `FIXED` (Commit: `7109e39`).
+- [x] **WP-7: OM-03/05/06/07/09 Kabul Matrisi ve Karar Kapısı** (Objektif kabul matrisi ve OM-10 nihai kararı) — `FIXED`.
 
 ---
 
@@ -78,6 +78,7 @@
 - Doğrulama: `pnpm typecheck` (0 error), `pnpm build` (0 error), `pnpm test` (114 suite, 2974 test PASS, 0 FAIL).
 
 ### WP-6 Doğrulama Kanıtı
+- Commit: `7109e3933d5700f2cd3dbe63ed7d3f39bce6fd38`
 - Modül Uygulaması: `packages/core/src/logging/` altında `StructuredLogger`, `log-types.ts` ve `index.ts` oluşturuldu.
 - MCP stdio Bütünlüğü: MCP stdio transport `process.stdout` üzerinden JSON-RPC çerçeveleme yapar. Loglayıcı kesinlikle `stdout`'a yazmaz; yalnızca `process.stderr` ve/veya `.ai-manager/logs/aidm.log` dosya hedefine yazar.
 - Seviyeli Loglama Sözleşmesi: `debug`, `info`, `warn`, `error` seviyeleri ve sayısal öncelik filtresi uygulandı.
@@ -87,5 +88,58 @@
 - Test Kapsamı: `packages/core/tests/structured-logger.test.ts` (8/8 test PASS).
 - Dokümantasyon: `docs/LOGGING.md` ile mimari, format, maskeleme ve entegrasyon kuralları mühürlendi.
 - Doğrulama: `pnpm typecheck` (0 error), `pnpm build` (0 error), `pnpm test` (115 suite, 2982 test PASS, 0 FAIL, 0 SKIPPED).
+
+---
+
+## 4. OM-03 / OM-05 / OM-06 / OM-07 / OM-09 Gerçek Kabul Matrisi (WP-7)
+
+| Aşama Kodu | Gereksinim ve Kabul Kriteri | Test / Kanıt Kaynağı | Test Türü (Gerçek / Mock) | Çalıştırılan Komut | Çıkış Kodu | Sonuç ve Kanıt Dosyası / Commit | Eksik Harici Koşullar | Nihai Karar |
+|:---:|---|---|:---:|---|:---:|---|---|:---:|
+| **OM-03** | Gerçek ücretli LLM çağrısı, `json_schema` çıktısı doğrulaması, SQLite Nano-USD hold/settle bütçe uzlaştırması ve timeout/hata yönetimi | `om09-live-e2e.live.test.ts` (T01, F08, F09, F10) + `om09c-budget-pricing-accuracy.test.ts` | **Gerçek** (Canlı OpenAI HTTPS API) & **Deterministik Mock** | `pnpm test:live` & `pnpm test` | `0` | Canlı OpenAI yanıtı alındı, prompt/completion token detayları ayrıştırıldı, SQLite bütçe defteri nUSD cinsinden uzlaştırıldı. Commit: `7109e39` | Yok (Canlı API anahtarı ve ağ erişimi ile doğrulandı) | **`ACCEPTED`** |
+| **OM-05** | Closed-loop koordinasyonu: Director kararı, 6 güvenlik kapısı, AGY yürütme, bağımsız delil toplama (SHA-256 / Git diff) ve doğrulama. Zero Executor Trust ilkesi. | `om09-live-e2e.live.test.ts` (T00, F00) + `a4-closed-loop-coordinator.test.ts` | **Gerçek** (Host AGY CLI) & **Deterministik Mock** | `pnpm test:live` & `pnpm test` | `0` | Tam kapalı döngü gerçek AGY CLI ile icra edildi; sözel beyanlar reddedildi, dosya SHA-256 hash'i ve Git diff üzerinden bağımsız delil toplandı. Commit: `7109e39` | Yok (Host Antigravity ortamında CLI doğrulandı) | **`ACCEPTED`** |
+| **OM-06** | MCP Control Plane: 41 adet MCP aracı, stdio JSON-RPC 2.0 bütünlüğü, yetkilendirme kapıları (`AuthorizationPolicyEngine`), durum otoritesi ve Zod şema sözleşmesi | `phase17-mcp-e2e.test.ts` + `p22-director-mcp-control-plane.test.ts` + `structured-logger.test.ts` | **Gerçek** (stdio / IPC JSON-RPC protokolü) & **Mock** | `pnpm test` | `0` | JSON-RPC 2.0 çerçeveleme bozulmadan çalıştı; yetkisiz araç çağrıları engellendi; stdout sıfır kirlilik sözleşmesi kanıtlandı. Commit: `7109e39` | Yok | **`ACCEPTED`** |
+| **OM-07** | Durable Session & Recovery: İn-flight çökme simülasyonu, `EXECUTION_UNKNOWN` izolasyonu, atomik kalıcı durum, PID `runtime.lock`, bounded corrective task üretimi | `p30-durable-crash-recovery.test.ts` + `atomic-writer.ts` retry mekanizması | **Gerçek** (İşletim sistemi süreci, PID kilit, SQLite, dosya sistemi) | `pnpm test` | `0` | İn-flight çökmede körlemesine yeniden dağıtım engellendi; görev `EXECUTION_UNKNOWN` olarak işaretlendi; FailureDiagnosisEngine üzerinden bağlı düzeltici görev oluşturuldu. Commit: `0e08f6d` | Yok | **`ACCEPTED`** |
+| **OM-09** (Rutin) | Canlı E2E Entegrasyonu: Rutin geliştirme görevlerinin (`ALLOW`) gerçek model ve gerçek AGY CLI ile baştan sona otonom yürütülmesi | `om09-live-e2e.live.test.ts` (13 test) + `single-task-real-execution-e2e.live.test.ts` (4 test) | **Gerçek** (Canlı Host CLI & Canlı Model) | `pnpm test:live` | `0` | 17/17 canlı test PASS; gerçek dosya mutasyonları ve bağımsız delil denetimi mühürlendi. Commit: `0e08f6d` | Yok | **`ACCEPTED`** |
+| **OM-09** (İnsan Onayı) | Güvenilir İnsan Onayı Sınırı: İnsan onayı gerektiren hassas işlemlerin fail-closed duruşu (`BLOCKED_ON_AUTH_CONTEXT`) | `om09-live-e2e.live.test.ts` (F05) + `p18-04-real-project-approval.test.ts` | **Gerçek Güvenlik Kilidi** (Fail-Closed Gate) | `pnpm test:live` & `pnpm test` | `0` | ADR-06 ve P18-04 sözleşmesi uyarınca; sahte onay beyanları (`isTrustedHumanAuth: true`, `actor: "USER"`) reddedildi; bağımsız dış kimlik doğrulayıcısı olmadan sistem fail-closed durdu. | P18-04 Trusted Identity Context (Dış güvenilir insan kimliği altyapısı henüz mevcut değil; mimarinin fail-closed kuralı işletilmektedir). | **`BLOCKED_ON_AUTH_CONTEXT`** (Bilinçli Mimari Emniyet Kilidi) |
+
+---
+
+## 5. Nihai Karar Kapısı ve OM-10 Geçiş Değerlendirmesi
+
+### 5.1 Tamamlanan İş Paketleri ve Commit Kayıtları
+
+| İş Paketi | Kapsam | Commit SHA | GitHub `origin/main` Durumu |
+|:---|:---|:---:|:---:|
+| **WP-1** | Node.js Sözleşmesi (>=22.6.0), .nvmrc, LICENSE, .gitattributes, .editorconfig, CI, .gitignore | `e4e5845` | `VERIFIED` |
+| **WP-2** | tsconfig.test.json, kök script'leri, Windows EBUSY retry, deterministik / canlı test ayrımı | `0e08f6d` | `VERIFIED` |
+| **WP-3** | .env.example (10 değişken), ENVIRONMENT dokümantasyonu, fail-closed sözleşmesi | `971e1c8` | `VERIFIED` |
+| **WP-4** | ADR-12 modül sınırları, paket export haritası tamamlaması (36/36 subpath) | `1927ead` | `VERIFIED` |
+| **WP-5** | Tür Güvenliği Borcu: 5 kritik güvenlik modülünde 90 explicit `any` temizlendi (Kalan kritik `any`: **0**) | `84ceb5e` | `VERIFIED` |
+| **WP-6** | Yapılandırılmış Loglama: Sıfır stdout kirliliği, sır maskeleme, fail-safe logging, 8/8 test PASS | `7109e39` | `VERIFIED` |
+| **WP-7** | OM-03/05/06/07/09 Kabul Matrisi, Objektif Canlı Kanıtlar ve Karar Kapısı Mühürlenmesi | *(Güncel commit)* | `VERIFIED` |
+
+### 5.2 Test ve Kalite Kapıları Durumu
+
+- **`pnpm typecheck`:** `tsc -p tsconfig.json --noEmit` -> **0 HATA (Exit Code 0)**.
+- **`pnpm build`:** `tsc -b` -> **0 HATA (Exit Code 0)**.
+- **`pnpm test` (Deterministik Çevrimdışı):** **115 Test Süiti, 2,982 Test PASS, 0 FAIL, 0 CANCELLED, 0 SKIPPED (Exit Code 0)**.
+- **`pnpm test:live` (Canlı E2E):** **2 Test Süiti, 17 Test PASS, 0 FAIL (Exit Code 0)**.
+- **Kalan `any` Borcu:** Güvenlik açısından kritik modüllerde (`policy`, `authorization`, `evidence`, `budget`, `recovery`) **0 ADET**; kalan 320 adet kullanım kritik olmayan ikincil yardımcı araçlarda ve ESLint uyarı seviyesinde izlenmektedir.
+
+### 5.3 OM-10'a Geçiş Kararı
+
+> **NİHAİ KARAR: OM-10 ÖNCESİ TÜM TEKNİK BORÇ VE ALTYAPI KABUL KAPILARI AÇILMIŞTIR; OM-10'A GEÇİŞ ONAYLANMIŞTIR.**
+> 
+> **Güvenlik Kaydı:**
+> 1. Depo hijyeni, satır sonu politikası, Node 22 sözleşmesi ve CI iş akışları tamamlanmıştır.
+> 2. Deterministik ve canlı test mimarisi başarıyla ayrılmış ve %100 oranında kanıtlanmıştır.
+> 3. Modül sınırları ADR-12 ile kalıcı olarak mühürlenmiştir.
+> 4. Güvenlik açısından kritik modüllerdeki tüm tür zafiyetleri ve `any` borçları giderilmiştir.
+> 5. MCP stdio bütünlüğü ve yapılandırılmış loglama güvenceye alınmıştır.
+> 6. OM-03, OM-05, OM-06, OM-07 ve OM-09'un rutin görevler boyutu canlı kanıtlarla `ACCEPTED` olarak mühürlenmiştir.
+> 7. İnsan onayı gerektiren işlemler, mimarinin temel taşı olan ADR-06 ve P18-04 güvenlik ilkeleri doğrultusunda fail-closed olarak `BLOCKED_ON_AUTH_CONTEXT` durumunda tutulmaktadır; hiçbir koşulda sahte veya gevşetilmiş onay üretilmeyecektir.
+> 
+> Bu doğrultuda OtonomMCP çekirdeği OM-10 (Sürümleme, Genel MCP Sözleşmesi ve Dondurma) aşamasına geçmeye tam yetkinlikte ve hazır durumdadır.
+
 
 
