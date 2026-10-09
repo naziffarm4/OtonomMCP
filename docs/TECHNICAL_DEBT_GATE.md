@@ -32,7 +32,7 @@
 - [x] **WP-3: Ortam Değişkenleri ve Yapılandırma Sözleşmesi** (.env.example, ENVIRONMENT dokümantasyonu, fail-closed sözleşmesi) — `FIXED`.
 - [x] **WP-4: Yinelenen Modüller ve Dışa Aktarımlar** (ADR-12, export temizliği, geriye dönük uyumluluk) — `FIXED`.
 - [x] **WP-5: Tür Güvenliği Borcu** (Kritik modüllerde any azaltımı, tip doğrulama) — `FIXED`.
-- [ ] **WP-6: Yapılandırılmış Loglama** (MCP stdio protokol bütünlüğü, log seviyeleri, sır maskeleme)
+- [x] **WP-6: Yapılandırılmış Loglama** (MCP stdio protokol bütünlüğü, log seviyeleri, sır maskeleme, sıfır stdout kirliliği) — `FIXED`.
 - [ ] **WP-7: OM-03/05/06/07/09 Kabul Matrisi ve Karar Kapısı** (Objektif kabul matrisi ve OM-10 nihai kararı)
 
 ---
@@ -76,4 +76,16 @@
 - Güvenlik Kapıları & Tip Daraltma: Girdi doğrulamaları `unknown` + Zod/tip koruyucuları (type guards) ile güçlendirildi. `node:sqlite` veri erişimi `DbRow` (Record<string, unknown>) ile tip güvenli kılındı.
 - ESLint Yapılandırması: `eslint.config.js` dosyasına `@typescript-eslint/no-explicit-any: 'warn'` kuralı eklendi.
 - Doğrulama: `pnpm typecheck` (0 error), `pnpm build` (0 error), `pnpm test` (114 suite, 2974 test PASS, 0 FAIL).
+
+### WP-6 Doğrulama Kanıtı
+- Modül Uygulaması: `packages/core/src/logging/` altında `StructuredLogger`, `log-types.ts` ve `index.ts` oluşturuldu.
+- MCP stdio Bütünlüğü: MCP stdio transport `process.stdout` üzerinden JSON-RPC çerçeveleme yapar. Loglayıcı kesinlikle `stdout`'a yazmaz; yalnızca `process.stderr` ve/veya `.ai-manager/logs/aidm.log` dosya hedefine yazar.
+- Seviyeli Loglama Sözleşmesi: `debug`, `info`, `warn`, `error` seviyeleri ve sayısal öncelik filtresi uygulandı.
+- Sır Maskeleme: API anahtarları (`Bearer`, `sk-`, `aidm-mcp-`), token'lar ve hassas yapılandırma anahtarları (`authorization`, `api_key`, `token`, `secret`, `password`) `[REDACTED]` ile dinamik olarak maskelendi.
+- Korelasyon ve İzlenebilirlik: `sessionId`, `taskId`, `correlationId`, `executionId` alanları birinci sınıf metadata olarak yapılandırıldı.
+- Fail-Safe & Non-Throwing: Loglama hataları (disk doluluğu, I/O istisnası vb.) güvenlik kontrollerini devre dışı bırakamaz ve uygulama akışını kesemez.
+- Test Kapsamı: `packages/core/tests/structured-logger.test.ts` (8/8 test PASS).
+- Dokümantasyon: `docs/LOGGING.md` ile mimari, format, maskeleme ve entegrasyon kuralları mühürlendi.
+- Doğrulama: `pnpm typecheck` (0 error), `pnpm build` (0 error), `pnpm test` (115 suite, 2982 test PASS, 0 FAIL, 0 SKIPPED).
+
 

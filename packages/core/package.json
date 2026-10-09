@@ -152,6 +152,10 @@
     "./execution-integration": {
       "types": "./dist/execution-integration/index.d.ts",
       "import": "./dist/execution-integration/index.js"
+    },
+    "./logging": {
+      "types": "./dist/logging/index.d.ts",
+      "import": "./dist/logging/index.js"
     }
   },
   "bin": {

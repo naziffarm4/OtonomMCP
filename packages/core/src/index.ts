@@ -64,3 +64,4 @@ export {
 } from './director/index.js';
 
 export * from './authorization/index.js';
+export * from './logging/index.js';
