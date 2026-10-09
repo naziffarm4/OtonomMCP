@@ -36,6 +36,8 @@ import {
   type LlmRequest,
   type LlmResponse,
   LlmFinishReason,
+  auditBillingEndpoint,
+  resolveBillingEndpointKind,
 } from '../dist/index.js';
 
 describe('OM-09C: LLM Budget Pricing Accuracy & Hardening', () => {
@@ -1566,6 +1568,734 @@ describe('OM-09C: LLM Budget Pricing Accuracy & Hardening', () => {
 
       const accountAfter = budgetManager.getGlobalAccount()!;
       assert.strictEqual(accountAfter.reservedSpendNanoUsd, initialHold, 'Hold must be preserved against unauthorized release');
+    });
+  });
+
+  // ==========================================================================
+  // 14. ENDPOINT-SPECIFIC USAGE CONTRACTS & EFFECTIVE BILLING ENDPOINT AUDIT (OM-09C-FIX-4)
+  // ==========================================================================
+  describe('14. Endpoint-Specific Usage Contracts & Effective Billing Endpoint Audit (OM-09C-FIX-4)', () => {
+    // 14.1 Chat Completions Usage Schema
+    describe('14.1 Chat Completions Usage Schema (/v1/chat/completions)', () => {
+      it('successfully normalizes complete Chat Completions usage with details', () => {
+        const rate = pricingEngine.getRate('openai', 'gpt-4o');
+        const result = UsageNormalizer.normalizeAndReconcile({
+          response: {
+            correlation: { correlation_id: 'c1', project_id: 'p1' },
+            provider: 'openai',
+            model: 'gpt-4o',
+            content: 'test',
+            finish_reason: LlmFinishReason.STOP,
+            usage: {
+              prompt_tokens: 1200,
+              completion_tokens: 300,
+              total_tokens: 1500,
+              prompt_tokens_details: { cached_tokens: 400 },
+              completion_tokens_details: { reasoning_tokens: 50 },
+            } as any,
+            raw_metadata: null,
+            error: null,
+            structured_output: null,
+          },
+          request: {
+            messages: [{ role: 'user', content: 'hi' }],
+            model: 'gpt-4o',
+            correlation: { correlation_id: 'c1', project_id: 'p1' },
+            director_context: { project_id: 'p1' },
+            response_format: 'TEXT' as any,
+          },
+          modelId: 'gpt-4o',
+          rate,
+          pricingEngine,
+          providerId: 'openai',
+          endpoint: 'https://api.openai.com/v1/chat/completions',
+        });
+
+        assert.strictEqual(result.success, true);
+        if (result.success) {
+          assert.strictEqual(result.usage.inputTokens, 1200);
+          assert.strictEqual(result.usage.outputTokens, 300);
+          assert.strictEqual(result.usage.cachedTokens, 400);
+          assert.strictEqual(result.usage.reasoningTokens, 50);
+          assert.strictEqual(result.endpointKind, 'openai_chat_completions');
+        }
+      });
+
+      it('fails closed when prompt_tokens is missing from Chat Completions response', () => {
+        const rate = pricingEngine.getRate('openai', 'gpt-4o');
+        const result = UsageNormalizer.normalizeAndReconcile({
+          response: {
+            correlation: { correlation_id: 'c1', project_id: 'p1' },
+            provider: 'openai',
+            model: 'gpt-4o',
+            content: 'test',
+            finish_reason: LlmFinishReason.STOP,
+            usage: { completion_tokens: 300 } as any,
+            raw_metadata: null,
+            error: null,
+            structured_output: null,
+          },
+          request: {
+            messages: [{ role: 'user', content: 'hi' }],
+            model: 'gpt-4o',
+            correlation: { correlation_id: 'c1', project_id: 'p1' },
+            director_context: { project_id: 'p1' },
+            response_format: 'TEXT' as any,
+          },
+          modelId: 'gpt-4o',
+          rate,
+          pricingEngine,
+          providerId: 'openai',
+          endpoint: 'https://api.openai.com/v1/chat/completions',
+        });
+
+        assert.strictEqual(result.success, false);
+        if (!result.success) {
+          assert.strictEqual(result.errorCode, 'ERR_USAGE_INCOMPLETE');
+        }
+      });
+
+      it('fails closed when prompt_tokens is negative or fractional', () => {
+        const rate = pricingEngine.getRate('openai', 'gpt-4o');
+        for (const badTokens of [-5, 12.34, NaN]) {
+          const result = UsageNormalizer.normalizeAndReconcile({
+            response: {
+              correlation: { correlation_id: 'c1', project_id: 'p1' },
+              provider: 'openai',
+              model: 'gpt-4o',
+              content: 'test',
+              finish_reason: LlmFinishReason.STOP,
+              usage: { prompt_tokens: badTokens, completion_tokens: 100 } as any,
+              raw_metadata: null,
+              error: null,
+              structured_output: null,
+            },
+            request: {
+              messages: [{ role: 'user', content: 'hi' }],
+              model: 'gpt-4o',
+              correlation: { correlation_id: 'c1', project_id: 'p1' },
+              director_context: { project_id: 'p1' },
+              response_format: 'TEXT' as any,
+            },
+            modelId: 'gpt-4o',
+            rate,
+            pricingEngine,
+            providerId: 'openai',
+            endpoint: 'https://api.openai.com/v1/chat/completions',
+          });
+
+          assert.strictEqual(result.success, false);
+          if (!result.success) {
+            assert.strictEqual(result.errorCode, 'ERR_USAGE_MALFORMED');
+          }
+        }
+      });
+
+      it('fails closed when reasoning_tokens exceeds completion_tokens', () => {
+        const rate = pricingEngine.getRate('openai', 'gpt-4o');
+        const result = UsageNormalizer.normalizeAndReconcile({
+          response: {
+            correlation: { correlation_id: 'c1', project_id: 'p1' },
+            provider: 'openai',
+            model: 'gpt-4o',
+            content: 'test',
+            finish_reason: LlmFinishReason.STOP,
+            usage: {
+              prompt_tokens: 500,
+              completion_tokens: 100,
+              completion_tokens_details: { reasoning_tokens: 150 },
+            } as any,
+            raw_metadata: null,
+            error: null,
+            structured_output: null,
+          },
+          request: {
+            messages: [{ role: 'user', content: 'hi' }],
+            model: 'gpt-4o',
+            correlation: { correlation_id: 'c1', project_id: 'p1' },
+            director_context: { project_id: 'p1' },
+            response_format: 'TEXT' as any,
+          },
+          modelId: 'gpt-4o',
+          rate,
+          pricingEngine,
+          providerId: 'openai',
+          endpoint: 'https://api.openai.com/v1/chat/completions',
+        });
+
+        assert.strictEqual(result.success, false);
+        if (!result.success) {
+          assert.strictEqual(result.errorCode, 'ERR_USAGE_INCONSISTENT');
+        }
+      });
+    });
+
+    // 14.2 Responses API Usage Schema
+    describe('14.2 Responses API Usage Schema (/v1/responses)', () => {
+      it('successfully normalizes Responses API usage (input_tokens & output_tokens)', () => {
+        const rate = pricingEngine.getRate('openai', 'gpt-4o');
+        const result = UsageNormalizer.normalizeAndReconcile({
+          response: {
+            correlation: { correlation_id: 'c2', project_id: 'p2' },
+            provider: 'openai',
+            model: 'gpt-4o',
+            content: 'responses test',
+            finish_reason: LlmFinishReason.STOP,
+            usage: {
+              input_tokens: 2000,
+              output_tokens: 500,
+              total_tokens: 2500,
+              input_tokens_details: { cached_tokens: 600 },
+              output_tokens_details: { reasoning_tokens: 100 },
+            } as any,
+            raw_metadata: null,
+            error: null,
+            structured_output: null,
+          },
+          request: {
+            messages: [{ role: 'user', content: 'hi' }],
+            model: 'gpt-4o',
+            correlation: { correlation_id: 'c2', project_id: 'p2' },
+            director_context: { project_id: 'p2' },
+            response_format: 'TEXT' as any,
+          },
+          modelId: 'gpt-4o',
+          rate,
+          pricingEngine,
+          providerId: 'openai',
+          endpoint: 'https://api.openai.com/v1/responses',
+        });
+
+        assert.strictEqual(result.success, true);
+        if (result.success) {
+          assert.strictEqual(result.usage.inputTokens, 2000);
+          assert.strictEqual(result.usage.outputTokens, 500);
+          assert.strictEqual(result.usage.cachedTokens, 600);
+          assert.strictEqual(result.usage.reasoningTokens, 100);
+          assert.strictEqual(result.endpointKind, 'openai_responses');
+        }
+      });
+
+      it('fails closed when input_tokens is missing from Responses API usage', () => {
+        const rate = pricingEngine.getRate('openai', 'gpt-4o');
+        const result = UsageNormalizer.normalizeAndReconcile({
+          response: {
+            correlation: { correlation_id: 'c2', project_id: 'p2' },
+            provider: 'openai',
+            model: 'gpt-4o',
+            content: 'test',
+            finish_reason: LlmFinishReason.STOP,
+            usage: { output_tokens: 500 } as any,
+            raw_metadata: null,
+            error: null,
+            structured_output: null,
+          },
+          request: {
+            messages: [{ role: 'user', content: 'hi' }],
+            model: 'gpt-4o',
+            correlation: { correlation_id: 'c2', project_id: 'p2' },
+            director_context: { project_id: 'p2' },
+            response_format: 'TEXT' as any,
+          },
+          modelId: 'gpt-4o',
+          rate,
+          pricingEngine,
+          providerId: 'openai',
+          endpoint: 'https://api.openai.com/v1/responses',
+        });
+
+        assert.strictEqual(result.success, false);
+        if (!result.success) {
+          assert.strictEqual(result.errorCode, 'ERR_USAGE_INCOMPLETE');
+        }
+      });
+    });
+
+    // 14.3 Cache-Write Availability and Omission Policy Per Endpoint
+    describe('14.3 Cache-Write Availability and Omission Policy Per Endpoint', () => {
+      it('gpt-4o on /v1/chat/completions: omission of cache_write_tokens is safely 0 cost (no undercharge)', () => {
+        const rate = pricingEngine.getRate('openai', 'gpt-4o');
+        assert.strictEqual(rate.cacheWriteRateNum, 0n, 'gpt-4o does not charge for cache writes');
+
+        const result = UsageNormalizer.normalizeAndReconcile({
+          response: {
+            correlation: { correlation_id: 'c3', project_id: 'p3' },
+            provider: 'openai',
+            model: 'gpt-4o',
+            content: 'test',
+            finish_reason: LlmFinishReason.STOP,
+            usage: {
+              prompt_tokens: 1000,
+              completion_tokens: 200,
+              prompt_tokens_details: { cached_tokens: 300 },
+              // cache_write_tokens is intentionally omitted
+            } as any,
+            raw_metadata: null,
+            error: null,
+            structured_output: null,
+          },
+          request: {
+            messages: [{ role: 'user', content: 'hi' }],
+            model: 'gpt-4o',
+            correlation: { correlation_id: 'c3', project_id: 'p3' },
+            director_context: { project_id: 'p3' },
+            response_format: 'TEXT' as any,
+          },
+          modelId: 'gpt-4o',
+          rate,
+          pricingEngine,
+          providerId: 'openai',
+          endpoint: 'https://api.openai.com/v1/chat/completions',
+        });
+
+        assert.strictEqual(result.success, true);
+        if (result.success) {
+          assert.strictEqual(result.usage.cacheWriteTokens, 0);
+        }
+      });
+
+      it('gpt-6-luna on /v1/chat/completions: omission of cache_write_tokens fails closed when caching was active', () => {
+        const rate = pricingEngine.getRate('openai', 'gpt-6-luna');
+        assert.ok(rate.cacheWriteRateNum && rate.cacheWriteRateNum > 0n, 'gpt-6-luna charges 1.25x for cache writes');
+
+        const result = UsageNormalizer.normalizeAndReconcile({
+          response: {
+            correlation: { correlation_id: 'c4', project_id: 'p4' },
+            provider: 'openai',
+            model: 'gpt-6-luna',
+            content: 'test',
+            finish_reason: LlmFinishReason.STOP,
+            usage: {
+              prompt_tokens: 1000,
+              completion_tokens: 200,
+              prompt_tokens_details: { cached_tokens: 300 },
+              // cache_write_tokens is omitted
+            } as any,
+            raw_metadata: null,
+            error: null,
+            structured_output: null,
+          },
+          request: {
+            messages: [{ role: 'user', content: 'hi' }],
+            model: 'gpt-6-luna',
+            correlation: { correlation_id: 'c4', project_id: 'p4' },
+            director_context: { project_id: 'p4' },
+            response_format: 'TEXT' as any,
+          },
+          modelId: 'gpt-6-luna',
+          rate,
+          pricingEngine,
+          providerId: 'openai',
+          endpoint: 'https://api.openai.com/v1/chat/completions',
+        });
+
+        assert.strictEqual(result.success, false);
+        if (!result.success) {
+          assert.strictEqual(result.errorCode, 'ERR_USAGE_INCOMPLETE');
+          assert.ok(result.errorReason.includes('cache-write pricing'));
+        }
+      });
+
+      it('gpt-6-luna: omission of cache_write_tokens is safely 0 when prompt caching was explicitly disabled in request', () => {
+        const rate = pricingEngine.getRate('openai', 'gpt-6-luna');
+
+        const result = UsageNormalizer.normalizeAndReconcile({
+          response: {
+            correlation: { correlation_id: 'c5', project_id: 'p5' },
+            provider: 'openai',
+            model: 'gpt-6-luna',
+            content: 'test',
+            finish_reason: LlmFinishReason.STOP,
+            usage: {
+              prompt_tokens: 1000,
+              completion_tokens: 200,
+            } as any,
+            raw_metadata: null,
+            error: null,
+            structured_output: null,
+          },
+          request: {
+            messages: [{ role: 'user', content: 'hi' }],
+            model: 'gpt-6-luna',
+            metadata: { prompt_caching: false },
+            correlation: { correlation_id: 'c5', project_id: 'p5' },
+            director_context: { project_id: 'p5' },
+            response_format: 'TEXT' as any,
+          },
+          modelId: 'gpt-6-luna',
+          rate,
+          pricingEngine,
+          providerId: 'openai',
+          endpoint: 'https://api.openai.com/v1/chat/completions',
+        });
+
+        assert.strictEqual(result.success, true);
+        if (result.success) {
+          assert.strictEqual(result.usage.cacheWriteTokens, 0);
+        }
+      });
+    });
+
+    // 14.4 Unknown or Overridden Base URL
+    describe('14.4 Unknown or Overridden Base URL Audit', () => {
+      it('rejects unknown overridden base URL without registered pricing fail-closed', () => {
+        const audit = auditBillingEndpoint({
+          endpoint: 'https://unauthorized-proxy.internal/v1/chat/completions',
+          providerId: 'openai',
+          modelId: 'gpt-4o',
+          pricingEngine,
+        });
+
+        assert.strictEqual(audit.valid, false);
+        if (!audit.valid) {
+          assert.strictEqual(audit.errorCode, 'ERR_UNSUPPORTED_BILLING_MODE');
+          assert.ok(audit.errorReason.includes('not a verified standard provider host'));
+        }
+      });
+
+      it('permits custom base URL when pricing rate is explicitly registered for that host in PricingEngine', () => {
+        pricingEngine.registerRate({
+          providerId: 'my-internal-proxy.corp',
+          modelId: 'gpt-4o',
+          inputRateNum: 2_500_000_000n,
+          inputRateDen: 1_000_000n,
+          outputRateNum: 10_000_000_000n,
+          outputRateDen: 1_000_000n,
+          cachedInputRateNum: 1_250_000_000n,
+          cachedInputRateDen: 1_000_000n,
+        });
+
+        const audit = auditBillingEndpoint({
+          endpoint: 'https://my-internal-proxy.corp/v1/chat/completions',
+          providerId: 'openai',
+          modelId: 'gpt-4o',
+          pricingEngine,
+        });
+
+        assert.strictEqual(audit.valid, true);
+      });
+    });
+
+    // 14.5 Regional Endpoint and Surcharge Detection
+    describe('14.5 Regional Endpoint & Data-Residency Surcharge Detection', () => {
+      it('rejects regional subdomain (e.g. eu.api.openai.com) fail-closed before dispatch', () => {
+        const audit = auditBillingEndpoint({
+          endpoint: 'https://eu.api.openai.com/v1/chat/completions',
+          providerId: 'openai',
+          modelId: 'gpt-4o',
+          pricingEngine,
+        });
+
+        assert.strictEqual(audit.valid, false);
+        if (!audit.valid) {
+          assert.strictEqual(audit.errorCode, 'ERR_UNSUPPORTED_BILLING_MODE');
+          assert.ok(audit.errorReason.includes('Regional endpoint'));
+        }
+      });
+
+      it('rejects Azure OpenAI regional hostnames fail-closed', () => {
+        const audit = auditBillingEndpoint({
+          endpoint: 'https://my-custom-resource.openai.azure.com/openai/deployments/gpt-4o/chat/completions',
+          providerId: 'openai',
+          modelId: 'gpt-4o',
+          pricingEngine,
+        });
+
+        assert.strictEqual(audit.valid, false);
+        if (!audit.valid) {
+          assert.strictEqual(audit.errorCode, 'ERR_UNSUPPORTED_BILLING_MODE');
+        }
+      });
+
+      it('rejects data residency query parameters fail-closed', () => {
+        const audit = auditBillingEndpoint({
+          endpoint: 'https://api.openai.com/v1/chat/completions?data_residency=eu',
+          providerId: 'openai',
+          modelId: 'gpt-4o',
+          pricingEngine,
+        });
+
+        assert.strictEqual(audit.valid, false);
+        if (!audit.valid) {
+          assert.strictEqual(audit.errorCode, 'ERR_UNSUPPORTED_BILLING_MODE');
+        }
+      });
+
+      it('sanitizes secrets in endpoint URLs without leaking credentials', () => {
+        const secretUrl = 'https://api-key-sk-secret12345@api.openai.com/v1/chat/completions?token=supersecret';
+        const audit = auditBillingEndpoint({
+          endpoint: secretUrl,
+          providerId: 'openai',
+          modelId: 'gpt-4o',
+          pricingEngine,
+        });
+
+        assert.ok(audit.sanitizedEndpoint);
+        assert.ok(!audit.sanitizedEndpoint.includes('supersecret'));
+      });
+    });
+
+    // 14.6 Requested Versus Reported Service Tier Reconciliation
+    describe('14.6 Requested vs Provider-Reported Service Tier Reconciliation', () => {
+      it('applies fast (priority surcharge) rate when provider reports fast even if standard was requested', () => {
+        const rate = pricingEngine.getRate('openai', 'gpt-6-luna', 'standard');
+
+        const result = UsageNormalizer.normalizeAndReconcile({
+          response: {
+            correlation: { correlation_id: 'c6', project_id: 'p6' },
+            provider: 'openai',
+            model: 'gpt-6-luna',
+            content: 'test',
+            finish_reason: LlmFinishReason.STOP,
+            service_tier: 'fast', // Provider reported priority processing
+            usage: {
+              prompt_tokens: 1000,
+              completion_tokens: 200,
+              prompt_tokens_details: { cached_tokens: 100, cache_write_tokens: 50 },
+            } as any,
+            raw_metadata: null,
+            error: null,
+            structured_output: null,
+          },
+          request: {
+            messages: [{ role: 'user', content: 'hi' }],
+            model: 'gpt-6-luna',
+            metadata: { service_tier: 'standard' }, // Caller requested standard
+            correlation: { correlation_id: 'c6', project_id: 'p6' },
+            director_context: { project_id: 'p6' },
+            response_format: 'TEXT' as any,
+          },
+          modelId: 'gpt-6-luna',
+          rate,
+          pricingEngine,
+          providerId: 'openai',
+          endpoint: 'https://api.openai.com/v1/chat/completions',
+        });
+
+        assert.strictEqual(result.success, true);
+        if (result.success) {
+          assert.strictEqual(result.effectiveServiceTier, 'fast');
+          assert.strictEqual(result.usage.serviceTier, 'fast');
+        }
+      });
+
+      it('falls back to standard tier when discounted tier (flex/batch) requested but provider did not confirm', () => {
+        const rate = pricingEngine.getRate('openai', 'gpt-6-luna', 'flex');
+
+        const result = UsageNormalizer.normalizeAndReconcile({
+          response: {
+            correlation: { correlation_id: 'c7', project_id: 'p7' },
+            provider: 'openai',
+            model: 'gpt-6-luna',
+            content: 'test',
+            finish_reason: LlmFinishReason.STOP,
+            // service_tier is omitted by provider
+            usage: {
+              prompt_tokens: 1000,
+              completion_tokens: 200,
+              prompt_tokens_details: { cached_tokens: 100, cache_write_tokens: 50 },
+            } as any,
+            raw_metadata: null,
+            error: null,
+            structured_output: null,
+          },
+          request: {
+            messages: [{ role: 'user', content: 'hi' }],
+            model: 'gpt-6-luna',
+            metadata: { service_tier: 'flex' }, // Caller requested discounted flex
+            correlation: { correlation_id: 'c7', project_id: 'p7' },
+            director_context: { project_id: 'p7' },
+            response_format: 'TEXT' as any,
+          },
+          modelId: 'gpt-6-luna',
+          rate,
+          pricingEngine,
+          providerId: 'openai',
+          endpoint: 'https://api.openai.com/v1/chat/completions',
+        });
+
+        assert.strictEqual(result.success, true);
+        if (result.success) {
+          assert.strictEqual(result.effectiveServiceTier, 'standard', 'Must fall back to standard undiscounted tier to prevent undercharging');
+          assert.strictEqual(result.usage.serviceTier, 'standard');
+        }
+      });
+
+      it('fails closed when provider reports an unknown/unpriced tier (e.g. ultrafast)', () => {
+        const rate = pricingEngine.getRate('openai', 'gpt-6-luna', 'standard');
+
+        const result = UsageNormalizer.normalizeAndReconcile({
+          response: {
+            correlation: { correlation_id: 'c8', project_id: 'p8' },
+            provider: 'openai',
+            model: 'gpt-6-luna',
+            content: 'test',
+            finish_reason: LlmFinishReason.STOP,
+            service_tier: 'ultrafast', // Unpriced tier
+            usage: {
+              prompt_tokens: 1000,
+              completion_tokens: 200,
+              prompt_tokens_details: { cached_tokens: 100, cache_write_tokens: 50 },
+            } as any,
+            raw_metadata: null,
+            error: null,
+            structured_output: null,
+          },
+          request: {
+            messages: [{ role: 'user', content: 'hi' }],
+            model: 'gpt-6-luna',
+            correlation: { correlation_id: 'c8', project_id: 'p8' },
+            director_context: { project_id: 'p8' },
+            response_format: 'TEXT' as any,
+          },
+          modelId: 'gpt-6-luna',
+          rate,
+          pricingEngine,
+          providerId: 'openai',
+          endpoint: 'https://api.openai.com/v1/chat/completions',
+        });
+
+        assert.strictEqual(result.success, false);
+        if (!result.success) {
+          assert.strictEqual(result.errorCode, 'ERR_PRICING_NOT_FOUND');
+        }
+      });
+    });
+
+    // 14.7 Reservation Hold Retention on Every Unpriceable Response
+    describe('14.7 Reservation Hold Retention on Unpriceable Responses', () => {
+      it('retains reservation in UNKNOWN state and preserves reserved hold when metrics are unpriceable', async () => {
+        budgetManager.createGlobalAccount(5.0);
+
+        const unpriceableProvider: LLMProvider = {
+          providerId: 'openai',
+          providerName: 'openai',
+          defaultModel: 'gpt-6-luna',
+          supportedModels: ['gpt-6-luna'],
+          supportedCapabilities: [],
+          checkAvailability: async () => ({ available: true, model: 'gpt-6-luna', reason: null }),
+          generate: async (req: LlmRequest) => ({
+            correlation: req.correlation,
+            provider: 'openai',
+            model: 'gpt-6-luna',
+            content: 'Unpriceable corrupted metrics',
+            finish_reason: LlmFinishReason.STOP,
+            usage: {
+              prompt_tokens: 1000,
+              completion_tokens: 200,
+              // Omitted cache_write_tokens on gpt-6-luna without disabling caching
+            } as any,
+            raw_metadata: null,
+          }),
+        };
+
+        const adapter = new BudgetAwareLlmAdapter(unpriceableProvider, budgetManager);
+
+        const req: LlmRequest = {
+          messages: [{ role: 'user', content: 'test unpriceable retention' }],
+          model: 'gpt-6-luna',
+          correlation: { correlation_id: 'corr_unk_hold_1', attempt: 1, project_id: 'proj_unk' },
+          director_context: { project_id: 'proj_unk' },
+        };
+
+        const res = await adapter.generate(req);
+        assert.strictEqual(res.content, 'Unpriceable corrupted metrics');
+
+        const account = budgetManager.getGlobalAccount()!;
+        assert.ok(account.reservedSpendNanoUsd > 0n, 'Reserved hold MUST NOT be released when usage is unpriceable');
+        assert.strictEqual(account.committedSpendNanoUsd, 0n, 'Committed spend must remain 0 when usage could not be settled');
+
+        // Verify reservation state is UNKNOWN in SQLite
+        const reservation = budgetManager.db.getReservationByIdempotencyKey('idemp_res_corr_unk_hold_1_att_1');
+        assert.ok(reservation);
+        assert.strictEqual(reservation.state, ReservationState.UNKNOWN);
+      });
+    });
+
+    // 14.8 Successful Settlement for Valid Usage From Supported Endpoints
+    describe('14.8 Successful Settlement for Supported Endpoints', () => {
+      it('successfully settles valid Responses API usage (/v1/responses) with zero leftover hold', async () => {
+        budgetManager.createGlobalAccount(10.0);
+
+        const responsesProvider: LLMProvider = {
+          providerId: 'openai',
+          providerName: 'openai',
+          defaultModel: 'gpt-4o',
+          supportedModels: ['gpt-4o'],
+          supportedCapabilities: [],
+          checkAvailability: async () => ({ available: true, model: 'gpt-4o', reason: null }),
+          generate: async (req: LlmRequest) => ({
+            correlation: req.correlation,
+            provider: 'openai',
+            model: 'gpt-4o',
+            content: 'Responses API response',
+            finish_reason: LlmFinishReason.STOP,
+            usage: {
+              input_tokens: 2000,
+              output_tokens: 400,
+              total_tokens: 2400,
+              input_tokens_details: { cached_tokens: 1000 },
+              output_tokens_details: { reasoning_tokens: 50 },
+            } as any,
+            raw_metadata: null,
+          }),
+        };
+
+        const adapter = new BudgetAwareLlmAdapter(responsesProvider, budgetManager);
+
+        const req: LlmRequest = {
+          messages: [{ role: 'user', content: 'test responses api' }],
+          model: 'gpt-4o',
+          metadata: { endpoint: 'https://api.openai.com/v1/responses' },
+          correlation: { correlation_id: 'corr_responses_settle_1', attempt: 1, project_id: 'proj_resp' },
+          director_context: { project_id: 'proj_resp' },
+        };
+
+        const res = await adapter.generate(req);
+        assert.strictEqual(res.content, 'Responses API response');
+
+        const account = budgetManager.getGlobalAccount()!;
+        assert.strictEqual(account.reservedSpendNanoUsd, 0n, 'Reservation hold must be completely settled to 0');
+        // gpt-4o pricing:
+        // Ordinary input: (2000 - 1000) = 1000 tokens * 2.50 USD / 1M = 2,500,000 nUSD
+        // Cached input: 1000 tokens * 1.25 USD / 1M = 1,250,000 nUSD
+        // Output: 400 tokens * 10.00 USD / 1M = 4,000,000 nUSD
+        // Total = 2,500,000 + 1,250,000 + 4,000,000 = 7,750,000 nUSD ($0.00775)
+        assert.strictEqual(account.committedSpendNanoUsd, 7_750_000n);
+      });
+    });
+
+    // 14.9 Idempotency and Migration Stability
+    describe('14.9 Idempotency & Migration Stability', () => {
+      it('re-executing settle with identical idempotency key returns cached result without double charging', () => {
+        budgetManager.createGlobalAccount(5.0);
+
+        const reservation = budgetManager.reserve({
+          sessionId: 'sess_idemp_test',
+          providerId: 'openai',
+          modelId: 'gpt-4o',
+          estimatedTokens: { inputTokens: 1000, outputTokens: 500 },
+          idempotencyKey: 'idemp_res_test',
+        });
+
+        budgetManager.markDispatched(reservation.reservationId);
+
+        const settlePayload = {
+          reservationId: reservation.reservationId,
+          reportedUsage: { inputTokens: 1000, outputTokens: 500, cachedTokens: 0, serviceTier: 'standard' },
+          idempotencyKey: 'idemp_settle_exact_key',
+        };
+
+        const firstResult = budgetManager.settle(settlePayload, 'openai');
+        const committedAfterFirst = budgetManager.getGlobalAccount()!.committedSpendNanoUsd;
+        assert.ok(committedAfterFirst > 0n);
+
+        const secondResult = budgetManager.settle(settlePayload, 'openai');
+        const committedAfterSecond = budgetManager.getGlobalAccount()!.committedSpendNanoUsd;
+
+        assert.strictEqual(firstResult.actualCostNanoUsd, secondResult.actualCostNanoUsd);
+        assert.strictEqual(committedAfterFirst, committedAfterSecond, 'Committed spend must remain invariant across repeated idempotent settlements');
+      });
     });
   });
 });

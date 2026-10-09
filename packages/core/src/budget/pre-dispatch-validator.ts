@@ -6,6 +6,7 @@ import {
 } from './budget-types.js';
 import type { BudgetDatabase } from './budget-database.js';
 import type { PricingEngine } from './pricing-engine.js';
+import { auditBillingEndpoint } from './endpoint-audit.js';
 
 export class PreDispatchValidator {
   constructor(
@@ -20,6 +21,34 @@ export class PreDispatchValidator {
    * If strict=true, throws a specific BudgetError on any failure.
    */
   validate(request: PreDispatchValidationRequest, strict = true): PreDispatchValidationResult {
+    // 0. Surcharge & Billing Endpoint Check
+    if (
+      (request as any).metadata?.regional ||
+      (request as any).metadata?.data_residency ||
+      (request as any).metadata?.dataResidency ||
+      (request as any).metadata?.regional_processing ||
+      (request as any).endpoint
+    ) {
+      const audit = auditBillingEndpoint({
+        endpoint: (request as any).endpoint,
+        metadata: (request as any).metadata,
+        providerId: request.providerId,
+        modelId: request.modelId,
+        pricingEngine: this.pricingEngine,
+      });
+      if (!audit.valid) {
+        if (strict) {
+          throw new BudgetError(audit.errorReason, audit.errorCode);
+        }
+        return {
+          allowed: false,
+          accountId: request.accountId ?? 'UNKNOWN',
+          availableNanoUsd: 0n,
+          estimatedCostNanoUsd: 0n,
+          reason: audit.errorReason,
+        };
+      }
+    }
     // 1. Resolve Account
     const account = request.accountId
       ? this.db.getAccount(request.accountId)

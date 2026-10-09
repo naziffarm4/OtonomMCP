@@ -61,11 +61,17 @@ import { BudgetError, type BudgetErrorCode } from '../errors/budget-error.js';
 import type { LlmRequest, LlmResponse } from '../llm-bridge/llm-types.js';
 import type { PricingRate, TokenUsage } from './budget-types.js';
 import type { PricingEngine } from './pricing-engine.js';
+import {
+  auditBillingEndpoint,
+  resolveBillingEndpointKind,
+  type BillingEndpointKind,
+} from './endpoint-audit.js';
 
 export interface NormalizedUsageSuccess {
   readonly success: true;
   readonly usage: TokenUsage;
   readonly effectiveServiceTier: string;
+  readonly endpointKind?: BillingEndpointKind;
 }
 
 export interface NormalizedUsageFailure {
@@ -76,32 +82,45 @@ export interface NormalizedUsageFailure {
 
 export type UsageNormalizationResult = NormalizedUsageSuccess | NormalizedUsageFailure;
 
+export interface NormalizeUsageParams {
+  response: LlmResponse<unknown>;
+  request: LlmRequest;
+  modelId: string;
+  rate: PricingRate;
+  pricingEngine: PricingEngine;
+  providerId: string;
+  endpoint?: string | null;
+}
+
 export class UsageNormalizer {
   /**
-   * Normalizes raw response usage into an exact, validated TokenUsage object.
+   * Normalizes raw response usage into an exact, validated TokenUsage object
+   * adhering to endpoint-specific usage contracts (/v1/chat/completions, /v1/responses, etc.).
    * Enforces fail-closed handling on missing, partial, fractional, or inconsistent metrics.
    */
-  static normalizeAndReconcile(params: {
-    response: LlmResponse<unknown>;
-    request: LlmRequest;
-    modelId: string;
-    rate: PricingRate;
-    pricingEngine: PricingEngine;
-    providerId: string;
-  }): UsageNormalizationResult {
-    const { response, request, modelId, rate, pricingEngine, providerId } = params;
+  static normalizeAndReconcile(params: NormalizeUsageParams): UsageNormalizationResult {
+    const { response, request, modelId, rate, pricingEngine, providerId, endpoint } = params;
 
-    // 1. Regional / Data-residency surcharge check
-    if (
-      request.metadata?.regional ||
-      request.metadata?.data_residency ||
-      request.metadata?.dataResidency ||
-      request.metadata?.regional_processing
-    ) {
+    // 1. Audit Billing Endpoint & Regional / Data-Residency Surcharge Check
+    const effectiveEndpoint =
+      endpoint ??
+      (request.metadata?.endpoint as string | undefined) ??
+      (request.metadata?.base_url as string | undefined) ??
+      (request.metadata?.baseUrl as string | undefined);
+
+    const auditResult = auditBillingEndpoint({
+      endpoint: effectiveEndpoint,
+      metadata: request.metadata,
+      providerId,
+      modelId,
+      pricingEngine,
+    });
+
+    if (!auditResult.valid) {
       return {
         success: false,
-        errorReason: 'Regional processing and data-residency billing surcharges are not currently supported by pricing engine; rejected fail-closed to prevent billing inaccuracy',
-        errorCode: 'ERR_UNSUPPORTED_BILLING_MODE',
+        errorReason: auditResult.errorReason,
+        errorCode: auditResult.errorCode,
       };
     }
 
@@ -116,10 +135,13 @@ export class UsageNormalizer {
     }
 
     // 3. Mandatory Input Token Validation (No Fallback to Estimates)
-    const rawInput =
-      rawUsage.prompt_tokens ??
-      rawUsage.reported_input_tokens ??
-      rawUsage.input_tokens;
+    // Select primary field based on endpoint kind
+    let rawInput: unknown;
+    if (auditResult.endpointKind === 'openai_responses') {
+      rawInput = rawUsage.input_tokens ?? rawUsage.reported_input_tokens ?? rawUsage.prompt_tokens;
+    } else {
+      rawInput = rawUsage.prompt_tokens ?? rawUsage.reported_input_tokens ?? rawUsage.input_tokens;
+    }
 
     if (rawInput === undefined || rawInput === null) {
       return {
@@ -138,10 +160,12 @@ export class UsageNormalizer {
     }
 
     // 4. Mandatory Output Token Validation (No Fallback to Estimates)
-    let rawOutput =
-      rawUsage.completion_tokens ??
-      rawUsage.reported_output_tokens ??
-      rawUsage.output_tokens;
+    let rawOutput: unknown;
+    if (auditResult.endpointKind === 'openai_responses') {
+      rawOutput = rawUsage.output_tokens ?? rawUsage.reported_output_tokens ?? rawUsage.completion_tokens;
+    } else {
+      rawOutput = rawUsage.completion_tokens ?? rawUsage.reported_output_tokens ?? rawUsage.output_tokens;
+    }
 
     if (rawOutput === undefined || rawOutput === null) {
       return {
@@ -158,6 +182,8 @@ export class UsageNormalizer {
         errorCode: 'ERR_USAGE_MALFORMED',
       };
     }
+
+    let finalOutput = rawOutput as number;
 
     // 5. Reasoning Token Validation & Accounting
     const promptDetails = rawUsage.prompt_tokens_details as Record<string, unknown> | undefined;
@@ -182,17 +208,21 @@ export class UsageNormalizer {
       }
       reasoningTokens = rawReasoning;
 
-      // In OpenAI schema, completion_tokens already includes reasoning_tokens.
-      // If reasoning_tokens was reported separately outside completion_tokens_details, ensure it is in rawOutput:
-      if (compDetails?.reasoning_tokens === undefined && outDetails?.reasoning_tokens === undefined && rawUsage.reasoning_tokens !== undefined) {
-        rawOutput += reasoningTokens;
+      // In OpenAI schema, completion_tokens / output_tokens already includes reasoning_tokens.
+      // If reasoning_tokens was reported separately outside details, ensure it is accounted for:
+      if (
+        compDetails?.reasoning_tokens === undefined &&
+        outDetails?.reasoning_tokens === undefined &&
+        rawUsage.reasoning_tokens !== undefined
+      ) {
+        finalOutput += reasoningTokens;
       }
     }
 
-    if (reasoningTokens > rawOutput) {
+    if (reasoningTokens > finalOutput) {
       return {
         success: false,
-        errorReason: `Reasoning tokens (${reasoningTokens}) cannot exceed total output tokens (${rawOutput})`,
+        errorReason: `Reasoning tokens (${reasoningTokens}) cannot exceed total output tokens (${finalOutput})`,
         errorCode: 'ERR_USAGE_INCONSISTENT',
       };
     }
@@ -216,8 +246,8 @@ export class UsageNormalizer {
       }
       cachedTokens = rawCached;
     } else {
-      // Documented schema policy: Absence of prompt_tokens_details or cached_tokens represents
-      // 0 cached tokens. Uncached base rate applies to full input, which never undercharges.
+      // Documented schema policy: Absence of cached tokens represents 0 cached tokens.
+      // Uncached base rate applies to full input, which never undercharges.
       cachedTokens = 0;
     }
 
@@ -231,6 +261,10 @@ export class UsageNormalizer {
 
     let cacheWriteTokens = 0;
     const modelChargesCacheWrite = (rate.cacheWriteRateNum ?? 0n) > 0n;
+    const isCachingDisabled =
+      request.metadata?.prompt_caching === false ||
+      request.metadata?.cache === false ||
+      request.metadata?.prompt_cache === false;
 
     if (rawCacheWrite !== undefined && rawCacheWrite !== null) {
       if (typeof rawCacheWrite !== 'number' || !Number.isInteger(rawCacheWrite) || rawCacheWrite < 0) {
@@ -247,14 +281,20 @@ export class UsageNormalizer {
       // we CANNOT assume 0 cache-writes if caching was possible.
       // Omission of cache_write_tokens would silently undercharge if cache writes occurred!
       if (modelChargesCacheWrite) {
-        return {
-          success: false,
-          errorReason: `Model '${modelId}' has cache-write pricing (1.25x rate), but provider response omitted cache_write_tokens. Refusing to settle incomplete usage as zero-write.`,
-          errorCode: 'ERR_USAGE_INCOMPLETE',
-        };
+        if (isCachingDisabled) {
+          // Explicitly disabled by request: cache writes guaranteed 0
+          cacheWriteTokens = 0;
+        } else {
+          return {
+            success: false,
+            errorReason: `Model '${modelId}' has cache-write pricing (1.25x rate), but provider response omitted cache_write_tokens. Refusing to settle incomplete usage as zero-write.`,
+            errorCode: 'ERR_USAGE_INCOMPLETE',
+          };
+        }
+      } else {
+        // For models where cache writes are not billed (e.g. gpt-4o, gpt-4o-mini), omission is safely 0 cost.
+        cacheWriteTokens = 0;
       }
-      // For models where cache writes are not billed (e.g. gpt-4o, gpt-4o-mini), omission is safely 0 cost.
-      cacheWriteTokens = 0;
     }
 
     // 8. Total Input Partition Invariant: cached + cacheWrite <= total input
@@ -323,14 +363,15 @@ export class UsageNormalizer {
     return {
       success: true,
       usage: {
-        inputTokens: rawInput,
-        outputTokens: rawOutput,
+        inputTokens: rawInput as number,
+        outputTokens: finalOutput,
         cachedTokens,
         cacheWriteTokens,
         reasoningTokens,
         serviceTier: effectiveTier,
       },
       effectiveServiceTier: effectiveTier,
+      endpointKind: auditResult.endpointKind,
     };
   }
 }

@@ -6,6 +6,8 @@ import type { BudgetManager } from './budget-manager.js';
 import { ReservationState, type TokenUsage } from './budget-types.js';
 import { UsageNormalizer } from './usage-normalizer.js';
 
+import { auditBillingEndpoint } from './endpoint-audit.js';
+
 export interface BudgetAwareLlmAdapterOptions {
   budgetManager: BudgetManager;
   defaultEstimatedPromptTokens?: number;
@@ -105,23 +107,33 @@ export class BudgetAwareLlmAdapter implements LLMProvider {
   }
 
   async generate<TStructured = unknown>(request: LlmRequest): Promise<LlmResponse<TStructured>> {
-    // 0. Surcharge & Unsupported Billing Mode Check (Fail closed)
-    if (
-      request.metadata?.regional ||
-      request.metadata?.data_residency ||
-      request.metadata?.dataResidency ||
-      request.metadata?.regional_processing
-    ) {
-      throw new BudgetError(
-        'Regional processing and data-residency billing surcharges are not currently supported by pricing engine; rejected fail-closed to prevent billing inaccuracy',
-        'ERR_UNSUPPORTED_BILLING_MODE'
-      );
-    }
-
     const correlationId = request.correlation?.correlation_id ?? `corr_${Date.now()}`;
     const attempt = request.correlation?.attempt ?? 1;
     const model = request.model?.trim() || this.defaultModel;
     const providerId = this.providerName;
+
+    // 0. Resolve Effective Billing Endpoint & Audit (Fail closed before dispatch)
+    const effectiveEndpoint =
+      (request.metadata?.endpoint as string | undefined) ??
+      (request.metadata?.base_url as string | undefined) ??
+      (request.metadata?.baseUrl as string | undefined) ??
+      (this.inner as any).endpoint ??
+      (this.inner as any).transport?.endpoint ??
+      process.env.AIDM_LLM_ENDPOINT ??
+      process.env.OPENAI_BASE_URL ??
+      (providerId.toLowerCase().includes('openai') ? 'https://api.openai.com/v1/chat/completions' : undefined);
+
+    const auditResult = auditBillingEndpoint({
+      endpoint: effectiveEndpoint,
+      metadata: request.metadata,
+      providerId,
+      modelId: model,
+      pricingEngine: this.budgetManager.pricingEngine,
+    });
+
+    if (!auditResult.valid) {
+      throw new BudgetError(auditResult.errorReason, auditResult.errorCode);
+    }
     const estimatedTokens = this.estimateTokens(request);
     const reservationKey = `idemp_res_${correlationId}_att_${attempt}`;
     const settlementKey = `idemp_set_${correlationId}_att_${attempt}`;
@@ -206,6 +218,7 @@ export class BudgetAwareLlmAdapter implements LLMProvider {
       rate,
       pricingEngine: this.budgetManager.pricingEngine,
       providerId,
+      endpoint: effectiveEndpoint,
     });
 
     if (!normResult.success) {

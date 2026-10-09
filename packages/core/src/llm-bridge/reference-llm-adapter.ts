@@ -688,7 +688,9 @@ export class ReferenceLlmAdapter implements LLMProvider {
     if (wire.usage && typeof wire.usage === 'object') {
       const hasExactMetrics =
         typeof wire.usage.prompt_tokens === 'number' ||
-        typeof wire.usage.completion_tokens === 'number';
+        typeof wire.usage.completion_tokens === 'number' ||
+        typeof (wire.usage as any).input_tokens === 'number' ||
+        typeof (wire.usage as any).output_tokens === 'number';
 
       const cachedTokens =
         wire.usage.cached_tokens ??
