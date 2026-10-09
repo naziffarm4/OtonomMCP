@@ -55,12 +55,12 @@ OtonomMCP mimarisi, net olarak ayrılmış 7 ana aktör üzerine kuruludur:
 
 ## 🛠 Teknoloji Yığını
 
-- **Çalışma Zamanı (Runtime):** Node.js (`>= 18.0.0`, ESM)
+- **Çalışma Zamanı (Runtime):** Node.js (`>= 22.6.0`, Node 22 LTS, ESM)
 - **Dil:** TypeScript (`5.8.x+`, katı tip denetimi)
 - **Paket Yöneticisi:** pnpm (Workspace / Monorepo)
 - **Protokol:** Model Context Protocol (MCP `stdio` JSON-RPC 2.0)
 - **Veri Doğrulama:** Zod (`v3.x` / `v4.x`)
-- **Veritabanı & Kalıcılık:** Yerleşik Node.js SQLite (`BigInt` Nano-USD atomik bütçe ve durum defteri)
+- **Veritabanı & Kalıcılık:** Yerleşik Node.js SQLite (`node:sqlite`, `BigInt` Nano-USD atomik bütçe ve durum defteri)
 - **Test Çatısı:** Node.js Native Test Runner (`node --test`) & Vitest
 
 ---
@@ -68,7 +68,7 @@ OtonomMCP mimarisi, net olarak ayrılmış 7 ana aktör üzerine kuruludur:
 ## 📋 Gereksinimler
 
 - **İşletim Sistemi:** Windows 10 / 11 (x64)
-- **Node.js:** `>= 18.0.0` (Doğrulanan: `v22.19.0`)
+- **Node.js:** `>= 22.6.0` (Doğrulanan: `v22.19.0`, bkz. `.nvmrc`)
 - **pnpm:** `>= 9.0.0` (Doğrulanan: `12.3.4`)
 - **Git:** Sürüm kontrolü ve bağımsız kanıt doğrulama için yerel Git CLI
 

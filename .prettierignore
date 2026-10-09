@@ -1,0 +1,7 @@
+node_modules/
+dist/
+build/
+coverage/
+.ai-manager/
+pnpm-lock.yaml
+*.tsbuildinfo

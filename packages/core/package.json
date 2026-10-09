@@ -3,6 +3,9 @@
   "version": "0.1.0",
   "description": "AI Development Manager Core Scaffolding, Domain Types, Lifecycle States, FSM Engine, and Error Hierarchy",
   "type": "module",
+  "engines": {
+    "node": ">=22.6.0"
+  },
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {

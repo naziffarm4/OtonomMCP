@@ -7,19 +7,26 @@ dist/
 build/
 *.tsbuildinfo
 
+# Coverage
+coverage/
+
 # Logs & temporary files
 *.log
 npm-debug.log*
 yarn-debug.log*
 pnpm-debug.log*
 .test-*
+.mcp-protect-*
 .mcp-unprotect-*
+
+# Editor & OS files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
 
 # Environment & local state
 .env
 .env.*
 !.env.example
-.ai-manager/*
-**/.ai-manager/cache/
-**/.ai-manager/state/
-**/.ai-manager/*.sqlite*
+.ai-manager/
