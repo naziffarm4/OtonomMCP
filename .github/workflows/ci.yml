@@ -22,11 +22,20 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 22.x
+          node-version-file: '.nvmrc'
           cache: 'pnpm'
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
+
+      - name: Run linter
+        run: pnpm lint
+
+      - name: Typecheck sources
+        run: pnpm typecheck
+
+      - name: Typecheck tests
+        run: pnpm typecheck:tests
 
       - name: Build packages
         run: pnpm build
