@@ -164,8 +164,8 @@ export function createContextGetTool(): McpToolRegistration {
       const items: ContextItemOutput[] = [];
       let totalTokens = 0;
       let targetLayerName: string = requestedLayer ?? 'L0';
-      let isSufficient = true;
-      let sufficiencyReason = 'Targeted context resolved';
+      const isSufficient = true;
+      const sufficiencyReason = 'Targeted context resolved';
 
       // Sort paths deterministically
       const sortedPaths = [...input.sourcePaths].sort();

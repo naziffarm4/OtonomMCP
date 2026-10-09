@@ -164,8 +164,8 @@ export function parseExecutorProcessOutput(
     };
   }
 
-  let discoveredClaims: string[] = [];
-  let discoveredFiles: string[] = [];
+  const discoveredClaims: string[] = [];
+  const discoveredFiles: string[] = [];
   let discoveredMetadata: Record<string, unknown> | undefined;
 
   let parsedSingle = false;

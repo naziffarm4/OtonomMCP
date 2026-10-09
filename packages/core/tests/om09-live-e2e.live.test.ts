@@ -806,7 +806,7 @@ describe('OM-09: Live E2E Execution Gate (Real Host & Tooling)', () => {
   // REAL LLM FAILURE MODES (Section 6)
   // ==========================================================================
   it('F01: Real LLM Failure (Transport Unavailable) fails closed; AGY not invoked', async () => {
-    let agyInvoked = false;
+    const agyInvoked = false;
 
     // Transport pointing to an unavailable port (connection refused)
     const deadTransport = new HttpLlmTransport<ReferenceWireRequest, ReferenceWireResponse>({
@@ -1022,7 +1022,7 @@ describe('OM-09: Live E2E Execution Gate (Real Host & Tooling)', () => {
   // AUTHORIZATION POLICY TESTS (ALLOW vs DENY)
   // ==========================================================================
   it('F04: Authorization DENY on unauthorized file halts execution; AGY not invoked', async () => {
-    let agyInvoked = false;
+    const agyInvoked = false;
 
     const mandate: ProjectMandate = {
       projectId,
@@ -1086,7 +1086,7 @@ describe('OM-09: Live E2E Execution Gate (Real Host & Tooling)', () => {
   // HUMAN APPROVAL ENFORCEMENT
   // ==========================================================================
   it('F05: Human Approval required halts execution without trusted human identity', async () => {
-    let agyInvoked = false;
+    const agyInvoked = false;
 
     const mandate: ProjectMandate = {
       projectId,

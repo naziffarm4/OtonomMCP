@@ -600,7 +600,7 @@ describe('P13-01: Failure Diagnosis & Recovery Policy Engine', () => {
 
   // T30
   it('T30: no Antigravity dispatch occurs during policy evaluation', () => {
-    let dispatchCalled = false;
+    const dispatchCalled = false;
     const evidence = createBaseEvidence({
       verificationChecks: [
         { checkId: 'CHECK_TEST', type: 'TEST', status: 'FAIL', evidence: 'Test failed' },

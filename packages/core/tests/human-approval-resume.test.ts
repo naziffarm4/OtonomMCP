@@ -653,7 +653,7 @@ describe('Phase 9 — Human Approval & Resume Protocol (TASK-P9-04)', () => {
 
   it('T13_approval_does_not_invoke_antigravity: zero references or invocations of Antigravity executor', async () => {
     // Track execution
-    let antigravityCalled = false;
+    const antigravityCalled = false;
     // Human approval submit must complete without touching antigravity
     await humanApprovalEngine.submitApproval({
       workspaceRoot: tempDir,

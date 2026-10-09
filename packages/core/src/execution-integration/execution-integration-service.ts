@@ -562,7 +562,7 @@ export class ExecutionStateIntegrator {
     let updatedCompletedTaskIds = [...(durableState.completedTaskIds ?? [])];
     let updatedActiveTaskId = durableState.activeTaskId;
     let updatedBlockedState: BlockedState | null = durableState.blockedState ?? null;
-    let updatedLifecycleState = durableState.currentLifecycleState;
+    const updatedLifecycleState = durableState.currentLifecycleState;
 
     // 5. Apply Approved Decision Mapping
     if (verificationDecision === 'ACCEPT') {

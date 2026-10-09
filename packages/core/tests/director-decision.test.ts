@@ -1261,7 +1261,7 @@ describe('Phase 9 — Typed Director Decision Protocol (TASK-P9-03)', () => {
   });
 
   it('T42_no_antigravity_invocation: zero references or calls to Antigravity execution', async () => {
-    let antigravityCalled = false;
+    const antigravityCalled = false;
     // Decision creation must never attempt to invoke any executor
     const decision = await decisionEngine.createDecision({
       directorSessionId: activeSession.directorSessionId,

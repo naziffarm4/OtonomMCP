@@ -443,7 +443,7 @@ describe('Phase 8 MCP Server Foundation (TASK-P8-01)', () => {
   // 10. NO DIRECT STATE MUTATION FROM MCP
   // ==========================================================================
   it('T10_no_direct_state_mutation: aidm.health and MCP calls do not mutate state', async () => {
-    let stateMutated = false;
+    const stateMutated = false;
     const trackingDelegate = {
       isHealthy: () => true,
       getStatus: () => {

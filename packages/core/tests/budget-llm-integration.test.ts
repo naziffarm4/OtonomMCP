@@ -563,7 +563,7 @@ describe('P18-03 Real Provider Integration, Outbox & Financial Concurrency', () 
       idempotencyKey: 'idemp_dyn_settle',
     }, 'reference-llm');
 
-    let account = budgetManager.getGlobalAccount()!;
+    const account = budgetManager.getGlobalAccount()!;
     assert.equal(account.accountState, BudgetAccountState.LIMIT_OVERRUN);
 
     // Kullanıcı limiti $1.00'a çıkarır (Dinamik limit güncelleme)
@@ -591,7 +591,7 @@ describe('P18-03 Real Provider Integration, Outbox & Financial Concurrency', () 
       idempotencyKey: 'idemp_roll_settle',
     }, 'reference-llm');
 
-    let account = budgetManager.getGlobalAccount()!;
+    const account = budgetManager.getGlobalAccount()!;
     assert.equal(account.committedSpendNanoUsd, 10_500_000n);
 
     // Yeni faturalandırma dönemi başlat (Limit aynı kalsın)

@@ -1,4 +1,6 @@
-export default [
+import tseslint from 'typescript-eslint';
+
+export default tseslint.config(
   {
     ignores: [
       '**/node_modules/**',
@@ -9,9 +11,19 @@ export default [
       '**/*.tsbuildinfo',
     ],
   },
+  ...tseslint.configs.recommended,
   {
     rules: {
       '@typescript-eslint/no-explicit-any': 'warn',
+      '@typescript-eslint/no-unused-vars': [
+        'warn',
+        {
+          argsIgnorePattern: '^_',
+          varsIgnorePattern: '^_',
+          caughtErrorsIgnorePattern: '^_',
+        },
+      ],
     },
   },
-];
+);
+

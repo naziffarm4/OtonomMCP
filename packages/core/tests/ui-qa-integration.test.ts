@@ -372,7 +372,7 @@ describe('Phase 5 UI Verification -> QA Review Integration (TASK-P5-04)', () => 
 
     it('1. Predicate receives a single-item array for one evidence item', () => {
       const evi1 = makeEvidence('evi:pred:1', 0);
-      let receivedArrayLengths: number[] = [];
+      const receivedArrayLengths: number[] = [];
 
       const crit: AcceptanceCriterion = {
         criterion_id: 'CRIT-PRED-1',

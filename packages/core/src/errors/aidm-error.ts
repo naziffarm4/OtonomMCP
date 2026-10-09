@@ -20,7 +20,7 @@ export class AidmError extends Error {
     Object.setPrototypeOf(this, new.target.prototype);
 
     const errorConstructor = Error as unknown as {
-      captureStackTrace?: (targetObject: object, constructorOpt?: Function) => void;
+      captureStackTrace?: (targetObject: object, constructorOpt?: unknown) => void;
     };
     if (typeof errorConstructor.captureStackTrace === 'function') {
       errorConstructor.captureStackTrace(this, this.constructor);

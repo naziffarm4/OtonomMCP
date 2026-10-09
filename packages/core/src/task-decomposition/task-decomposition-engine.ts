@@ -617,7 +617,7 @@ export class TaskDecompositionEngine {
           : this.generateDeterministicTaskId(parentId, i, prop.semanticKey ?? prop.title, projectId);
 
         // 3. Traceability Validation
-        let traceability = prop.traceabilitySources ? [...prop.traceabilitySources] : [...defaultTraceability];
+        const traceability = prop.traceabilitySources ? [...prop.traceabilitySources] : [...defaultTraceability];
         if (traceability.length === 0) {
           throw new TaskDecompositionInvalidTraceabilityError(
             `Task '${taskId}' must have at least one traceability source.`,

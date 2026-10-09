@@ -13,12 +13,14 @@
     "typecheck:tests": "pnpm --filter @aidm/core typecheck:tests",
     "test": "pnpm --filter @aidm/core test",
     "test:live": "pnpm --filter @aidm/core test:live",
-    "lint": "node -e \"console.log('Lint configuration verified.')\"",
+    "lint": "eslint .",
     "aidm": "node packages/core/bin/aidm.js"
   },
   "devDependencies": {
     "@types/node": "^26.6.2",
-    "typescript": "^5.8.2"
+    "eslint": "^10.12.0",
+    "typescript": "^5.8.2",
+    "typescript-eslint": "^8.71.1"
   },
   "packageManager": "pnpm@12.3.4"
 }
