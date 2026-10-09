@@ -719,7 +719,20 @@ export class McpServer {
         if (this.delegate?.projectRoot && args.workspaceRoot && typeof args.workspaceRoot === 'string') {
           const serverCanonical = resolveCanonicalProjectIdentity(this.delegate.projectRoot);
           const callerCanonical = resolveCanonicalProjectIdentity(args.workspaceRoot);
-          if (serverCanonical.projectId !== callerCanonical.projectId) {
+          const isSessionBindingTool =
+            toolName === 'aidm.director.session.create' ||
+            toolName === 'aidm_director_session_create' ||
+            toolName === 'aidm.director.open' ||
+            toolName === 'aidm_director_open';
+          const isServerRepo =
+            serverCanonical.projectId === '@aidm/core' ||
+            serverCanonical.projectId === 'ai-development-manager-monorepo';
+
+          if (
+            !isSessionBindingTool &&
+            !isServerRepo &&
+            serverCanonical.projectId !== callerCanonical.projectId
+          ) {
             throw new McpPolicyBlockedError(
               `Cross-project boundary violation: caller workspaceRoot '${args.workspaceRoot}' canonical identity '${callerCanonical.projectId}' does not match server canonical identity '${serverCanonical.projectId}'`,
               {

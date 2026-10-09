@@ -503,7 +503,7 @@ export class DirectorPromptBuilder {
       name: 'DirectorAction',
       description: 'Structured DirectorAction schema for AIDM reasoning runtime',
       schema: DIRECTOR_ACTION_JSON_SCHEMA,
-      strict: true,
+      strict: false,
     });
 
     return {

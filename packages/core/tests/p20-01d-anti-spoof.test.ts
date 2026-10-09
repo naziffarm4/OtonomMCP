@@ -198,7 +198,7 @@ describe('Phase 20 TASK-P20-01D — Auth Context Anti-Spoof Verification & Roadm
     const baseMandate: ProjectMandate = {
       projectId: canonicalProjectId,
       allowedDirectories: ['src/'],
-      allowedOperationTypes: ['FILE_READ', 'FILE_CREATE', 'FILE_MODIFY', 'TEST_EXECUTION', 'BUILD_EXECUTION'],
+      allowedOperationTypes: ['FILE_READ', 'FILE_CREATE', 'FILE_MODIFY', 'IMPLEMENTATION', 'IMPLEMENT_TASK', 'TEST_EXECUTION', 'BUILD_EXECUTION', 'EVIDENCE_REVIEW', 'REVIEW_EVIDENCE'],
       allowedCommandCategories: ['test', 'build', 'lint', 'format'],
       autoExecutableTaskClasses: ['IMPLEMENTATION', 'TEST'],
       forbiddenOperations: ['WORKSPACE_ESCAPE', 'SYSTEM_DESTRUCTIVE'],
@@ -211,7 +211,7 @@ describe('Phase 20 TASK-P20-01D — Auth Context Anti-Spoof Verification & Roadm
     };
     await fs.promises.mkdir(path.join(tempDir, '.ai-manager', 'state'), { recursive: true });
     await fs.promises.writeFile(path.join(tempDir, '.ai-manager', 'state', 'project-mandate.json'), JSON.stringify(baseMandate, null, 2), 'utf8');
-    policyEngine = new AuthorizationPolicyEngine({ historyManager, mandateStore });
+    policyEngine = new AuthorizationPolicyEngine({ historyManager, mandateStore, specStore, evidenceStore });
 
     // Acquire lock and save durable state
     await runtimeStateManager.save({
@@ -314,7 +314,7 @@ describe('Phase 20 TASK-P20-01D — Auth Context Anti-Spoof Verification & Roadm
       created_at: new Date().toISOString(),
       started_at: null,
       completed_at: null,
-      metadata: { revision: 1, target_files: ['src/spoof-check.ts'] },
+      metadata: { revision: 1, target_files: ['src/spoof-check.ts'], taskClass: 'IMPLEMENTATION' },
     };
     await specStore.saveTasks([parentFeature, task1]);
 

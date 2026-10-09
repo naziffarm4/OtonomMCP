@@ -107,7 +107,12 @@ export class ExecutionIntegrationLock {
         };
       } catch (err: unknown) {
         const nodeErr = err as NodeJS.ErrnoException;
-        if (nodeErr.code !== 'EEXIST') {
+        const isLockConflict =
+          nodeErr.code === 'EEXIST' ||
+          nodeErr.code === 'EPERM' ||
+          nodeErr.code === 'EACCES' ||
+          nodeErr.code === 'EBUSY';
+        if (!isLockConflict) {
           throw new ExecutionIntegrationError(
             `Failed to create lock file '${this.lockFilePath}': ${nodeErr.message}`,
             'ERR_EXECUTION_INTEGRATION_LOCK_FAILURE',

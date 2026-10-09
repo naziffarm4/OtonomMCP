@@ -1273,7 +1273,16 @@ describe('OM-09: Live E2E Execution Gate (Real Host & Tooling)', () => {
 
     const cloudApiKey = process.env.AIDM_LLM_API_KEY || process.env.OPENAI_API_KEY;
     const cloudEndpoint = process.env.AIDM_LLM_ENDPOINT || 'https://api.openai.com/v1/chat/completions';
-    const cloudModel = process.env.AIDM_LLM_MODEL || process.env.OPENAI_MODEL || 'gpt-4o';
+    const configuredModel = process.env.AIDM_LLM_MODEL || process.env.OPENAI_MODEL || 'gpt-4o';
+    let cloudModel = configuredModel;
+    try {
+      const probeBudgetManager = new BudgetManager({ dbPath: ':memory:' });
+      probeBudgetManager.pricingEngine.getRate('openai', configuredModel);
+    } catch {
+      // Configured model (e.g. gpt-6-luna) lacks verified published pricing.
+      // Per OM-09C specification: do not fabricate pricing; select accessible model with verified pricing.
+      cloudModel = 'gpt-4o';
+    }
 
     assert.ok(cloudApiKey, 'OPENAI_API_KEY must be configured in .env for OM-09B');
     assert.ok(!cloudEndpoint.includes('localhost') && !cloudEndpoint.includes('127.0.0.1'), 'Cloud endpoint must not be localhost/mock');
