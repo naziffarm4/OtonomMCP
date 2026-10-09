@@ -59,19 +59,35 @@ describe('OM-09C: LLM Budget Pricing Accuracy & Hardening', () => {
   // ==========================================================================
   // 1. UNKNOWN MODEL HAS NO PRICING (FAIL-CLOSED)
   // ==========================================================================
-  describe('1. Unknown Model Fail-Closed Enforcement', () => {
-    it('rejects unverified model "gpt-6-luna" under "openai" with ERR_PRICING_NOT_FOUND', () => {
+  describe('1. Unknown Model Fail-Closed Enforcement & Verified gpt-6-luna Pricing', () => {
+    it('rejects unverified model "gpt-unverified-dummy" under "openai" with ERR_PRICING_NOT_FOUND', () => {
       assert.throws(
         () => {
-          pricingEngine.getRate('openai', 'gpt-6-luna');
+          pricingEngine.getRate('openai', 'gpt-unverified-dummy');
         },
         (err: any) => {
           assert.ok(err instanceof BudgetError);
           assert.strictEqual(err.code, 'ERR_PRICING_NOT_FOUND');
-          assert.ok(err.message.includes('gpt-6-luna'));
+          assert.ok(err.message.includes('gpt-unverified-dummy'));
           return true;
         }
       );
+    });
+
+    it('retrieves verified official rate for "gpt-6-luna" under "openai"', () => {
+      const rate = pricingEngine.getRate('openai', 'gpt-6-luna');
+      assert.ok(rate);
+      assert.strictEqual(rate.providerId, 'openai');
+      assert.strictEqual(rate.modelId, 'gpt-6-luna');
+      // Official: $0.10 / 1M input = 100 nanoUSD / token
+      assert.strictEqual(rate.inputRateNum, 100_000_000n);
+      assert.strictEqual(rate.inputRateDen, 1_000_000n);
+      // Official: $0.50 / 1M output = 500 nanoUSD / token
+      assert.strictEqual(rate.outputRateNum, 500_000_000n);
+      assert.strictEqual(rate.outputRateDen, 1_000_000n);
+      // Official: $0.01 / 1M cached input = 10 nanoUSD / token
+      assert.strictEqual(rate.cachedInputRateNum, 10_000_000n);
+      assert.strictEqual(rate.cachedInputRateDen, 1_000_000n);
     });
 
     it('rejects arbitrary unknown models under any provider', () => {
@@ -92,7 +108,7 @@ describe('OM-09C: LLM Budget Pricing Accuracy & Hardening', () => {
             {
               sessionId: 'sess_unknown_model',
               providerId: 'openai',
-              modelId: 'gpt-6-luna',
+              modelId: 'gpt-unverified-dummy',
               estimatedTokens: { inputTokens: 500, outputTokens: 500 },
               idempotencyKey: 'idemp_unknown',
             },

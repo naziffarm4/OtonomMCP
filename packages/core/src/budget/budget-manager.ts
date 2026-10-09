@@ -146,6 +146,36 @@ export class BudgetManager {
         cachedInputRateDen: 1_000_000n,
       });
     }
+
+    // 8. gpt-6-luna: $0.10 / 1M input, $0.01 / 1M cached input, $0.50 / 1M output
+    // Source: OpenAI Official Documentation (https://developers.openai.com/api/docs/pricing)
+    for (const modelId of ['gpt-6-luna']) {
+      this.pricingEngine.registerRate({
+        providerId: 'openai',
+        modelId,
+        inputRateNum: 100_000_000n,
+        inputRateDen: 1_000_000n,
+        outputRateNum: 500_000_000n,
+        outputRateDen: 1_000_000n,
+        cachedInputRateNum: 10_000_000n,
+        cachedInputRateDen: 1_000_000n,
+      });
+    }
+
+    // 9. gpt-6-sol: $2.00 / 1M input, $0.20 / 1M cached input, $10.00 / 1M output
+    // Source: OpenAI Official Documentation (https://developers.openai.com/api/docs/pricing)
+    for (const modelId of ['gpt-6-sol']) {
+      this.pricingEngine.registerRate({
+        providerId: 'openai',
+        modelId,
+        inputRateNum: 2_000_000_000n,
+        inputRateDen: 1_000_000n,
+        outputRateNum: 10_000_000_000n,
+        outputRateDen: 1_000_000n,
+        cachedInputRateNum: 200_000_000n,
+        cachedInputRateDen: 1_000_000n,
+      });
+    }
   }
 
   open(): void {

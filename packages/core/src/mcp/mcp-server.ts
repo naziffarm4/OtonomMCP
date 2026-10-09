@@ -12,6 +12,8 @@
  * 5. Deterministic request correlation is tracked for every request.
  */
 
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 import {
   type McpServerConfig,
   type McpServerCapabilities,
@@ -716,32 +718,82 @@ export class McpServer {
           this.delegate?.projectRoot ??
           process.cwd();
 
-        if (this.delegate?.projectRoot && args.workspaceRoot && typeof args.workspaceRoot === 'string') {
-          const serverCanonical = resolveCanonicalProjectIdentity(this.delegate.projectRoot);
-          const callerCanonical = resolveCanonicalProjectIdentity(args.workspaceRoot);
-          const isSessionBindingTool =
-            toolName === 'aidm.director.session.create' ||
-            toolName === 'aidm_director_session_create' ||
-            toolName === 'aidm.director.open' ||
-            toolName === 'aidm_director_open';
-          const isServerRepo =
-            serverCanonical.projectId === '@aidm/core' ||
-            serverCanonical.projectId === 'ai-development-manager-monorepo';
+        if (args.workspaceRoot && typeof args.workspaceRoot === 'string') {
+          const resolvedExplicit = path.resolve(args.workspaceRoot);
+          let isDir = false;
+          try {
+            isDir = fs.existsSync(resolvedExplicit) && fs.statSync(resolvedExplicit).isDirectory();
+          } catch {
+            isDir = false;
+          }
 
-          if (
-            !isSessionBindingTool &&
-            !isServerRepo &&
-            serverCanonical.projectId !== callerCanonical.projectId
-          ) {
-            throw new McpPolicyBlockedError(
-              `Cross-project boundary violation: caller workspaceRoot '${args.workspaceRoot}' canonical identity '${callerCanonical.projectId}' does not match server canonical identity '${serverCanonical.projectId}'`,
-              {
-                toolName,
-                code: 'PROJECT_ISOLATION_VIOLATION',
-                reason: 'Workspace root canonical identity mismatch',
-              },
-              correlation.correlationId
-            );
+          if (isDir) {
+            const callerCanonical = resolveCanonicalProjectIdentity(args.workspaceRoot);
+            const isSessionBindingTool =
+              toolName === 'aidm.director.session.create' ||
+              toolName === 'aidm_director_session_create' ||
+              toolName === 'aidm.director.open' ||
+              toolName === 'aidm_director_open';
+
+            // 1. Prohibit targeting server repository itself (P18-02 Strict Invariant 1)
+            const isCallerServerRepo =
+              callerCanonical.projectId === '@aidm/core' ||
+              callerCanonical.projectId === 'ai-development-manager-monorepo';
+            if (isCallerServerRepo) {
+              throw new McpPolicyBlockedError(
+                `Target project operations on server repository '${args.workspaceRoot}' are strictly prohibited. Server repository != target project.`,
+                {
+                  toolName,
+                  code: 'PROJECT_ISOLATION_VIOLATION',
+                  reason: 'Targeting server repository is prohibited',
+                },
+                correlation.correlationId
+              );
+            }
+
+            // 2. Authoritative Project Identity Resolution:
+            // Priority A: Active session context (if bound, this is the authoritative target project)
+            // Priority B: Configured server projectRoot (if dedicated non-server project)
+            const activeRoot = this.delegate?.activeContext?.projectRoot;
+            const configuredRoot = this.delegate?.projectRoot;
+            const configuredCanonical = configuredRoot ? resolveCanonicalProjectIdentity(configuredRoot) : undefined;
+            const isConfiguredServerRepo = configuredCanonical
+              ? configuredCanonical.projectId === '@aidm/core' || configuredCanonical.projectId === 'ai-development-manager-monorepo'
+              : true;
+
+            const authoritativeRoot = activeRoot ?? (!isConfiguredServerRepo ? configuredRoot : undefined);
+
+            if (authoritativeRoot) {
+              const authoritativeCanonical = resolveCanonicalProjectIdentity(authoritativeRoot);
+
+              if (isSessionBindingTool) {
+                // In dedicated mode, server cannot be bound or rebound to a conflicting target project
+                if (!isConfiguredServerRepo && configuredCanonical && configuredCanonical.projectId !== callerCanonical.projectId) {
+                  throw new McpPolicyBlockedError(
+                    `Cross-project boundary violation: dedicated server configured for '${configuredCanonical.projectId}' cannot bind to '${callerCanonical.projectId}'`,
+                    {
+                      toolName,
+                      code: 'PROJECT_ISOLATION_VIOLATION',
+                      reason: 'Dedicated server project mismatch',
+                    },
+                    correlation.correlationId
+                  );
+                }
+              } else {
+                // All operational tools: caller workspaceRoot MUST match authoritative project identity
+                if (authoritativeCanonical.projectId !== callerCanonical.projectId) {
+                  throw new McpPolicyBlockedError(
+                    `Cross-project boundary violation: caller workspaceRoot '${args.workspaceRoot}' canonical identity '${callerCanonical.projectId}' conflicts with active context projectRoot '${authoritativeCanonical.projectId}'`,
+                    {
+                      toolName,
+                      code: 'PROJECT_ISOLATION_VIOLATION',
+                      reason: 'Workspace root canonical identity mismatch',
+                    },
+                    correlation.correlationId
+                  );
+                }
+              }
+            }
           }
         }
 
