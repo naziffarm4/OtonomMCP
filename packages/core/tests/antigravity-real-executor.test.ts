@@ -428,6 +428,10 @@ describe('Phase 14 TASK-P14-01: Real Antigravity Executor Boundary', () => {
     });
 
     it('probes real installed agy CLI if present on this host system', async () => {
+      if (process.env.AIDM_LIVE_E2E !== '1') {
+        // Opt-in live test only; skipped in deterministic offline test runs
+        return;
+      }
       const realResolution = resolveAntigravityExecutable();
       if (!realResolution.found || !realResolution.executablePath) {
         // Skip live CLI check if not installed in this environment

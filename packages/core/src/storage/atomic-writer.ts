@@ -73,14 +73,30 @@ export async function atomicWriteFile(
     });
   }
 
-  try {
-    await fs.promises.rename(tempPath, targetPath);
-  } catch (err) {
+  let renamed = false;
+  let lastRenameErr: unknown = null;
+  for (let attempt = 0; attempt < 5; attempt++) {
+    try {
+      await fs.promises.rename(tempPath, targetPath);
+      renamed = true;
+      break;
+    } catch (err) {
+      lastRenameErr = err;
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code === 'EPERM' || code === 'EBUSY' || code === 'EEXIST') {
+        await new Promise((res) => setTimeout(res, 25));
+        continue;
+      }
+      break;
+    }
+  }
+
+  if (!renamed) {
     await fs.promises.unlink(tempPath).catch(() => {});
     throw new StorageError(`Failed to atomically rename '${tempPath}' to '${targetPath}'`, {
       filePath: targetPath,
       operation: 'rename',
-      cause: err,
+      cause: lastRenameErr,
     });
   }
 }

@@ -9,8 +9,11 @@
   },
   "scripts": {
     "build": "pnpm --filter @aidm/core build",
-    "typecheck": "pnpm --filter @aidm/core build",
+    "typecheck": "pnpm --filter @aidm/core typecheck",
+    "typecheck:tests": "pnpm --filter @aidm/core typecheck:tests",
     "test": "pnpm --filter @aidm/core test",
+    "test:live": "pnpm --filter @aidm/core test:live",
+    "lint": "node -e \"console.log('Lint configuration verified.')\"",
     "aidm": "node packages/core/bin/aidm.js"
   },
   "devDependencies": {

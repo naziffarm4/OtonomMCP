@@ -156,7 +156,10 @@
   "scripts": {
     "build": "tsc -b",
     "clean": "rm -rf dist *.tsbuildinfo",
-    "test": "node --test --experimental-strip-types tests/**/*.test.ts"
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "typecheck:tests": "tsc -p tsconfig.test.json --noEmit",
+    "test": "node scripts/run-tests.js",
+    "test:live": "node scripts/run-tests.js --live"
   },
   "keywords": [
     "aidm",
