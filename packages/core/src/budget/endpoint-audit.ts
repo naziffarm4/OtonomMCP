@@ -34,6 +34,8 @@ export interface EndpointAuditSuccess {
   readonly endpointKind: BillingEndpointKind;
   readonly sanitizedEndpoint: string;
   readonly effectiveUrl: string;
+  readonly effectiveHost?: string;
+  readonly isCustomHost?: boolean;
 }
 
 export interface EndpointAuditFailure {
@@ -91,6 +93,27 @@ export function getRegisteredEndpointContract(hostOrProvider: string): BillingEn
 }
 
 /**
+ * Normalizes a raw usage contract string to its canonical BillingEndpointKind.
+ */
+export function parseUsageContractKind(contract?: string | null): BillingEndpointKind | undefined {
+  if (!contract || contract.trim().length === 0) return undefined;
+  const lower = contract.trim().toLowerCase();
+  if (lower === 'openai_chat_completions' || lower === 'chat_completions' || lower === '/v1/chat/completions') {
+    return 'openai_chat_completions';
+  }
+  if (lower === 'openai_responses' || lower === 'responses' || lower === '/v1/responses') {
+    return 'openai_responses';
+  }
+  if (lower === 'anthropic_messages' || lower === 'messages' || lower === '/v1/messages') {
+    return 'anthropic_messages';
+  }
+  if (lower === 'reference_adapter' || lower === 'reference') {
+    return 'reference_adapter';
+  }
+  return undefined;
+}
+
+/**
  * Resolves the BillingEndpointKind from an endpoint URL, provider identifier, or explicit usage contract.
  */
 export function resolveBillingEndpointKind(
@@ -98,60 +121,48 @@ export function resolveBillingEndpointKind(
   providerId?: string | null,
   usageContract?: string | null
 ): BillingEndpointKind {
-  if (usageContract && usageContract.trim().length > 0) {
-    const lower = usageContract.trim().toLowerCase();
-    if (lower === 'openai_chat_completions' || lower === 'chat_completions' || lower === '/v1/chat/completions') {
-      return 'openai_chat_completions';
+  if (endpoint && endpoint.trim().length > 0 && endpoint !== 'internal:default') {
+    try {
+      const parsed = new URL(endpoint.trim());
+      const hostname = parsed.hostname.toLowerCase();
+      // Host-specific registered contract has highest authority for custom endpoints
+      const regHost = REGISTERED_ENDPOINT_CONTRACTS.get(hostname);
+      if (regHost) return regHost;
+
+      const pathname = parsed.pathname.toLowerCase();
+      if (pathname.endsWith('/responses') || pathname.endsWith('/v1/responses')) {
+        return 'openai_responses';
+      }
+      if (pathname.endsWith('/chat/completions') || pathname.endsWith('/v1/chat/completions')) {
+        return 'openai_chat_completions';
+      }
+      if (pathname.endsWith('/messages') || pathname.endsWith('/v1/messages')) {
+        return 'anthropic_messages';
+      }
+    } catch {
+      const lower = endpoint.toLowerCase();
+      if (lower.includes('/responses')) return 'openai_responses';
+      if (lower.includes('/chat/completions')) return 'openai_chat_completions';
+      if (lower.includes('/messages')) return 'anthropic_messages';
     }
-    if (lower === 'openai_responses' || lower === 'responses' || lower === '/v1/responses') {
-      return 'openai_responses';
-    }
-    if (lower === 'anthropic_messages' || lower === 'messages' || lower === '/v1/messages') {
-      return 'anthropic_messages';
-    }
-    if (lower === 'reference_adapter' || lower === 'reference') {
-      return 'reference_adapter';
-    }
+
+    const parsedContract = parseUsageContractKind(usageContract);
+    if (parsedContract) return parsedContract;
+
+    return 'custom_endpoint';
   }
+
+  const parsedContract = parseUsageContractKind(usageContract);
+  if (parsedContract) return parsedContract;
 
   if (providerId) {
     const regProvider = REGISTERED_ENDPOINT_CONTRACTS.get(providerId.trim().toLowerCase());
     if (regProvider) return regProvider;
+    if (providerId.toLowerCase().includes('anthropic')) return 'anthropic_messages';
+    if (providerId.toLowerCase().includes('openai')) return 'openai_chat_completions';
   }
 
-  if (!endpoint || endpoint.trim().length === 0 || endpoint === 'internal:default') {
-    if (providerId?.toLowerCase().includes('anthropic')) {
-      return 'anthropic_messages';
-    }
-    if (providerId?.toLowerCase().includes('openai')) {
-      return 'openai_chat_completions';
-    }
-    return 'reference_adapter';
-  }
-
-  try {
-    const parsed = new URL(endpoint);
-    const regHost = REGISTERED_ENDPOINT_CONTRACTS.get(parsed.hostname.toLowerCase());
-    if (regHost) return regHost;
-
-    const pathname = parsed.pathname.toLowerCase();
-    if (pathname.endsWith('/responses') || pathname.endsWith('/v1/responses')) {
-      return 'openai_responses';
-    }
-    if (pathname.endsWith('/chat/completions') || pathname.endsWith('/v1/chat/completions')) {
-      return 'openai_chat_completions';
-    }
-    if (pathname.endsWith('/messages') || pathname.endsWith('/v1/messages')) {
-      return 'anthropic_messages';
-    }
-  } catch {
-    const lower = endpoint.toLowerCase();
-    if (lower.includes('/responses')) return 'openai_responses';
-    if (lower.includes('/chat/completions')) return 'openai_chat_completions';
-    if (lower.includes('/messages')) return 'anthropic_messages';
-  }
-
-  return 'custom_endpoint';
+  return 'reference_adapter';
 }
 
 export interface ResolveEndpointParams {
@@ -348,25 +359,35 @@ export function resolveEffectiveBillingEndpoint(params: ResolveEndpointParams): 
     } else {
       // Custom Host / Gateway / Proxy:
       // Invariant: Never infer /v1/chat/completions solely because endpoint resolution failed or returned custom_endpoint.
-      // Must require an explicit registered contract or explicit usage contract.
-      const customContract =
-        usageContract ??
-        REGISTERED_ENDPOINT_CONTRACTS.get(hostname) ??
-        REGISTERED_ENDPOINT_CONTRACTS.get((providerId ?? '').toLowerCase());
+      // Must require an explicit registered host-specific contract.
+      // A provider-wide contract or request-supplied metadata must not, by itself, establish trusted host authorization.
+      const registeredHostContract = REGISTERED_ENDPOINT_CONTRACTS.get(hostname);
 
-      if (!customContract) {
+      if (!registeredHostContract) {
         return {
           success: false,
-          errorReason: `Cannot resolve effective endpoint for custom host '${hostname}': base URL provided without an unambiguous registered usage contract; refusing to infer /v1/chat/completions fail-closed`,
+          errorReason: `Cannot resolve effective endpoint for custom host '${hostname}': base URL provided without a registered host-specific usage contract; provider-level contracts or metadata cannot authorize custom hosts; refusing to infer /v1/chat/completions fail-closed`,
           errorCode: 'ERR_UNSUPPORTED_BILLING_MODE',
           sanitizedUrl: sanitizeSecrets(effectiveUrl),
         };
       }
 
-      const lowerContract = customContract.toLowerCase();
-      const targetAction = lowerContract.includes('responses')
+      // If caller requested a schema, verify consistency
+      if (usageContract && usageContract.trim().length > 0) {
+        const requestedKind = parseUsageContractKind(usageContract);
+        if (requestedKind && requestedKind !== registeredHostContract) {
+          return {
+            success: false,
+            errorReason: `Requested usage contract '${usageContract}' conflicts with registered host contract '${registeredHostContract}' for host '${hostname}'`,
+            errorCode: 'ERR_UNSUPPORTED_BILLING_MODE',
+            sanitizedUrl: sanitizeSecrets(effectiveUrl),
+          };
+        }
+      }
+
+      const targetAction = registeredHostContract === 'openai_responses'
         ? '/responses'
-        : lowerContract.includes('messages')
+        : registeredHostContract === 'anthropic_messages'
           ? '/messages'
           : '/chat/completions';
 
@@ -380,7 +401,17 @@ export function resolveEffectiveBillingEndpoint(params: ResolveEndpointParams): 
     }
   }
 
-  const endpointKind = resolveBillingEndpointKind(effectiveUrl, providerId, usageContract);
+  let endpointKind: BillingEndpointKind;
+  const isStandardOrLocal =
+    STANDARD_OPENAI_HOSTS.has(hostname) ||
+    STANDARD_ANTHROPIC_HOSTS.has(hostname) ||
+    LOCAL_TEST_HOSTS.has(hostname);
+
+  if (!isStandardOrLocal && REGISTERED_ENDPOINT_CONTRACTS.has(hostname)) {
+    endpointKind = REGISTERED_ENDPOINT_CONTRACTS.get(hostname)!;
+  } else {
+    endpointKind = resolveBillingEndpointKind(effectiveUrl, providerId, usageContract);
+  }
 
   return {
     success: true,
@@ -432,6 +463,7 @@ export function auditBillingEndpoint(params: {
       endpointKind: kind,
       sanitizedEndpoint: 'internal:default',
       effectiveUrl: 'internal:default',
+      isCustomHost: false,
     };
   }
 
@@ -525,58 +557,102 @@ export function auditBillingEndpoint(params: {
 
   // If NOT standard OpenAI, NOT standard Anthropic, and NOT local fixture -> CUSTOM / UNKNOWN ENDPOINT
   if (!isStandardOpenAi && !isStandardAnthropic && !isLocalFixture) {
-    // Check 5a: Authoritative Pricing Registration
-    // A model rate registered only under 'openai' or 'anthropic' must NEVER authorize a custom endpoint/host!
-    let hasCustomPricing = false;
+    // Check 5a: Authoritative Host-Scoped Pricing Registration
+    // A model rate registered only under a generic providerId (e.g. 'openai', 'anthropic', 'openai-compatible')
+    // must NEVER authorize a custom endpoint/host!
+    // The pricing engine MUST have a rate explicitly registered for the hostname.
+    let hasHostPricing = false;
     if (pricingEngine && modelId) {
       try {
         pricingEngine.getRate(hostname, modelId);
-        hasCustomPricing = true;
+        hasHostPricing = true;
       } catch {
-        if (effectiveProvider !== 'openai' && effectiveProvider !== 'anthropic') {
-          try {
-            pricingEngine.getRate(effectiveProvider, modelId);
-            hasCustomPricing = true;
-          } catch {
-            hasCustomPricing = false;
-          }
-        }
+        hasHostPricing = false;
       }
     }
 
-    if (!hasCustomPricing) {
+    if (!hasHostPricing) {
       return {
         valid: false,
-        errorReason: `Configured base URL '${parsedUrl.origin}' is not a verified standard provider host and has no registered endpoint pricing in PricingEngine; rejected fail-closed before dispatch`,
+        errorReason: `Endpoint host '${hostname}' is not a verified standard provider host and has no registered host-scoped pricing in PricingEngine for model '${modelId ?? 'unknown'}'; generic provider pricing cannot authorize arbitrary hosts; rejected fail-closed before dispatch`,
         errorCode: 'ERR_UNSUPPORTED_BILLING_MODE',
         sanitizedEndpoint,
       };
     }
 
-    // Check 5b: Explicit Usage Contract Registration
-    const explicitContract =
+    // Check 5b: Authoritative Host-Scoped Usage Contract Authorization
+    // Requirement: Require an explicit usage contract bound to the hostname.
+    // A provider-wide contract or request-supplied metadata must NOT, by itself, establish trusted host authorization.
+    const registeredHostContract = REGISTERED_ENDPOINT_CONTRACTS.get(hostname);
+
+    if (!registeredHostContract) {
+      return {
+        valid: false,
+        errorReason: `Custom endpoint host '${hostname}' has no host-specific registered usage contract (no registered usage contract bound to host); provider-level contracts or request metadata cannot authorize custom endpoints without a registered host contract; rejected fail-closed`,
+        errorCode: 'ERR_UNSUPPORTED_BILLING_MODE',
+        sanitizedEndpoint,
+      };
+    }
+
+    // Treat caller-supplied usageContract or metadata.usage_contract as requested schema, and verify consistency
+    const rawRequestedContract =
       usageContract ??
       (metadata?.usage_contract as string | undefined) ??
-      (metadata?.usageContract as string | undefined) ??
-      REGISTERED_ENDPOINT_CONTRACTS.get(hostname) ??
-      REGISTERED_ENDPOINT_CONTRACTS.get(effectiveProvider);
+      (metadata?.usageContract as string | undefined);
 
-    if (!explicitContract) {
+    if (rawRequestedContract && rawRequestedContract.trim().length > 0) {
+      const requestedKind = parseUsageContractKind(rawRequestedContract);
+      if (requestedKind && requestedKind !== registeredHostContract) {
+        return {
+          valid: false,
+          errorReason: `Requested usage contract '${rawRequestedContract}' conflicts with registered host contract '${registeredHostContract}' for host '${hostname}'; rejected fail-closed`,
+          errorCode: 'ERR_UNSUPPORTED_BILLING_MODE',
+          sanitizedEndpoint,
+        };
+      }
+    }
+
+    // Verify consistency with URL path if path implies a known schema
+    let pathKind: BillingEndpointKind | undefined;
+    if (pathname.endsWith('/responses') || pathname.endsWith('/v1/responses')) {
+      pathKind = 'openai_responses';
+    } else if (pathname.endsWith('/chat/completions') || pathname.endsWith('/v1/chat/completions')) {
+      pathKind = 'openai_chat_completions';
+    } else if (pathname.endsWith('/messages') || pathname.endsWith('/v1/messages')) {
+      pathKind = 'anthropic_messages';
+    }
+
+    if (pathKind && pathKind !== registeredHostContract) {
       return {
         valid: false,
-        errorReason: `Custom endpoint host '${hostname}' has valid pricing but no registered usage contract; rejected fail-closed to prevent telemetry schema mismatch`,
+        errorReason: `Endpoint URL path '${parsedUrl.pathname}' indicates '${pathKind}' which conflicts with registered host usage contract '${registeredHostContract}' for host '${hostname}'; rejected fail-closed`,
         errorCode: 'ERR_UNSUPPORTED_BILLING_MODE',
         sanitizedEndpoint,
       };
     }
+
+    return {
+      valid: true,
+      endpointKind: registeredHostContract,
+      sanitizedEndpoint,
+      effectiveUrl: endpoint.trim(),
+      effectiveHost: hostname,
+      isCustomHost: true,
+    };
   }
 
-  const endpointKind = resolveBillingEndpointKind(endpoint, providerId, usageContract ?? (metadata?.usage_contract as string | undefined));
+  const endpointKind = resolveBillingEndpointKind(
+    endpoint,
+    providerId,
+    usageContract ?? (metadata?.usage_contract as string | undefined)
+  );
 
   return {
     valid: true,
     endpointKind,
     sanitizedEndpoint,
     effectiveUrl: endpoint.trim(),
+    effectiveHost: hostname,
+    isCustomHost: false,
   };
 }

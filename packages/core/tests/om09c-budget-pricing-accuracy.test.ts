@@ -2956,5 +2956,334 @@ describe('OM-09C: LLM Budget Pricing Accuracy & Hardening', () => {
       });
     });
   });
-});
+
+  // 16. Host-Scoped Pricing and Usage Contract Authorization (OM-09C-FIX-6)
+  describe('16. Host-Scoped Pricing & Usage Contract Authorization (OM-09C-FIX-6)', () => {
+      it('rejects custom endpoint before dispatch when generic provider has registered price but hostname has no price registration', async () => {
+        let providerCalled = false;
+        const mockProvider: LLMProvider = {
+          providerId: 'openai-compatible',
+          async generate<T>(): Promise<LlmResponse<T>> {
+            providerCalled = true;
+            return {
+              content: 'test',
+              finish_reason: LlmFinishReason.STOP,
+              usage: { prompt_tokens: 100, completion_tokens: 50 },
+              raw_metadata: null,
+            };
+          },
+        };
+
+        // Register rate only under generic providerId 'openai-compatible', NOT under 'proxy-one.corp.net'
+        pricingEngine.registerRate({
+          providerId: 'openai-compatible',
+          modelId: 'custom-model',
+          inputRateNum: 1_000_000_000n,
+          inputRateDen: 1_000_000n,
+          outputRateNum: 2_000_000_000n,
+          outputRateDen: 1_000_000n,
+        });
+
+        // Even if contract is registered for the host, price is NOT registered for the host
+        registerCustomEndpointContract('proxy-one.corp.net', 'openai_chat_completions');
+
+        const adapter = new BudgetAwareLlmAdapter(mockProvider, budgetManager);
+
+        await assert.rejects(
+          async () => {
+            await adapter.generate({
+              messages: [{ role: 'user', content: 'test host pricing requirement' }],
+              model: 'custom-model',
+              metadata: { endpoint: 'https://proxy-one.corp.net/v1/chat/completions' },
+              correlation: { correlation_id: 'c_host_price_1', project_id: 'p_host' },
+              director_context: { project_id: 'p_host' },
+            });
+          },
+          (err: any) => {
+            assert.ok(err instanceof BudgetError);
+            assert.strictEqual(err.code, 'ERR_UNSUPPORTED_BILLING_MODE');
+            assert.ok(err.message.includes('has no registered host-scoped pricing'));
+            return true;
+          }
+        );
+
+        assert.strictEqual(providerCalled, false, 'Provider must not be called when hostname has no registered price');
+      });
+
+      it('rejects custom hostname before dispatch when provider has registered contract but hostname has no host-specific contract', async () => {
+        let providerCalled = false;
+        const mockProvider: LLMProvider = {
+          providerId: 'openai-compatible',
+          async generate<T>(): Promise<LlmResponse<T>> {
+            providerCalled = true;
+            return {
+              content: 'test',
+              finish_reason: LlmFinishReason.STOP,
+              usage: { prompt_tokens: 100, completion_tokens: 50 },
+              raw_metadata: null,
+            };
+          },
+        };
+
+        // Price registered for the custom hostname
+        pricingEngine.registerRate({
+          providerId: 'proxy-two.corp.net',
+          modelId: 'custom-model',
+          inputRateNum: 1_000_000_000n,
+          inputRateDen: 1_000_000n,
+          outputRateNum: 2_000_000_000n,
+          outputRateDen: 1_000_000n,
+        });
+
+        // Provider-level contract registered, but NO host-specific contract
+        registerCustomEndpointContract('openai-compatible', 'openai_chat_completions');
+
+        const adapter = new BudgetAwareLlmAdapter(mockProvider, budgetManager);
+
+        await assert.rejects(
+          async () => {
+            await adapter.generate({
+              messages: [{ role: 'user', content: 'test provider contract fallback rejection' }],
+              model: 'custom-model',
+              metadata: { endpoint: 'https://proxy-two.corp.net/v1/chat/completions' },
+              correlation: { correlation_id: 'c_host_contract_1', project_id: 'p_host' },
+              director_context: { project_id: 'p_host' },
+            });
+          },
+          (err: any) => {
+            assert.ok(err instanceof BudgetError);
+            assert.strictEqual(err.code, 'ERR_UNSUPPORTED_BILLING_MODE');
+            assert.ok(err.message.includes('has no host-specific registered usage contract'));
+            return true;
+          }
+        );
+
+        assert.strictEqual(providerCalled, false, 'Provider must not be called when hostname lacks host-specific contract');
+      });
+
+      it('rejects custom hostname before dispatch when caller supplies metadata.usage_contract but hostname has no registered contract', async () => {
+        let providerCalled = false;
+        const mockProvider: LLMProvider = {
+          providerId: 'openai-compatible',
+          async generate<T>(): Promise<LlmResponse<T>> {
+            providerCalled = true;
+            return {
+              content: 'test',
+              finish_reason: LlmFinishReason.STOP,
+              usage: { prompt_tokens: 100, completion_tokens: 50 },
+              raw_metadata: null,
+            };
+          },
+        };
+
+        // Price registered for the custom hostname
+        pricingEngine.registerRate({
+          providerId: 'proxy-three.corp.net',
+          modelId: 'custom-model',
+          inputRateNum: 1_000_000_000n,
+          inputRateDen: 1_000_000n,
+          outputRateNum: 2_000_000_000n,
+          outputRateDen: 1_000_000n,
+        });
+
+        // Host has NO contract registered. Caller attempts to supply metadata.usage_contract
+        const adapter = new BudgetAwareLlmAdapter(mockProvider, budgetManager);
+
+        await assert.rejects(
+          async () => {
+            await adapter.generate({
+              messages: [{ role: 'user', content: 'test metadata usage contract bypass attempt' }],
+              model: 'custom-model',
+              metadata: {
+                endpoint: 'https://proxy-three.corp.net/v1/chat/completions',
+                usage_contract: 'openai_chat_completions',
+              },
+              correlation: { correlation_id: 'c_meta_contract_1', project_id: 'p_host' },
+              director_context: { project_id: 'p_host' },
+            });
+          },
+          (err: any) => {
+            assert.ok(err instanceof BudgetError);
+            assert.strictEqual(err.code, 'ERR_UNSUPPORTED_BILLING_MODE');
+            assert.ok(err.message.includes('has no host-specific registered usage contract'));
+            return true;
+          }
+        );
+
+        assert.strictEqual(providerCalled, false, 'Provider must not be called when host has no registered contract despite metadata');
+      });
+
+      it('accepts custom endpoint when both host-specific pricing and host-specific usage contract are registered and consistent', async () => {
+        budgetManager.createGlobalAccount(50.0);
+        let providerCalled = false;
+        const mockProvider: LLMProvider = {
+          providerId: 'authorized-gateway.corp.net',
+          providerName: 'authorized-gateway.corp.net',
+          defaultModel: 'custom-model',
+          supportedModels: ['custom-model'],
+          supportedCapabilities: [],
+          checkAvailability: async () => ({ available: true, model: 'custom-model', reason: null }),
+          async generate<T>(): Promise<LlmResponse<T>> {
+            providerCalled = true;
+            return {
+              content: 'authorized custom response',
+              finish_reason: LlmFinishReason.STOP,
+              usage: { prompt_tokens: 100, completion_tokens: 50 },
+              raw_metadata: null,
+            };
+          },
+        };
+
+        pricingEngine.registerRate({
+          providerId: 'authorized-gateway.corp.net',
+          modelId: 'custom-model',
+          inputRateNum: 1_000_000_000n,
+          inputRateDen: 1_000_000n,
+          outputRateNum: 2_000_000_000n,
+          outputRateDen: 1_000_000n,
+        });
+        registerCustomEndpointContract('authorized-gateway.corp.net', 'openai_chat_completions');
+
+        const adapter = new BudgetAwareLlmAdapter(mockProvider, budgetManager);
+        const res = await adapter.generate({
+          messages: [{ role: 'user', content: 'test authorized custom host' }],
+          model: 'custom-model',
+          metadata: {
+            endpoint: 'https://authorized-gateway.corp.net/v1/chat/completions',
+            usage_contract: 'openai_chat_completions',
+          },
+          correlation: { correlation_id: 'c_auth_custom_1', project_id: 'p_host' },
+          director_context: { project_id: 'p_host' },
+        });
+
+        assert.strictEqual(providerCalled, true, 'Provider must be called when host-specific price and contract are consistent');
+        assert.strictEqual(res.content, 'authorized custom response');
+      });
+
+      it('rejects custom endpoint before dispatch when caller-supplied usage contract or URL path conflicts with registered host contract', async () => {
+        let providerCalled = false;
+        const mockProvider: LLMProvider = {
+          providerId: 'strict-gateway.corp.net',
+          async generate<T>(): Promise<LlmResponse<T>> {
+            providerCalled = true;
+            return {
+              content: 'test',
+              finish_reason: LlmFinishReason.STOP,
+              usage: { prompt_tokens: 100, completion_tokens: 50 },
+              raw_metadata: null,
+            };
+          },
+        };
+
+        pricingEngine.registerRate({
+          providerId: 'strict-gateway.corp.net',
+          modelId: 'custom-model',
+          inputRateNum: 1_000_000_000n,
+          inputRateDen: 1_000_000n,
+          outputRateNum: 2_000_000_000n,
+          outputRateDen: 1_000_000n,
+        });
+        // Host contract registered as chat completions
+        registerCustomEndpointContract('strict-gateway.corp.net', 'openai_chat_completions');
+
+        const adapter = new BudgetAwareLlmAdapter(mockProvider, budgetManager);
+
+        // Subcase a: Caller metadata requests 'openai_responses', conflicting with registered 'openai_chat_completions'
+        await assert.rejects(
+          async () => {
+            await adapter.generate({
+              messages: [{ role: 'user', content: 'test conflicting requested contract' }],
+              model: 'custom-model',
+              metadata: {
+                endpoint: 'https://strict-gateway.corp.net/v1/chat/completions',
+                usage_contract: 'openai_responses',
+              },
+              correlation: { correlation_id: 'c_conflict_1', project_id: 'p_host' },
+              director_context: { project_id: 'p_host' },
+            });
+          },
+          (err: any) => {
+            assert.ok(err instanceof BudgetError);
+            assert.strictEqual(err.code, 'ERR_UNSUPPORTED_BILLING_MODE');
+            assert.ok(err.message.includes('conflicts with registered host contract'));
+            return true;
+          }
+        );
+
+        assert.strictEqual(providerCalled, false, 'Provider must not be called when usage contract conflicts');
+
+        // Subcase b: URL path /v1/responses conflicts with registered 'openai_chat_completions'
+        await assert.rejects(
+          async () => {
+            await adapter.generate({
+              messages: [{ role: 'user', content: 'test conflicting URL path' }],
+              model: 'custom-model',
+              metadata: {
+                endpoint: 'https://strict-gateway.corp.net/v1/responses',
+              },
+              correlation: { correlation_id: 'c_conflict_2', project_id: 'p_host' },
+              director_context: { project_id: 'p_host' },
+            });
+          },
+          (err: any) => {
+            assert.ok(err instanceof BudgetError);
+            assert.strictEqual(err.code, 'ERR_UNSUPPORTED_BILLING_MODE');
+            assert.ok(err.message.includes('conflicts with registered host usage contract'));
+            return true;
+          }
+        );
+
+        assert.strictEqual(providerCalled, false, 'Provider must not be called when URL path conflicts with registered host contract');
+      });
+
+      it('preserves valid standard OpenAI and Anthropic endpoint paths without custom host registration', () => {
+        const auditOpenAi = auditBillingEndpoint({
+          endpoint: 'https://api.openai.com/v1/chat/completions',
+          providerId: 'openai',
+          modelId: 'gpt-4o',
+          pricingEngine,
+        });
+        assert.strictEqual(auditOpenAi.valid, true);
+        if (auditOpenAi.valid) {
+          assert.strictEqual(auditOpenAi.endpointKind, 'openai_chat_completions');
+          assert.strictEqual(auditOpenAi.isCustomHost, false);
+        }
+
+        const auditAnthropic = auditBillingEndpoint({
+          endpoint: 'https://api.anthropic.com/v1/messages',
+          providerId: 'anthropic',
+          modelId: 'claude-3-5-sonnet',
+          pricingEngine,
+        });
+        assert.strictEqual(auditAnthropic.valid, true);
+        if (auditAnthropic.valid) {
+          assert.strictEqual(auditAnthropic.endpointKind, 'anthropic_messages');
+          assert.strictEqual(auditAnthropic.isCustomHost, false);
+        }
+      });
+
+      it('preserves local test fixture authorization (localhost, 127.0.0.1, test.local, internal:default)', () => {
+        const localFixtures = [
+          'http://localhost:8080/v1/chat/completions',
+          'http://127.0.0.1:8080/v1/chat/completions',
+          'http://test.local/v1/chat/completions',
+          'internal:default',
+        ];
+
+        for (const ep of localFixtures) {
+          const audit = auditBillingEndpoint({
+            endpoint: ep,
+            providerId: 'reference-llm',
+            modelId: 'reference-model',
+            pricingEngine,
+          });
+          assert.strictEqual(audit.valid, true, `Local fixture '${ep}' must remain valid`);
+          if (audit.valid) {
+            assert.strictEqual(audit.isCustomHost, false);
+          }
+        }
+      });
+    });
+  });
+
 

@@ -141,6 +141,10 @@ export class BudgetAwareLlmAdapter implements LLMProvider {
     if (!auditResult.valid) {
       throw new BudgetError(auditResult.errorReason, auditResult.errorCode);
     }
+    const billingProvider = (auditResult.isCustomHost && auditResult.effectiveHost)
+      ? auditResult.effectiveHost
+      : providerId;
+
     const estimatedTokens = this.estimateTokens(request);
     const reservationKey = `idemp_res_${correlationId}_att_${attempt}`;
     const settlementKey = `idemp_set_${correlationId}_att_${attempt}`;
@@ -149,7 +153,7 @@ export class BudgetAwareLlmAdapter implements LLMProvider {
     this.budgetManager.preDispatchValidate({
       sessionId: correlationId,
       taskId: request.correlation?.task_id ?? null,
-      providerId,
+      providerId: billingProvider,
       modelId: model,
       estimatedTokens,
       idempotencyKey: reservationKey,
@@ -159,7 +163,7 @@ export class BudgetAwareLlmAdapter implements LLMProvider {
     const reservation = this.budgetManager.reserve({
       sessionId: correlationId,
       taskId: request.correlation?.task_id ?? null,
-      providerId,
+      providerId: billingProvider,
       modelId: model,
       estimatedTokens,
       idempotencyKey: reservationKey,
@@ -211,11 +215,11 @@ export class BudgetAwareLlmAdapter implements LLMProvider {
     }
 
     // 5b. Authoritative Usage Normalization & Fail-Closed Reconciliation
-    const rate = this.budgetManager.getPricingRate(providerId, model, estimatedTokens.serviceTier);
+    const rate = this.budgetManager.getPricingRate(billingProvider, model, estimatedTokens.serviceTier);
     if (!rate) {
       this.budgetManager.recordUnknown({
         reservationId: reservation.reservationId,
-        errorReason: `Model '${model}' has no verified pricing registered under provider '${providerId}'; holding reservation in UNKNOWN state`,
+        errorReason: `Model '${model}' has no verified pricing registered under provider '${billingProvider}'; holding reservation in UNKNOWN state`,
       });
       throw new BudgetError(`Model '${model}' has no verified pricing registered`, 'ERR_PRICING_NOT_FOUND');
     }
@@ -226,7 +230,7 @@ export class BudgetAwareLlmAdapter implements LLMProvider {
       modelId: model,
       rate,
       pricingEngine: this.budgetManager.pricingEngine,
-      providerId,
+      providerId: billingProvider,
       endpoint: resolvedEndpoint.effectiveUrl,
       expectedEndpointKind: auditResult.endpointKind,
     });
