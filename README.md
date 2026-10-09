@@ -86,10 +86,18 @@ pnpm install
 pnpm build
 ```
 
-### Testleri Çalıştırma
+### Testleri Çalıştırma (Deterministik & Çevrimdışı)
 ```bash
 pnpm test
 ```
+
+### Canlı E2E Testleri (Opt-in)
+```bash
+pnpm test:live
+```
+
+### Yapılandırma ve Ortam Değişkenleri
+Ortam değişkenleri, öncelik hiyerarşisi ve üretim modu güvenlik sözleşmesi için [.env.example](.env.example) ve [docs/ENVIRONMENT.md](docs/ENVIRONMENT.md) dokümanına bakınız.
 
 ### Operasyonel CLI ve Antigravity IDE / MCP Entegrasyonu
 

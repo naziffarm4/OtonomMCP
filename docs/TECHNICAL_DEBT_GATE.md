@@ -29,7 +29,7 @@
 
 - [x] **WP-1: Node.js ve Depo Hijyeni** (Sözleşme, engines >=22.6.0, .nvmrc, LICENSE, .gitattributes, .editorconfig, .gitignore, CI, doküman düzeltmeleri) — `FIXED` (Commit: `e4e5845`, origin/main mühürlendi).
 - [x] **WP-2: Gerçek Tip Kontrolü ve Deterministik Testler** (tsconfig.test.json, kök script'leri: typecheck/test/test:live, Windows kilit dayanıklılığı, deterministik 2974 PASS ve canlı 17 PASS ayrımı) — `FIXED`.
-- [ ] **WP-3: Ortam Değişkenleri ve Yapılandırma Sözleşmesi** (.env.example, ENVIRONMENT dokümantasyonu, fail-closed sözleşmesi)
+- [x] **WP-3: Ortam Değişkenleri ve Yapılandırma Sözleşmesi** (.env.example, ENVIRONMENT dokümantasyonu, fail-closed sözleşmesi) — `FIXED`.
 - [ ] **WP-4: Yinelenen Modüller ve Dışa Aktarımlar** (ADR-12, export temizliği, geriye dönük uyumluluk)
 - [ ] **WP-5: Tür Güvenliği Borcu** (Kritik modüllerde any azaltımı, tip doğrulama)
 - [ ] **WP-6: Yapılandırılmış Loglama** (MCP stdio protokol bütünlüğü, log seviyeleri, sır maskeleme)
@@ -45,7 +45,12 @@
 - CI Tetikleyici: `.github/workflows/ci.yml` Node 22 sabitlendi.
 
 ### WP-2 Doğrulama Kanıtı
+- Commit: `0e08f6d3504ce24c58b0434245bfa62f6585ecd1`
 - `pnpm typecheck`: `tsc -p tsconfig.json --noEmit` -> Exit Code 0 (0 error, strictly typed src).
 - `pnpm test`: `node scripts/run-tests.js` -> 114 suite, 2974 test PASS, 0 FAIL, 0 CANCELLED, 0 SKIPPED. Tamamen deterministik ve çevrimdışı.
 - `pnpm test:live`: `node scripts/run-tests.js --live` -> 2 suite, 17 test PASS, 0 FAIL. Gerçek LLM/AGY ve OpenAI canlı akışı opt-in ile doğrulandı.
 - Windows Lock Contention: `atomic-writer.ts` retry mekanizması ile eşzamanlı testlerdeki EPERM/EBUSY kalıcı olarak çözüldü.
+
+### WP-3 Doğrulama Kanıtı
+- `.env.example`: Kodda kullanılan tüm 10 adet ortam değişkeni (`AIDM_LLM_API_KEY`, `OPENAI_API_KEY`, `AIDM_LLM_ENDPOINT`, `OPENAI_BASE_URL`, `AIDM_LLM_MODEL`, `OPENAI_MODEL`, `AIDM_MCP_AUTH_TOKEN`, `NODE_ENV`, `ANTIGRAVITY_BIN_PATH`, `AIDM_LIVE_E2E`) şablona eklendi; hiçbir gerçek sır veya canlı anahtar içermediği doğrulandı.
+- Dokümantasyon: `docs/ENVIRONMENT.md` referans tablosu, öncelik sıralaması (`AIDM_*` > `OPENAI_*`), `NODE_ENV=production` mock fail-closed sözleşmesi ve origin uyuşmazlığı kontrolü (`ERR_UNSUPPORTED_BILLING_MODE`) eksiksiz belgelendi. README.md ile bağlantılandı.
