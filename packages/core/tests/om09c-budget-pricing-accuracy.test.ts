@@ -28,8 +28,14 @@ import {
   usdToNanoUsd,
   MAX_SAFE_INT64,
   ceilDiv,
+  BudgetAwareLlmAdapter,
+  UsageNormalizer,
   type TokenUsage,
   type PricingRate,
+  type LLMProvider,
+  type LlmRequest,
+  type LlmResponse,
+  LlmFinishReason,
 } from '../dist/index.js';
 
 describe('OM-09C: LLM Budget Pricing Accuracy & Hardening', () => {
@@ -1006,6 +1012,560 @@ describe('OM-09C: LLM Budget Pricing Accuracy & Hardening', () => {
       assert.strictEqual(accountAfter.reservedSpendNanoUsd, initialReserved, 'Reserved spend must be retained in UNKNOWN state');
       const resState = budgetManager.getReservation(res.reservationId)!;
       assert.strictEqual(resState.state, 'UNKNOWN');
+    });
+  });
+
+  // ==========================================================================
+  // 13. FAIL-CLOSED USAGE NORMALIZATION & BILLING TRUTH (OM-09C-FIX-3)
+  // ==========================================================================
+  describe('13. Fail-Closed Usage Normalization & Billing Truth (OM-09C-FIX-3)', () => {
+    let lunaRate: PricingRate;
+    let gpt4oRate: PricingRate;
+
+    beforeEach(() => {
+      lunaRate = pricingEngine.getRate('openai', 'gpt-6-luna', 'standard');
+      gpt4oRate = pricingEngine.getRate('openai', 'gpt-4o', 'standard');
+    });
+
+    it('pricingEngine rejects fractional and non-integer token counts (no silent flooring)', () => {
+      // Fractional input tokens
+      assert.throws(
+        () => pricingEngine.calculateCostNanoUsd({ inputTokens: 100.5, outputTokens: 50 }, lunaRate),
+        (err: any) => err instanceof BudgetError && err.code === 'ERR_INVALID_PRICING'
+      );
+
+      // Fractional output tokens
+      assert.throws(
+        () => pricingEngine.calculateCostNanoUsd({ inputTokens: 100, outputTokens: 50.25 }, lunaRate),
+        (err: any) => err instanceof BudgetError && err.code === 'ERR_INVALID_PRICING'
+      );
+
+      // Fractional cached tokens
+      assert.throws(
+        () => pricingEngine.calculateCostNanoUsd({ inputTokens: 100, outputTokens: 50, cachedTokens: 10.5 }, lunaRate),
+        (err: any) => err instanceof BudgetError && err.code === 'ERR_INVALID_PRICING'
+      );
+
+      // Fractional cache-write tokens
+      assert.throws(
+        () => pricingEngine.calculateCostNanoUsd({ inputTokens: 100, outputTokens: 50, cacheWriteTokens: 5.5 }, lunaRate),
+        (err: any) => err instanceof BudgetError && err.code === 'ERR_INVALID_PRICING'
+      );
+
+      // Fractional reasoning tokens
+      assert.throws(
+        () => pricingEngine.calculateCostNanoUsd({ inputTokens: 100, outputTokens: 50, reasoningTokens: 2.5 }, lunaRate),
+        (err: any) => err instanceof BudgetError && err.code === 'ERR_INVALID_PRICING'
+      );
+    });
+
+    it('UsageNormalizer rejects missing input or output tokens without falling back to estimates', () => {
+      const dummyReq: LlmRequest = {
+        messages: [{ role: 'user', content: 'test prompt' }],
+        correlation: { correlation_id: 'corr_test_norm', project_id: 'proj_norm' },
+        director_context: { project_id: 'proj_norm' },
+      };
+
+      // Missing prompt_tokens
+      const resMissingInput: LlmResponse<unknown> = {
+        provider: 'openai',
+        model: 'gpt-6-luna',
+        content: 'answer',
+        finish_reason: LlmFinishReason.STOP,
+        usage: { completion_tokens: 50, total_tokens: 50 } as any,
+        raw_metadata: null,
+      };
+
+      const norm1 = UsageNormalizer.normalizeAndReconcile({
+        response: resMissingInput,
+        request: dummyReq,
+        modelId: 'gpt-6-luna',
+        rate: lunaRate,
+        pricingEngine,
+        providerId: 'openai',
+      });
+      assert.strictEqual(norm1.success, false);
+      assert.strictEqual((norm1 as any).errorCode, 'ERR_USAGE_INCOMPLETE');
+
+      // Missing completion_tokens
+      const resMissingOutput: LlmResponse<unknown> = {
+        provider: 'openai',
+        model: 'gpt-6-luna',
+        content: 'answer',
+        finish_reason: LlmFinishReason.STOP,
+        usage: { prompt_tokens: 100, total_tokens: 100 } as any,
+        raw_metadata: null,
+      };
+
+      const norm2 = UsageNormalizer.normalizeAndReconcile({
+        response: resMissingOutput,
+        request: dummyReq,
+        modelId: 'gpt-6-luna',
+        rate: lunaRate,
+        pricingEngine,
+        providerId: 'openai',
+      });
+      assert.strictEqual(norm2.success, false);
+      assert.strictEqual((norm2 as any).errorCode, 'ERR_USAGE_INCOMPLETE');
+
+      // Completely missing usage object
+      const resMissingUsage: LlmResponse<unknown> = {
+        provider: 'openai',
+        model: 'gpt-6-luna',
+        content: 'answer',
+        finish_reason: LlmFinishReason.STOP,
+        usage: null as any,
+        raw_metadata: null,
+      };
+
+      const norm3 = UsageNormalizer.normalizeAndReconcile({
+        response: resMissingUsage,
+        request: dummyReq,
+        modelId: 'gpt-6-luna',
+        rate: lunaRate,
+        pricingEngine,
+        providerId: 'openai',
+      });
+      assert.strictEqual(norm3.success, false);
+      assert.strictEqual((norm3 as any).errorCode, 'ERR_USAGE_MISSING');
+    });
+
+    it('UsageNormalizer enforces documented schema policy for missing cache-write tokens', () => {
+      const dummyReq: LlmRequest = {
+        messages: [{ role: 'user', content: 'test prompt' }],
+        correlation: { correlation_id: 'corr_test_cw', project_id: 'proj_cw' },
+        director_context: { project_id: 'proj_cw' },
+      };
+
+      // On gpt-6-luna: cache writes are billed at 1.25x. Missing cache_write_tokens CANNOT be assumed 0!
+      const resLunaMissingCw: LlmResponse<unknown> = {
+        provider: 'openai',
+        model: 'gpt-6-luna',
+        content: 'response',
+        finish_reason: LlmFinishReason.STOP,
+        usage: {
+          prompt_tokens: 1000,
+          completion_tokens: 500,
+          prompt_tokens_details: { cached_tokens: 200 }, // cache_write_tokens omitted
+        } as any,
+        raw_metadata: null,
+      };
+
+      const normLuna = UsageNormalizer.normalizeAndReconcile({
+        response: resLunaMissingCw,
+        request: dummyReq,
+        modelId: 'gpt-6-luna',
+        rate: lunaRate,
+        pricingEngine,
+        providerId: 'openai',
+      });
+      assert.strictEqual(normLuna.success, false);
+      assert.strictEqual((normLuna as any).errorCode, 'ERR_USAGE_INCOMPLETE');
+      assert.ok((normLuna as any).errorReason.includes('cache-write pricing'));
+
+      // When gpt-6-luna explicitly reports cache_write_tokens: 0, it settles reliably
+      const resLunaExplicitZeroCw: LlmResponse<unknown> = {
+        provider: 'openai',
+        model: 'gpt-6-luna',
+        content: 'response',
+        finish_reason: LlmFinishReason.STOP,
+        usage: {
+          prompt_tokens: 1000,
+          completion_tokens: 500,
+          prompt_tokens_details: { cached_tokens: 200, cache_write_tokens: 0 },
+        } as any,
+        raw_metadata: null,
+      };
+
+      const normLunaExplicit = UsageNormalizer.normalizeAndReconcile({
+        response: resLunaExplicitZeroCw,
+        request: dummyReq,
+        modelId: 'gpt-6-luna',
+        rate: lunaRate,
+        pricingEngine,
+        providerId: 'openai',
+      });
+      assert.strictEqual(normLunaExplicit.success, true);
+      assert.strictEqual((normLunaExplicit as any).usage.cacheWriteTokens, 0);
+
+      // On gpt-4o: cache writes are NOT billed (rate.cacheWriteRateNum is undefined/0n).
+      // Documented schema policy: omission of cache_write_tokens safely defaults to 0 cost.
+      const resGpt4oMissingCw: LlmResponse<unknown> = {
+        provider: 'openai',
+        model: 'gpt-4o',
+        content: 'response',
+        finish_reason: LlmFinishReason.STOP,
+        usage: {
+          prompt_tokens: 1000,
+          completion_tokens: 500,
+          prompt_tokens_details: { cached_tokens: 200 },
+        } as any,
+        raw_metadata: null,
+      };
+
+      const normGpt4o = UsageNormalizer.normalizeAndReconcile({
+        response: resGpt4oMissingCw,
+        request: dummyReq,
+        modelId: 'gpt-4o',
+        rate: gpt4oRate,
+        pricingEngine,
+        providerId: 'openai',
+      });
+      assert.strictEqual(normGpt4o.success, true);
+      assert.strictEqual((normGpt4o as any).usage.cacheWriteTokens, 0);
+    });
+
+    it('UsageNormalizer reconciles actual service tier differing from requested tier', () => {
+      // 1. Caller requested 'flex' (50% discount), but provider returned 'default' (standard)
+      const reqFlex: LlmRequest = {
+        messages: [{ role: 'user', content: 'test' }],
+        metadata: { service_tier: 'flex' },
+        correlation: { correlation_id: 'corr_tier_1', project_id: 'proj_tier' },
+        director_context: { project_id: 'proj_tier' },
+      };
+
+      const resProviderStandard: LlmResponse<unknown> = {
+        provider: 'openai',
+        model: 'gpt-6-luna',
+        content: 'res',
+        finish_reason: LlmFinishReason.STOP,
+        usage: { prompt_tokens: 1000, completion_tokens: 500, service_tier: 'default', prompt_tokens_details: { cache_write_tokens: 0 } } as any,
+        raw_metadata: { service_tier: 'default' },
+      };
+
+      const norm1 = UsageNormalizer.normalizeAndReconcile({
+        response: resProviderStandard,
+        request: reqFlex,
+        modelId: 'gpt-6-luna',
+        rate: lunaRate,
+        pricingEngine,
+        providerId: 'openai',
+      });
+      assert.strictEqual(norm1.success, true);
+      // Provider reported default -> reconciled to standard, preventing undercharge
+      assert.strictEqual((norm1 as any).effectiveServiceTier, 'standard');
+
+      // 2. Caller requested 'flex', and provider confirmed 'flex'
+      const resProviderFlex: LlmResponse<unknown> = {
+        provider: 'openai',
+        model: 'gpt-6-luna',
+        content: 'res',
+        finish_reason: LlmFinishReason.STOP,
+        usage: { prompt_tokens: 1000, completion_tokens: 500, service_tier: 'flex', prompt_tokens_details: { cache_write_tokens: 0 } } as any,
+        raw_metadata: { service_tier: 'flex' },
+      };
+
+      const norm2 = UsageNormalizer.normalizeAndReconcile({
+        response: resProviderFlex,
+        request: reqFlex,
+        modelId: 'gpt-6-luna',
+        rate: lunaRate,
+        pricingEngine,
+        providerId: 'openai',
+      });
+      assert.strictEqual(norm2.success, true);
+      assert.strictEqual((norm2 as any).effectiveServiceTier, 'flex');
+
+      // 3. Caller requested 'flex', but provider response omitted service_tier
+      const resProviderOmitted: LlmResponse<unknown> = {
+        provider: 'openai',
+        model: 'gpt-6-luna',
+        content: 'res',
+        finish_reason: LlmFinishReason.STOP,
+        usage: { prompt_tokens: 1000, completion_tokens: 500, prompt_tokens_details: { cache_write_tokens: 0 } } as any,
+        raw_metadata: null,
+      };
+
+      const norm3 = UsageNormalizer.normalizeAndReconcile({
+        response: resProviderOmitted,
+        request: reqFlex,
+        modelId: 'gpt-6-luna',
+        rate: lunaRate,
+        pricingEngine,
+        providerId: 'openai',
+      });
+      assert.strictEqual(norm3.success, true);
+      // Unconfirmed discount falls back to standard to never undercharge
+      assert.strictEqual((norm3 as any).effectiveServiceTier, 'standard');
+
+      // 4. Caller requested 'fast' (priority), provider omitted service_tier
+      const reqFast: LlmRequest = {
+        messages: [{ role: 'user', content: 'test' }],
+        metadata: { service_tier: 'fast' },
+        correlation: { correlation_id: 'corr_tier_2', project_id: 'proj_tier' },
+        director_context: { project_id: 'proj_tier' },
+      };
+
+      const norm4 = UsageNormalizer.normalizeAndReconcile({
+        response: resProviderOmitted,
+        request: reqFast,
+        modelId: 'gpt-6-luna',
+        rate: lunaRate,
+        pricingEngine,
+        providerId: 'openai',
+      });
+      assert.strictEqual(norm4.success, true);
+      assert.strictEqual((norm4 as any).effectiveServiceTier, 'fast');
+    });
+
+    it('UsageNormalizer rejects unsupported regional processing and data-residency surcharges', () => {
+      const dummyRes: LlmResponse<unknown> = {
+        provider: 'openai',
+        model: 'gpt-6-luna',
+        content: 'test',
+        finish_reason: LlmFinishReason.STOP,
+        usage: { prompt_tokens: 100, completion_tokens: 50, prompt_tokens_details: { cache_write_tokens: 0 } } as any,
+        raw_metadata: null,
+      };
+
+      // regional processing metadata
+      const norm1 = UsageNormalizer.normalizeAndReconcile({
+        response: dummyRes,
+        request: {
+          messages: [{ role: 'user', content: 'hi' }],
+          metadata: { regional: true },
+          correlation: { correlation_id: 'c1', project_id: 'p1' },
+          director_context: { project_id: 'p1' },
+        },
+        modelId: 'gpt-6-luna',
+        rate: lunaRate,
+        pricingEngine,
+        providerId: 'openai',
+      });
+      assert.strictEqual(norm1.success, false);
+      assert.strictEqual((norm1 as any).errorCode, 'ERR_UNSUPPORTED_BILLING_MODE');
+
+      // data-residency metadata
+      const norm2 = UsageNormalizer.normalizeAndReconcile({
+        response: dummyRes,
+        request: {
+          messages: [{ role: 'user', content: 'hi' }],
+          metadata: { data_residency: 'eu' },
+          correlation: { correlation_id: 'c2', project_id: 'p2' },
+          director_context: { project_id: 'p2' },
+        },
+        modelId: 'gpt-6-luna',
+        rate: lunaRate,
+        pricingEngine,
+        providerId: 'openai',
+      });
+      assert.strictEqual(norm2.success, false);
+      assert.strictEqual((norm2 as any).errorCode, 'ERR_UNSUPPORTED_BILLING_MODE');
+    });
+
+    it('BudgetAwareLlmAdapter.generate fails closed and retains reservation in UNKNOWN on incomplete usage', async () => {
+      budgetManager.createGlobalAccount(5.0);
+
+      const incompleteMockProvider: LLMProvider = {
+        providerId: 'openai',
+        providerName: 'openai',
+        defaultModel: 'gpt-4o',
+        supportedModels: ['gpt-4o'],
+        supportedCapabilities: [],
+        checkAvailability: async () => ({ available: true, model: 'gpt-4o', reason: null }),
+        generate: async (req: LlmRequest) => ({
+          correlation: req.correlation,
+          provider: 'openai',
+          model: 'gpt-4o',
+          content: 'Hello',
+          finish_reason: LlmFinishReason.STOP,
+          usage: {
+            prompt_tokens: 500,
+            // completion_tokens missing!
+          } as any,
+          raw_metadata: null,
+        }),
+      };
+
+      const adapter = new BudgetAwareLlmAdapter(incompleteMockProvider, budgetManager);
+
+      const res = await adapter.generate({
+        messages: [{ role: 'user', content: 'hello' }],
+        model: 'gpt-4o',
+        correlation: { correlation_id: 'corr_incomplete_1', project_id: 'proj_inc' },
+        director_context: { project_id: 'proj_inc' },
+      });
+      assert.strictEqual(res.content, 'Hello');
+
+      // Verification: reservation is held in UNKNOWN state, and reserved spend is NOT released!
+      const account = budgetManager.getGlobalAccount()!;
+      assert.ok(account.reservedSpendNanoUsd > 0n, 'Reserved spend must be retained in UNKNOWN state');
+      assert.strictEqual(account.committedSpendNanoUsd, 0n);
+
+      const pending = budgetManager.db.listPendingReservations();
+      assert.strictEqual(pending.length, 1);
+      assert.strictEqual(pending[0].state, ReservationState.UNKNOWN);
+    });
+
+    it('BudgetAwareLlmAdapter.generate fails closed and retains reservation in UNKNOWN when cache_write_tokens is missing on gpt-6-luna', async () => {
+      budgetManager.createGlobalAccount(5.0);
+
+      const lunaMissingCwProvider: LLMProvider = {
+        providerId: 'openai',
+        providerName: 'openai',
+        defaultModel: 'gpt-6-luna',
+        supportedModels: ['gpt-6-luna'],
+        supportedCapabilities: [],
+        checkAvailability: async () => ({ available: true, model: 'gpt-6-luna', reason: null }),
+        generate: async (req: LlmRequest) => ({
+          correlation: req.correlation,
+          provider: 'openai',
+          model: 'gpt-6-luna',
+          content: 'Hello from luna',
+          finish_reason: LlmFinishReason.STOP,
+          usage: {
+            prompt_tokens: 1000,
+            completion_tokens: 500,
+            prompt_tokens_details: { cached_tokens: 200 }, // missing cache_write_tokens on a cache-write model
+          } as any,
+          raw_metadata: null,
+        }),
+      };
+
+      const adapter = new BudgetAwareLlmAdapter(lunaMissingCwProvider, budgetManager);
+
+      const res = await adapter.generate({
+        messages: [{ role: 'user', content: 'hello luna' }],
+        model: 'gpt-6-luna',
+        correlation: { correlation_id: 'corr_luna_missing_cw', project_id: 'proj_luna' },
+        director_context: { project_id: 'proj_luna' },
+      });
+      assert.strictEqual(res.content, 'Hello from luna');
+
+      const account = budgetManager.getGlobalAccount()!;
+      assert.ok(account.reservedSpendNanoUsd > 0n, 'Reserved spend must be retained on incomplete cache-write usage');
+      assert.strictEqual(account.committedSpendNanoUsd, 0n);
+
+      const pending = budgetManager.db.listPendingReservations();
+      assert.strictEqual(pending.length, 1);
+      assert.strictEqual(pending[0].state, ReservationState.UNKNOWN);
+    });
+
+    it('BudgetAwareLlmAdapter.generate settles successfully with exact pricing when gpt-6-luna usage is complete', async () => {
+      budgetManager.createGlobalAccount(5.0);
+
+      const completeLunaProvider: LLMProvider = {
+        providerId: 'openai',
+        providerName: 'openai',
+        defaultModel: 'gpt-6-luna',
+        supportedModels: ['gpt-6-luna'],
+        supportedCapabilities: [],
+        checkAvailability: async () => ({ available: true, model: 'gpt-6-luna', reason: null }),
+        generate: async (req: LlmRequest) => ({
+          correlation: req.correlation,
+          provider: 'openai',
+          model: 'gpt-6-luna',
+          content: 'Complete luna response',
+          finish_reason: LlmFinishReason.STOP,
+          usage: {
+            prompt_tokens: 5000,
+            completion_tokens: 1000,
+            prompt_tokens_details: {
+              cached_tokens: 1000,     // 1,000 * 10 nUSD = 10,000 nUSD
+              cache_write_tokens: 1000, // 1,000 * 125 nUSD = 125,000 nUSD
+            },
+            completion_tokens_details: {
+              reasoning_tokens: 400,   // Included in completion_tokens
+            },
+          } as any,
+          raw_metadata: null,
+        }),
+      };
+
+      const adapter = new BudgetAwareLlmAdapter(completeLunaProvider, budgetManager);
+
+      const req: LlmRequest = {
+        messages: [{ role: 'user', content: 'test complete usage' }],
+        model: 'gpt-6-luna',
+        correlation: { correlation_id: 'corr_complete_luna_1', attempt: 1, project_id: 'proj_comp' },
+        director_context: { project_id: 'proj_comp' },
+      };
+
+      const res = await adapter.generate(req);
+      assert.strictEqual(res.content, 'Complete luna response');
+
+      const account = budgetManager.getGlobalAccount()!;
+      assert.strictEqual(account.reservedSpendNanoUsd, 0n, 'Reservation hold must be completely settled to 0');
+      // Ordinary input: (5000 - 1000 - 1000) = 3000 * 100 nUSD = 300,000 nUSD
+      // Cached input: 1000 * 10 nUSD = 10,000 nUSD
+      // Cache write: 1000 * 125 nUSD = 125,000 nUSD
+      // Output: 1000 * 500 nUSD = 500,000 nUSD
+      // Total: 300,000 + 10,000 + 125,000 + 500,000 = 935,000 nUSD
+      assert.strictEqual(account.committedSpendNanoUsd, 935_000n);
+
+      // Repeated call with same idempotency keys returns cached result without double charging
+      const repeatRes = await adapter.generate(req);
+      assert.strictEqual(repeatRes.content, 'Complete luna response');
+      const accountAfterRepeat = budgetManager.getGlobalAccount()!;
+      assert.strictEqual(accountAfterRepeat.committedSpendNanoUsd, 935_000n, 'Committed spend must not double charge');
+    });
+
+    it('BudgetAwareLlmAdapter.generate rejects regional processing metadata fail-closed before dispatch', async () => {
+      budgetManager.createGlobalAccount(5.0);
+
+      let dispatched = false;
+      const mockProvider: LLMProvider = {
+        providerId: 'openai',
+        providerName: 'openai',
+        defaultModel: 'gpt-6-luna',
+        supportedModels: ['gpt-6-luna'],
+        supportedCapabilities: [],
+        checkAvailability: async () => ({ available: true, model: 'gpt-6-luna', reason: null }),
+        generate: async () => {
+          dispatched = true;
+          throw new Error('Should never be called');
+        },
+      };
+
+      const adapter = new BudgetAwareLlmAdapter(mockProvider, budgetManager);
+
+      await assert.rejects(
+        () => adapter.generate({
+          messages: [{ role: 'user', content: 'hello' }],
+          model: 'gpt-6-luna',
+          metadata: { regional: true },
+          correlation: { correlation_id: 'corr_reg_fail', project_id: 'proj_reg' },
+          director_context: { project_id: 'proj_reg' },
+        }),
+        (err: any) => err instanceof BudgetError && err.code === 'ERR_UNSUPPORTED_BILLING_MODE'
+      );
+
+      assert.strictEqual(dispatched, false, 'Provider must not be dispatched when unsupported billing mode is requested');
+    });
+
+    it('ReconciliationEngine blocks release of UNKNOWN reservation without authoritative reconciliation', () => {
+      budgetManager.createGlobalAccount(5.0);
+
+      const res = budgetManager.reserve({
+        sessionId: 'sess_unknown_rel_guard',
+        providerId: 'openai',
+        modelId: 'gpt-6-luna',
+        estimatedTokens: { inputTokens: 1000, outputTokens: 1000 },
+        idempotencyKey: 'idemp_unk_guard',
+      });
+
+      budgetManager.markDispatched(res.reservationId);
+      budgetManager.recordUnknown({
+        reservationId: res.reservationId,
+        errorReason: 'Connection timed out',
+      });
+
+      const initialHold = budgetManager.getGlobalAccount()!.reservedSpendNanoUsd;
+      assert.ok(initialHold > 0n);
+
+      // Attempting to release an UNKNOWN reservation must throw ERR_INVALID_RESERVATION_STATE
+      assert.throws(
+        () => {
+          budgetManager.release({
+            reservationId: res.reservationId,
+            reason: 'Rogue attempt to release undetermined hold',
+          });
+        },
+        (err: any) => err instanceof BudgetError && err.code === 'ERR_INVALID_RESERVATION_STATE'
+      );
+
+      const accountAfter = budgetManager.getGlobalAccount()!;
+      assert.strictEqual(accountAfter.reservedSpendNanoUsd, initialHold, 'Hold must be preserved against unauthorized release');
     });
   });
 });

@@ -166,6 +166,14 @@ export class ReconciliationEngine {
         );
       }
 
+      if (reservation.state === ReservationState.UNKNOWN) {
+        throw new BudgetError(
+          `Cannot release UNKNOWN reservation ${request.reservationId} without authoritative reconciliation`,
+          'ERR_INVALID_RESERVATION_STATE',
+          { reservationId: request.reservationId, currentState: reservation.state }
+        );
+      }
+
       const account = this.db.getAccount(reservation.accountId);
       if (!account) {
         throw new BudgetError(`Budget account not found: ${reservation.accountId}`, 'ERR_INVALID_BUDGET_ACCOUNT');

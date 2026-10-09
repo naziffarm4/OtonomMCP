@@ -13,7 +13,12 @@ export type BudgetErrorCode =
   | 'ERR_RESERVATION_MODEL_MISMATCH'
   | 'ERR_RESERVATION_ALREADY_CONSUMED'
   | 'ERR_IDEMPOTENCY_CONFLICT'
-  | 'ERR_BUDGET_DB_ERROR';
+  | 'ERR_BUDGET_DB_ERROR'
+  | 'ERR_UNSUPPORTED_BILLING_MODE'
+  | 'ERR_USAGE_MISSING'
+  | 'ERR_USAGE_INCOMPLETE'
+  | 'ERR_USAGE_MALFORMED'
+  | 'ERR_USAGE_INCONSISTENT';
 
 export interface BudgetErrorDetails extends AidmErrorDetails {
   accountId?: string;

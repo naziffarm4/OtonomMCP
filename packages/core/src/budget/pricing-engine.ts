@@ -115,32 +115,32 @@ export class PricingEngine {
   calculateCostNanoUsd(usage: TokenUsage, rate: PricingRate): bigint {
     if (
       typeof usage.inputTokens !== 'number' ||
-      typeof usage.outputTokens !== 'number' ||
-      !Number.isFinite(usage.inputTokens) ||
-      !Number.isFinite(usage.outputTokens) ||
+      !Number.isInteger(usage.inputTokens) ||
       usage.inputTokens < 0 ||
+      typeof usage.outputTokens !== 'number' ||
+      !Number.isInteger(usage.outputTokens) ||
       usage.outputTokens < 0
     ) {
-      throw new BudgetError('Token counts must be non-negative finite numbers', 'ERR_INVALID_PRICING');
+      throw new BudgetError('Token counts must be non-negative integers', 'ERR_INVALID_PRICING');
     }
 
-    if (usage.cachedTokens !== undefined && (!Number.isFinite(usage.cachedTokens) || usage.cachedTokens < 0)) {
-      throw new BudgetError('Cached token count must be a non-negative finite number', 'ERR_INVALID_PRICING');
+    if (usage.cachedTokens !== undefined && (!Number.isInteger(usage.cachedTokens) || usage.cachedTokens < 0)) {
+      throw new BudgetError('Cached token count must be a non-negative integer', 'ERR_INVALID_PRICING');
     }
 
-    if (usage.cacheWriteTokens !== undefined && (!Number.isFinite(usage.cacheWriteTokens) || usage.cacheWriteTokens < 0)) {
-      throw new BudgetError('Cache-write token count must be a non-negative finite number', 'ERR_INVALID_PRICING');
+    if (usage.cacheWriteTokens !== undefined && (!Number.isInteger(usage.cacheWriteTokens) || usage.cacheWriteTokens < 0)) {
+      throw new BudgetError('Cache-write token count must be a non-negative integer', 'ERR_INVALID_PRICING');
     }
 
-    if (usage.reasoningTokens !== undefined && (!Number.isFinite(usage.reasoningTokens) || usage.reasoningTokens < 0)) {
-      throw new BudgetError('Reasoning token count must be a non-negative finite number', 'ERR_INVALID_PRICING');
+    if (usage.reasoningTokens !== undefined && (!Number.isInteger(usage.reasoningTokens) || usage.reasoningTokens < 0)) {
+      throw new BudgetError('Reasoning token count must be a non-negative integer', 'ERR_INVALID_PRICING');
     }
 
-    const totalInputTokens = BigInt(Math.floor(usage.inputTokens));
-    const cachedTokens = BigInt(Math.floor(Math.max(0, usage.cachedTokens ?? 0)));
-    const cacheWriteTokens = BigInt(Math.floor(Math.max(0, usage.cacheWriteTokens ?? 0)));
-    const outputTokens = BigInt(Math.floor(usage.outputTokens));
-    const reasoningTokens = BigInt(Math.floor(Math.max(0, usage.reasoningTokens ?? 0)));
+    const totalInputTokens = BigInt(usage.inputTokens);
+    const cachedTokens = BigInt(usage.cachedTokens ?? 0);
+    const cacheWriteTokens = BigInt(usage.cacheWriteTokens ?? 0);
+    const outputTokens = BigInt(usage.outputTokens);
+    const reasoningTokens = BigInt(usage.reasoningTokens ?? 0);
 
     // Invariant: cached read + cache write cannot exceed total input
     if (cacheWriteTokens === 0n && cachedTokens > totalInputTokens) {

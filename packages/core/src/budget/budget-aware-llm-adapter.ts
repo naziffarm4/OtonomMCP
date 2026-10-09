@@ -3,7 +3,8 @@ import type { LlmRequest, LlmResponse } from '../llm-bridge/llm-types.js';
 import { LlmTimeoutError } from '../errors/llm-error.js';
 import { BudgetError } from '../errors/budget-error.js';
 import type { BudgetManager } from './budget-manager.js';
-import type { TokenUsage } from './budget-types.js';
+import { ReservationState, type TokenUsage } from './budget-types.js';
+import { UsageNormalizer } from './usage-normalizer.js';
 
 export interface BudgetAwareLlmAdapterOptions {
   budgetManager: BudgetManager;
@@ -104,6 +105,19 @@ export class BudgetAwareLlmAdapter implements LLMProvider {
   }
 
   async generate<TStructured = unknown>(request: LlmRequest): Promise<LlmResponse<TStructured>> {
+    // 0. Surcharge & Unsupported Billing Mode Check (Fail closed)
+    if (
+      request.metadata?.regional ||
+      request.metadata?.data_residency ||
+      request.metadata?.dataResidency ||
+      request.metadata?.regional_processing
+    ) {
+      throw new BudgetError(
+        'Regional processing and data-residency billing surcharges are not currently supported by pricing engine; rejected fail-closed to prevent billing inaccuracy',
+        'ERR_UNSUPPORTED_BILLING_MODE'
+      );
+    }
+
     const correlationId = request.correlation?.correlation_id ?? `corr_${Date.now()}`;
     const attempt = request.correlation?.attempt ?? 1;
     const model = request.model?.trim() || this.defaultModel;
@@ -133,7 +147,9 @@ export class BudgetAwareLlmAdapter implements LLMProvider {
     });
 
     // 3. Mark Reservation DISPATCHED before issuing the HTTP call
-    this.budgetManager.markDispatched(reservation.reservationId);
+    if (reservation.state === ReservationState.PREPARED) {
+      this.budgetManager.markDispatched(reservation.reservationId);
+    }
 
     const dispatchClaimId = `claim_${reservation.reservationId}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 
@@ -173,84 +189,41 @@ export class BudgetAwareLlmAdapter implements LLMProvider {
       throw err;
     }
 
-    // 5b. Usage Extraction & Reconciliation
-    const usage = response?.usage as any;
-    const hasReportedMetrics =
-      usage &&
-      (typeof usage.reported_input_tokens === 'number' ||
-        typeof usage.reported_output_tokens === 'number' ||
-        typeof usage.prompt_tokens === 'number' ||
-        typeof usage.input_tokens === 'number' ||
-        typeof usage.completion_tokens === 'number' ||
-        typeof usage.output_tokens === 'number');
-
-    if (!hasReportedMetrics) {
-      // Never record zero cost on missing usage; hold reservation as UNKNOWN
+    // 5b. Authoritative Usage Normalization & Fail-Closed Reconciliation
+    const rate = this.budgetManager.getPricingRate(providerId, model, estimatedTokens.serviceTier);
+    if (!rate) {
       this.budgetManager.recordUnknown({
         reservationId: reservation.reservationId,
-        errorReason: 'Provider response omitted usage metrics; holding reservation in UNKNOWN state',
+        errorReason: `Model '${model}' has no verified pricing registered under provider '${providerId}'; holding reservation in UNKNOWN state`,
+      });
+      throw new BudgetError(`Model '${model}' has no verified pricing registered`, 'ERR_PRICING_NOT_FOUND');
+    }
+
+    const normResult = UsageNormalizer.normalizeAndReconcile({
+      response: response as LlmResponse<unknown>,
+      request,
+      modelId: model,
+      rate,
+      pricingEngine: this.budgetManager.pricingEngine,
+      providerId,
+    });
+
+    if (!normResult.success) {
+      // Incomplete, malformed, or missing required usage metrics:
+      // Keep reservation in UNKNOWN state, retaining reservation hold against unbudgeted spend.
+      // Never settle using estimates as actual!
+      this.budgetManager.recordUnknown({
+        reservationId: reservation.reservationId,
+        errorReason: `${normResult.errorReason}; holding reservation in UNKNOWN state`,
       });
       return response;
     }
 
-    const reportedInput =
-      usage?.reported_input_tokens ??
-      usage?.input_tokens ??
-      usage?.prompt_tokens ??
-      estimatedTokens.inputTokens;
-
-    // Reasoning tokens extraction (OpenAI / DeepSeek / Anthropic schemas)
-    const reportedReasoning =
-      usage?.reported_reasoning_tokens ??
-      usage?.reasoning_tokens ??
-      usage?.completion_tokens_details?.reasoning_tokens ??
-      usage?.output_tokens_details?.reasoning_tokens ??
-      0;
-
-    let reportedOutput =
-      usage?.reported_output_tokens ??
-      usage?.output_tokens ??
-      usage?.completion_tokens ??
-      estimatedTokens.outputTokens;
-
-    if (
-      reportedReasoning > 0 &&
-      usage?.completion_tokens_details?.reasoning_tokens === undefined &&
-      usage?.output_tokens_details?.reasoning_tokens === undefined
-    ) {
-      reportedOutput += reportedReasoning;
-    }
-
-    const reportedCached =
-      usage?.reported_cached_tokens ??
-      usage?.cached_tokens ??
-      usage?.prompt_tokens_details?.cached_tokens ??
-      usage?.input_tokens_details?.cached_tokens ??
-      0;
-
-    const reportedCacheWrite =
-      usage?.reported_cache_write_tokens ??
-      usage?.cache_write_tokens ??
-      usage?.prompt_tokens_details?.cache_write_tokens ??
-      usage?.input_tokens_details?.cache_write_tokens ??
-      0;
-
-    const serviceTier = (request.metadata?.service_tier ?? request.metadata?.serviceTier ?? 'standard') as string;
-
-    const reportedUsage: TokenUsage = {
-      inputTokens: reportedInput,
-      outputTokens: reportedOutput,
-      cachedTokens: reportedCached,
-      cacheWriteTokens: reportedCacheWrite,
-      reasoningTokens: reportedReasoning,
-      serviceTier,
-    };
-
-    // Settle against actual provider usage
+    // Settle against verified actual provider usage
     try {
       this.budgetManager.settle({
         reservationId: reservation.reservationId,
-        reportedUsage,
+        reportedUsage: normResult.usage,
         providerCorrelationId: correlationId,
         idempotencyKey: settlementKey,
       }, providerId);

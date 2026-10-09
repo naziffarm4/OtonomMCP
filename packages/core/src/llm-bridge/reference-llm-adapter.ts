@@ -790,6 +790,11 @@ export class ReferenceLlmAdapter implements LLMProvider {
     if (wire.object) rawMetadata.object = wire.object;
     if (wire.created) rawMetadata.created = wire.created;
     if (wire.system_fingerprint) rawMetadata.system_fingerprint = wire.system_fingerprint;
+    if ((wire as any).service_tier) rawMetadata.service_tier = (wire as any).service_tier;
+    if (wire.usage && (wire.usage as any).service_tier) {
+      rawMetadata.service_tier = (wire.usage as any).service_tier;
+      (usage as any).service_tier = (wire.usage as any).service_tier;
+    }
     if (wire.metadata) {
       Object.assign(rawMetadata, wire.metadata);
     }

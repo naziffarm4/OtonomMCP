@@ -7,3 +7,4 @@ export * from './reconciliation-engine.js';
 export * from './budget-recovery-engine.js';
 export * from './budget-aware-llm-adapter.js';
 export * from './budget-manager.js';
+export * from './usage-normalizer.js';
