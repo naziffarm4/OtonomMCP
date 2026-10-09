@@ -249,22 +249,23 @@ export class UsageNormalizer {
 
     const reasoningTokens = ((rawDetailReasoning ?? rawTopReasoning ?? 0) as number);
 
-    // Official usage contract: completion_tokens / output_tokens ALREADY INCLUDES reasoning tokens.
-    // Do NOT add reasoningTokens a second time to finalOutput!
-    const hasSeparateReasoningTokens =
-      request.metadata?.separate_reasoning_tokens === true ||
-      request.metadata?.separateReasoningTokens === true;
+    // Trusted Contract-Authoritative Reasoning Token Accounting (OM-09C-FIX-7):
+    // Official provider contracts (OpenAI Chat Completions, Responses, Anthropic Messages)
+    // report output_tokens / completion_tokens inclusive of reasoning tokens.
+    // Treatment must derive strictly from trusted provider/endpoint usage contract.
+    // Caller-controlled request metadata is strictly untrusted and cannot cause double counting.
+    const isContractSeparateReasoning = auditResult.separateReasoningTokens === true;
 
-    if (hasSeparateReasoningTokens) {
+    if (isContractSeparateReasoning) {
       finalOutput += reasoningTokens;
-    }
-
-    if (reasoningTokens > finalOutput) {
-      return {
-        success: false,
-        errorReason: `Reasoning tokens (${reasoningTokens}) cannot exceed total output tokens (${finalOutput})`,
-        errorCode: 'ERR_USAGE_INCONSISTENT',
-      };
+    } else {
+      if (reasoningTokens > finalOutput) {
+        return {
+          success: false,
+          errorReason: `Reasoning tokens (${reasoningTokens}) cannot exceed total output tokens (${finalOutput})`,
+          errorCode: 'ERR_USAGE_INCONSISTENT',
+        };
+      }
     }
 
     // 6. Cached Input (Cache Read) Validation

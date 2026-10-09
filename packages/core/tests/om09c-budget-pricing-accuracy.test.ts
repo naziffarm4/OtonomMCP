@@ -3284,6 +3284,352 @@ describe('OM-09C: LLM Budget Pricing Accuracy & Hardening', () => {
         }
       });
     });
+
+    // ==========================================================================
+    // 17. CONTRACT-AUTHORITATIVE REASONING TOKEN ACCOUNTING (OM-09C-FIX-7)
+    // ==========================================================================
+    describe('17. Contract-Authoritative Reasoning Token Accounting (OM-09C-FIX-7)', () => {
+      const gpt4oRate: PricingRate = {
+        providerId: 'openai',
+        modelId: 'gpt-4o',
+        inputRateNum: 2_500_000_000n, // $2.50 / M = 2,500 nUSD per token
+        inputRateDen: 1_000_000n,
+        outputRateNum: 10_000_000_000n, // $10.00 / M = 10,000 nUSD per token
+        outputRateDen: 1_000_000n,
+      };
+
+      it('caller metadata separate_reasoning_tokens: true cannot cause double counting under contract where output tokens include reasoning tokens', () => {
+        // gpt-4o standard contract: completion_tokens (300) already includes reasoning tokens (100)
+        // input: 1,000 tokens * 2,500 nUSD = 2,500,000 nUSD
+        // output: 300 tokens * 10,000 nUSD = 3,000,000 nUSD
+        // expected total: 5,500,000 nUSD
+        // if double-counted: output would become 400, cost 6,500,000 nUSD
+        const result = UsageNormalizer.normalizeAndReconcile({
+          response: {
+            usage: {
+              prompt_tokens: 1000,
+              completion_tokens: 300,
+              completion_tokens_details: {
+                reasoning_tokens: 100,
+              },
+            },
+          },
+          request: {
+            messages: [{ role: 'user', content: 'test reasoning caller metadata' }],
+            model: 'gpt-4o',
+            metadata: {
+              separate_reasoning_tokens: true, // Caller metadata attempt to inflate output
+            },
+            correlation: { correlation_id: 'corr-reason-1', project_id: 'p-reason' },
+            director_context: { project_id: 'p-reason' },
+          },
+          modelId: 'gpt-4o',
+          rate: gpt4oRate,
+          pricingEngine,
+          providerId: 'openai',
+        });
+
+        assert.strictEqual(result.success, true);
+        if (result.success) {
+          assert.strictEqual(result.usage.inputTokens, 1000);
+          assert.strictEqual(result.usage.outputTokens, 300, 'Output tokens must remain 300 and not double count reasoning tokens');
+          assert.strictEqual(result.usage.reasoningTokens, 100);
+          assert.strictEqual(result.usage.inputTokens + result.usage.outputTokens, 1300);
+
+          const totalCostNanoUsd = pricingEngine.calculateCostNanoUsd(result.usage, gpt4oRate);
+          assert.strictEqual(totalCostNanoUsd, 5_500_000n, 'Total cost must be exactly 5,500,000 nUSD');
+        }
+      });
+
+      it('caller metadata separateReasoningTokens: true cannot bypass the double-counting rule', () => {
+        const result = UsageNormalizer.normalizeAndReconcile({
+          response: {
+            usage: {
+              prompt_tokens: 1000,
+              completion_tokens: 300,
+              completion_tokens_details: {
+                reasoning_tokens: 100,
+              },
+            },
+          },
+          request: {
+            messages: [{ role: 'user', content: 'test camelCase caller metadata' }],
+            model: 'gpt-4o',
+            metadata: {
+              separateReasoningTokens: true, // camelCase caller metadata attempt
+            },
+            correlation: { correlation_id: 'corr-reason-2', project_id: 'p-reason' },
+            director_context: { project_id: 'p-reason' },
+          },
+          modelId: 'gpt-4o',
+          rate: gpt4oRate,
+          pricingEngine,
+          providerId: 'openai',
+        });
+
+        assert.strictEqual(result.success, true);
+        if (result.success) {
+          assert.strictEqual(result.usage.inputTokens, 1000);
+          assert.strictEqual(result.usage.outputTokens, 300, 'Output tokens must remain 300 and not double count reasoning tokens');
+          assert.strictEqual(result.usage.reasoningTokens, 100);
+          assert.strictEqual(result.usage.inputTokens + result.usage.outputTokens, 1300);
+
+          const totalCostNanoUsd = pricingEngine.calculateCostNanoUsd(result.usage, gpt4oRate);
+          assert.strictEqual(totalCostNanoUsd, 5_500_000n);
+        }
+      });
+
+      it('both metadata values being absent preserves correct authoritative accounting', () => {
+        const result = UsageNormalizer.normalizeAndReconcile({
+          response: {
+            usage: {
+              prompt_tokens: 1000,
+              completion_tokens: 300,
+              completion_tokens_details: {
+                reasoning_tokens: 100,
+              },
+            },
+          },
+          request: {
+            messages: [{ role: 'user', content: 'test absent metadata' }],
+            model: 'gpt-4o',
+            correlation: { correlation_id: 'corr-reason-3', project_id: 'p-reason' },
+            director_context: { project_id: 'p-reason' },
+          },
+          modelId: 'gpt-4o',
+          rate: gpt4oRate,
+          pricingEngine,
+          providerId: 'openai',
+        });
+
+        assert.strictEqual(result.success, true);
+        if (result.success) {
+          assert.strictEqual(result.usage.inputTokens, 1000);
+          assert.strictEqual(result.usage.outputTokens, 300);
+          assert.strictEqual(result.usage.reasoningTokens, 100);
+          assert.strictEqual(result.usage.inputTokens + result.usage.outputTokens, 1300);
+
+          const totalCostNanoUsd = pricingEngine.calculateCostNanoUsd(result.usage, gpt4oRate);
+          assert.strictEqual(totalCostNanoUsd, 5_500_000n);
+        }
+      });
+
+      it('a trusted contract that explicitly defines separate reasoning-token accounting behaves according to that contract', () => {
+        // Trusted host registration with separateReasoningTokens: true
+        pricingEngine.registerRate({
+          providerId: 'authoritative-reasoning.corp.net',
+          modelId: 'deep-thinker-v1',
+          inputRateNum: 1_000_000_000n, // $1.00 / M = 1,000 nUSD per token
+          inputRateDen: 1_000_000n,
+          outputRateNum: 2_000_000_000n, // $2.00 / M = 2,000 nUSD per token
+          outputRateDen: 1_000_000n,
+        });
+
+        registerCustomEndpointContract('authoritative-reasoning.corp.net', {
+          endpointKind: 'openai_chat_completions',
+          separateReasoningTokens: true,
+        });
+
+        const customRate = pricingEngine.getRate('authoritative-reasoning.corp.net', 'deep-thinker-v1');
+
+        // Provider returns output_tokens: 300, and reasoning_tokens: 100 separately.
+        // Under this trusted contract, total output tokens = 300 + 100 = 400.
+        // input cost = 1,000 * 1,000 = 1,000,000 nUSD
+        // output cost = 400 * 2,000 = 800,000 nUSD
+        // total cost = 1,800,000 nUSD
+        const result = UsageNormalizer.normalizeAndReconcile({
+          response: {
+            usage: {
+              prompt_tokens: 1000,
+              completion_tokens: 300,
+              completion_tokens_details: {
+                reasoning_tokens: 100,
+              },
+            },
+          },
+          request: {
+            messages: [{ role: 'user', content: 'test trusted separate reasoning contract' }],
+            model: 'deep-thinker-v1',
+            metadata: {
+              endpoint: 'https://authoritative-reasoning.corp.net/v1/chat/completions',
+              usage_contract: 'openai_chat_completions',
+              // Even if caller maliciously tries to declare separate_reasoning_tokens: false,
+              // the trusted contract is authoritative!
+              separate_reasoning_tokens: false,
+            },
+            correlation: { correlation_id: 'corr-reason-4', project_id: 'p-reason' },
+            director_context: { project_id: 'p-reason' },
+          },
+          modelId: 'deep-thinker-v1',
+          rate: customRate,
+          pricingEngine,
+          providerId: 'authoritative-reasoning.corp.net',
+        });
+
+        assert.strictEqual(result.success, true);
+        if (result.success) {
+          assert.strictEqual(result.usage.inputTokens, 1000);
+          assert.strictEqual(result.usage.outputTokens, 400, 'Contract-authoritative separate reasoning must add reasoning to finalOutput');
+          assert.strictEqual(result.usage.reasoningTokens, 100);
+          assert.strictEqual(result.usage.inputTokens + result.usage.outputTokens, 1400);
+
+          const totalCostNanoUsd = pricingEngine.calculateCostNanoUsd(result.usage, customRate);
+          assert.strictEqual(totalCostNanoUsd, 1_800_000n, 'Total cost must accurately account for 400 output tokens');
+        }
+      });
+
+      it('rejects conflicting or malformed reasoning-token metrics fail-closed', () => {
+        // Negative reasoning tokens
+        const resNeg = UsageNormalizer.normalizeAndReconcile({
+          response: {
+            usage: {
+              prompt_tokens: 1000,
+              completion_tokens: 300,
+              completion_tokens_details: { reasoning_tokens: -5 },
+            },
+          },
+          request: {
+            messages: [{ role: 'user', content: 'test' }],
+            model: 'gpt-4o',
+            correlation: { correlation_id: 'c-neg', project_id: 'p-reason' },
+            director_context: { project_id: 'p-reason' },
+          },
+          modelId: 'gpt-4o',
+          rate: gpt4oRate,
+          pricingEngine,
+          providerId: 'openai',
+        });
+        assert.strictEqual(resNeg.success, false);
+        if (!resNeg.success) {
+          assert.strictEqual(resNeg.errorCode, 'ERR_USAGE_MALFORMED');
+        }
+
+        // Fractional reasoning tokens
+        const resFrac = UsageNormalizer.normalizeAndReconcile({
+          response: {
+            usage: {
+              prompt_tokens: 1000,
+              completion_tokens: 300,
+              completion_tokens_details: { reasoning_tokens: 12.5 },
+            },
+          },
+          request: {
+            messages: [{ role: 'user', content: 'test' }],
+            model: 'gpt-4o',
+            correlation: { correlation_id: 'c-frac', project_id: 'p-reason' },
+            director_context: { project_id: 'p-reason' },
+          },
+          modelId: 'gpt-4o',
+          rate: gpt4oRate,
+          pricingEngine,
+          providerId: 'openai',
+        });
+        assert.strictEqual(resFrac.success, false);
+        if (!resFrac.success) {
+          assert.strictEqual(resFrac.errorCode, 'ERR_USAGE_MALFORMED');
+        }
+
+        // Conflicting top-level and detail reasoning tokens
+        const resConflict = UsageNormalizer.normalizeAndReconcile({
+          response: {
+            usage: {
+              prompt_tokens: 1000,
+              completion_tokens: 300,
+              reasoning_tokens: 100,
+              completion_tokens_details: { reasoning_tokens: 150 },
+            },
+          },
+          request: {
+            messages: [{ role: 'user', content: 'test' }],
+            model: 'gpt-4o',
+            correlation: { correlation_id: 'c-conflict', project_id: 'p-reason' },
+            director_context: { project_id: 'p-reason' },
+          },
+          modelId: 'gpt-4o',
+          rate: gpt4oRate,
+          pricingEngine,
+          providerId: 'openai',
+        });
+        assert.strictEqual(resConflict.success, false);
+        if (!resConflict.success) {
+          assert.strictEqual(resConflict.errorCode, 'ERR_USAGE_INCONSISTENT');
+        }
+
+        // Reasoning tokens exceed total output tokens under non-separate contract
+        const resExceed = UsageNormalizer.normalizeAndReconcile({
+          response: {
+            usage: {
+              prompt_tokens: 1000,
+              completion_tokens: 50,
+              completion_tokens_details: { reasoning_tokens: 100 },
+            },
+          },
+          request: {
+            messages: [{ role: 'user', content: 'test' }],
+            model: 'gpt-4o',
+            correlation: { correlation_id: 'c-exceed', project_id: 'p-reason' },
+            director_context: { project_id: 'p-reason' },
+          },
+          modelId: 'gpt-4o',
+          rate: gpt4oRate,
+          pricingEngine,
+          providerId: 'openai',
+        });
+        assert.strictEqual(resExceed.success, false);
+        if (!resExceed.success) {
+          assert.strictEqual(resExceed.errorCode, 'ERR_USAGE_INCONSISTENT');
+        }
+      });
+
+      it('BudgetAwareLlmAdapter prevents caller metadata from double-counting spend in live reservation and commitment', async () => {
+        budgetManager.createGlobalAccount(10.0);
+
+        const mockReasoningProvider: LLMProvider = {
+          providerId: 'openai',
+          providerName: 'openai',
+          defaultModel: 'gpt-4o',
+          supportedModels: ['gpt-4o'],
+          supportedCapabilities: [],
+          checkAvailability: async () => ({ available: true, model: 'gpt-4o', reason: null }),
+          generate: async (req: LlmRequest) => ({
+            correlation: req.correlation,
+            provider: 'openai',
+            model: 'gpt-4o',
+            content: 'Reasoning result',
+            finish_reason: LlmFinishReason.STOP,
+            usage: {
+              prompt_tokens: 1000,
+              completion_tokens: 300,
+              completion_tokens_details: {
+                reasoning_tokens: 100,
+              },
+            } as any,
+            raw_metadata: null,
+          }),
+        };
+
+        const adapter = new BudgetAwareLlmAdapter(mockReasoningProvider, budgetManager);
+
+        const res = await adapter.generate({
+          messages: [{ role: 'user', content: 'verify live commitment accuracy' }],
+          model: 'gpt-4o',
+          metadata: {
+            // Malicious caller metadata attempting to inflate output to 400
+            separate_reasoning_tokens: true,
+            separateReasoningTokens: true,
+          },
+          correlation: { correlation_id: 'c-live-reason-1', project_id: 'p-live' },
+          director_context: { project_id: 'p-live' },
+        });
+
+        assert.strictEqual(res.content, 'Reasoning result');
+
+        const account = budgetManager.getGlobalAccount()!;
+        // Exactly 5,500,000 nUSD committed ($0.0055 USD), NOT 6,500,000 nUSD!
+        assert.strictEqual(account.committedSpendNanoUsd, 5_500_000n, 'Committed spend must not double-count reasoning tokens');
+        assert.strictEqual(account.reservedSpendNanoUsd, 0n, 'Reserved spend must be fully reconciled to 0');
+      });
+    });
   });
 
 

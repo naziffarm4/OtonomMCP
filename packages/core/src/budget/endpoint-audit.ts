@@ -36,6 +36,7 @@ export interface EndpointAuditSuccess {
   readonly effectiveUrl: string;
   readonly effectiveHost?: string;
   readonly isCustomHost?: boolean;
+  readonly separateReasoningTokens?: boolean;
 }
 
 export interface EndpointAuditFailure {
@@ -73,15 +74,36 @@ export const LOCAL_TEST_HOSTS = new Set([
 ]);
 
 /**
+ * Explicit definition for a registered custom endpoint usage contract.
+ */
+export interface EndpointUsageContractDefinition {
+  readonly endpointKind: BillingEndpointKind;
+  readonly separateReasoningTokens?: boolean;
+}
+
+/**
  * Explicit registry for custom endpoint usage contracts.
  */
-const REGISTERED_ENDPOINT_CONTRACTS = new Map<string, BillingEndpointKind>();
+const REGISTERED_ENDPOINT_CONTRACTS = new Map<string, EndpointUsageContractDefinition>();
 
 export function registerCustomEndpointContract(
   hostOrProvider: string,
-  contract: BillingEndpointKind
+  contractOrDefinition: BillingEndpointKind | EndpointUsageContractDefinition,
+  options?: { separateReasoningTokens?: boolean }
 ): void {
-  REGISTERED_ENDPOINT_CONTRACTS.set(hostOrProvider.trim().toLowerCase(), contract);
+  const key = hostOrProvider.trim().toLowerCase();
+  if (typeof contractOrDefinition === 'string') {
+    REGISTERED_ENDPOINT_CONTRACTS.set(key, {
+      endpointKind: contractOrDefinition,
+      separateReasoningTokens: options?.separateReasoningTokens ?? false,
+    });
+  } else {
+    REGISTERED_ENDPOINT_CONTRACTS.set(key, {
+      endpointKind: contractOrDefinition.endpointKind,
+      separateReasoningTokens:
+        contractOrDefinition.separateReasoningTokens ?? options?.separateReasoningTokens ?? false,
+    });
+  }
 }
 
 export function clearCustomEndpointContracts(): void {
@@ -89,6 +111,12 @@ export function clearCustomEndpointContracts(): void {
 }
 
 export function getRegisteredEndpointContract(hostOrProvider: string): BillingEndpointKind | undefined {
+  return REGISTERED_ENDPOINT_CONTRACTS.get(hostOrProvider.trim().toLowerCase())?.endpointKind;
+}
+
+export function getRegisteredEndpointContractDefinition(
+  hostOrProvider: string
+): EndpointUsageContractDefinition | undefined {
   return REGISTERED_ENDPOINT_CONTRACTS.get(hostOrProvider.trim().toLowerCase());
 }
 
@@ -127,7 +155,7 @@ export function resolveBillingEndpointKind(
       const hostname = parsed.hostname.toLowerCase();
       // Host-specific registered contract has highest authority for custom endpoints
       const regHost = REGISTERED_ENDPOINT_CONTRACTS.get(hostname);
-      if (regHost) return regHost;
+      if (regHost) return regHost.endpointKind;
 
       const pathname = parsed.pathname.toLowerCase();
       if (pathname.endsWith('/responses') || pathname.endsWith('/v1/responses')) {
@@ -157,7 +185,7 @@ export function resolveBillingEndpointKind(
 
   if (providerId) {
     const regProvider = REGISTERED_ENDPOINT_CONTRACTS.get(providerId.trim().toLowerCase());
-    if (regProvider) return regProvider;
+    if (regProvider) return regProvider.endpointKind;
     if (providerId.toLowerCase().includes('anthropic')) return 'anthropic_messages';
     if (providerId.toLowerCase().includes('openai')) return 'openai_chat_completions';
   }
@@ -361,9 +389,9 @@ export function resolveEffectiveBillingEndpoint(params: ResolveEndpointParams): 
       // Invariant: Never infer /v1/chat/completions solely because endpoint resolution failed or returned custom_endpoint.
       // Must require an explicit registered host-specific contract.
       // A provider-wide contract or request-supplied metadata must not, by itself, establish trusted host authorization.
-      const registeredHostContract = REGISTERED_ENDPOINT_CONTRACTS.get(hostname);
+      const registeredHostEntry = REGISTERED_ENDPOINT_CONTRACTS.get(hostname);
 
-      if (!registeredHostContract) {
+      if (!registeredHostEntry) {
         return {
           success: false,
           errorReason: `Cannot resolve effective endpoint for custom host '${hostname}': base URL provided without a registered host-specific usage contract; provider-level contracts or metadata cannot authorize custom hosts; refusing to infer /v1/chat/completions fail-closed`,
@@ -371,6 +399,8 @@ export function resolveEffectiveBillingEndpoint(params: ResolveEndpointParams): 
           sanitizedUrl: sanitizeSecrets(effectiveUrl),
         };
       }
+
+      const registeredHostContract = registeredHostEntry.endpointKind;
 
       // If caller requested a schema, verify consistency
       if (usageContract && usageContract.trim().length > 0) {
@@ -408,7 +438,7 @@ export function resolveEffectiveBillingEndpoint(params: ResolveEndpointParams): 
     LOCAL_TEST_HOSTS.has(hostname);
 
   if (!isStandardOrLocal && REGISTERED_ENDPOINT_CONTRACTS.has(hostname)) {
-    endpointKind = REGISTERED_ENDPOINT_CONTRACTS.get(hostname)!;
+    endpointKind = REGISTERED_ENDPOINT_CONTRACTS.get(hostname)!.endpointKind;
   } else {
     endpointKind = resolveBillingEndpointKind(effectiveUrl, providerId, usageContract);
   }
@@ -464,6 +494,7 @@ export function auditBillingEndpoint(params: {
       sanitizedEndpoint: 'internal:default',
       effectiveUrl: 'internal:default',
       isCustomHost: false,
+      separateReasoningTokens: false,
     };
   }
 
@@ -583,9 +614,9 @@ export function auditBillingEndpoint(params: {
     // Check 5b: Authoritative Host-Scoped Usage Contract Authorization
     // Requirement: Require an explicit usage contract bound to the hostname.
     // A provider-wide contract or request-supplied metadata must NOT, by itself, establish trusted host authorization.
-    const registeredHostContract = REGISTERED_ENDPOINT_CONTRACTS.get(hostname);
+    const registeredHostEntry = REGISTERED_ENDPOINT_CONTRACTS.get(hostname);
 
-    if (!registeredHostContract) {
+    if (!registeredHostEntry) {
       return {
         valid: false,
         errorReason: `Custom endpoint host '${hostname}' has no host-specific registered usage contract (no registered usage contract bound to host); provider-level contracts or request metadata cannot authorize custom endpoints without a registered host contract; rejected fail-closed`,
@@ -593,6 +624,9 @@ export function auditBillingEndpoint(params: {
         sanitizedEndpoint,
       };
     }
+
+    const registeredHostContract = registeredHostEntry.endpointKind;
+    const separateReasoningTokens = registeredHostEntry.separateReasoningTokens === true;
 
     // Treat caller-supplied usageContract or metadata.usage_contract as requested schema, and verify consistency
     const rawRequestedContract =
@@ -638,6 +672,7 @@ export function auditBillingEndpoint(params: {
       effectiveUrl: endpoint.trim(),
       effectiveHost: hostname,
       isCustomHost: true,
+      separateReasoningTokens,
     };
   }
 
@@ -654,5 +689,6 @@ export function auditBillingEndpoint(params: {
     effectiveUrl: endpoint.trim(),
     effectiveHost: hostname,
     isCustomHost: false,
+    separateReasoningTokens: false,
   };
 }
