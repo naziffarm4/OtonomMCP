@@ -30,7 +30,7 @@
 - [x] **WP-1: Node.js ve Depo Hijyeni** (Sözleşme, engines >=22.6.0, .nvmrc, LICENSE, .gitattributes, .editorconfig, .gitignore, CI, doküman düzeltmeleri) — `FIXED` (Commit: `e4e5845`, origin/main mühürlendi).
 - [x] **WP-2: Gerçek Tip Kontrolü ve Deterministik Testler** (tsconfig.test.json, kök script'leri: typecheck/test/test:live, Windows kilit dayanıklılığı, deterministik 2974 PASS ve canlı 17 PASS ayrımı) — `FIXED`.
 - [x] **WP-3: Ortam Değişkenleri ve Yapılandırma Sözleşmesi** (.env.example, ENVIRONMENT dokümantasyonu, fail-closed sözleşmesi) — `FIXED`.
-- [ ] **WP-4: Yinelenen Modüller ve Dışa Aktarımlar** (ADR-12, export temizliği, geriye dönük uyumluluk)
+- [x] **WP-4: Yinelenen Modüller ve Dışa Aktarımlar** (ADR-12, export temizliği, geriye dönük uyumluluk) — `FIXED`.
 - [ ] **WP-5: Tür Güvenliği Borcu** (Kritik modüllerde any azaltımı, tip doğrulama)
 - [ ] **WP-6: Yapılandırılmış Loglama** (MCP stdio protokol bütünlüğü, log seviyeleri, sır maskeleme)
 - [ ] **WP-7: OM-03/05/06/07/09 Kabul Matrisi ve Karar Kapısı** (Objektif kabul matrisi ve OM-10 nihai kararı)
@@ -52,5 +52,14 @@
 - Windows Lock Contention: `atomic-writer.ts` retry mekanizması ile eşzamanlı testlerdeki EPERM/EBUSY kalıcı olarak çözüldü.
 
 ### WP-3 Doğrulama Kanıtı
+- Commit: `971e1c8a9067b75d63beb9ba301d73c616cade53`
 - `.env.example`: Kodda kullanılan tüm 10 adet ortam değişkeni (`AIDM_LLM_API_KEY`, `OPENAI_API_KEY`, `AIDM_LLM_ENDPOINT`, `OPENAI_BASE_URL`, `AIDM_LLM_MODEL`, `OPENAI_MODEL`, `AIDM_MCP_AUTH_TOKEN`, `NODE_ENV`, `ANTIGRAVITY_BIN_PATH`, `AIDM_LIVE_E2E`) şablona eklendi; hiçbir gerçek sır veya canlı anahtar içermediği doğrulandı.
 - Dokümantasyon: `docs/ENVIRONMENT.md` referans tablosu, öncelik sıralaması (`AIDM_*` > `OPENAI_*`), `NODE_ENV=production` mock fail-closed sözleşmesi ve origin uyuşmazlığı kontrolü (`ERR_UNSUPPORTED_BILLING_MODE`) eksiksiz belgelendi. README.md ile bağlantılandı.
+
+### WP-4 Doğrulama Kanıtı
+- ADR-12: `docs/ADR-12-MODULE-OWNERSHIP.md` ve `docs/DECISIONS.md` içinde modül sınırları bağlayıcı kılındı:
+  - `src/budget/` (finansal Nano-USD bütçesi, SQLite defteri, faturalandırma uç nokta denetimi) ile `src/token-budget/` (LLM context window token bütçesi, P0-P4 öncelikli budama) ayrımı kesinleştirildi.
+  - `src/director/` (Director oturumu, insan onayı ve alan eylemleri) ile `src/director-action/` (tel protokolü zarfı `DirectorActionEnvelope`, Zod şeması ve dağıtım hattı) katman ayrımı korundu.
+  - Canonical `DirectorPromptBuilder`'ın `director-reasoning` modülü olduğu teyit edildi; runtime eylem istemi oluşturucu kök dışa aktarımda `DirectorActionPromptBuilder` olarak sunuldu.
+- Paket Haritası: `packages/core/package.json` içindeki `exports` haritasına eksik olan `./authorization` ve `./execution-integration` alt yolları eklendi. Tüm 36 subpath'in `dist/` çıktıları doğrulandı (36/36 mevcut).
+- Doğrulama: `pnpm typecheck` (0 error), `pnpm build` (0 error), `pnpm test` (114 suite, 2974 PASS, 0 FAIL). Geriye dönük uyumluluk %100 korundu.

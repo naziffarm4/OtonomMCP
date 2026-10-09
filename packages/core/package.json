@@ -144,6 +144,14 @@
     "./execution-bridge": {
       "types": "./dist/execution-bridge/index.d.ts",
       "import": "./dist/execution-bridge/index.js"
+    },
+    "./authorization": {
+      "types": "./dist/authorization/index.d.ts",
+      "import": "./dist/authorization/index.js"
+    },
+    "./execution-integration": {
+      "types": "./dist/execution-integration/index.d.ts",
+      "import": "./dist/execution-integration/index.js"
     }
   },
   "bin": {

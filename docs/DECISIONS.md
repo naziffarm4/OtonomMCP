@@ -85,3 +85,15 @@
 - **Karar:** Otonom eylemler yalnızca yerel çalışma ağacında adım adım yürütülür ve bağımsız delil denetimine tabi tutulur. Kontrolsüz veya otomatik `git push` ya da hedef dala körlemesine merge işlemleri yasaktır.
 - **Gerekçe:** Geliştiricinin yerel Git deposunun ve uzak deposunun tahrif edilmesini önlemek.
 - **Etkisi:** Değişiklikler yerel checkpoint'lerle izlenir ve güvenli sınırda tutulur.
+
+---
+
+### ADR-12: Modül Sahipliği, Çakışma Yönetimi ve Dışa Aktarma Politikası
+- **Karar:**
+  1. `src/budget/` (finansal Nano-USD bütçesi, SQLite defteri, faturalandırma uç nokta denetimi) ile `src/token-budget/` (LLM context window token bütçesi, P0-P4 öncelikli budama) iki bağımsız alt sistemdir ve kesinlikle birleştirilmeyecektir.
+  2. `src/director/` (Director oturumu, insan onayı ve alan eylemleri) ile `src/director-action/` (tel protokolü zarfı `DirectorActionEnvelope`, Zod şeması ve dağıtım hattı) katman ayrımı korunacaktır.
+  3. Kök `@aidm/core` paketinden içe aktarılan canonical `DirectorPromptBuilder`, `director-reasoning` modülünden sağlanır; runtime eylem istemi oluşturucu `DirectorActionPromptBuilder` olarak sunulur.
+  4. `packages/core/package.json` içindeki `exports` haritası eksiksiz tutulacak; `./authorization` ve `./execution-integration` dahil tüm 32 alt sistem resmi subpath olarak korunacaktır.
+- **Gerekçe:** Tek Sorumluluk İlkesi'ni korumak, kavram karmaşasını gidermek, kök dışa aktarım çakışmalarını derleme zamanında önlemek ve geriye dönük uyumluluğu %100 muhafaza etmek.
+- **Etkisi:** Ayrıntılı mimari gerekçe, karşılaştırma matrisleri ve geçiş güvencesi `docs/ADR-12-MODULE-OWNERSHIP.md` dokümanında kayıt altına alınmıştır.
+
