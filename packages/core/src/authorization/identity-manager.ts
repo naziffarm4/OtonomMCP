@@ -78,11 +78,13 @@ export class IdentityManager {
         const publicKey = crypto.createPublicKey({ key: data.publicKeyPem, format: 'pem', type: 'spki' });
         return { publicKey, privateKey, identityId: data.identityId };
       }
-    } catch (err: any) {
-      if (err.code !== 'ENOENT' && !err.message.includes('revoked')) {
+    } catch (err: unknown) {
+      const errCode = (err as { code?: string })?.code;
+      const errMsg = err instanceof Error ? err.message : String(err);
+      if (errCode !== 'ENOENT' && !errMsg.includes('revoked')) {
         // Fail-closed when keys are broken or inaccessible
-        throw new Error(`Failed to load or decrypt existing identity: ${err.message}. Fail-closed.`);
-      } else if (err.message.includes('revoked')) {
+        throw new Error(`Failed to load or decrypt existing identity: ${errMsg}. Fail-closed.`);
+      } else if (errMsg.includes('revoked')) {
         throw err;
       }
     }
@@ -113,8 +115,9 @@ export class IdentityManager {
         data.revokedAt = new Date().toISOString();
         data.encryptedPrivateKeyPem = null; // delete key
         await fs.writeFile(this.storagePath, JSON.stringify(data, null, 2), 'utf8');
-      } catch (err: any) {
-        if (err.code !== 'ENOENT') {
+      } catch (err: unknown) {
+        const errCode = (err as { code?: string })?.code;
+        if (errCode !== 'ENOENT') {
             throw err;
         }
       }

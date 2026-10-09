@@ -350,11 +350,15 @@ export class UsageNormalizer {
     // 9. Reconcile Actual Billed Service Tier
     const requestedTier = (request.metadata?.service_tier ?? request.metadata?.serviceTier ?? 'standard') as string;
 
+    const respRecord = response as unknown as Record<string, unknown>;
+    const rawMetaRecord = response.raw_metadata as Record<string, unknown> | undefined;
+    const metaRecord = respRecord.metadata as Record<string, unknown> | undefined;
+
     const reportedTierRaw =
-      (response as any).service_tier ??
+      respRecord.service_tier ??
       rawUsage.service_tier ??
-      (response.raw_metadata as any)?.service_tier ??
-      (response as any).metadata?.service_tier;
+      rawMetaRecord?.service_tier ??
+      metaRecord?.service_tier;
 
     let reportedTier: string | null = null;
     if (typeof reportedTierRaw === 'string' && reportedTierRaw.trim().length > 0) {

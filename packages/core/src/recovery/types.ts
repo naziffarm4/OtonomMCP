@@ -179,7 +179,28 @@ export interface RecoveryEngineOptions {
   validationEvidence?: ValidationEvidence | null;
   userResponse?: string | Record<string, unknown> | null;
   isCorrupted?: boolean;
-  lockManager?: any;
-  evidenceStore?: any;
+  lockManager?: RecoveryLockManager;
+  evidenceStore?: RecoveryEvidenceStore;
+}
+
+export interface RecoveryLockManager {
+  getLockInfo(): Promise<{ pid: number; heartbeatAt: string } | null | undefined>;
+  heartbeatStaleMs?: number;
+}
+
+export interface RecoveryEvidenceItem {
+  taskId?: string;
+  projectId?: string;
+  taskRevision?: number;
+  verificationDecision?: string;
+  executionIntentBinding?: { directorSessionId?: string; executionIntentId?: string };
+  requestBinding?: { directorSessionId?: string; executionIntentId?: string };
+  metadata?: Record<string, unknown>;
+  verifiedAt?: string;
+  collectedAt?: string;
+}
+
+export interface RecoveryEvidenceStore {
+  listAllEvidence(): Promise<RecoveryEvidenceItem[]>;
 }
 

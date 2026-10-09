@@ -19,6 +19,7 @@
  */
 
 import { Actor } from '../actors.js';
+import { LifecycleState } from '../lifecycle.js';
 import { TaskStatus, type TaskDefinition } from '../task-engine/task-types.js';
 import {
   type SystemExecutionEvidence,
@@ -153,8 +154,9 @@ export class RetryAuthorizationService {
 
     try {
       assertNoForbiddenEvidenceFields(rawEvidence);
-    } catch (err: any) {
-      throw new RetrySecurityViolationError(err.message, { cause: err });
+    } catch (err: unknown) {
+      const errMessage = err instanceof Error ? err.message : String(err);
+      throw new RetrySecurityViolationError(errMessage, { cause: err });
     }
 
     const evidenceParsed = SystemExecutionEvidenceZodSchema.safeParse(rawEvidence);
@@ -190,8 +192,9 @@ export class RetryAuthorizationService {
     let specTasks: TaskDefinition[];
     try {
       specTasks = await this.specStore.loadTasks();
-    } catch (err: any) {
-      throw new RetryPersistenceError(`Failed to load tasks from SpecStore: ${err.message}`, {
+    } catch (err: unknown) {
+      const errMessage = err instanceof Error ? err.message : String(err);
+      throw new RetryPersistenceError(`Failed to load tasks from SpecStore: ${errMessage}`, {
         cause: err,
       });
     }
@@ -216,7 +219,7 @@ export class RetryAuthorizationService {
     // Inspect DurableState
     const durableState = (await this.durableStateManager.load()) ?? {
       schemaVersion: CURRENT_DURABLE_STATE_SCHEMA_VERSION,
-      currentLifecycleState: 'TASK_LOOP' as any,
+      currentLifecycleState: LifecycleState.TASK_LOOP,
       activeTaskId: null,
       completedTaskIds: [],
       blockedState: null,
@@ -468,7 +471,7 @@ export class RetryAuthorizationService {
             authorizedAt: now,
           },
         });
-      } catch (histErr: any) {
+      } catch (histErr: unknown) {
         // Logging crash window protection
       }
     }
@@ -493,9 +496,10 @@ export class RetryAuthorizationService {
 
     try {
       await this.specStore.saveTasks(updatedTasksList);
-    } catch (saveErr: any) {
+    } catch (saveErr: unknown) {
+      const saveMessage = saveErr instanceof Error ? saveErr.message : String(saveErr);
       throw new RetryPersistenceError(
-        `Failed to persist updated task in SpecStore: ${saveErr.message}`,
+        `Failed to persist updated task in SpecStore: ${saveMessage}`,
         { taskId: task.task_id, cause: saveErr }
       );
     }
@@ -546,9 +550,10 @@ export class RetryAuthorizationService {
 
     try {
       await this.durableStateManager.save(updatedDurableState);
-    } catch (durableErr: any) {
+    } catch (durableErr: unknown) {
+      const durableMessage = durableErr instanceof Error ? durableErr.message : String(durableErr);
       throw new RetryPersistenceError(
-        `Failed to persist updated DurableState: ${durableErr.message}`,
+        `Failed to persist updated DurableState: ${durableMessage}`,
         { taskId: task.task_id, cause: durableErr }
       );
     }

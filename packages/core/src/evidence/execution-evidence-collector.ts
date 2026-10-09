@@ -489,7 +489,7 @@ export class SystemEvidenceCollector {
             if (!commandsToRun.some((c) => c.command === spec.expected_command)) {
               commandsToRun.push({
                 id: cid,
-                type: (spec.type as any) ?? 'COMMAND',
+                type: (spec.type as VerificationCommandSpec['type']) ?? 'COMMAND',
                 command: spec.expected_command,
               });
             }
@@ -530,15 +530,16 @@ export class SystemEvidenceCollector {
             : `Command '${cmdSpec.command}' failed with exit code ${res.exitCode}. stderr: ${(res.stderr || res.stdout).slice(0, 300)}`,
           details: { exitCode: res.exitCode, stdoutSnippet: res.stdout.slice(0, 500) },
         });
-      } catch (err: any) {
+      } catch (err: unknown) {
+        const errMessage = err instanceof Error ? err.message : String(err);
         // Infrastructure failure (spawn error, missing binary, execution failure) -> BLOCK
         verificationChecks.push({
           checkId: `CHECK_${cmdSpec.id}`,
           type: cmdSpec.type,
           status: 'BLOCK',
           command: cmdSpec.command,
-          evidence: `Verification command execution failed due to infrastructure error: ${err.message ?? String(err)}`,
-          details: { error: err.message },
+          evidence: `Verification command execution failed due to infrastructure error: ${errMessage}`,
+          details: { error: errMessage },
         });
       }
     }

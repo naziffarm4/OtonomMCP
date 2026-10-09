@@ -31,7 +31,7 @@
 - [x] **WP-2: Gerçek Tip Kontrolü ve Deterministik Testler** (tsconfig.test.json, kök script'leri: typecheck/test/test:live, Windows kilit dayanıklılığı, deterministik 2974 PASS ve canlı 17 PASS ayrımı) — `FIXED`.
 - [x] **WP-3: Ortam Değişkenleri ve Yapılandırma Sözleşmesi** (.env.example, ENVIRONMENT dokümantasyonu, fail-closed sözleşmesi) — `FIXED`.
 - [x] **WP-4: Yinelenen Modüller ve Dışa Aktarımlar** (ADR-12, export temizliği, geriye dönük uyumluluk) — `FIXED`.
-- [ ] **WP-5: Tür Güvenliği Borcu** (Kritik modüllerde any azaltımı, tip doğrulama)
+- [x] **WP-5: Tür Güvenliği Borcu** (Kritik modüllerde any azaltımı, tip doğrulama) — `FIXED`.
 - [ ] **WP-6: Yapılandırılmış Loglama** (MCP stdio protokol bütünlüğü, log seviyeleri, sır maskeleme)
 - [ ] **WP-7: OM-03/05/06/07/09 Kabul Matrisi ve Karar Kapısı** (Objektif kabul matrisi ve OM-10 nihai kararı)
 
@@ -57,9 +57,23 @@
 - Dokümantasyon: `docs/ENVIRONMENT.md` referans tablosu, öncelik sıralaması (`AIDM_*` > `OPENAI_*`), `NODE_ENV=production` mock fail-closed sözleşmesi ve origin uyuşmazlığı kontrolü (`ERR_UNSUPPORTED_BILLING_MODE`) eksiksiz belgelendi. README.md ile bağlantılandı.
 
 ### WP-4 Doğrulama Kanıtı
+- Commit: `1927eadccccec28a504334d993e39a741bfdb112`
 - ADR-12: `docs/ADR-12-MODULE-OWNERSHIP.md` ve `docs/DECISIONS.md` içinde modül sınırları bağlayıcı kılındı:
   - `src/budget/` (finansal Nano-USD bütçesi, SQLite defteri, faturalandırma uç nokta denetimi) ile `src/token-budget/` (LLM context window token bütçesi, P0-P4 öncelikli budama) ayrımı kesinleştirildi.
   - `src/director/` (Director oturumu, insan onayı ve alan eylemleri) ile `src/director-action/` (tel protokolü zarfı `DirectorActionEnvelope`, Zod şeması ve dağıtım hattı) katman ayrımı korundu.
   - Canonical `DirectorPromptBuilder`'ın `director-reasoning` modülü olduğu teyit edildi; runtime eylem istemi oluşturucu kök dışa aktarımda `DirectorActionPromptBuilder` olarak sunuldu.
 - Paket Haritası: `packages/core/package.json` içindeki `exports` haritasına eksik olan `./authorization` ve `./execution-integration` alt yolları eklendi. Tüm 36 subpath'in `dist/` çıktıları doğrulandı (36/36 mevcut).
 - Doğrulama: `pnpm typecheck` (0 error), `pnpm build` (0 error), `pnpm test` (114 suite, 2974 PASS, 0 FAIL). Geriye dönük uyumluluk %100 korundu.
+
+### WP-5 Doğrulama Kanıtı
+- Başlangıç ve Bitiş Sayımı: Başlangıçta 410 olan `any` sayısı, güvenlik açısından en kritik modüllerde hedeflenerek 320'ye düşürüldü (90 kritik `any` bütünüyle temizlendi).
+- Kritik Modüllerde Sıfır Tolerans:
+  1. `policy/`: 0 (başlangıçta da 0 idi).
+  2. `authorization/`: 33 -> **0** (`auth-context-validator.ts`, `authorization-policy-engine.ts`, `identity-manager.ts`, `project-mandate-store.ts`).
+  3. `evidence/`: 2 -> **0** (`execution-evidence-collector.ts`).
+  4. `budget/` (finansal harcama/SQLite): 29 -> **0** (`budget-aware-llm-adapter.ts`, `budget-database.ts`, `budget-manager.ts`, `pre-dispatch-validator.ts`, `usage-normalizer.ts`).
+  5. `recovery/` (durum geçişi/kurtarma): 26 -> **0** (`corrective-task-service.ts`, `decision-engine.ts`, `failure-diagnosis-engine.ts`, `recovery-engine.ts`, `recovery-policy-engine.ts`, `retry-authorization-service.ts`, `types.ts`).
+- Güvenlik Kapıları & Tip Daraltma: Girdi doğrulamaları `unknown` + Zod/tip koruyucuları (type guards) ile güçlendirildi. `node:sqlite` veri erişimi `DbRow` (Record<string, unknown>) ile tip güvenli kılındı.
+- ESLint Yapılandırması: `eslint.config.js` dosyasına `@typescript-eslint/no-explicit-any: 'warn'` kuralı eklendi.
+- Doğrulama: `pnpm typecheck` (0 error), `pnpm build` (0 error), `pnpm test` (114 suite, 2974 test PASS, 0 FAIL).
+

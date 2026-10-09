@@ -278,7 +278,7 @@ export class FailureDiagnosisEngine {
 
     // 0. Executor execution check
     if (typeUpper === 'EXECUTOR' || idUpper.includes('EXECUTOR')) {
-      const cat = (check.details as any)?.failureCategory;
+      const cat = (check.details as Record<string, unknown> | undefined)?.failureCategory;
       if (cat && (cat as string) in FailureCategory) {
         const failureCat = cat as FailureCategory;
         const severity =

@@ -22,16 +22,18 @@ export class PreDispatchValidator {
    */
   validate(request: PreDispatchValidationRequest, strict = true): PreDispatchValidationResult {
     // 0. Surcharge & Billing Endpoint Check
+    const reqRecord = request as unknown as Record<string, unknown>;
+    const metadata = reqRecord.metadata as Record<string, unknown> | undefined;
     if (
-      (request as any).metadata?.regional ||
-      (request as any).metadata?.data_residency ||
-      (request as any).metadata?.dataResidency ||
-      (request as any).metadata?.regional_processing ||
-      (request as any).endpoint
+      metadata?.regional ||
+      metadata?.data_residency ||
+      metadata?.dataResidency ||
+      metadata?.regional_processing ||
+      reqRecord.endpoint
     ) {
       const audit = auditBillingEndpoint({
-        endpoint: (request as any).endpoint,
-        metadata: (request as any).metadata,
+        endpoint: reqRecord.endpoint as string | undefined,
+        metadata,
         providerId: request.providerId,
         modelId: request.modelId,
         pricingEngine: this.pricingEngine,

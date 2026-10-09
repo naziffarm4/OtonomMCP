@@ -127,9 +127,10 @@ export function evaluateRecoveryDecision(snapshot: RecoverySnapshot): Determinis
   // --------------------------------------------------------------------------
   // Priority 2: Security Violation
   // --------------------------------------------------------------------------
+  const valEvidenceRecord = snapshot.validationEvidence as unknown as Record<string, unknown> | undefined;
   const isSecurityViolation =
-    (snapshot.validationEvidence as any)?.securityViolation === true ||
-    (snapshot.validationEvidence as any)?.category === 'SECURITY_VIOLATION' ||
+    valEvidenceRecord?.securityViolation === true ||
+    valEvidenceRecord?.category === 'SECURITY_VIOLATION' ||
     durableState.metadata?.securityViolation === true ||
     lastEvent?.eventType === 'SECURITY_VIOLATION_DETECTED';
 

@@ -14,6 +14,8 @@ import {
   BudgetAccountType,
 } from './budget-types.js';
 
+type DbRow = Record<string, unknown>;
+
 export interface BudgetDatabaseOptions {
   dbPath: string;
 }
@@ -307,21 +309,21 @@ export class BudgetDatabase {
 
   getAccount(accountId: string): BudgetAccount | undefined {
     const db = this.assertDb();
-    const row = db.prepare('SELECT * FROM budget_accounts WHERE account_id = ?;').get(accountId) as any;
+    const row = db.prepare('SELECT * FROM budget_accounts WHERE account_id = ?;').get(accountId) as DbRow | undefined;
     if (!row) return undefined;
     return this.mapAccount(row);
   }
 
   getGlobalAccount(): BudgetAccount | undefined {
     const db = this.assertDb();
-    const row = db.prepare("SELECT * FROM budget_accounts WHERE account_type = 'GLOBAL';").get() as any;
+    const row = db.prepare("SELECT * FROM budget_accounts WHERE account_type = 'GLOBAL';").get() as DbRow | undefined;
     if (!row) return undefined;
     return this.mapAccount(row);
   }
 
   getProjectAccount(projectId: string): BudgetAccount | undefined {
     const db = this.assertDb();
-    const row = db.prepare("SELECT * FROM budget_accounts WHERE account_type = 'PROJECT' AND project_id = ?;").get(projectId) as any;
+    const row = db.prepare("SELECT * FROM budget_accounts WHERE account_type = 'PROJECT' AND project_id = ?;").get(projectId) as DbRow | undefined;
     if (!row) return undefined;
     return this.mapAccount(row);
   }
@@ -463,13 +465,13 @@ export class BudgetDatabase {
       SELECT * FROM pricing_rates
       WHERE provider_id = ? AND model_id = ? AND service_tier = ?
       ORDER BY valid_from DESC LIMIT 1;
-    `).get(providerId, modelId, tier) as any;
+    `).get(providerId, modelId, tier) as DbRow | undefined;
     if (!row) return undefined;
 
     let longContext: ContextTierPricing | undefined;
     if (row.tier_config_json) {
       try {
-        const parsed = JSON.parse(row.tier_config_json);
+        const parsed = JSON.parse(row.tier_config_json as string);
         if (parsed.longContext) {
           longContext = {
             inputRateNum: BigInt(parsed.longContext.inputRateNum),
@@ -488,21 +490,21 @@ export class BudgetDatabase {
     }
 
     return {
-      rateId: row.rate_id,
-      providerId: row.provider_id,
-      modelId: row.model_id,
-      serviceTier: row.service_tier,
-      inputRateNum: BigInt(row.input_rate_num),
-      inputRateDen: BigInt(row.input_rate_den),
-      outputRateNum: BigInt(row.output_rate_num),
-      outputRateDen: BigInt(row.output_rate_den),
-      cachedInputRateNum: BigInt(row.cached_input_rate_num),
-      cachedInputRateDen: BigInt(row.cached_input_rate_den),
-      cacheWriteRateNum: row.cache_write_rate_num !== undefined ? BigInt(row.cache_write_rate_num) : 0n,
-      cacheWriteRateDen: row.cache_write_rate_den !== undefined ? BigInt(row.cache_write_rate_den) : 1n,
-      longContextThreshold: row.long_context_threshold ?? undefined,
+      rateId: row.rate_id as string,
+      providerId: row.provider_id as string,
+      modelId: row.model_id as string,
+      serviceTier: row.service_tier as string,
+      inputRateNum: BigInt(row.input_rate_num as string | number | bigint),
+      inputRateDen: BigInt(row.input_rate_den as string | number | bigint),
+      outputRateNum: BigInt(row.output_rate_num as string | number | bigint),
+      outputRateDen: BigInt(row.output_rate_den as string | number | bigint),
+      cachedInputRateNum: BigInt(row.cached_input_rate_num as string | number | bigint),
+      cachedInputRateDen: BigInt(row.cached_input_rate_den as string | number | bigint),
+      cacheWriteRateNum: row.cache_write_rate_num !== undefined ? BigInt(row.cache_write_rate_num as string | number | bigint) : 0n,
+      cacheWriteRateDen: row.cache_write_rate_den !== undefined ? BigInt(row.cache_write_rate_den as string | number | bigint) : 1n,
+      longContextThreshold: (row.long_context_threshold as number | undefined) ?? undefined,
       longContext,
-      validFrom: row.valid_from,
+      validFrom: row.valid_from as string,
     };
   }
 
@@ -548,14 +550,14 @@ export class BudgetDatabase {
 
   getReservation(reservationId: string): BudgetReservation | undefined {
     const db = this.assertDb();
-    const row = db.prepare('SELECT * FROM budget_reservations WHERE reservation_id = ?;').get(reservationId) as any;
+    const row = db.prepare('SELECT * FROM budget_reservations WHERE reservation_id = ?;').get(reservationId) as DbRow | undefined;
     if (!row) return undefined;
     return this.mapReservation(row);
   }
 
   getReservationByIdempotencyKey(idempotencyKey: string): BudgetReservation | undefined {
     const db = this.assertDb();
-    const row = db.prepare('SELECT * FROM budget_reservations WHERE idempotency_key = ?;').get(idempotencyKey) as any;
+    const row = db.prepare('SELECT * FROM budget_reservations WHERE idempotency_key = ?;').get(idempotencyKey) as DbRow | undefined;
     if (!row) return undefined;
     return this.mapReservation(row);
   }
@@ -587,19 +589,19 @@ export class BudgetDatabase {
 
   listPendingReservations(accountId?: string): BudgetReservation[] {
     const db = this.assertDb();
-    let rows: any[];
+    let rows: DbRow[];
     if (accountId) {
       rows = db.prepare(`
         SELECT * FROM budget_reservations
         WHERE account_id = ? AND state IN ('PREPARED', 'DISPATCHED', 'UNKNOWN')
         ORDER BY created_at ASC;
-      `).all(accountId) as any[];
+      `).all(accountId) as DbRow[];
     } else {
       rows = db.prepare(`
         SELECT * FROM budget_reservations
         WHERE state IN ('PREPARED', 'DISPATCHED', 'UNKNOWN')
         ORDER BY created_at ASC;
-      `).all() as any[];
+      `).all() as DbRow[];
     }
     return rows.map((r) => this.mapReservation(r));
   }
@@ -748,16 +750,6 @@ export class BudgetDatabase {
              OR (account_type = 'GLOBAL')
         )`,
       ];
-      const sqlParams: any[] = [
-        claimId,
-        now,
-        params.reservationId,
-        params.expectedAccountId,
-        params.expectedModelId,
-        params.expectedProviderId,
-        params.expectedProjectId,
-      ];
-
       const stmt = db.prepare(`
         UPDATE budget_reservations
         SET dispatch_count = dispatch_count + 1,
@@ -766,7 +758,15 @@ export class BudgetDatabase {
             updated_at = ?
         WHERE ${sqlConditions.join(' AND ')};
       `);
-      const result = stmt.run(...sqlParams);
+      const result = stmt.run(
+        claimId,
+        now,
+        params.reservationId,
+        params.expectedAccountId,
+        params.expectedModelId,
+        params.expectedProviderId,
+        params.expectedProjectId
+      );
 
       if (result.changes === 0) {
         // Re-run verifyReservation to produce the specific typed error (model/account/state mismatch)
@@ -787,14 +787,14 @@ export class BudgetDatabase {
 
   getIdempotencyRecord(idempotencyKey: string): IdempotencyRecord | undefined {
     const db = this.assertDb();
-    const row = db.prepare('SELECT * FROM budget_idempotency WHERE idempotency_key = ?;').get(idempotencyKey) as any;
+    const row = db.prepare('SELECT * FROM budget_idempotency WHERE idempotency_key = ?;').get(idempotencyKey) as DbRow | undefined;
     if (!row) return undefined;
     return {
-      idempotencyKey: row.idempotency_key,
-      operationType: row.operation_type,
-      resourceId: row.resource_id,
-      responsePayload: row.response_payload,
-      createdAt: row.created_at,
+      idempotencyKey: row.idempotency_key as string,
+      operationType: row.operation_type as string,
+      resourceId: row.resource_id as string,
+      responsePayload: row.response_payload as string,
+      createdAt: row.created_at as string,
     };
   }
 
@@ -858,18 +858,18 @@ export class BudgetDatabase {
       WHERE status = 'PENDING'
       ORDER BY created_at ASC
       LIMIT ?;
-    `).all(limit) as any[];
+    `).all(limit) as DbRow[];
 
     return rows.map((r) => ({
-      outboxId: r.outbox_id,
-      eventType: r.event_type,
-      actor: r.actor,
-      taskId: r.task_id ?? null,
-      payload: r.payload,
-      status: r.status,
+      outboxId: r.outbox_id as string,
+      eventType: r.event_type as string,
+      actor: r.actor as string,
+      taskId: (r.task_id as string | undefined) ?? null,
+      payload: r.payload as string,
+      status: r.status as OutboxRecord['status'],
       retryCount: Number(r.retry_count),
-      createdAt: r.created_at,
-      deliveredAt: r.delivered_at ?? null,
+      createdAt: r.created_at as string,
+      deliveredAt: (r.delivered_at as string | undefined) ?? null,
     }));
   }
 
@@ -892,42 +892,42 @@ export class BudgetDatabase {
     `).run(outboxId);
   }
 
-  private mapAccount(row: any): BudgetAccount {
-    const limit = BigInt(row.limit_spend_nano_usd);
-    const reserved = BigInt(row.reserved_spend_nano_usd);
-    const committed = BigInt(row.committed_spend_nano_usd);
+  private mapAccount(row: DbRow): BudgetAccount {
+    const limit = BigInt(row.limit_spend_nano_usd as string | number | bigint);
+    const reserved = BigInt(row.reserved_spend_nano_usd as string | number | bigint);
+    const committed = BigInt(row.committed_spend_nano_usd as string | number | bigint);
     const available = limit >= committed + reserved ? limit - committed - reserved : 0n;
 
     return {
-      accountId: row.account_id,
+      accountId: row.account_id as string,
       accountType: row.account_type as BudgetAccountType,
-      projectId: row.project_id ?? null,
+      projectId: (row.project_id as string | undefined) ?? null,
       limitSpendNanoUsd: limit,
       reservedSpendNanoUsd: reserved,
       committedSpendNanoUsd: committed,
       accountState: row.account_state as BudgetAccountState,
       availableSpendNanoUsd: available,
-      createdAt: row.created_at,
-      updatedAt: row.updated_at,
+      createdAt: row.created_at as string,
+      updatedAt: row.updated_at as string,
     };
   }
 
-  private mapReservation(row: any): BudgetReservation {
+  private mapReservation(row: DbRow): BudgetReservation {
     return {
-      reservationId: row.reservation_id,
-      accountId: row.account_id,
-      sessionId: row.session_id,
-      taskId: row.task_id ?? null,
-      providerId: row.provider_id ?? undefined,
-      modelId: row.model_id,
-      reservedSpendNanoUsd: BigInt(row.reserved_spend_nano_usd),
-      settledSpendNanoUsd: BigInt(row.settled_spend_nano_usd),
+      reservationId: row.reservation_id as string,
+      accountId: row.account_id as string,
+      sessionId: row.session_id as string,
+      taskId: (row.task_id as string | undefined) ?? null,
+      providerId: (row.provider_id as string | undefined) ?? undefined,
+      modelId: row.model_id as string,
+      reservedSpendNanoUsd: BigInt(row.reserved_spend_nano_usd as string | number | bigint),
+      settledSpendNanoUsd: BigInt(row.settled_spend_nano_usd as string | number | bigint),
       state: row.state as ReservationState,
-      idempotencyKey: row.idempotency_key,
+      idempotencyKey: row.idempotency_key as string,
       dispatchCount: row.dispatch_count !== undefined && row.dispatch_count !== null ? Number(row.dispatch_count) : 0,
-      dispatchClaimId: row.dispatch_claim_id ?? null,
-      createdAt: row.created_at,
-      updatedAt: row.updated_at,
+      dispatchClaimId: (row.dispatch_claim_id as string | undefined) ?? null,
+      createdAt: row.created_at as string,
+      updatedAt: row.updated_at as string,
     };
   }
 }

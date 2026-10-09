@@ -37,7 +37,7 @@ export class ProjectMandateStore {
     }
   }
 
-  async saveMandate(mandate: ProjectMandate, authContext: any): Promise<ProjectMandate> {
+  async saveMandate(mandate: ProjectMandate, authContext: unknown): Promise<ProjectMandate> {
     // SECURITY: Mandate'in kim tarafından oluşturulduğu ve değiştirildiği güvenilir kimlik doğrulaması gerektirir.
     // P22 Trusted IDE Authentication kapsamında gerçek bir IDE entegrasyonu (OS düzeyinde onay penceresi)
     // olmadığı için yalnızca Ed25519 kriptografi ile tam güven sağlanamaz.

@@ -22,6 +22,7 @@
  */
 
 import { Actor } from '../actors.js';
+import { LifecycleState } from '../lifecycle.js';
 import { TaskStatus, TaskPriority, type TaskDefinition } from '../task-engine/task-types.js';
 import {
   type SystemExecutionEvidence,
@@ -251,8 +252,9 @@ export class CorrectiveTaskService {
 
     try {
       assertNoForbiddenEvidenceFields(rawEvidence);
-    } catch (err: any) {
-      throw new CorrectiveTaskSecurityViolationError(err.message, { cause: err });
+    } catch (err: unknown) {
+      const errMessage = err instanceof Error ? err.message : String(err);
+      throw new CorrectiveTaskSecurityViolationError(errMessage, { cause: err });
     }
 
     const evidenceParsed = SystemExecutionEvidenceZodSchema.safeParse(rawEvidence);
@@ -288,9 +290,10 @@ export class CorrectiveTaskService {
     let specTasks: TaskDefinition[];
     try {
       specTasks = await this.specStore.loadTasks();
-    } catch (err: any) {
+    } catch (err: unknown) {
+      const errMessage = err instanceof Error ? err.message : String(err);
       throw new CorrectiveTaskPersistenceError(
-        `Failed to load tasks from SpecStore: ${err.message}`,
+        `Failed to load tasks from SpecStore: ${errMessage}`,
         { cause: err }
       );
     }
@@ -315,7 +318,7 @@ export class CorrectiveTaskService {
     // Hard invariant: ACCEPTED / completed source task cannot be replanned
     const durableState = (await this.durableStateManager.load()) ?? {
       schemaVersion: CURRENT_DURABLE_STATE_SCHEMA_VERSION,
-      currentLifecycleState: 'TASK_LOOP' as any,
+      currentLifecycleState: LifecycleState.TASK_LOOP,
       activeTaskId: null,
       completedTaskIds: [],
       blockedState: null,
@@ -707,7 +710,7 @@ export class CorrectiveTaskService {
       topologicalOrder = this.dagEngine.topologicalSort(candidateTasks, {
         validFeatureIds: new Set([sourceTask.parent_feature_id]),
       });
-    } catch (dagErr: any) {
+    } catch (dagErr: unknown) {
       if (dagErr instanceof TaskGraphValidationError) {
         throw new CorrectiveTaskGraphValidationError(dagErr.message, {
           category: dagErr.category,
@@ -715,8 +718,9 @@ export class CorrectiveTaskService {
           details: dagErr.details,
         });
       }
+      const dagMessage = dagErr instanceof Error ? dagErr.message : String(dagErr);
       throw new CorrectiveTaskGraphValidationError(
-        `Task graph validation failed for candidate corrective task: ${dagErr.message}`,
+        `Task graph validation failed for candidate corrective task: ${dagMessage}`,
         { cause: dagErr }
       );
     }
@@ -753,9 +757,10 @@ export class CorrectiveTaskService {
     // Ingest the validated augmented task list
     try {
       await this.specStore.saveTasks(validatedTasks);
-    } catch (saveErr: any) {
+    } catch (saveErr: unknown) {
+      const saveMessage = saveErr instanceof Error ? saveErr.message : String(saveErr);
       throw new CorrectiveTaskPersistenceError(
-        `Failed to persist augmented task graph in SpecStore: ${saveErr.message}`,
+        `Failed to persist augmented task graph in SpecStore: ${saveMessage}`,
         { cause: saveErr, correctiveTaskId }
       );
     }
@@ -785,9 +790,10 @@ export class CorrectiveTaskService {
 
     try {
       await this.durableStateManager.save(updatedDurableState);
-    } catch (durableErr: any) {
+    } catch (durableErr: unknown) {
+      const durableMessage = durableErr instanceof Error ? durableErr.message : String(durableErr);
       throw new CorrectiveTaskPersistenceError(
-        `Failed to update DurableState with corrective metadata: ${durableErr.message}`,
+        `Failed to update DurableState with corrective metadata: ${durableMessage}`,
         { cause: durableErr }
       );
     }

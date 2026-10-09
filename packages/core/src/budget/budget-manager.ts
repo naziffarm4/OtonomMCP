@@ -311,7 +311,7 @@ export class BudgetManager {
           await this.historyManager.appendEvent({
             eventId: record.outboxId,
             eventType: record.eventType,
-            actor: record.actor as any,
+            actor: (record.actor as Actor) ?? Actor.ORCHESTRATOR,
             taskId: record.taskId ?? null,
             payload,
           });

@@ -117,10 +117,14 @@ export class AuthorizationPolicyEngine {
       });
     }
 
+    const actionRecord = action as unknown as Record<string, unknown>;
+    const payloadRecord = action.payload as unknown as Record<string, unknown> | undefined;
+    const metadataRecord = actionRecord.metadata as Record<string, unknown> | undefined;
+
     const expectedRevision =
-      (action.payload as any)?.expectedMandateRevision ??
-      (action as any).expectedMandateRevision ??
-      (action as any).metadata?.expectedMandateRevision;
+      payloadRecord?.expectedMandateRevision ??
+      actionRecord.expectedMandateRevision ??
+      metadataRecord?.expectedMandateRevision;
     if (expectedRevision !== undefined && expectedRevision !== mandate.mandateRevision) {
       return this.createDecision({
         action,
@@ -134,9 +138,9 @@ export class AuthorizationPolicyEngine {
     }
 
     const expectedPolicyVersion =
-      (action.payload as any)?.expectedPolicyVersion ??
-      (action as any).expectedPolicyVersion ??
-      (action as any).metadata?.expectedPolicyVersion;
+      payloadRecord?.expectedPolicyVersion ??
+      actionRecord.expectedPolicyVersion ??
+      metadataRecord?.expectedPolicyVersion;
     if (expectedPolicyVersion !== undefined && expectedPolicyVersion !== mandate.policyVersion) {
       return this.createDecision({
         action,
@@ -163,12 +167,12 @@ export class AuthorizationPolicyEngine {
     }
 
     if (
-      (action as any).hasImplementationAuthority === true ||
-      (action as any).isDevelopmentAuthorized === true ||
-      (action as any).autoExecutable === true ||
-      (action as any).isAutoExecutable === true ||
-      (action as any).trusted === true ||
-      (action as any).approved === true
+      actionRecord.hasImplementationAuthority === true ||
+      actionRecord.isDevelopmentAuthorized === true ||
+      actionRecord.autoExecutable === true ||
+      actionRecord.isAutoExecutable === true ||
+      actionRecord.trusted === true ||
+      actionRecord.approved === true
     ) {
       return this.createDecision({
         action,
@@ -642,9 +646,10 @@ export class AuthorizationPolicyEngine {
         };
       }
 
+      const foundRecord = found as unknown as Record<string, unknown>;
       if (
-        found.status === ('UNKNOWN' as any) ||
-        (found as any).taskClass === 'UNKNOWN' ||
+        (found.status as string) === 'UNKNOWN' ||
+        foundRecord.taskClass === 'UNKNOWN' ||
         found.metadata?.taskClass === 'UNKNOWN' ||
         found.metadata?.category === 'UNKNOWN'
       ) {
@@ -657,11 +662,11 @@ export class AuthorizationPolicyEngine {
 
       const rawClass =
         found.metadata?.taskClass ??
-        (found as any).taskClass ??
+        foundRecord.taskClass ??
         found.metadata?.task_class ??
-        (found as any).task_class ??
+        foundRecord.task_class ??
         found.metadata?.category ??
-        (found as any).category;
+        foundRecord.category;
       const taskClass = typeof rawClass === 'string' ? rawClass.trim() : '';
 
       if (!taskClass || taskClass === 'UNKNOWN') {
@@ -741,12 +746,13 @@ export class AuthorizationPolicyEngine {
           };
         }
 
-        const rawDecision = (evidence as any).verificationDecision ?? (evidence as any).verificationStatus;
+        const evRecord = evidence as unknown as Record<string, unknown>;
+        const rawDecision = evRecord.verificationDecision ?? evRecord.verificationStatus;
         if (
-          (evidence as any).status === 'UNKNOWN' ||
+          evRecord.status === 'UNKNOWN' ||
           rawDecision === 'UNKNOWN' ||
           rawDecision === 'INCONCLUSIVE' ||
-          (evidence as any).verificationState === 'UNKNOWN'
+          evRecord.verificationState === 'UNKNOWN'
         ) {
           return {
             result: AuthorizationDecisionResult.DENY,
@@ -772,11 +778,11 @@ export class AuthorizationPolicyEngine {
         }
 
         const isVerified =
-          (evidence as any).isSystemVerified === true ||
+          evRecord.isSystemVerified === true ||
           rawDecision === 'ACCEPT' ||
           rawDecision === 'REJECT' ||
           rawDecision === 'BLOCK';
-        if (!isVerified || (evidence as any).isSystemVerified === false) {
+        if (!isVerified || evRecord.isSystemVerified === false) {
           return {
             result: AuthorizationDecisionResult.DENY,
             appliedRules: ['UNVERIFIED_EVIDENCE_REJECTED'],
@@ -917,9 +923,10 @@ export class AuthorizationPolicyEngine {
       };
     }
 
+    const foundRecord = found as unknown as Record<string, unknown>;
     if (
-      found.status === ('UNKNOWN' as any) ||
-      (found as any).taskClass === 'UNKNOWN' ||
+      (found.status as string) === 'UNKNOWN' ||
+      foundRecord.taskClass === 'UNKNOWN' ||
       found.metadata?.taskClass === 'UNKNOWN' ||
       found.metadata?.category === 'UNKNOWN'
     ) {
@@ -932,11 +939,11 @@ export class AuthorizationPolicyEngine {
 
     const rawClass =
       found.metadata?.taskClass ??
-      (found as any).taskClass ??
+      foundRecord.taskClass ??
       found.metadata?.task_class ??
-      (found as any).task_class ??
+      foundRecord.task_class ??
       found.metadata?.category ??
-      (found as any).category;
+      foundRecord.category;
     const taskClass = typeof rawClass === 'string' ? rawClass.trim() : '';
 
     if (!taskClass || taskClass === 'UNKNOWN') {

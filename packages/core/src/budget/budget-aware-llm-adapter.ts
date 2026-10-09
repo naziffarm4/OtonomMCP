@@ -45,8 +45,9 @@ export class BudgetAwareLlmAdapter implements LLMProvider {
       this.defaultEstimatedCompletionTokens = 1000;
     }
 
-    if (this.inner && 'setBudgetManager' in this.inner && typeof (this.inner as any).setBudgetManager === 'function') {
-      (this.inner as any).setBudgetManager(this.budgetManager);
+    const innerWithSetter = this.inner as unknown as { setBudgetManager?(bm: BudgetManager): void };
+    if (typeof innerWithSetter.setBudgetManager === 'function') {
+      innerWithSetter.setBudgetManager(this.budgetManager);
     }
   }
 
@@ -116,8 +117,8 @@ export class BudgetAwareLlmAdapter implements LLMProvider {
     const resolvedEndpoint = resolveEffectiveBillingEndpoint({
       requestEndpoint: request.metadata?.endpoint as string | undefined,
       requestBaseUrl: (request.metadata?.base_url ?? request.metadata?.baseUrl) as string | undefined,
-      adapterEndpoint: (this.inner as any).endpoint,
-      transportEndpoint: (this.inner as any).transport?.endpoint,
+      adapterEndpoint: (this.inner as unknown as { endpoint?: string })?.endpoint,
+      transportEndpoint: (this.inner as unknown as { transport?: { endpoint?: string } })?.transport?.endpoint,
       envLlmEndpoint: process.env.AIDM_LLM_ENDPOINT,
       envOpenAiBaseUrl: process.env.OPENAI_BASE_URL,
       providerId,

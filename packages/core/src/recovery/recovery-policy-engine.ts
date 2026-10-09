@@ -77,8 +77,9 @@ export class RecoveryPolicyEngine {
     // 1. Security guard: no forbidden fake verification fields
     try {
       assertNoForbiddenEvidenceFields(candidate);
-    } catch (err: any) {
-      throw new RecoveryPolicySecurityViolationError(err.message, { cause: err });
+    } catch (err: unknown) {
+      const errMessage = err instanceof Error ? err.message : String(err);
+      throw new RecoveryPolicySecurityViolationError(errMessage, { cause: err });
     }
 
     // 2. Schema validation

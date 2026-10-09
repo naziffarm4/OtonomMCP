@@ -9,4 +9,9 @@ export default [
       '**/*.tsbuildinfo',
     ],
   },
+  {
+    rules: {
+      '@typescript-eslint/no-explicit-any': 'warn',
+    },
+  },
 ];

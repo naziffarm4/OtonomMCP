@@ -5,6 +5,8 @@ import type {
   RecoverySnapshot,
   ValidationEvidence,
   DurableExecutionIntent,
+  RecoveryLockManager,
+  RecoveryEvidenceStore,
 } from './types.js';
 import { ExecutionLifecycleState, RecoveryDecision } from './types.js';
 import type { DurableState } from '../storage/durable-state.js';
@@ -57,8 +59,8 @@ export class RecoveryEngine {
   private readonly validationEvidence?: ValidationEvidence | null;
   private readonly userResponse: string | Record<string, unknown> | null;
   private readonly isCorrupted: boolean;
-  private readonly lockManager?: any;
-  private readonly evidenceStore?: any;
+  private readonly lockManager?: RecoveryLockManager;
+  private readonly evidenceStore?: RecoveryEvidenceStore;
 
   constructor(options: RecoveryEngineOptions) {
     if (!options.workspaceRoot) {
@@ -359,9 +361,14 @@ export class RecoveryEngine {
               ev.taskRevision !== targetRevision
             )
               continue;
+            const evRecord = ev as unknown as Record<string, unknown>;
+            const execIntentBinding = ev.executionIntentBinding as unknown as Record<string, unknown> | undefined;
+            const reqBinding = evRecord.requestBinding as Record<string, unknown> | undefined;
+            const metadata = ev.metadata as unknown as Record<string, unknown> | undefined;
+
             const evSessionId =
-              ev.executionIntentBinding?.directorSessionId ??
-              (ev as any).requestBinding?.directorSessionId;
+              (ev.executionIntentBinding?.directorSessionId as string | undefined) ??
+              (reqBinding?.directorSessionId as string | undefined);
             if (
               executionIntent?.directorSessionId &&
               evSessionId &&
@@ -371,9 +378,9 @@ export class RecoveryEngine {
             }
 
             const evIntentId =
-              (ev.executionIntentBinding as any)?.executionIntentId ??
-              (ev as any).requestBinding?.executionIntentId ??
-              (ev.metadata as any)?.executionIntentId;
+              (execIntentBinding?.executionIntentId as string | undefined) ??
+              (reqBinding?.executionIntentId as string | undefined) ??
+              (metadata?.executionIntentId as string | undefined);
             if (
               executionIntent?.executionIntentId &&
               evIntentId &&
@@ -382,7 +389,7 @@ export class RecoveryEngine {
               continue;
             }
             if (executionIntent?.executionStartTimestamp) {
-              const evTime = (ev as any).verifiedAt ?? (ev as any).collectedAt;
+              const evTime = (evRecord.verifiedAt as string | undefined) ?? (evRecord.collectedAt as string | undefined);
               if (
                 evTime &&
                 new Date(evTime).getTime() <
