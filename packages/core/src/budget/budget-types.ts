@@ -42,16 +42,32 @@ export interface BudgetAccount {
   updatedAt: string;
 }
 
+export interface ContextTierPricing {
+  inputRateNum: bigint;
+  inputRateDen: bigint;
+  outputRateNum: bigint;
+  outputRateDen: bigint;
+  cachedInputRateNum?: bigint;
+  cachedInputRateDen?: bigint;
+  cacheWriteRateNum?: bigint;
+  cacheWriteRateDen?: bigint;
+}
+
 export interface PricingRate {
   rateId: string;
   providerId: string;
   modelId: string;
+  serviceTier?: string;
   inputRateNum: bigint;
   inputRateDen: bigint;
   outputRateNum: bigint;
   outputRateDen: bigint;
   cachedInputRateNum: bigint;
   cachedInputRateDen: bigint;
+  cacheWriteRateNum?: bigint;
+  cacheWriteRateDen?: bigint;
+  longContextThreshold?: number;
+  longContext?: ContextTierPricing;
   validFrom: string;
 }
 
@@ -59,12 +75,17 @@ export interface PricingRateInput {
   rateId?: string;
   providerId: string;
   modelId: string;
+  serviceTier?: string;
   inputRateNum: bigint;
   inputRateDen: bigint;
   outputRateNum: bigint;
   outputRateDen: bigint;
   cachedInputRateNum?: bigint;
   cachedInputRateDen?: bigint;
+  cacheWriteRateNum?: bigint;
+  cacheWriteRateDen?: bigint;
+  longContextThreshold?: number;
+  longContext?: ContextTierPricing;
   validFrom?: string;
 }
 
@@ -72,6 +93,10 @@ export interface TokenUsage {
   inputTokens: number;
   outputTokens: number;
   cachedTokens?: number;
+  cacheWriteTokens?: number;
+  reasoningTokens?: number;
+  serviceTier?: string;
+  contextTier?: 'short' | 'long';
 }
 
 export interface BudgetReservation {

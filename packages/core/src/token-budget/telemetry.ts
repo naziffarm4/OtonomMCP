@@ -91,6 +91,16 @@ export function normalizeTelemetry(raw: unknown): TokenTelemetry {
       ? Math.max(0, Math.floor(obj.reported_cached_tokens))
       : null;
 
+  const reportedCacheWrite =
+    typeof obj.reported_cache_write_tokens === 'number' && Number.isFinite(obj.reported_cache_write_tokens)
+      ? Math.max(0, Math.floor(obj.reported_cache_write_tokens))
+      : null;
+
+  const reportedReasoning =
+    typeof obj.reported_reasoning_tokens === 'number' && Number.isFinite(obj.reported_reasoning_tokens)
+      ? Math.max(0, Math.floor(obj.reported_reasoning_tokens))
+      : null;
+
   const isExact = Boolean(obj.is_exact_provider_metric && reportedInput !== null);
 
   const estimatedTokens =
@@ -110,6 +120,8 @@ export function normalizeTelemetry(raw: unknown): TokenTelemetry {
     reported_input_tokens: reportedInput,
     reported_output_tokens: reportedOutput,
     reported_cached_tokens: reportedCached,
+    reported_cache_write_tokens: reportedCacheWrite,
+    reported_reasoning_tokens: reportedReasoning,
     estimated_tokens: estimatedTokens,
     estimated_cost_usd: estimatedCost,
     provider_name: providerName,

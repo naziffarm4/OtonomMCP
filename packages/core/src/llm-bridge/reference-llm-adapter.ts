@@ -693,12 +693,27 @@ export class ReferenceLlmAdapter implements LLMProvider {
       const cachedTokens =
         wire.usage.cached_tokens ??
         wire.usage.prompt_tokens_details?.cached_tokens ??
+        (wire.usage as any).input_tokens_details?.cached_tokens ??
+        null;
+
+      const cacheWriteTokens =
+        (wire.usage as any).cache_write_tokens ??
+        (wire.usage.prompt_tokens_details as any)?.cache_write_tokens ??
+        (wire.usage as any).input_tokens_details?.cache_write_tokens ??
+        null;
+
+      const reasoningTokens =
+        (wire.usage as any).reasoning_tokens ??
+        (wire.usage.completion_tokens_details as any)?.reasoning_tokens ??
+        (wire.usage as any).output_tokens_details?.reasoning_tokens ??
         null;
 
       usage = normalizeTelemetry({
-        reported_input_tokens: wire.usage.prompt_tokens ?? null,
-        reported_output_tokens: wire.usage.completion_tokens ?? null,
+        reported_input_tokens: wire.usage.prompt_tokens ?? (wire.usage as any).input_tokens ?? null,
+        reported_output_tokens: wire.usage.completion_tokens ?? (wire.usage as any).output_tokens ?? null,
         reported_cached_tokens: cachedTokens,
+        reported_cache_write_tokens: cacheWriteTokens,
+        reported_reasoning_tokens: reasoningTokens,
         estimated_tokens:
           wire.usage.total_tokens ??
           ((wire.usage.prompt_tokens ?? 0) + (wire.usage.completion_tokens ?? 0)),
@@ -713,6 +728,12 @@ export class ReferenceLlmAdapter implements LLMProvider {
       }
       if (wire.usage.prompt_tokens_details) {
         (usage as any).prompt_tokens_details = wire.usage.prompt_tokens_details;
+      }
+      if ((wire.usage as any).input_tokens_details) {
+        (usage as any).input_tokens_details = (wire.usage as any).input_tokens_details;
+      }
+      if ((wire.usage as any).output_tokens_details) {
+        (usage as any).output_tokens_details = (wire.usage as any).output_tokens_details;
       }
     } else {
       // When provider metrics are unavailable, reported values remain strictly null

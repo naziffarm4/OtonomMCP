@@ -72,6 +72,8 @@ export interface TokenTelemetry {
   reported_input_tokens: number | null;
   reported_output_tokens: number | null;
   reported_cached_tokens: number | null;
+  reported_cache_write_tokens?: number | null;
+  reported_reasoning_tokens?: number | null;
   estimated_tokens: number;
   estimated_cost_usd: number | null;
   provider_name: string | null;

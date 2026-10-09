@@ -727,4 +727,285 @@ describe('OM-09C: LLM Budget Pricing Accuracy & Hardening', () => {
       assert.strictEqual(rate.outputRateDen, 1_000_000n);
     });
   });
+
+  // ==========================================================================
+  // 12. COMPLETE GPT-6 LUNA MULTIDIMENSIONAL PRICING & RECONCILIATION (OM-09C-FIX-2)
+  // ==========================================================================
+  describe('12. Complete GPT-6 Luna Multidimensional Pricing & Reconciliation', () => {
+    it('calculates exact partitioned cost for gpt-6-luna with cached input and cache writes', () => {
+      const rate = pricingEngine.getRate('openai', 'gpt-6-luna');
+      assert.ok(rate);
+
+      // 10,000 total input: 2,000 cached (read), 3,000 cache-write, 5,000 ordinary uncached
+      // 4,000 output tokens
+      const usage: TokenUsage = {
+        inputTokens: 10000,
+        cachedTokens: 2000,
+        cacheWriteTokens: 3000,
+        outputTokens: 4000,
+      };
+
+      const cost = pricingEngine.calculateCostNanoUsd(usage, rate);
+      // ordinary: 5,000 * 100 = 500,000 nanoUSD
+      // cached: 2,000 * 10 = 20,000 nanoUSD
+      // cache-write: 3,000 * 125 = 375,000 nanoUSD
+      // output: 4,000 * 500 = 2,000,000 nanoUSD
+      // total = 2,895,000 nanoUSD ($0.002895)
+      assert.strictEqual(cost, 2_895_000n);
+    });
+
+    it('accounts for reasoning tokens as billable output tokens without deduction', () => {
+      const rate = pricingEngine.getRate('openai', 'gpt-6-luna');
+      const usage: TokenUsage = {
+        inputTokens: 1000,
+        outputTokens: 2000,
+        reasoningTokens: 1500, // 1500 of the 2000 are reasoning tokens
+      };
+
+      const cost = pricingEngine.calculateCostNanoUsd(usage, rate);
+      // input: 1,000 * 100 = 100,000 nanoUSD
+      // output: 2,000 * 500 = 1,000,000 nanoUSD
+      // total = 1,100,000 nanoUSD
+      assert.strictEqual(cost, 1_100_000n);
+    });
+
+    it('fails closed when reasoning tokens exceed output tokens', () => {
+      const rate = pricingEngine.getRate('openai', 'gpt-6-luna');
+      const usage: TokenUsage = {
+        inputTokens: 1000,
+        outputTokens: 500,
+        reasoningTokens: 1000, // Inconsistent: reasoning > total output
+      };
+
+      assert.throws(
+        () => pricingEngine.calculateCostNanoUsd(usage, rate),
+        (err: any) => err instanceof BudgetError && err.code === 'ERR_INVALID_PRICING'
+      );
+    });
+
+    it('fails closed when cached read + cache write exceeds total input tokens', () => {
+      const rate = pricingEngine.getRate('openai', 'gpt-6-luna');
+      const usage: TokenUsage = {
+        inputTokens: 5000,
+        cachedTokens: 3000,
+        cacheWriteTokens: 3000, // 3000 + 3000 = 6000 > 5000
+        outputTokens: 1000,
+      };
+
+      assert.throws(
+        () => pricingEngine.calculateCostNanoUsd(usage, rate),
+        (err: any) => err instanceof BudgetError && err.code === 'ERR_INVALID_PRICING'
+      );
+    });
+
+    it('fails closed when cache writes are reported for a model without cache-write pricing', () => {
+      const rate = pricingEngine.getRate('openai', 'gpt-4o');
+      const usage: TokenUsage = {
+        inputTokens: 2000,
+        cacheWriteTokens: 500,
+        outputTokens: 500,
+      };
+
+      assert.throws(
+        () => pricingEngine.calculateCostNanoUsd(usage, rate),
+        (err: any) => {
+          assert.ok(err instanceof BudgetError);
+          assert.strictEqual(err.code, 'ERR_INVALID_PRICING');
+          assert.ok(err.message.includes('no cache-write pricing'));
+          return true;
+        }
+      );
+    });
+
+    it('applies long-context rates (>272K input tokens) for gpt-6-luna correctly', () => {
+      const rate = pricingEngine.getRate('openai', 'gpt-6-luna');
+
+      // 300,000 input tokens (> 272K threshold), 50,000 cached, 50,000 cache write, 200,000 ordinary
+      // 10,000 output tokens
+      const usage: TokenUsage = {
+        inputTokens: 300000,
+        cachedTokens: 50000,
+        cacheWriteTokens: 50000,
+        outputTokens: 10000,
+      };
+
+      const cost = pricingEngine.calculateCostNanoUsd(usage, rate);
+      // Long-context rates for gpt-6-luna:
+      // ordinary: 200,000 * 200 nanoUSD ($0.20/1M) = 40,000,000 nanoUSD
+      // cached: 50,000 * 20 nanoUSD ($0.02/1M) = 1,000,000 nanoUSD
+      // cache-write: 50,000 * 250 nanoUSD ($0.25/1M) = 12,500,000 nanoUSD
+      // output: 10,000 * 750 nanoUSD ($0.75/1M) = 7,500,000 nanoUSD
+      // total = 40,000,000 + 1,000,000 + 12,500,000 + 7,500,000 = 61,000,000 nanoUSD ($0.061)
+      assert.strictEqual(cost, 61_000_000n);
+    });
+
+    it('fails closed if request exceeds short-context limit for a model without long-context pricing', () => {
+      const limitedRate: PricingRate = {
+        rateId: 'limited-model-rate',
+        providerId: 'openai',
+        modelId: 'limited-model',
+        inputRateNum: 100_000_000n,
+        inputRateDen: 1_000_000n,
+        outputRateNum: 500_000_000n,
+        outputRateDen: 1_000_000n,
+        cachedInputRateNum: 10_000_000n,
+        cachedInputRateDen: 1_000_000n,
+        longContextThreshold: 272_000,
+        // No longContext defined!
+        validFrom: new Date().toISOString(),
+      };
+
+      assert.throws(
+        () => pricingEngine.calculateCostNanoUsd({ inputTokens: 300000, outputTokens: 1000 }, limitedRate),
+        (err: any) => {
+          assert.ok(err instanceof BudgetError);
+          assert.strictEqual(err.code, 'ERR_INVALID_PRICING');
+          assert.ok(err.message.includes('has no long-context pricing registered'));
+          return true;
+        }
+      );
+    });
+
+    it('verifies batch and flex service tier pricing for gpt-6-luna (50% discount)', () => {
+      const batchRate = pricingEngine.getRate('openai', 'gpt-6-luna', 'batch');
+      const flexRate = pricingEngine.getRate('openai', 'gpt-6-luna', 'flex');
+
+      assert.strictEqual(batchRate.inputRateNum, 50_000_000n); // $0.05 / 1M
+      assert.strictEqual(batchRate.outputRateNum, 250_000_000n); // $0.25 / 1M
+      assert.strictEqual(batchRate.cachedInputRateNum, 5_000_000n); // $0.005 / 1M
+      assert.strictEqual(batchRate.cacheWriteRateNum, 62_500_000n); // $0.0625 / 1M
+
+      const usage: TokenUsage = {
+        inputTokens: 10000,
+        cachedTokens: 2000,
+        cacheWriteTokens: 3000,
+        outputTokens: 4000,
+        serviceTier: 'batch',
+      };
+
+      const cost = pricingEngine.calculateCostNanoUsd(usage, batchRate);
+      // ordinary: 5,000 * 50 = 250,000 nanoUSD
+      // cached: 2,000 * 5 = 10,000 nanoUSD
+      // cache-write: 3,000 * 62.5 = 187,500 nanoUSD
+      // output: 4,000 * 250 = 1,000,000 nanoUSD
+      // total = 250,000 + 10,000 + 187,500 + 1,000,000 = 1,447,500 nanoUSD
+      assert.strictEqual(cost, 1_447_500n);
+
+      const flexCost = pricingEngine.calculateCostNanoUsd(usage, flexRate);
+      assert.strictEqual(flexCost, 1_447_500n);
+    });
+
+    it('verifies fast service tier pricing for gpt-6-luna (priority processing)', () => {
+      const fastRate = pricingEngine.getRate('openai', 'gpt-6-luna', 'fast');
+      assert.strictEqual(fastRate.inputRateNum, 200_000_000n); // $0.20 / 1M
+      assert.strictEqual(fastRate.outputRateNum, 1_000_000_000n); // $1.00 / 1M
+      assert.strictEqual(fastRate.cachedInputRateNum, 20_000_000n); // $0.02 / 1M
+      assert.strictEqual(fastRate.cacheWriteRateNum, 250_000_000n); // $0.25 / 1M
+
+      const usage: TokenUsage = {
+        inputTokens: 10000,
+        outputTokens: 2000,
+        serviceTier: 'fast',
+      };
+
+      const cost = pricingEngine.calculateCostNanoUsd(usage, fastRate);
+      // 10,000 * 200 + 2,000 * 1000 = 2,000,000 + 2,000,000 = 4,000,000 nanoUSD
+      assert.strictEqual(cost, 4_000_000n);
+    });
+
+    it('fails closed when an unsupported service tier (e.g. ultrafast) is requested for gpt-6-luna', () => {
+      assert.throws(
+        () => pricingEngine.getRate('openai', 'gpt-6-luna', 'ultrafast'),
+        (err: any) => {
+          assert.ok(err instanceof BudgetError);
+          assert.strictEqual(err.code, 'ERR_PRICING_NOT_FOUND');
+          assert.ok(err.message.includes('ultrafast'));
+          return true;
+        }
+      );
+    });
+
+    it('settles multi-dimensional gpt-6-luna usage atomically via BudgetManager and zeroes hold', () => {
+      budgetManager.createGlobalAccount(5.0);
+
+      const res = budgetManager.reserve({
+        sessionId: 'sess_luna_multi',
+        providerId: 'openai',
+        modelId: 'gpt-6-luna',
+        estimatedTokens: { inputTokens: 5000, outputTokens: 2000 },
+        idempotencyKey: 'res_idem_luna_1',
+      });
+
+      assert.strictEqual(res.state, 'PREPARED');
+      const accountBefore = budgetManager.getGlobalAccount()!;
+      assert.ok(accountBefore.reservedSpendNanoUsd > 0n);
+
+      const settleRes = budgetManager.settle({
+        reservationId: res.reservationId,
+        reportedUsage: {
+          inputTokens: 6000,
+          cachedTokens: 1000,
+          cacheWriteTokens: 1000,
+          outputTokens: 1500,
+          reasoningTokens: 800,
+        },
+        idempotencyKey: 'set_idem_luna_1',
+      }, 'openai');
+
+      assert.strictEqual(settleRes.reservationId, res.reservationId);
+      // ordinary: 4,000 * 100 = 400,000
+      // cached: 1,000 * 10 = 10,000
+      // cache-write: 1,000 * 125 = 125,000
+      // output: 1,500 * 500 = 750,000
+      // actual: 1,285,000 nanoUSD
+      assert.strictEqual(settleRes.actualCostNanoUsd, 1_285_000n);
+
+      const accountAfter = budgetManager.getGlobalAccount()!;
+      assert.strictEqual(accountAfter.reservedSpendNanoUsd, 0n, 'Reserved hold must be completely settled');
+      assert.strictEqual(accountAfter.committedSpendNanoUsd, 1_285_000n);
+    });
+
+    it('holds reservation in UNKNOWN state and does not release hold when settlement fails on corrupted metrics', () => {
+      budgetManager.createGlobalAccount(5.0);
+
+      const res = budgetManager.reserve({
+        sessionId: 'sess_corrupt_test',
+        providerId: 'openai',
+        modelId: 'gpt-6-luna',
+        estimatedTokens: { inputTokens: 1000, outputTokens: 1000 },
+        idempotencyKey: 'res_idem_corrupt_1',
+      });
+
+      const initialReserved = budgetManager.getGlobalAccount()!.reservedSpendNanoUsd;
+      assert.ok(initialReserved > 0n);
+
+      // Attempting to settle corrupted usage (cached + write > input) throws ERR_INVALID_PRICING
+      assert.throws(
+        () => {
+          budgetManager.settle({
+            reservationId: res.reservationId,
+            reportedUsage: {
+              inputTokens: 1000,
+              cachedTokens: 800,
+              cacheWriteTokens: 800, // 800 + 800 = 1600 > 1000
+              outputTokens: 500,
+            },
+            idempotencyKey: 'set_idem_corrupt_1',
+          }, 'openai');
+        },
+        (err: any) => err instanceof BudgetError && err.code === 'ERR_INVALID_PRICING'
+      );
+
+      // Record unknown retains the reservation and does NOT release the reserved spend to prevent unbudgeted leaks
+      budgetManager.recordUnknown({
+        reservationId: res.reservationId,
+        errorReason: 'Corrupted token metrics during reconciliation',
+      });
+
+      const accountAfter = budgetManager.getGlobalAccount()!;
+      assert.strictEqual(accountAfter.reservedSpendNanoUsd, initialReserved, 'Reserved spend must be retained in UNKNOWN state');
+      const resState = budgetManager.getReservation(res.reservationId)!;
+      assert.strictEqual(resState.state, 'UNKNOWN');
+    });
+  });
 });

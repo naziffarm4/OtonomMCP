@@ -99,6 +99,7 @@ export class BudgetAwareLlmAdapter implements LLMProvider {
     return {
       inputTokens: estimatedInput,
       outputTokens: estimatedOutput,
+      serviceTier: (request.metadata?.service_tier ?? request.metadata?.serviceTier ?? 'standard') as string,
     };
   }
 
@@ -203,6 +204,7 @@ export class BudgetAwareLlmAdapter implements LLMProvider {
       usage?.reported_reasoning_tokens ??
       usage?.reasoning_tokens ??
       usage?.completion_tokens_details?.reasoning_tokens ??
+      usage?.output_tokens_details?.reasoning_tokens ??
       0;
 
     let reportedOutput =
@@ -211,7 +213,11 @@ export class BudgetAwareLlmAdapter implements LLMProvider {
       usage?.completion_tokens ??
       estimatedTokens.outputTokens;
 
-    if (reportedReasoning > 0 && usage?.completion_tokens_details?.reasoning_tokens === undefined) {
+    if (
+      reportedReasoning > 0 &&
+      usage?.completion_tokens_details?.reasoning_tokens === undefined &&
+      usage?.output_tokens_details?.reasoning_tokens === undefined
+    ) {
       reportedOutput += reportedReasoning;
     }
 
@@ -219,21 +225,48 @@ export class BudgetAwareLlmAdapter implements LLMProvider {
       usage?.reported_cached_tokens ??
       usage?.cached_tokens ??
       usage?.prompt_tokens_details?.cached_tokens ??
+      usage?.input_tokens_details?.cached_tokens ??
       0;
+
+    const reportedCacheWrite =
+      usage?.reported_cache_write_tokens ??
+      usage?.cache_write_tokens ??
+      usage?.prompt_tokens_details?.cache_write_tokens ??
+      usage?.input_tokens_details?.cache_write_tokens ??
+      0;
+
+    const serviceTier = (request.metadata?.service_tier ?? request.metadata?.serviceTier ?? 'standard') as string;
 
     const reportedUsage: TokenUsage = {
       inputTokens: reportedInput,
       outputTokens: reportedOutput,
       cachedTokens: reportedCached,
+      cacheWriteTokens: reportedCacheWrite,
+      reasoningTokens: reportedReasoning,
+      serviceTier,
     };
 
     // Settle against actual provider usage
-    this.budgetManager.settle({
-      reservationId: reservation.reservationId,
-      reportedUsage,
-      providerCorrelationId: correlationId,
-      idempotencyKey: settlementKey,
-    }, providerId);
+    try {
+      this.budgetManager.settle({
+        reservationId: reservation.reservationId,
+        reportedUsage,
+        providerCorrelationId: correlationId,
+        idempotencyKey: settlementKey,
+      }, providerId);
+    } catch (settleErr) {
+      // If settlement fails (e.g. unpriced tier, invalid token metrics),
+      // retain reservation in UNKNOWN state to preserve the reserved spend hold.
+      try {
+        this.budgetManager.recordUnknown({
+          reservationId: reservation.reservationId,
+          errorReason: `Usage settlement failed: ${(settleErr as Error).message}; holding reservation in UNKNOWN state`,
+        });
+      } catch {
+        // preserve original error
+      }
+      throw settleErr;
+    }
 
     return response;
   }

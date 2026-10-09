@@ -67,7 +67,8 @@ export class PreDispatchValidator {
       estimatedCost = this.pricingEngine.estimateCostNanoUsd(
         request.estimatedTokens,
         request.providerId,
-        request.modelId
+        request.modelId,
+        request.estimatedTokens.serviceTier
       );
     } catch (err) {
       if (strict) throw err;

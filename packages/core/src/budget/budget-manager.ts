@@ -147,35 +147,112 @@ export class BudgetManager {
       });
     }
 
-    // 8. gpt-6-luna: $0.10 / 1M input, $0.01 / 1M cached input, $0.50 / 1M output
-    // Source: OpenAI Official Documentation (https://developers.openai.com/api/docs/pricing)
-    for (const modelId of ['gpt-6-luna']) {
+    // 8. gpt-6-luna (Authoritative official rates: https://developers.openai.com/api/docs/pricing)
+    // Standard Tier (Short context <= 272K, Long context > 272K)
+    this.pricingEngine.registerRate({
+      providerId: 'openai',
+      modelId: 'gpt-6-luna',
+      serviceTier: 'standard',
+      inputRateNum: 100_000_000n,
+      inputRateDen: 1_000_000n, // $0.10 / 1M
+      cachedInputRateNum: 10_000_000n,
+      cachedInputRateDen: 1_000_000n, // $0.01 / 1M
+      cacheWriteRateNum: 125_000_000n,
+      cacheWriteRateDen: 1_000_000n, // $0.125 / 1M (1.25x input)
+      outputRateNum: 500_000_000n,
+      outputRateDen: 1_000_000n, // $0.50 / 1M
+      longContextThreshold: 272_000,
+      longContext: {
+        inputRateNum: 200_000_000n,
+        inputRateDen: 1_000_000n, // $0.20 / 1M
+        cachedInputRateNum: 20_000_000n,
+        cachedInputRateDen: 1_000_000n, // $0.02 / 1M
+        cacheWriteRateNum: 250_000_000n,
+        cacheWriteRateDen: 1_000_000n, // $0.25 / 1M
+        outputRateNum: 750_000_000n,
+        outputRateDen: 1_000_000n, // $0.75 / 1M
+      },
+    });
+
+    // Batch & Flex Tiers (50% discount on standard)
+    for (const tier of ['batch', 'flex']) {
       this.pricingEngine.registerRate({
         providerId: 'openai',
-        modelId,
-        inputRateNum: 100_000_000n,
-        inputRateDen: 1_000_000n,
-        outputRateNum: 500_000_000n,
-        outputRateDen: 1_000_000n,
-        cachedInputRateNum: 10_000_000n,
-        cachedInputRateDen: 1_000_000n,
+        modelId: 'gpt-6-luna',
+        serviceTier: tier,
+        inputRateNum: 50_000_000n,
+        inputRateDen: 1_000_000n, // $0.05 / 1M
+        cachedInputRateNum: 5_000_000n,
+        cachedInputRateDen: 1_000_000n, // $0.005 / 1M
+        cacheWriteRateNum: 62_500_000n,
+        cacheWriteRateDen: 1_000_000n, // $0.0625 / 1M
+        outputRateNum: 250_000_000n,
+        outputRateDen: 1_000_000n, // $0.25 / 1M
+        longContextThreshold: 272_000,
+        longContext: {
+          inputRateNum: 100_000_000n,
+          inputRateDen: 1_000_000n, // $0.10 / 1M
+          cachedInputRateNum: 10_000_000n,
+          cachedInputRateDen: 1_000_000n, // $0.01 / 1M
+          cacheWriteRateNum: 125_000_000n,
+          cacheWriteRateDen: 1_000_000n, // $0.125 / 1M
+          outputRateNum: 375_000_000n,
+          outputRateDen: 1_000_000n, // $0.375 / 1M
+        },
       });
     }
 
-    // 9. gpt-6-sol: $2.00 / 1M input, $0.20 / 1M cached input, $10.00 / 1M output
-    // Source: OpenAI Official Documentation (https://developers.openai.com/api/docs/pricing)
-    for (const modelId of ['gpt-6-sol']) {
-      this.pricingEngine.registerRate({
-        providerId: 'openai',
-        modelId,
-        inputRateNum: 2_000_000_000n,
-        inputRateDen: 1_000_000n,
-        outputRateNum: 10_000_000_000n,
-        outputRateDen: 1_000_000n,
-        cachedInputRateNum: 200_000_000n,
-        cachedInputRateDen: 1_000_000n,
-      });
-    }
+    // Fast Tier (Priority processing)
+    this.pricingEngine.registerRate({
+      providerId: 'openai',
+      modelId: 'gpt-6-luna',
+      serviceTier: 'fast',
+      inputRateNum: 200_000_000n,
+      inputRateDen: 1_000_000n, // $0.20 / 1M
+      cachedInputRateNum: 20_000_000n,
+      cachedInputRateDen: 1_000_000n, // $0.02 / 1M
+      cacheWriteRateNum: 250_000_000n,
+      cacheWriteRateDen: 1_000_000n, // $0.25 / 1M
+      outputRateNum: 1_000_000_000n,
+      outputRateDen: 1_000_000n, // $1.00 / 1M
+      longContextThreshold: 272_000,
+      longContext: {
+        inputRateNum: 400_000_000n,
+        inputRateDen: 1_000_000n, // $0.40 / 1M
+        cachedInputRateNum: 40_000_000n,
+        cachedInputRateDen: 1_000_000n, // $0.04 / 1M
+        cacheWriteRateNum: 500_000_000n,
+        cacheWriteRateDen: 1_000_000n, // $0.50 / 1M
+        outputRateNum: 1_500_000_000n,
+        outputRateDen: 1_000_000n, // $1.50 / 1M
+      },
+    });
+
+    // 9. gpt-6-sol (Authoritative official rates: https://developers.openai.com/api/docs/pricing)
+    this.pricingEngine.registerRate({
+      providerId: 'openai',
+      modelId: 'gpt-6-sol',
+      serviceTier: 'standard',
+      inputRateNum: 2_000_000_000n,
+      inputRateDen: 1_000_000n, // $2.00 / 1M
+      cachedInputRateNum: 200_000_000n,
+      cachedInputRateDen: 1_000_000n, // $0.20 / 1M
+      cacheWriteRateNum: 2_500_000_000n,
+      cacheWriteRateDen: 1_000_000n, // $2.50 / 1M
+      outputRateNum: 10_000_000_000n,
+      outputRateDen: 1_000_000n, // $10.00 / 1M
+      longContextThreshold: 272_000,
+      longContext: {
+        inputRateNum: 4_000_000_000n,
+        inputRateDen: 1_000_000n, // $4.00 / 1M
+        cachedInputRateNum: 400_000_000n,
+        cachedInputRateDen: 1_000_000n, // $0.40 / 1M
+        cacheWriteRateNum: 5_000_000_000n,
+        cacheWriteRateDen: 1_000_000n, // $5.00 / 1M
+        outputRateNum: 15_000_000_000n,
+        outputRateDen: 1_000_000n, // $15.00 / 1M
+      },
+    });
   }
 
   open(): void {
@@ -417,11 +494,11 @@ export class BudgetManager {
     return rate;
   }
 
-  getPricingRate(providerId: string, modelId: string): PricingRate | undefined {
+  getPricingRate(providerId: string, modelId: string, serviceTier: string = 'standard'): PricingRate | undefined {
     try {
-      return this.pricingEngine.getRate(providerId, modelId);
+      return this.pricingEngine.getRate(providerId, modelId, serviceTier);
     } catch {
-      return this.db.getPricingRate(providerId, modelId);
+      return this.db.getPricingRate(providerId, modelId, serviceTier);
     }
   }
 

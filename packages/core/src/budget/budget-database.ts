@@ -8,6 +8,7 @@ import {
   type BudgetReservation,
   type ClaimReservationRequest,
   type PricingRate,
+  type ContextTierPricing,
   type ReservationState,
   BudgetAccountState,
   BudgetAccountType,
@@ -134,14 +135,19 @@ export class BudgetDatabase {
         rate_id TEXT PRIMARY KEY NOT NULL,
         provider_id TEXT NOT NULL,
         model_id TEXT NOT NULL,
+        service_tier TEXT NOT NULL DEFAULT 'standard',
         input_rate_num INTEGER NOT NULL CHECK(input_rate_num >= 0),
         input_rate_den INTEGER NOT NULL CHECK(input_rate_den > 0),
         output_rate_num INTEGER NOT NULL CHECK(output_rate_num >= 0),
         output_rate_den INTEGER NOT NULL CHECK(output_rate_den > 0),
         cached_input_rate_num INTEGER NOT NULL DEFAULT 0 CHECK(cached_input_rate_num >= 0),
         cached_input_rate_den INTEGER NOT NULL DEFAULT 1 CHECK(cached_input_rate_den > 0),
+        cache_write_rate_num INTEGER NOT NULL DEFAULT 0 CHECK(cache_write_rate_num >= 0),
+        cache_write_rate_den INTEGER NOT NULL DEFAULT 1 CHECK(cache_write_rate_den > 0),
+        long_context_threshold INTEGER DEFAULT NULL,
+        tier_config_json TEXT DEFAULT NULL,
         valid_from TEXT NOT NULL,
-        CONSTRAINT uq_pricing_rates_key UNIQUE (provider_id, model_id, valid_from)
+        CONSTRAINT uq_pricing_rates_key UNIQUE (provider_id, model_id, service_tier, valid_from)
       );
 
       CREATE TABLE IF NOT EXISTS budget_reservations (
@@ -192,6 +198,31 @@ export class BudgetDatabase {
     }
     try {
       db.exec('ALTER TABLE budget_reservations ADD COLUMN dispatch_claim_id TEXT;');
+    } catch {
+      // column already exists
+    }
+    try {
+      db.exec("ALTER TABLE pricing_rates ADD COLUMN service_tier TEXT NOT NULL DEFAULT 'standard';");
+    } catch {
+      // column already exists
+    }
+    try {
+      db.exec('ALTER TABLE pricing_rates ADD COLUMN cache_write_rate_num INTEGER NOT NULL DEFAULT 0;');
+    } catch {
+      // column already exists
+    }
+    try {
+      db.exec('ALTER TABLE pricing_rates ADD COLUMN cache_write_rate_den INTEGER NOT NULL DEFAULT 1;');
+    } catch {
+      // column already exists
+    }
+    try {
+      db.exec('ALTER TABLE pricing_rates ADD COLUMN long_context_threshold INTEGER DEFAULT NULL;');
+    } catch {
+      // column already exists
+    }
+    try {
+      db.exec('ALTER TABLE pricing_rates ADD COLUMN tier_config_json TEXT DEFAULT NULL;');
     } catch {
       // column already exists
     }
@@ -373,52 +404,104 @@ export class BudgetDatabase {
 
   upsertPricingRate(rate: PricingRate): void {
     const db = this.assertDb();
+    const serviceTier = (rate.serviceTier ?? 'standard').toLowerCase();
+    const tierConfigJson = rate.longContext ? JSON.stringify({
+      longContext: {
+        inputRateNum: rate.longContext.inputRateNum.toString(),
+        inputRateDen: rate.longContext.inputRateDen.toString(),
+        outputRateNum: rate.longContext.outputRateNum.toString(),
+        outputRateDen: rate.longContext.outputRateDen.toString(),
+        cachedInputRateNum: rate.longContext.cachedInputRateNum?.toString(),
+        cachedInputRateDen: rate.longContext.cachedInputRateDen?.toString(),
+        cacheWriteRateNum: rate.longContext.cacheWriteRateNum?.toString(),
+        cacheWriteRateDen: rate.longContext.cacheWriteRateDen?.toString(),
+      }
+    }) : null;
+
     db.prepare(`
       INSERT INTO pricing_rates (
-        rate_id, provider_id, model_id, input_rate_num, input_rate_den,
+        rate_id, provider_id, model_id, service_tier, input_rate_num, input_rate_den,
         output_rate_num, output_rate_den, cached_input_rate_num,
-        cached_input_rate_den, valid_from
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      ON CONFLICT(provider_id, model_id, valid_from) DO UPDATE SET
+        cached_input_rate_den, cache_write_rate_num, cache_write_rate_den,
+        long_context_threshold, tier_config_json, valid_from
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(rate_id) DO UPDATE SET
         input_rate_num = excluded.input_rate_num,
         input_rate_den = excluded.input_rate_den,
         output_rate_num = excluded.output_rate_num,
         output_rate_den = excluded.output_rate_den,
         cached_input_rate_num = excluded.cached_input_rate_num,
-        cached_input_rate_den = excluded.cached_input_rate_den;
+        cached_input_rate_den = excluded.cached_input_rate_den,
+        cache_write_rate_num = excluded.cache_write_rate_num,
+        cache_write_rate_den = excluded.cache_write_rate_den,
+        service_tier = excluded.service_tier,
+        long_context_threshold = excluded.long_context_threshold,
+        tier_config_json = excluded.tier_config_json;
     `).run(
       rate.rateId,
       rate.providerId,
       rate.modelId,
+      serviceTier,
       rate.inputRateNum,
       rate.inputRateDen,
       rate.outputRateNum,
       rate.outputRateDen,
       rate.cachedInputRateNum,
       rate.cachedInputRateDen,
+      rate.cacheWriteRateNum ?? 0n,
+      rate.cacheWriteRateDen ?? 1n,
+      rate.longContextThreshold ?? null,
+      tierConfigJson,
       rate.validFrom
     );
   }
 
-  getPricingRate(providerId: string, modelId: string): PricingRate | undefined {
+  getPricingRate(providerId: string, modelId: string, serviceTier: string = 'standard'): PricingRate | undefined {
     const db = this.assertDb();
+    const tier = (serviceTier || 'standard').toLowerCase();
     const row = db.prepare(`
       SELECT * FROM pricing_rates
-      WHERE provider_id = ? AND model_id = ?
+      WHERE provider_id = ? AND model_id = ? AND service_tier = ?
       ORDER BY valid_from DESC LIMIT 1;
-    `).get(providerId, modelId) as any;
+    `).get(providerId, modelId, tier) as any;
     if (!row) return undefined;
+
+    let longContext: ContextTierPricing | undefined;
+    if (row.tier_config_json) {
+      try {
+        const parsed = JSON.parse(row.tier_config_json);
+        if (parsed.longContext) {
+          longContext = {
+            inputRateNum: BigInt(parsed.longContext.inputRateNum),
+            inputRateDen: BigInt(parsed.longContext.inputRateDen),
+            outputRateNum: BigInt(parsed.longContext.outputRateNum),
+            outputRateDen: BigInt(parsed.longContext.outputRateDen),
+            cachedInputRateNum: parsed.longContext.cachedInputRateNum !== undefined ? BigInt(parsed.longContext.cachedInputRateNum) : undefined,
+            cachedInputRateDen: parsed.longContext.cachedInputRateDen !== undefined ? BigInt(parsed.longContext.cachedInputRateDen) : undefined,
+            cacheWriteRateNum: parsed.longContext.cacheWriteRateNum !== undefined ? BigInt(parsed.longContext.cacheWriteRateNum) : undefined,
+            cacheWriteRateDen: parsed.longContext.cacheWriteRateDen !== undefined ? BigInt(parsed.longContext.cacheWriteRateDen) : undefined,
+          };
+        }
+      } catch {
+        // ignore
+      }
+    }
 
     return {
       rateId: row.rate_id,
       providerId: row.provider_id,
       modelId: row.model_id,
+      serviceTier: row.service_tier,
       inputRateNum: BigInt(row.input_rate_num),
       inputRateDen: BigInt(row.input_rate_den),
       outputRateNum: BigInt(row.output_rate_num),
       outputRateDen: BigInt(row.output_rate_den),
       cachedInputRateNum: BigInt(row.cached_input_rate_num),
       cachedInputRateDen: BigInt(row.cached_input_rate_den),
+      cacheWriteRateNum: row.cache_write_rate_num !== undefined ? BigInt(row.cache_write_rate_num) : 0n,
+      cacheWriteRateDen: row.cache_write_rate_den !== undefined ? BigInt(row.cache_write_rate_den) : 1n,
+      longContextThreshold: row.long_context_threshold ?? undefined,
+      longContext,
       validFrom: row.valid_from,
     };
   }

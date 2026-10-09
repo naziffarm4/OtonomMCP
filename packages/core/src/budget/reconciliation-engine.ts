@@ -73,7 +73,7 @@ export class ReconciliationEngine {
       }
 
       // 3. Compute Actual Cost via Pricing Engine
-      const rate = this.pricingEngine.getRate(providerId, reservation.modelId);
+      const rate = this.pricingEngine.getRate(providerId, reservation.modelId, request.reportedUsage.serviceTier);
       const actualCostNanoUsd = this.pricingEngine.calculateCostNanoUsd(request.reportedUsage, rate);
 
       // 4. Update Account Balances
