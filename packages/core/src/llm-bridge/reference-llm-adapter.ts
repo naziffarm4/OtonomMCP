@@ -224,11 +224,19 @@ export class ReferenceLlmAdapter implements LLMProvider {
   /**
    * Evaluates whether OpenAI Chat Completions wire format should be used.
    */
-  isOpenAiFormat(): boolean {
+  isOpenAiFormat(request?: LlmRequest): boolean {
     if (this.wireFormat === 'openai') return true;
     if (this.wireFormat === 'reference') return false;
-    const endpoint = this.endpoint || (this.transport as any)?.endpoint || '';
-    if (typeof endpoint === 'string' && endpoint.includes('openai.com')) {
+    const effectiveEndpoint =
+      (request?.metadata?.__aidm_effective_endpoint as string | undefined) ??
+      (request?.metadata?.endpoint as string | undefined) ??
+      this.endpoint ??
+      (this.transport as any)?.endpoint ??
+      '';
+    if (request?.metadata?.__aidm_endpoint_kind === 'openai_chat_completions') {
+      return true;
+    }
+    if (typeof effectiveEndpoint === 'string' && effectiveEndpoint.includes('openai.com')) {
       return true;
     }
     if (this.providerName.toLowerCase().includes('openai')) {
@@ -493,12 +501,17 @@ export class ReferenceLlmAdapter implements LLMProvider {
       }, timeoutMs);
     });
 
-    const effectiveBody = this.isOpenAiFormat()
+    const effectiveEndpoint =
+      (rawRequest.metadata?.__aidm_effective_endpoint as string | undefined) ??
+      (rawRequest.metadata?.endpoint as string | undefined) ??
+      this.endpoint;
+
+    const effectiveBody = this.isOpenAiFormat(rawRequest)
       ? (this.translateToOpenAiWire(wireRequest) as unknown as ReferenceWireRequest)
       : wireRequest;
 
     const transportReq: LlmTransportRequest<ReferenceWireRequest> = Object.freeze({
-      endpoint: this.endpoint,
+      endpoint: effectiveEndpoint,
       method: 'POST',
       headers: Object.freeze({
         'content-type': 'application/json',

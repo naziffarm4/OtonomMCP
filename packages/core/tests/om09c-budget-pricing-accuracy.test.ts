@@ -38,6 +38,9 @@ import {
   LlmFinishReason,
   auditBillingEndpoint,
   resolveBillingEndpointKind,
+  resolveEffectiveBillingEndpoint,
+  registerCustomEndpointContract,
+  clearCustomEndpointContracts,
 } from '../dist/index.js';
 
 describe('OM-09C: LLM Budget Pricing Accuracy & Hardening', () => {
@@ -47,6 +50,7 @@ describe('OM-09C: LLM Budget Pricing Accuracy & Hardening', () => {
   let pricingEngine: PricingEngine;
 
   beforeEach(async () => {
+    clearCustomEndpointContracts();
     tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'aidm-om09c-budget-'));
     dbPath = path.join(tempDir, 'budget.db');
 
@@ -56,6 +60,7 @@ describe('OM-09C: LLM Budget Pricing Accuracy & Hardening', () => {
   });
 
   afterEach(async () => {
+    clearCustomEndpointContracts();
     budgetManager.close();
     try {
       await fs.promises.rm(tempDir, { recursive: true, force: true });
@@ -1964,6 +1969,7 @@ describe('OM-09C: LLM Budget Pricing Accuracy & Hardening', () => {
           cachedInputRateNum: 1_250_000_000n,
           cachedInputRateDen: 1_000_000n,
         });
+        registerCustomEndpointContract('my-internal-proxy.corp', 'openai_chat_completions');
 
         const audit = auditBillingEndpoint({
           endpoint: 'https://my-internal-proxy.corp/v1/chat/completions',
@@ -2298,4 +2304,657 @@ describe('OM-09C: LLM Budget Pricing Accuracy & Hardening', () => {
       });
     });
   });
+
+  // ==========================================================================
+  // 15. UNKNOWN PROVIDER FAIL-CLOSED, RESOLUTION & REASONING (OM-09C-FIX-5)
+  // ==========================================================================
+  describe('15. Unknown Provider Fail-Closed, Resolution & Reasoning (OM-09C-FIX-5)', () => {
+    // 15.1 Unknown Provider & Custom Endpoint Fail-Closed
+    describe('15.1 Unknown Provider & Custom Endpoint Fail-Closed', () => {
+      it('rejects providerId: "openai-compatible" + unknown host fail-closed before dispatch', async () => {
+        budgetManager.createGlobalAccount(5.0);
+
+        let providerCalled = false;
+        const mockProvider: LLMProvider = {
+          providerId: 'openai-compatible',
+          providerName: 'openai-compatible',
+          defaultModel: 'custom-model',
+          supportedModels: ['custom-model'],
+          supportedCapabilities: [],
+          checkAvailability: async () => ({ available: true, model: 'custom-model', reason: null }),
+          generate: async () => {
+            providerCalled = true;
+            throw new Error('Provider must NOT be called on rejected endpoint');
+          },
+        };
+
+        const adapter = new BudgetAwareLlmAdapter(mockProvider, budgetManager);
+
+        await assert.rejects(
+          async () => {
+            await adapter.generate({
+              messages: [{ role: 'user', content: 'test' }],
+              model: 'custom-model',
+              metadata: { endpoint: 'https://unknown-proxy.corp.internal/v1/chat/completions' },
+              correlation: { correlation_id: 'c_unk_1', project_id: 'p_unk' },
+              director_context: { project_id: 'p_unk' },
+            });
+          },
+          (err: any) => {
+            assert.ok(err instanceof BudgetError);
+            assert.strictEqual(err.code, 'ERR_UNSUPPORTED_BILLING_MODE');
+            assert.ok(err.message.includes('not a verified standard provider host'));
+            return true;
+          }
+        );
+
+        assert.strictEqual(providerCalled, false, 'Provider dispatch MUST NOT occur when endpoint fails audit');
+      });
+
+      it('rejects a custom hostname when model price is only registered under generic "openai"', async () => {
+        budgetManager.createGlobalAccount(5.0);
+
+        // Model gpt-4o is registered under 'openai' in pricingEngine by default
+        // But endpoint is a third-party gateway 'https://ai-gateway.mycorp.net/v1/chat/completions'
+        let providerCalled = false;
+        const mockProvider: LLMProvider = {
+          providerId: 'openai',
+          providerName: 'openai',
+          defaultModel: 'gpt-4o',
+          supportedModels: ['gpt-4o'],
+          supportedCapabilities: [],
+          checkAvailability: async () => ({ available: true, model: 'gpt-4o', reason: null }),
+          generate: async () => {
+            providerCalled = true;
+            throw new Error('Provider must NOT be called on unverified custom host');
+          },
+        };
+
+        const adapter = new BudgetAwareLlmAdapter(mockProvider, budgetManager);
+
+        await assert.rejects(
+          async () => {
+            await adapter.generate({
+              messages: [{ role: 'user', content: 'test gateway' }],
+              model: 'gpt-4o',
+              metadata: { endpoint: 'https://ai-gateway.mycorp.net/v1/chat/completions' },
+              correlation: { correlation_id: 'c_gate_1', project_id: 'p_gate' },
+              director_context: { project_id: 'p_gate' },
+            });
+          },
+          (err: any) => {
+            assert.ok(err instanceof BudgetError);
+            assert.strictEqual(err.code, 'ERR_UNSUPPORTED_BILLING_MODE');
+            assert.ok(err.message.includes('not a verified standard provider host'));
+            return true;
+          }
+        );
+
+        assert.strictEqual(providerCalled, false, 'Provider must not be called when custom host lacks explicit host pricing');
+      });
+
+      it('rejects custom endpoint with valid pricing if its usage contract is NOT registered', async () => {
+        // Register rate under custom host
+        pricingEngine.registerRate({
+          providerId: 'my-custom-proxy.internal',
+          modelId: 'gpt-4o',
+          inputRateNum: 2_500_000_000n,
+          inputRateDen: 1_000_000n,
+          outputRateNum: 10_000_000_000n,
+          outputRateDen: 1_000_000n,
+        });
+
+        // Do NOT register contract
+        const audit = auditBillingEndpoint({
+          endpoint: 'https://my-custom-proxy.internal/v1/custom-chat',
+          providerId: 'openai',
+          modelId: 'gpt-4o',
+          pricingEngine,
+        });
+
+        assert.strictEqual(audit.valid, false);
+        if (!audit.valid) {
+          assert.strictEqual(audit.errorCode, 'ERR_UNSUPPORTED_BILLING_MODE');
+          assert.ok(audit.errorReason.includes('no registered usage contract'));
+        }
+      });
+
+      it('accepts correctly registered custom endpoint when both pricing and usage contract are registered', async () => {
+        pricingEngine.registerRate({
+          providerId: 'my-authorized-proxy.internal',
+          modelId: 'gpt-4o',
+          inputRateNum: 2_500_000_000n,
+          inputRateDen: 1_000_000n,
+          outputRateNum: 10_000_000_000n,
+          outputRateDen: 1_000_000n,
+        });
+        registerCustomEndpointContract('my-authorized-proxy.internal', 'openai_chat_completions');
+
+        const audit = auditBillingEndpoint({
+          endpoint: 'https://my-authorized-proxy.internal/v1/chat/completions',
+          providerId: 'openai',
+          modelId: 'gpt-4o',
+          pricingEngine,
+        });
+
+        assert.strictEqual(audit.valid, true);
+        if (audit.valid) {
+          assert.strictEqual(audit.endpointKind, 'openai_chat_completions');
+        }
+      });
+    });
+
+    // 15.2 Hostname Spoofing and Malformed Endpoint Inputs
+    describe('15.2 Hostname Spoofing & Malformed Endpoint Inputs', () => {
+      it('rejects endpoint URL with userinfo in authority fail-closed before dispatch', () => {
+        const spoofedUrls = [
+          'https://api.openai.com@attacker.com/v1/chat/completions',
+          'https://admin:pass@api.openai.com/v1/chat/completions',
+          'https://user@api.openai.com/v1/chat/completions',
+        ];
+
+        for (const url of spoofedUrls) {
+          const audit = auditBillingEndpoint({
+            endpoint: url,
+            providerId: 'openai',
+            modelId: 'gpt-4o',
+            pricingEngine,
+          });
+
+          assert.strictEqual(audit.valid, false);
+          if (!audit.valid) {
+            assert.strictEqual(audit.errorCode, 'ERR_UNSUPPORTED_BILLING_MODE');
+            assert.ok(audit.errorReason.includes('contains userinfo in authority'));
+          }
+        }
+      });
+
+      it('rejects non-standard ports for standard provider hosts fail-closed', () => {
+        const nonStandardPortUrls = [
+          'https://api.openai.com:8443/v1/chat/completions',
+          'https://api.openai.com:8080/v1/chat/completions',
+          'https://api.anthropic.com:444/v1/messages',
+        ];
+
+        for (const url of nonStandardPortUrls) {
+          const audit = auditBillingEndpoint({
+            endpoint: url,
+            providerId: url.includes('anthropic') ? 'anthropic' : 'openai',
+            modelId: 'gpt-4o',
+            pricingEngine,
+          });
+
+          assert.strictEqual(audit.valid, false);
+          if (!audit.valid) {
+            assert.strictEqual(audit.errorCode, 'ERR_UNSUPPORTED_BILLING_MODE');
+            assert.ok(audit.errorReason.includes('Non-standard port'));
+          }
+        }
+      });
+
+      it('rejects suffix-spoofed hostnames fail-closed', () => {
+        const suffixUrls = [
+          'https://api.openai.com.attacker.com/v1/chat/completions',
+          'https://api.anthropic.com.fake-endpoint.net/v1/messages',
+        ];
+
+        for (const url of suffixUrls) {
+          const audit = auditBillingEndpoint({
+            endpoint: url,
+            providerId: url.includes('anthropic') ? 'anthropic' : 'openai',
+            modelId: 'gpt-4o',
+            pricingEngine,
+          });
+
+          assert.strictEqual(audit.valid, false);
+          if (!audit.valid) {
+            assert.strictEqual(audit.errorCode, 'ERR_UNSUPPORTED_BILLING_MODE');
+            assert.ok(audit.errorReason.includes('not a verified standard provider host'));
+          }
+        }
+      });
+
+      it('rejects unsupported protocols (ftp, file, javascript) fail-closed', () => {
+        for (const protoUrl of [
+          'ftp://api.openai.com/v1/chat/completions',
+          'file:///api.openai.com/v1/chat/completions',
+          'javascript:alert(1)',
+        ]) {
+          const audit = auditBillingEndpoint({
+            endpoint: protoUrl,
+            providerId: 'openai',
+            modelId: 'gpt-4o',
+            pricingEngine,
+          });
+
+          assert.strictEqual(audit.valid, false);
+          if (!audit.valid) {
+            assert.strictEqual(audit.errorCode, 'ERR_UNSUPPORTED_BILLING_MODE');
+          }
+        }
+      });
+
+      it('preserves valid standard OpenAI, Anthropic, and local reference adapter flows', () => {
+        const validStandardEndpoints = [
+          { endpoint: 'https://api.openai.com/v1/chat/completions', providerId: 'openai', modelId: 'gpt-4o', kind: 'openai_chat_completions' },
+          { endpoint: 'https://api.openai.com/v1/responses', providerId: 'openai', modelId: 'gpt-4o', kind: 'openai_responses' },
+          { endpoint: 'https://api.anthropic.com/v1/messages', providerId: 'anthropic', modelId: 'claude-3-5-sonnet-20241022', kind: 'anthropic_messages' },
+          { endpoint: 'http://localhost:3000/v1/chat/completions', providerId: 'openai', modelId: 'gpt-4o', kind: 'openai_chat_completions' },
+          { endpoint: 'http://127.0.0.1:8080/v1/chat/completions', providerId: 'openai', modelId: 'gpt-4o', kind: 'openai_chat_completions' },
+          { endpoint: undefined, providerId: 'reference-llm', modelId: 'ref-model-v1', kind: 'reference_adapter' },
+        ];
+
+        // Register Anthropic model rate
+        pricingEngine.registerRate({
+          providerId: 'anthropic',
+          modelId: 'claude-3-5-sonnet-20241022',
+          inputRateNum: 3_000_000_000n,
+          inputRateDen: 1_000_000n,
+          outputRateNum: 15_000_000_000n,
+          outputRateDen: 1_000_000n,
+        });
+
+        // Register reference model rate
+        pricingEngine.registerRate({
+          providerId: 'reference-llm',
+          modelId: 'ref-model-v1',
+          inputRateNum: 1_000_000_000n,
+          inputRateDen: 1_000_000n,
+          outputRateNum: 2_000_000_000n,
+          outputRateDen: 1_000_000n,
+        });
+
+        for (const item of validStandardEndpoints) {
+          const audit = auditBillingEndpoint({
+            endpoint: item.endpoint,
+            providerId: item.providerId,
+            modelId: item.modelId,
+            pricingEngine,
+          });
+
+          assert.strictEqual(audit.valid, true, `Endpoint '${item.endpoint}' should be valid`);
+          if (audit.valid) {
+            assert.strictEqual(audit.endpointKind, item.kind);
+          }
+        }
+      });
+    });
+
+    // 15.3 Authoritative Endpoint Resolution & Dispatch Parity
+    describe('15.3 Authoritative Endpoint Resolution & Dispatch Parity', () => {
+      it('resolves standard OpenAI base URL by appending /chat/completions', () => {
+        const res = resolveEffectiveBillingEndpoint({
+          requestBaseUrl: 'https://api.openai.com/v1',
+          providerId: 'openai',
+        });
+
+        assert.strictEqual(res.success, true);
+        if (res.success) {
+          assert.strictEqual(res.effectiveUrl, 'https://api.openai.com/v1/chat/completions');
+          assert.strictEqual(res.isBaseUrl, true);
+          assert.strictEqual(res.endpointKind, 'openai_chat_completions');
+        }
+      });
+
+      it('resolves standard Anthropic base URL by appending /messages', () => {
+        const res = resolveEffectiveBillingEndpoint({
+          requestBaseUrl: 'https://api.anthropic.com/v1',
+          providerId: 'anthropic',
+        });
+
+        assert.strictEqual(res.success, true);
+        if (res.success) {
+          assert.strictEqual(res.effectiveUrl, 'https://api.anthropic.com/v1/messages');
+          assert.strictEqual(res.endpointKind, 'anthropic_messages');
+        }
+      });
+
+      it('refuses to infer /v1/chat/completions on custom base URL without registered usage contract', () => {
+        const res = resolveEffectiveBillingEndpoint({
+          requestBaseUrl: 'https://my-custom-proxy.org/v1',
+          providerId: 'openai-compatible',
+        });
+
+        assert.strictEqual(res.success, false);
+        if (!res.success) {
+          assert.strictEqual(res.errorCode, 'ERR_UNSUPPORTED_BILLING_MODE');
+          assert.ok(res.errorReason.includes('refusing to infer /v1/chat/completions'));
+        }
+      });
+
+      it('composes custom base URL correctly when explicit usage contract is registered', () => {
+        registerCustomEndpointContract('my-custom-proxy.org', 'openai_chat_completions');
+
+        const res = resolveEffectiveBillingEndpoint({
+          requestBaseUrl: 'https://my-custom-proxy.org/v1',
+          providerId: 'openai-compatible',
+        });
+
+        assert.strictEqual(res.success, true);
+        if (res.success) {
+          assert.strictEqual(res.effectiveUrl, 'https://my-custom-proxy.org/v1/chat/completions');
+          assert.strictEqual(res.endpointKind, 'openai_chat_completions');
+        }
+      });
+
+      it('detects conflicting request endpoint and base_url and rejects fail-closed', () => {
+        const res = resolveEffectiveBillingEndpoint({
+          requestEndpoint: 'https://api.openai.com/v1/chat/completions',
+          requestBaseUrl: 'https://api.anthropic.com/v1',
+          providerId: 'openai',
+        });
+
+        assert.strictEqual(res.success, false);
+        if (!res.success) {
+          assert.strictEqual(res.errorCode, 'ERR_UNSUPPORTED_BILLING_MODE');
+          assert.ok(res.errorReason.includes('Conflicting endpoint configuration'));
+        }
+      });
+
+      it('detects conflicting environment endpoint variables and rejects fail-closed', () => {
+        const res = resolveEffectiveBillingEndpoint({
+          envLlmEndpoint: 'https://api.openai.com/v1/chat/completions',
+          envOpenAiBaseUrl: 'https://proxy.internal.corp/v1',
+          providerId: 'openai',
+        });
+
+        assert.strictEqual(res.success, false);
+        if (!res.success) {
+          assert.strictEqual(res.errorCode, 'ERR_UNSUPPORTED_BILLING_MODE');
+          assert.ok(res.errorReason.includes('Conflicting environment endpoint configurations'));
+        }
+      });
+    });
+
+    // 15.4 Reasoning Token Accounting & Double Counting Prevention
+    describe('15.4 Reasoning Token Accounting & Double Counting Prevention', () => {
+      it('does not double charge when reasoning tokens are reported in completion_tokens_details', () => {
+        const rate = pricingEngine.getRate('openai', 'gpt-4o');
+
+        // Provider reports completion_tokens: 300, and completion_tokens_details.reasoning_tokens: 100.
+        // Reasoning tokens are INCLUDED in completion_tokens. Total output MUST remain 300.
+        const norm = UsageNormalizer.normalizeAndReconcile({
+          response: {
+            correlation: { correlation_id: 'c_reas_1', project_id: 'p_reas' },
+            provider: 'openai',
+            model: 'gpt-4o',
+            content: 'test',
+            finish_reason: LlmFinishReason.STOP,
+            usage: {
+              prompt_tokens: 1000,
+              completion_tokens: 300,
+              completion_tokens_details: {
+                reasoning_tokens: 100,
+              },
+            } as any,
+            raw_metadata: null,
+          },
+          request: {
+            messages: [{ role: 'user', content: 'test' }],
+            model: 'gpt-4o',
+            correlation: { correlation_id: 'c_reas_1', project_id: 'p_reas' },
+            director_context: { project_id: 'p_reas' },
+          },
+          modelId: 'gpt-4o',
+          rate,
+          pricingEngine,
+          providerId: 'openai',
+          endpoint: 'https://api.openai.com/v1/chat/completions',
+        });
+
+        assert.strictEqual(norm.success, true);
+        if (norm.success) {
+          assert.strictEqual(norm.usage.outputTokens, 300, 'Output tokens must remain 300 (no double addition of 100 reasoning tokens)');
+          assert.strictEqual(norm.usage.reasoningTokens, 100);
+
+          // Verify exact pricing:
+          // Input: 1000 * 2.50 / 1M = 2,500,000 nanoUSD
+          // Output: 300 * 10.00 / 1M = 3,000,000 nanoUSD
+          // Total = 5,500,000 nanoUSD ($0.0055)
+          const cost = pricingEngine.calculateCostNanoUsd(norm.usage, rate);
+          assert.strictEqual(cost, 5_500_000n, 'Cost must be exactly 5,500,000 nUSD without double charging output tokens');
+        }
+      });
+
+      it('does not double charge when reasoning tokens are reported at top level', () => {
+        const rate = pricingEngine.getRate('openai', 'gpt-4o');
+
+        // Top level reasoning_tokens: 80
+        const norm = UsageNormalizer.normalizeAndReconcile({
+          response: {
+            correlation: { correlation_id: 'c_reas_2', project_id: 'p_reas' },
+            provider: 'openai',
+            model: 'gpt-4o',
+            content: 'test',
+            finish_reason: LlmFinishReason.STOP,
+            usage: {
+              prompt_tokens: 1000,
+              completion_tokens: 250,
+              reasoning_tokens: 80,
+            } as any,
+            raw_metadata: null,
+          },
+          request: {
+            messages: [{ role: 'user', content: 'test' }],
+            model: 'gpt-4o',
+            correlation: { correlation_id: 'c_reas_2', project_id: 'p_reas' },
+            director_context: { project_id: 'p_reas' },
+          },
+          modelId: 'gpt-4o',
+          rate,
+          pricingEngine,
+          providerId: 'openai',
+          endpoint: 'https://api.openai.com/v1/chat/completions',
+        });
+
+        assert.strictEqual(norm.success, true);
+        if (norm.success) {
+          assert.strictEqual(norm.usage.outputTokens, 250, 'Output tokens must remain 250 (inclusive of top-level reasoning tokens)');
+          assert.strictEqual(norm.usage.reasoningTokens, 80);
+        }
+      });
+
+      it('successfully normalizes when reasoning tokens are completely absent', () => {
+        const rate = pricingEngine.getRate('openai', 'gpt-4o');
+
+        const norm = UsageNormalizer.normalizeAndReconcile({
+          response: {
+            correlation: { correlation_id: 'c_reas_3', project_id: 'p_reas' },
+            provider: 'openai',
+            model: 'gpt-4o',
+            content: 'test',
+            finish_reason: LlmFinishReason.STOP,
+            usage: {
+              prompt_tokens: 500,
+              completion_tokens: 150,
+            } as any,
+            raw_metadata: null,
+          },
+          request: {
+            messages: [{ role: 'user', content: 'test' }],
+            model: 'gpt-4o',
+            correlation: { correlation_id: 'c_reas_3', project_id: 'p_reas' },
+            director_context: { project_id: 'p_reas' },
+          },
+          modelId: 'gpt-4o',
+          rate,
+          pricingEngine,
+          providerId: 'openai',
+          endpoint: 'https://api.openai.com/v1/chat/completions',
+        });
+
+        assert.strictEqual(norm.success, true);
+        if (norm.success) {
+          assert.strictEqual(norm.usage.outputTokens, 150);
+          assert.strictEqual(norm.usage.reasoningTokens, 0);
+        }
+      });
+
+      it('fails closed when reasoning tokens exceed total completion tokens', () => {
+        const rate = pricingEngine.getRate('openai', 'gpt-4o');
+
+        const norm = UsageNormalizer.normalizeAndReconcile({
+          response: {
+            correlation: { correlation_id: 'c_reas_4', project_id: 'p_reas' },
+            provider: 'openai',
+            model: 'gpt-4o',
+            content: 'test',
+            finish_reason: LlmFinishReason.STOP,
+            usage: {
+              prompt_tokens: 500,
+              completion_tokens: 100,
+              completion_tokens_details: {
+                reasoning_tokens: 150, // Exceeds completion_tokens
+              },
+            } as any,
+            raw_metadata: null,
+          },
+          request: {
+            messages: [{ role: 'user', content: 'test' }],
+            model: 'gpt-4o',
+            correlation: { correlation_id: 'c_reas_4', project_id: 'p_reas' },
+            director_context: { project_id: 'p_reas' },
+          },
+          modelId: 'gpt-4o',
+          rate,
+          pricingEngine,
+          providerId: 'openai',
+          endpoint: 'https://api.openai.com/v1/chat/completions',
+        });
+
+        assert.strictEqual(norm.success, false);
+        if (!norm.success) {
+          assert.strictEqual(norm.errorCode, 'ERR_USAGE_INCONSISTENT');
+          assert.ok(norm.errorReason.includes('cannot exceed total output tokens'));
+        }
+      });
+
+      it('fails closed when top-level and detail-level reasoning counts conflict', () => {
+        const rate = pricingEngine.getRate('openai', 'gpt-4o');
+
+        const norm = UsageNormalizer.normalizeAndReconcile({
+          response: {
+            correlation: { correlation_id: 'c_reas_5', project_id: 'p_reas' },
+            provider: 'openai',
+            model: 'gpt-4o',
+            content: 'test',
+            finish_reason: LlmFinishReason.STOP,
+            usage: {
+              prompt_tokens: 500,
+              completion_tokens: 200,
+              reasoning_tokens: 50,
+              completion_tokens_details: {
+                reasoning_tokens: 75, // Conflicting!
+              },
+            } as any,
+            raw_metadata: null,
+          },
+          request: {
+            messages: [{ role: 'user', content: 'test' }],
+            model: 'gpt-4o',
+            correlation: { correlation_id: 'c_reas_5', project_id: 'p_reas' },
+            director_context: { project_id: 'p_reas' },
+          },
+          modelId: 'gpt-4o',
+          rate,
+          pricingEngine,
+          providerId: 'openai',
+          endpoint: 'https://api.openai.com/v1/chat/completions',
+        });
+
+        assert.strictEqual(norm.success, false);
+        if (!norm.success) {
+          assert.strictEqual(norm.errorCode, 'ERR_USAGE_INCONSISTENT');
+          assert.ok(norm.errorReason.includes('conflicting top-level reasoning tokens'));
+        }
+      });
+
+      it('preserves reservation in UNKNOWN state with financial hold retained when reasoning normalizer fails', async () => {
+        budgetManager.createGlobalAccount(5.0);
+
+        const conflictingProvider: LLMProvider = {
+          providerId: 'openai',
+          providerName: 'openai',
+          defaultModel: 'gpt-4o',
+          supportedModels: ['gpt-4o'],
+          supportedCapabilities: [],
+          checkAvailability: async () => ({ available: true, model: 'gpt-4o', reason: null }),
+          generate: async (req: LlmRequest) => ({
+            correlation: req.correlation,
+            provider: 'openai',
+            model: 'gpt-4o',
+            content: 'conflicting reasoning',
+            finish_reason: LlmFinishReason.STOP,
+            usage: {
+              prompt_tokens: 500,
+              completion_tokens: 200,
+              reasoning_tokens: 50,
+              completion_tokens_details: { reasoning_tokens: 75 },
+            } as any,
+            raw_metadata: null,
+          }),
+        };
+
+        const adapter = new BudgetAwareLlmAdapter(conflictingProvider, budgetManager);
+
+        const req: LlmRequest = {
+          messages: [{ role: 'user', content: 'test conflict hold retention' }],
+          model: 'gpt-4o',
+          correlation: { correlation_id: 'c_hold_conflict_1', attempt: 1, project_id: 'p_hold' },
+          director_context: { project_id: 'p_hold' },
+        };
+
+        await adapter.generate(req);
+
+        const account = budgetManager.getGlobalAccount()!;
+        assert.ok(account.reservedSpendNanoUsd > 0n, 'Financial hold must NOT be released on inconsistent reasoning metrics');
+        assert.strictEqual(account.committedSpendNanoUsd, 0n);
+
+        const res = budgetManager.db.getReservationByIdempotencyKey('idemp_res_c_hold_conflict_1_att_1');
+        assert.ok(res);
+        assert.strictEqual(res.state, ReservationState.UNKNOWN);
+      });
+    });
+
+    // 15.5 Pricing and Settlement Invariants
+    describe('15.5 Pricing and Settlement Invariants', () => {
+      it('rejects settlement when response endpoint schema mismatches expected endpoint kind', () => {
+        const rate = pricingEngine.getRate('openai', 'gpt-4o');
+
+        // Audit as chat_completions, but response contains only Responses API metrics (input_tokens/output_tokens)
+        const norm = UsageNormalizer.normalizeAndReconcile({
+          response: {
+            correlation: { correlation_id: 'c_mismatch_1', project_id: 'p_mis' },
+            provider: 'openai',
+            model: 'gpt-4o',
+            content: 'test',
+            finish_reason: LlmFinishReason.STOP,
+            usage: {
+              input_tokens: 1000,
+              output_tokens: 200,
+            } as any,
+            raw_metadata: null,
+          },
+          request: {
+            messages: [{ role: 'user', content: 'test' }],
+            model: 'gpt-4o',
+            correlation: { correlation_id: 'c_mismatch_1', project_id: 'p_mis' },
+            director_context: { project_id: 'p_mis' },
+          },
+          modelId: 'gpt-4o',
+          rate,
+          pricingEngine,
+          providerId: 'openai',
+          endpoint: 'https://api.openai.com/v1/chat/completions',
+          expectedEndpointKind: 'openai_chat_completions',
+        });
+
+        assert.strictEqual(norm.success, false);
+        if (!norm.success) {
+          assert.strictEqual(norm.errorCode, 'ERR_USAGE_INCOMPLETE');
+        }
+      });
+    });
+  });
 });
+

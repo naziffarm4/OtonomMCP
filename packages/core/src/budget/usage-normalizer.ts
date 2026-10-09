@@ -90,6 +90,7 @@ export interface NormalizeUsageParams {
   pricingEngine: PricingEngine;
   providerId: string;
   endpoint?: string | null;
+  expectedEndpointKind?: BillingEndpointKind;
 }
 
 export class UsageNormalizer {
@@ -99,7 +100,7 @@ export class UsageNormalizer {
    * Enforces fail-closed handling on missing, partial, fractional, or inconsistent metrics.
    */
   static normalizeAndReconcile(params: NormalizeUsageParams): UsageNormalizationResult {
-    const { response, request, modelId, rate, pricingEngine, providerId, endpoint } = params;
+    const { response, request, modelId, rate, pricingEngine, providerId, endpoint, expectedEndpointKind } = params;
 
     // 1. Audit Billing Endpoint & Regional / Data-Residency Surcharge Check
     const effectiveEndpoint =
@@ -124,6 +125,15 @@ export class UsageNormalizer {
       };
     }
 
+    // Verify endpoint schema matches expected dispatch endpoint kind if supplied
+    if (expectedEndpointKind && auditResult.endpointKind !== expectedEndpointKind) {
+      return {
+        success: false,
+        errorReason: `Endpoint schema mismatch: audited endpoint kind '${auditResult.endpointKind}' does not match expected dispatch endpoint kind '${expectedEndpointKind}'`,
+        errorCode: 'ERR_UNSUPPORTED_BILLING_MODE',
+      };
+    }
+
     // 2. Validate Usage Object Presence
     const rawUsage = response?.usage as unknown as Record<string, unknown> | undefined;
     if (!rawUsage || typeof rawUsage !== 'object') {
@@ -134,13 +144,16 @@ export class UsageNormalizer {
       };
     }
 
-    // 3. Mandatory Input Token Validation (No Fallback to Estimates)
-    // Select primary field based on endpoint kind
+    // 3. Mandatory Input Token Validation (Bound strictly to endpoint kind)
     let rawInput: unknown;
     if (auditResult.endpointKind === 'openai_responses') {
-      rawInput = rawUsage.input_tokens ?? rawUsage.reported_input_tokens ?? rawUsage.prompt_tokens;
+      rawInput = rawUsage.input_tokens ?? rawUsage.reported_input_tokens;
+    } else if (auditResult.endpointKind === 'openai_chat_completions') {
+      rawInput = rawUsage.prompt_tokens ?? rawUsage.reported_input_tokens;
+    } else if (auditResult.endpointKind === 'anthropic_messages') {
+      rawInput = rawUsage.input_tokens ?? rawUsage.reported_input_tokens;
     } else {
-      rawInput = rawUsage.prompt_tokens ?? rawUsage.reported_input_tokens ?? rawUsage.input_tokens;
+      rawInput = rawUsage.reported_input_tokens ?? rawUsage.prompt_tokens ?? rawUsage.input_tokens;
     }
 
     if (rawInput === undefined || rawInput === null) {
@@ -159,12 +172,16 @@ export class UsageNormalizer {
       };
     }
 
-    // 4. Mandatory Output Token Validation (No Fallback to Estimates)
+    // 4. Mandatory Output Token Validation (Bound strictly to endpoint kind)
     let rawOutput: unknown;
     if (auditResult.endpointKind === 'openai_responses') {
-      rawOutput = rawUsage.output_tokens ?? rawUsage.reported_output_tokens ?? rawUsage.completion_tokens;
+      rawOutput = rawUsage.output_tokens ?? rawUsage.reported_output_tokens;
+    } else if (auditResult.endpointKind === 'openai_chat_completions') {
+      rawOutput = rawUsage.completion_tokens ?? rawUsage.reported_output_tokens;
+    } else if (auditResult.endpointKind === 'anthropic_messages') {
+      rawOutput = rawUsage.output_tokens ?? rawUsage.reported_output_tokens;
     } else {
-      rawOutput = rawUsage.completion_tokens ?? rawUsage.reported_output_tokens ?? rawUsage.output_tokens;
+      rawOutput = rawUsage.reported_output_tokens ?? rawUsage.completion_tokens ?? rawUsage.output_tokens;
     }
 
     if (rawOutput === undefined || rawOutput === null) {
@@ -191,32 +208,55 @@ export class UsageNormalizer {
     const outDetails = rawUsage.output_tokens_details as Record<string, unknown> | undefined;
     const inDetails = rawUsage.input_tokens_details as Record<string, unknown> | undefined;
 
-    const rawReasoning =
-      rawUsage.reasoning_tokens ??
-      rawUsage.reported_reasoning_tokens ??
-      compDetails?.reasoning_tokens ??
-      outDetails?.reasoning_tokens;
+    const rawTopReasoning = rawUsage.reasoning_tokens ?? rawUsage.reported_reasoning_tokens;
+    const rawDetailReasoning = compDetails?.reasoning_tokens ?? outDetails?.reasoning_tokens;
 
-    let reasoningTokens = 0;
-    if (rawReasoning !== undefined && rawReasoning !== null) {
-      if (typeof rawReasoning !== 'number' || !Number.isInteger(rawReasoning) || rawReasoning < 0) {
+    if (rawTopReasoning !== undefined && rawTopReasoning !== null) {
+      if (typeof rawTopReasoning !== 'number' || !Number.isInteger(rawTopReasoning) || rawTopReasoning < 0) {
         return {
           success: false,
-          errorReason: `Provider reported invalid reasoning token count: ${String(rawReasoning)}; must be non-negative integer`,
+          errorReason: `Provider reported invalid top-level reasoning token count: ${String(rawTopReasoning)}; must be non-negative integer`,
           errorCode: 'ERR_USAGE_MALFORMED',
         };
       }
-      reasoningTokens = rawReasoning;
+    }
 
-      // In OpenAI schema, completion_tokens / output_tokens already includes reasoning_tokens.
-      // If reasoning_tokens was reported separately outside details, ensure it is accounted for:
-      if (
-        compDetails?.reasoning_tokens === undefined &&
-        outDetails?.reasoning_tokens === undefined &&
-        rawUsage.reasoning_tokens !== undefined
-      ) {
-        finalOutput += reasoningTokens;
+    if (rawDetailReasoning !== undefined && rawDetailReasoning !== null) {
+      if (typeof rawDetailReasoning !== 'number' || !Number.isInteger(rawDetailReasoning) || rawDetailReasoning < 0) {
+        return {
+          success: false,
+          errorReason: `Provider reported invalid details reasoning token count: ${String(rawDetailReasoning)}; must be non-negative integer`,
+          errorCode: 'ERR_USAGE_MALFORMED',
+        };
       }
+    }
+
+    // Detect conflicting top-level and detail-level reasoning counts
+    if (
+      rawTopReasoning !== undefined &&
+      rawTopReasoning !== null &&
+      rawDetailReasoning !== undefined &&
+      rawDetailReasoning !== null
+    ) {
+      if (rawTopReasoning !== rawDetailReasoning) {
+        return {
+          success: false,
+          errorReason: `Provider reported conflicting top-level reasoning tokens (${rawTopReasoning}) and details reasoning tokens (${rawDetailReasoning})`,
+          errorCode: 'ERR_USAGE_INCONSISTENT',
+        };
+      }
+    }
+
+    const reasoningTokens = ((rawDetailReasoning ?? rawTopReasoning ?? 0) as number);
+
+    // Official usage contract: completion_tokens / output_tokens ALREADY INCLUDES reasoning tokens.
+    // Do NOT add reasoningTokens a second time to finalOutput!
+    const hasSeparateReasoningTokens =
+      request.metadata?.separate_reasoning_tokens === true ||
+      request.metadata?.separateReasoningTokens === true;
+
+    if (hasSeparateReasoningTokens) {
+      finalOutput += reasoningTokens;
     }
 
     if (reasoningTokens > finalOutput) {

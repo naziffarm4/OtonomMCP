@@ -6,7 +6,7 @@ import type { BudgetManager } from './budget-manager.js';
 import { ReservationState, type TokenUsage } from './budget-types.js';
 import { UsageNormalizer } from './usage-normalizer.js';
 
-import { auditBillingEndpoint } from './endpoint-audit.js';
+import { auditBillingEndpoint, resolveEffectiveBillingEndpoint } from './endpoint-audit.js';
 
 export interface BudgetAwareLlmAdapterOptions {
   budgetManager: BudgetManager;
@@ -113,22 +113,29 @@ export class BudgetAwareLlmAdapter implements LLMProvider {
     const providerId = this.providerName;
 
     // 0. Resolve Effective Billing Endpoint & Audit (Fail closed before dispatch)
-    const effectiveEndpoint =
-      (request.metadata?.endpoint as string | undefined) ??
-      (request.metadata?.base_url as string | undefined) ??
-      (request.metadata?.baseUrl as string | undefined) ??
-      (this.inner as any).endpoint ??
-      (this.inner as any).transport?.endpoint ??
-      process.env.AIDM_LLM_ENDPOINT ??
-      process.env.OPENAI_BASE_URL ??
-      (providerId.toLowerCase().includes('openai') ? 'https://api.openai.com/v1/chat/completions' : undefined);
+    const resolvedEndpoint = resolveEffectiveBillingEndpoint({
+      requestEndpoint: request.metadata?.endpoint as string | undefined,
+      requestBaseUrl: (request.metadata?.base_url ?? request.metadata?.baseUrl) as string | undefined,
+      adapterEndpoint: (this.inner as any).endpoint,
+      transportEndpoint: (this.inner as any).transport?.endpoint,
+      envLlmEndpoint: process.env.AIDM_LLM_ENDPOINT,
+      envOpenAiBaseUrl: process.env.OPENAI_BASE_URL,
+      providerId,
+      modelId: model,
+      usageContract: (request.metadata?.usage_contract ?? request.metadata?.usageContract) as string | undefined,
+    });
+
+    if (!resolvedEndpoint.success) {
+      throw new BudgetError(resolvedEndpoint.errorReason, resolvedEndpoint.errorCode);
+    }
 
     const auditResult = auditBillingEndpoint({
-      endpoint: effectiveEndpoint,
+      endpoint: resolvedEndpoint.effectiveUrl,
       metadata: request.metadata,
       providerId,
       modelId: model,
       pricingEngine: this.budgetManager.pricingEngine,
+      usageContract: (request.metadata?.usage_contract ?? request.metadata?.usageContract) as string | undefined,
     });
 
     if (!auditResult.valid) {
@@ -173,6 +180,8 @@ export class BudgetAwareLlmAdapter implements LLMProvider {
         __aidm_budget_authorized: true,
         __aidm_reservation_id: reservation.reservationId,
         __aidm_dispatch_claim_id: dispatchClaimId,
+        __aidm_effective_endpoint: resolvedEndpoint.effectiveUrl,
+        __aidm_endpoint_kind: auditResult.endpointKind,
       },
     };
 
@@ -213,12 +222,13 @@ export class BudgetAwareLlmAdapter implements LLMProvider {
 
     const normResult = UsageNormalizer.normalizeAndReconcile({
       response: response as LlmResponse<unknown>,
-      request,
+      request: authorizedRequest,
       modelId: model,
       rate,
       pricingEngine: this.budgetManager.pricingEngine,
       providerId,
-      endpoint: effectiveEndpoint,
+      endpoint: resolvedEndpoint.effectiveUrl,
+      expectedEndpointKind: auditResult.endpointKind,
     });
 
     if (!normResult.success) {
