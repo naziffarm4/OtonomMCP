@@ -54,24 +54,42 @@ export interface ITrustedIdentityProvider {
 }
 ```
 
-### 3.2. Zorunlu Bağlam Bağlama (Cryptographic Scope Binding)
-Her onay talebi (`TrustedApprovalBinding`), onaylanan eylemin tam sınırlarına bağlanmalıdır:
+### 3.2. Kriptografik İmza Doğrulama ve Algoritma Kısıtlaması (Signature Enforcement & Allowlist)
+- `jwksUri` ya da `publicKeyPem` tanımlı olması tek başına yeterli kabul edilmez.
+- Gerçek kriptografik imza doğrulayıcısı (Node `crypto.verify` veya asenkron JWKS resolver) bulunmuyorsa doğrulama `CONFIG_MISSING` / `BLOCKED_ON_AUTH_CONTEXT` ile reddedilir.
+- Yalnızca asimetrik algoritmalar (`RS256`, `RS384`, `RS512`, `ES256`, `ES384`, `ES512`, `EdDSA`) kabul edilir. `alg: none` ve simetrik `HS256`/`HS384`/`HS512` algoritmaları doğrudan reddedilir (`SIGNATURE_INVALID`).
+- SSRF Koruması: `jwksUri` yalnızca güvenli `https://` protokülünü kabul eder; link-local bulut metadata adresleri (`169.254.169.254`) engellenir.
+
+### 3.3. Doğrulanmış Payload'dan Yetkili Claim Çıkarımı (Authoritative Claims Extraction)
+- İstemcinin ayrı gönderdiği `assertion.claims` alanı kimlik kanıtı olarak asla kabul edilmez.
+- `sub`, `iss`, `aud`, `actorRole`, `exp`, `iat`, `nbf`, `nonce` alanları kriptografik olarak imzalanmış JWT payload'ı çözülerek oluşturulur.
+- İstemci beyanı ile imzalı token içeriği uyuşmazsa istek `UNVERIFIED` ile fail-closed reddedilir.
+- `actorRole` yalnızca `PRODUCT_OWNER` veya `USER` olabilir; `DIRECTOR` ve `EXECUTOR` aktörleri onay veremez.
+
+### 3.4. Zorunlu Bağlam Bağlama (Cryptographic Scope Binding)
+Her onay talebi (`TrustedApprovalBinding`), imzalı JWT payload'ı içinde doğrulanmalıdır:
 - `projectId`: Onayın ait olduğu kanonik proje kimliği. Başka bir projenin onayıyla işlem yapılamaz.
 - `packageId` ve `revision`: Approval package'ın kesin kimliği ve revizyon numarası.
 - `contextFingerprint`: Onay verildiği andaki Director Context Snapshot mantıksal parmak izi.
 - `directorSessionId` (opsiyonel/gerekli olduğunda): Aktif direktör oturumu.
-- `taskId` / `actionType` (korumalı eylemler için): İcrası talep edilen spesifik işlem.
+- `taskId` / `actionType` / `operation` (korumalı eylemler için): İcrası talep edilen spesifik işlem.
+- Beklenen yürütme bağlamıyla tek bir alan dahi uyuşmazsa `BINDING_MISMATCH` ile fail-closed durulur.
 
-### 3.3. Replay (Tekrar Oynatma) ve Zaman Aşımı Koruması
-- Her onay iddiası zorunlu bir `nonce` (veya `jti`) içermelidir.
-- Doğrulanan nonce'lar `NonceStore` üzerinde işaretlenir; daha önce kullanılmış bir nonce anında `REPLAY_ATTACK_DETECTED` ile fail-closed reddedilir.
-- `issuedAt`, `notBefore` ve `expiresAt` alanları kontrol edilir. Süresi dolmuş token'lar reddedilir.
+### 3.5. Replay (Tekrar Oynatma) ve Yarış Koşullarına Dayanıklı Atomik Nonce Tüketimi
+- Her onay iddiası zorunlu bir `nonce` (veya `jti`) içermelidir (en az 8 karakter).
+- İki Aşamalı Nonce Rezervasyonu:
+  1. **Ön Kontrol / Rezervasyon:** `reserveNonce(nonce, ttl)` ile eşzamanlı gelen isteklerden yalnızca biri onay sürecine girer; paralel yarışan diğer tüm istekler anında `REPLAY_DETECTED` alır.
+  2. **Doğrulama ve İptal/Onay:** İmza, süre veya bağlam kontrolleri başarısız olursa rezervasyon kaldırılır (`releaseReservation`); kontroller eksiksiz geçerse `markNonceSeen` ile kalıcı olarak işaretlenir.
+- Süresi dolmuş (`exp`), gelecekte düzenlenmiş (`iat`) veya henüz yürürlüğe girmemiş (`nbf`) token'lar reddedilir.
 
-### 3.4. Hassas Veri Maskeleme ve Güvenli Loglama
+### 3.6. mTLS Sertifikası Doğrulama Sınırı
+- İstemcinin gönderdiği metadatanın güvenilirliği reddedilir; gerçek X.509 sertifika ayrıştırması veya `verifyTlsConnectionFn` doğrulaması zorunludur.
+
+### 3.7. Hassas Veri Maskeleme ve Güvenli Loglama
 - Ham JWT belirteçleri, authorization header'ları, özel anahtarlar ve PII (kişisel tanımlayıcı veriler) `TrustedIdentitySanitizer` tarafından maskelenmeden `HistoryManager` veya kalıcı defterlere yazılamaz.
 - Loglarda yalnızca kimlik sağlayıcısı, kullanıcı konusu (`sub`), maskelenmiş parmak izi ve bağlam özetleri yer alır.
 
-### 3.5. Fail-Closed Davranış Güvencesi
+### 3.8. Fail-Closed Davranış Güvencesi
 - Sağlayıcı yapılandırılmamışsa (`UnconfiguredIdentityProviderAdapter`): `BLOCKED_ON_AUTH_CONTEXT`.
 - Sağlayıcıya ulaşılamıyorsa (network timeout, DNS hatası, IdP 5xx): `BLOCKED_ON_AUTH_CONTEXT`.
 - İmza geçersizse veya issuer/audience uyuşmuyorsa: `BLOCKED_ON_AUTH_CONTEXT`.
@@ -82,5 +100,6 @@ Her onay talebi (`TrustedApprovalBinding`), onaylanan eylemin tam sınırlarına
 ## 4. Kararın Etkileri
 
 1. **OM-09 Durumu:** Rutin mandate görevleri otonom çalışmayı sürdürürken (`ALLOW`), insan onayı alt kapsamı gerçek bir IdP yapılandırması bağlanana kadar meşru ve bilinçli bir güvenlik kilidi olarak `BLOCKED_ON_AUTH_CONTEXT` durumunda kalır. OM-09 genel kabulü verilemez.
-2. **OM-10 Durumu:** Gerçek dış IdP entegrasyonu tamamlanmadan ve canlı ortamda doğrulanmadan OM-10 başlatılamaz. OM-10 kapısı BLOCKED olarak mühürlü kalır.
-3. **Geliştirici Güvencesi:** Sahte alanlarla (`isTrustedHumanAuth: true`, `actor: "USER"`) güvenlik kilidinin atlatılması matematiksel ve mimari olarak engellenmiştir.
+2. **P18-04 Kabul Durumu:** Adaptör seviyesinde güvenlik açıkları kapatılmış olsa da, gerçek bir canlı harici IdP kurulana ve doğrulanana kadar P18-04 genel kabulü verilmez; durum **`BLOCKED_ON_EXTERNAL_IDP`** olarak mühürlüdür.
+3. **OM-10 Durumu:** Gerçek dış IdP entegrasyonu tamamlanmadan ve canlı ortamda doğrulanmadan OM-10 kesinlikle başlatılamaz. OM-10 kapısı BLOCKED olarak mühürlü kalır.
+4. **Geliştirici Güvencesi:** Sahte alanlarla (`isTrustedHumanAuth: true`, `actor: "USER"`) güvenlik kilidinin atlatılması matematiksel ve mimari olarak engellenmiştir.

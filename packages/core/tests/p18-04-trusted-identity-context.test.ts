@@ -70,10 +70,21 @@ describe('Phase 18 TASK-P18-04 — Trusted Identity Context Architecture & Verif
   const directorSessionId = 'sess-trusted-identity-01';
   const contextFingerprint = 'ctx-fp-sha256-authoritative-baseline-999';
 
-  function createSignedJwt(payload: Record<string, unknown>, privateKeyPem: string): string {
-    const header = Buffer.from(JSON.stringify({ alg: 'RS256', typ: 'JWT' })).toString('base64url');
-    const body = Buffer.from(JSON.stringify(payload)).toString('base64url');
+  function createSignedJwt(
+    payload: Record<string, unknown>,
+    privateKeyPem: string,
+    binding?: TrustedApprovalBinding | Record<string, unknown>,
+    headerOverrides?: Record<string, unknown>
+  ): string {
+    const header = Buffer.from(
+      JSON.stringify({ alg: 'RS256', typ: 'JWT', ...headerOverrides })
+    ).toString('base64url');
+    const fullPayload = binding ? { ...payload, binding } : payload;
+    const body = Buffer.from(JSON.stringify(fullPayload)).toString('base64url');
     const data = `${header}.${body}`;
+    if (headerOverrides?.alg === 'none') {
+      return `${data}.`;
+    }
     const signer = crypto.createSign('RSA-SHA256');
     signer.update(data);
     const signature = signer.sign(privateKeyPem).toString('base64url');
@@ -237,16 +248,18 @@ describe('Phase 18 TASK-P18-04 — Trusted Identity Context Architecture & Verif
       authMethod: 'OIDC',
     };
 
-    const token = createSignedJwt(claims, rsaPrivateKeyPem);
+    const binding: TrustedApprovalBinding = {
+      projectId,
+      packageId: pkg.packageId,
+      revision: pkg.revision,
+      contextFingerprint,
+      directorSessionId,
+    };
+
+    const token = createSignedJwt(claims, rsaPrivateKeyPem, binding);
     const assertion: TrustedIdentityAssertion = {
       token,
-      binding: {
-        projectId,
-        packageId: pkg.packageId,
-        revision: pkg.revision,
-        contextFingerprint,
-        directorSessionId,
-      },
+      binding,
       claims,
     };
 
@@ -308,7 +321,7 @@ describe('Phase 18 TASK-P18-04 — Trusted Identity Context Architecture & Verif
       authMethod: 'OIDC',
     };
     const resWrongIssuer = await oidcAdapter.verifyAssertion(
-      { token: createSignedJwt(claimsWrongIssuer, rsaPrivateKeyPem), binding, claims: claimsWrongIssuer },
+      { token: createSignedJwt(claimsWrongIssuer, rsaPrivateKeyPem, binding), binding, claims: claimsWrongIssuer },
       binding
     );
     assert.equal(resWrongIssuer.isValid, false);
@@ -328,7 +341,7 @@ describe('Phase 18 TASK-P18-04 — Trusted Identity Context Architecture & Verif
       authMethod: 'OIDC',
     };
     const resWrongAudience = await oidcAdapter.verifyAssertion(
-      { token: createSignedJwt(claimsWrongAudience, rsaPrivateKeyPem), binding, claims: claimsWrongAudience },
+      { token: createSignedJwt(claimsWrongAudience, rsaPrivateKeyPem, binding), binding, claims: claimsWrongAudience },
       binding
     );
     assert.equal(resWrongAudience.isValid, false);
@@ -370,7 +383,7 @@ describe('Phase 18 TASK-P18-04 — Trusted Identity Context Architecture & Verif
       authMethod: 'OIDC',
     };
 
-    const forgedToken = createSignedJwt(claims, roguePrivateKeyPem);
+    const forgedToken = createSignedJwt(claims, roguePrivateKeyPem, binding);
 
     const result = await oidcAdapter.verifyAssertion(
       { token: forgedToken, binding, claims },
@@ -414,7 +427,7 @@ describe('Phase 18 TASK-P18-04 — Trusted Identity Context Architecture & Verif
       authMethod: 'OIDC',
     };
 
-    const token = createSignedJwt(claims, rsaPrivateKeyPem);
+    const token = createSignedJwt(claims, rsaPrivateKeyPem, binding);
     const result = await oidcAdapter.verifyAssertion({ token, binding, claims }, binding);
 
     assert.equal(result.isValid, false);
@@ -455,7 +468,7 @@ describe('Phase 18 TASK-P18-04 — Trusted Identity Context Architecture & Verif
       authMethod: 'OIDC',
     };
 
-    const token = createSignedJwt(claims, rsaPrivateKeyPem);
+    const token = createSignedJwt(claims, rsaPrivateKeyPem, binding);
     const result = await oidcAdapter.verifyAssertion({ token, binding, claims }, binding);
 
     assert.equal(result.isValid, false);
@@ -486,7 +499,7 @@ describe('Phase 18 TASK-P18-04 — Trusted Identity Context Architecture & Verif
         nonce: `nonce-${crypto.randomUUID()}`,
         authMethod: 'OIDC',
       };
-      const token = createSignedJwt(claims, rsaPrivateKeyPem);
+      const token = createSignedJwt(claims, rsaPrivateKeyPem, binding);
       return { token, binding, claims };
     };
 
@@ -549,7 +562,7 @@ describe('Phase 18 TASK-P18-04 — Trusted Identity Context Architecture & Verif
       authMethod: 'OIDC',
     };
 
-    const token = createSignedJwt(claims, rsaPrivateKeyPem);
+    const token = createSignedJwt(claims, rsaPrivateKeyPem, binding);
 
     // First use succeeds
     const firstUse = await oidcAdapter.verifyAssertion({ token, binding, claims }, binding);
@@ -934,4 +947,576 @@ describe('Phase 18 TASK-P18-04 — Trusted Identity Context Architecture & Verif
     assert.ok(sanitized.nested.apiKey.includes('[MASKED]'));
     assert.equal(sanitized.nested.publicField, 'safe-value');
   });
+
+  // ==========================================================================
+  // SECTION 3: EXPANDED NEGATIVE SECURITY & ZERO-TRUST TEST SUITE
+  // ==========================================================================
+
+  // SEC-1: Adapter with only jwksUri and no real signature verifier/resolution fails closed
+  it('SEC-1: Only jwksUri defined without real signature verifier strictly fails closed with BLOCKED_ON_AUTH_CONTEXT', async () => {
+    const adapter = new OidcIdentityProviderAdapter({
+      issuer: 'https://auth.company.corp',
+      audience: 'aidm-core-platform',
+      jwksUri: 'https://auth.company.corp/.well-known/jwks.json',
+      requestTimeoutMs: 1000,
+      fetchJwksFn: async () => {
+        throw new Error('ECONNREFUSED: No live JWKS endpoint available');
+      },
+    });
+
+    const binding: TrustedApprovalBinding = {
+      projectId,
+      packageId: 'pkg-sec-1',
+      revision: 1,
+      contextFingerprint,
+    };
+    const claims: TrustedIdentityClaim = {
+      identityId: 'id-sec-1',
+      issuer: 'https://auth.company.corp',
+      audience: 'aidm-core-platform',
+      subject: 'alice@company.corp',
+      actorRole: 'PRODUCT_OWNER',
+      issuedAt: new Date().toISOString(),
+      expiresAt: new Date(Date.now() + 600000).toISOString(),
+      nonce: `nonce-${crypto.randomUUID()}`,
+      authMethod: 'OIDC',
+    };
+    const token = createSignedJwt(claims, rsaPrivateKeyPem, binding);
+
+    const res = await adapter.verifyAssertion({ token, binding }, binding);
+    assert.equal(res.isValid, false);
+    assert.equal(res.code, 'BLOCKED_ON_AUTH_CONTEXT');
+    assert.equal(res.status, 'PROVIDER_OUTAGE');
+  });
+
+  // SEC-2: Valid signed token with fake assertion.claims
+  it('SEC-2: Valid signed token with spoofed client assertion.claims fails closed', async () => {
+    const oidcAdapter = new OidcIdentityProviderAdapter({
+      issuer: 'https://auth.company.corp',
+      audience: 'aidm-core-platform',
+      publicKeyPem: rsaPublicKeyPem,
+      nonceStore,
+    });
+
+    const binding: TrustedApprovalBinding = {
+      projectId,
+      packageId: 'pkg-sec-2',
+      revision: 1,
+      contextFingerprint,
+    };
+
+    // Authentic token signed for bob (USER)
+    const authenticClaims: TrustedIdentityClaim = {
+      identityId: 'id-bob-user',
+      issuer: 'https://auth.company.corp',
+      audience: 'aidm-core-platform',
+      subject: 'bob-user@company.corp',
+      actorRole: 'USER',
+      issuedAt: new Date().toISOString(),
+      expiresAt: new Date(Date.now() + 600000).toISOString(),
+      nonce: `nonce-${crypto.randomUUID()}`,
+      authMethod: 'OIDC',
+    };
+    const token = createSignedJwt(authenticClaims, rsaPrivateKeyPem, binding);
+
+    // Attacker sends authentic token but attaches fake assertion.claims trying to spoof role as PRODUCT_OWNER
+    const spoofedClaims: Partial<TrustedIdentityClaim> = {
+      identityId: 'id-eve-root',
+      issuer: 'https://auth.company.corp',
+      audience: 'aidm-core-platform',
+      subject: 'eve-attacker@company.corp',
+      actorRole: 'PRODUCT_OWNER',
+    };
+
+    const res = await oidcAdapter.verifyAssertion(
+      { token, binding, claims: spoofedClaims as any },
+      binding
+    );
+
+    assert.equal(res.isValid, false);
+    assert.equal(res.code, 'BLOCKED_ON_AUTH_CONTEXT');
+    assert.equal(res.status, 'UNVERIFIED');
+    assert.ok(res.reason.includes('contradicts verified token'));
+
+    // When client does NOT pass assertion.claims, claims are strictly populated from token payload
+    const resNoClaims = await oidcAdapter.verifyAssertion(
+      { token, binding },
+      binding
+    );
+    assert.equal(resNoClaims.isValid, true);
+    assert.equal(resNoClaims.claims?.subject, 'bob-user@company.corp');
+    assert.equal(resNoClaims.claims?.actorRole, 'USER');
+  });
+
+  // SEC-3: Token payload vs assertion.binding mismatch
+  it('SEC-3: Token payload vs assertion.binding mismatch fails closed with BINDING_MISMATCH', async () => {
+    const oidcAdapter = new OidcIdentityProviderAdapter({
+      issuer: 'https://auth.company.corp',
+      audience: 'aidm-core-platform',
+      publicKeyPem: rsaPublicKeyPem,
+      nonceStore,
+    });
+
+    // Token was cryptographically signed for project-ALPHA
+    const tokenBinding: TrustedApprovalBinding = {
+      projectId: 'project-ALPHA',
+      packageId: 'pkg-alpha-001',
+      revision: 1,
+      contextFingerprint,
+    };
+    const claims: TrustedIdentityClaim = {
+      identityId: 'id-alice',
+      issuer: 'https://auth.company.corp',
+      audience: 'aidm-core-platform',
+      subject: 'alice@company.corp',
+      actorRole: 'PRODUCT_OWNER',
+      issuedAt: new Date().toISOString(),
+      expiresAt: new Date(Date.now() + 600000).toISOString(),
+      nonce: `nonce-${crypto.randomUUID()}`,
+      authMethod: 'OIDC',
+    };
+    const token = createSignedJwt(claims, rsaPrivateKeyPem, tokenBinding);
+
+    // Client attempts to submit this token for project-BETA
+    const targetBinding: TrustedApprovalBinding = {
+      projectId: 'project-BETA',
+      packageId: 'pkg-beta-999',
+      revision: 1,
+      contextFingerprint,
+    };
+
+    const res = await oidcAdapter.verifyAssertion(
+      { token, binding: targetBinding },
+      targetBinding
+    );
+    assert.equal(res.isValid, false);
+    assert.equal(res.status, 'BINDING_MISMATCH');
+    assert.equal(res.code, 'BLOCKED_ON_AUTH_CONTEXT');
+    assert.ok(res.reason.includes('Cross-project binding violation'));
+  });
+
+  // SEC-4: Unsupported algorithm and invalid kid
+  it('SEC-4: Unsupported algorithm (alg: none, HS256) and invalid kid strictly fails closed with SIGNATURE_INVALID', async () => {
+    const oidcAdapter = new OidcIdentityProviderAdapter({
+      issuer: 'https://auth.company.corp',
+      audience: 'aidm-core-platform',
+      publicKeyPem: rsaPublicKeyPem,
+      nonceStore,
+    });
+
+    const binding: TrustedApprovalBinding = {
+      projectId,
+      packageId: 'pkg-sec-4',
+      revision: 1,
+      contextFingerprint,
+    };
+    const claims: TrustedIdentityClaim = {
+      identityId: 'id-01',
+      issuer: 'https://auth.company.corp',
+      audience: 'aidm-core-platform',
+      subject: 'alice@company.corp',
+      actorRole: 'PRODUCT_OWNER',
+      issuedAt: new Date().toISOString(),
+      expiresAt: new Date(Date.now() + 600000).toISOString(),
+      nonce: `nonce-${crypto.randomUUID()}`,
+      authMethod: 'OIDC',
+    };
+
+    // 4a. alg: 'none' attack
+    const noneToken = createSignedJwt(claims, rsaPrivateKeyPem, binding, { alg: 'none' });
+    const resNone = await oidcAdapter.verifyAssertion({ token: noneToken, binding }, binding);
+    assert.equal(resNone.isValid, false);
+    assert.equal(resNone.status, 'SIGNATURE_INVALID');
+    assert.equal(resNone.code, 'BLOCKED_ON_AUTH_CONTEXT');
+
+    // 4b. alg: 'HS256' symmetric downgrade attack
+    const hsHeader = Buffer.from(JSON.stringify({ alg: 'HS256', typ: 'JWT' })).toString('base64url');
+    const hsBody = Buffer.from(JSON.stringify({ ...claims, binding })).toString('base64url');
+    const hsHmac = crypto.createHmac('sha256', rsaPublicKeyPem).update(`${hsHeader}.${hsBody}`).digest('base64url');
+    const hsToken = `${hsHeader}.${hsBody}.${hsHmac}`;
+    const resHs = await oidcAdapter.verifyAssertion({ token: hsToken, binding }, binding);
+    assert.equal(resHs.isValid, false);
+    assert.equal(resHs.status, 'SIGNATURE_INVALID');
+    assert.equal(resHs.code, 'BLOCKED_ON_AUTH_CONTEXT');
+
+    // 4c. Unknown kid in JWKS
+    const jwksAdapter = new OidcIdentityProviderAdapter({
+      issuer: 'https://auth.company.corp',
+      audience: 'aidm-core-platform',
+      jwksUri: 'https://auth.company.corp/keys',
+      fetchJwksFn: async () => ({
+        keys: [{
+          kty: 'RSA',
+          kid: 'known-good-kid',
+          ...crypto.createPublicKey(rsaPublicKeyPem).export({ format: 'jwk' }),
+        }],
+      }),
+    });
+    const unknownKidToken = createSignedJwt(claims, rsaPrivateKeyPem, binding, { kid: 'rogue-unknown-kid' });
+    const resKid = await jwksAdapter.verifyAssertion({ token: unknownKidToken, binding }, binding);
+    assert.equal(resKid.isValid, false);
+    assert.equal(resKid.status, 'SIGNATURE_INVALID');
+    assert.ok(resKid.reason.includes('not found in resolved JWKS keys'));
+  });
+
+  // SEC-5: Corrupt, unreachable, or malformed JWKS response and SSRF mitigation
+  it('SEC-5: Corrupt, malformed, or SSRF-targeting JWKS responses fail closed', async () => {
+    const binding: TrustedApprovalBinding = {
+      projectId,
+      packageId: 'pkg-sec-5',
+      revision: 1,
+      contextFingerprint,
+    };
+    const claims: TrustedIdentityClaim = {
+      identityId: 'id-01',
+      issuer: 'https://auth.company.corp',
+      audience: 'aidm-core-platform',
+      subject: 'alice@company.corp',
+      actorRole: 'PRODUCT_OWNER',
+      issuedAt: new Date().toISOString(),
+      expiresAt: new Date(Date.now() + 600000).toISOString(),
+      nonce: `nonce-${crypto.randomUUID()}`,
+      authMethod: 'OIDC',
+    };
+    const token = createSignedJwt(claims, rsaPrivateKeyPem, binding);
+
+    // 5a. Malformed JWKS JSON (keys is empty)
+    const malformedAdapter = new OidcIdentityProviderAdapter({
+      issuer: 'https://auth.company.corp',
+      audience: 'aidm-core-platform',
+      jwksUri: 'https://auth.company.corp/keys',
+      fetchJwksFn: async () => ({ keys: [] }),
+    });
+    const resMalformed = await malformedAdapter.verifyAssertion({ token, binding }, binding);
+    assert.equal(resMalformed.isValid, false);
+    assert.equal(resMalformed.status, 'SIGNATURE_INVALID');
+    assert.ok(resMalformed.reason.includes('missing or empty keys array'));
+
+    // 5b. SSRF Attempt targeting cloud metadata IP
+    const ssrfAdapter = new OidcIdentityProviderAdapter({
+      issuer: 'https://auth.company.corp',
+      audience: 'aidm-core-platform',
+      jwksUri: 'https://169.254.169.254/latest/meta-data',
+    });
+    const resSsrf = await ssrfAdapter.verifyAssertion({ token, binding }, binding);
+    assert.equal(resSsrf.isValid, false);
+    assert.equal(resSsrf.status, 'CONFIG_MISSING');
+    assert.ok(resSsrf.reason.includes('cloud metadata IP'));
+
+    // 5c. Insecure HTTP protocol rejected
+    const insecureHttpAdapter = new OidcIdentityProviderAdapter({
+      issuer: 'https://auth.company.corp',
+      audience: 'aidm-core-platform',
+      jwksUri: 'http://evil.corp/keys',
+    });
+    const resInsecure = await insecureHttpAdapter.verifyAssertion({ token, binding }, binding);
+    assert.equal(resInsecure.isValid, false);
+    assert.equal(resInsecure.status, 'CONFIG_MISSING');
+    assert.ok(resInsecure.reason.includes('HTTPS protocol'));
+  });
+
+  // SEC-6: Invalid iat, exp, and nbf timestamps
+  it('SEC-6: Invalid iat (future), exp (past), and nbf (future) fail closed', async () => {
+    const oidcAdapter = new OidcIdentityProviderAdapter({
+      issuer: 'https://auth.company.corp',
+      audience: 'aidm-core-platform',
+      publicKeyPem: rsaPublicKeyPem,
+      nonceStore,
+      clockSkewSeconds: 0,
+    });
+
+    const binding: TrustedApprovalBinding = {
+      projectId,
+      packageId: 'pkg-sec-6',
+      revision: 1,
+      contextFingerprint,
+    };
+
+    // 6a. Future iat (issued 10 minutes in the future)
+    const futureIatClaims = {
+      identityId: 'id-01',
+      issuer: 'https://auth.company.corp',
+      audience: 'aidm-core-platform',
+      subject: 'alice@company.corp',
+      actorRole: 'PRODUCT_OWNER',
+      issuedAt: new Date(Date.now() + 600000).toISOString(),
+      expiresAt: new Date(Date.now() + 1200000).toISOString(),
+      nonce: `nonce-${crypto.randomUUID()}`,
+      authMethod: 'OIDC',
+    };
+    const futureIatToken = createSignedJwt(futureIatClaims, rsaPrivateKeyPem, binding);
+    const resFutureIat = await oidcAdapter.verifyAssertion({ token: futureIatToken, binding }, binding);
+    assert.equal(resFutureIat.isValid, false);
+    assert.equal(resFutureIat.status, 'UNVERIFIED');
+    assert.ok(resFutureIat.reason.includes('issued in the future'));
+
+    // 6b. Future nbf (not valid until 10 minutes from now)
+    const futureNbfClaims = {
+      identityId: 'id-01',
+      issuer: 'https://auth.company.corp',
+      audience: 'aidm-core-platform',
+      subject: 'alice@company.corp',
+      actorRole: 'PRODUCT_OWNER',
+      issuedAt: new Date().toISOString(),
+      expiresAt: new Date(Date.now() + 600000).toISOString(),
+      notBefore: new Date(Date.now() + 600000).toISOString(),
+      nonce: `nonce-${crypto.randomUUID()}`,
+      authMethod: 'OIDC',
+    };
+    const futureNbfToken = createSignedJwt(futureNbfClaims, rsaPrivateKeyPem, binding);
+    const resFutureNbf = await oidcAdapter.verifyAssertion({ token: futureNbfToken, binding }, binding);
+    assert.equal(resFutureNbf.isValid, false);
+    assert.equal(resFutureNbf.status, 'UNVERIFIED');
+    assert.ok(resFutureNbf.reason.includes('not yet valid'));
+
+    // 6c. Malformed date
+    const malformedDateClaims = {
+      identityId: 'id-01',
+      issuer: 'https://auth.company.corp',
+      audience: 'aidm-core-platform',
+      subject: 'alice@company.corp',
+      actorRole: 'PRODUCT_OWNER',
+      issuedAt: 'not-a-valid-date',
+      expiresAt: new Date(Date.now() + 600000).toISOString(),
+      nonce: `nonce-${crypto.randomUUID()}`,
+      authMethod: 'OIDC',
+    };
+    const malformedDateToken = createSignedJwt(malformedDateClaims, rsaPrivateKeyPem, binding);
+    const resMalformedDate = await oidcAdapter.verifyAssertion({ token: malformedDateToken, binding }, binding);
+    assert.equal(resMalformedDate.isValid, false);
+    assert.equal(resMalformedDate.status, 'UNVERIFIED');
+  });
+
+  // SEC-7: Parallel nonce consumption and replay attack resistance
+  it('SEC-7: Parallel concurrent nonce consumption allows exactly one success and rejects all replays', async () => {
+    const oidcAdapter = new OidcIdentityProviderAdapter({
+      issuer: 'https://auth.company.corp',
+      audience: 'aidm-core-platform',
+      publicKeyPem: rsaPublicKeyPem,
+      nonceStore,
+    });
+
+    const binding: TrustedApprovalBinding = {
+      projectId,
+      packageId: 'pkg-sec-7',
+      revision: 1,
+      contextFingerprint,
+    };
+
+    const sharedNonce = `parallel-nonce-${crypto.randomUUID()}`;
+    const claims: TrustedIdentityClaim = {
+      identityId: 'id-01',
+      issuer: 'https://auth.company.corp',
+      audience: 'aidm-core-platform',
+      subject: 'alice@company.corp',
+      actorRole: 'PRODUCT_OWNER',
+      issuedAt: new Date().toISOString(),
+      expiresAt: new Date(Date.now() + 600000).toISOString(),
+      nonce: sharedNonce,
+      authMethod: 'OIDC',
+    };
+
+    const token = createSignedJwt(claims, rsaPrivateKeyPem, binding);
+
+    // Launch 15 concurrent verification requests simultaneously
+    const concurrency = 15;
+    const promises = Array.from({ length: concurrency }, () =>
+      oidcAdapter.verifyAssertion({ token, binding, claims }, binding)
+    );
+
+    const results = await Promise.all(promises);
+
+    const validCount = results.filter((r) => r.isValid && r.status === 'VERIFIED').length;
+    const replayCount = results.filter((r) => !r.isValid && r.status === 'REPLAY_DETECTED').length;
+
+    assert.equal(validCount, 1, 'Exactly one concurrent request MUST succeed');
+    assert.equal(replayCount, concurrency - 1, 'All other concurrent requests MUST be detected as REPLAY_DETECTED');
+  });
+
+  // SEC-8: Approval reuse for different package, revision, session, or action fails closed
+  it('SEC-8: Reusing an approval for another package, revision, session, or operation fails closed', async () => {
+    const oidcAdapter = new OidcIdentityProviderAdapter({
+      issuer: 'https://auth.company.corp',
+      audience: 'aidm-core-platform',
+      publicKeyPem: rsaPublicKeyPem,
+      nonceStore,
+    });
+
+    const originalBinding: TrustedApprovalBinding = {
+      projectId,
+      packageId: 'pkg-original',
+      revision: 1,
+      contextFingerprint: 'ctx-fp-original',
+      directorSessionId: 'sess-original',
+      taskId: 'task-original',
+      operation: 'DEPLOY_PROD',
+    };
+
+    const claims: TrustedIdentityClaim = {
+      identityId: 'id-01',
+      issuer: 'https://auth.company.corp',
+      audience: 'aidm-core-platform',
+      subject: 'alice@company.corp',
+      actorRole: 'PRODUCT_OWNER',
+      issuedAt: new Date().toISOString(),
+      expiresAt: new Date(Date.now() + 600000).toISOString(),
+      nonce: `nonce-${crypto.randomUUID()}`,
+      authMethod: 'OIDC',
+    };
+    const token = createSignedJwt(claims, rsaPrivateKeyPem, originalBinding);
+
+    // 8a. Reused for different package
+    const resDiffPkg = await oidcAdapter.verifyAssertion(
+      { token, binding: { ...originalBinding, packageId: 'pkg-rogue' } },
+      { ...originalBinding, packageId: 'pkg-rogue' }
+    );
+    assert.equal(resDiffPkg.isValid, false);
+    assert.equal(resDiffPkg.status, 'BINDING_MISMATCH');
+
+    // 8b. Reused for different revision
+    const resDiffRev = await oidcAdapter.verifyAssertion(
+      { token, binding: { ...originalBinding, revision: 2 } },
+      { ...originalBinding, revision: 2 }
+    );
+    assert.equal(resDiffRev.isValid, false);
+    assert.equal(resDiffRev.status, 'BINDING_MISMATCH');
+
+    // 8c. Reused for different session
+    const resDiffSess = await oidcAdapter.verifyAssertion(
+      { token, binding: { ...originalBinding, directorSessionId: 'sess-rogue' } },
+      { ...originalBinding, directorSessionId: 'sess-rogue' }
+    );
+    assert.equal(resDiffSess.isValid, false);
+    assert.equal(resDiffSess.status, 'BINDING_MISMATCH');
+
+    // 8d. Reused for different operation
+    const resDiffOp = await oidcAdapter.verifyAssertion(
+      { token, binding: { ...originalBinding, operation: 'DELETE_DATABASE' } },
+      { ...originalBinding, operation: 'DELETE_DATABASE' }
+    );
+    assert.equal(resDiffOp.isValid, false);
+    assert.equal(resDiffOp.status, 'BINDING_MISMATCH');
+  });
+
+  // SEC-9: Authentic mTLS X.509 verification vs fake client metadata
+  it('SEC-9: mTLS verification strictly requires authentic X.509 certificate and rejects unverified client metadata', async () => {
+    const clientSubject = 'CN=alice-po, O=AIDM Security, C=TR';
+    const mtlsAdapter = new MtlsIdentityProviderAdapter({
+      allowedSubjects: [clientSubject],
+      trustedCaFingerprints: ['AA:BB:CC:DD:EE:FF'],
+    });
+
+    const binding: TrustedApprovalBinding = {
+      projectId,
+      packageId: 'pkg-mtls-1',
+      revision: 1,
+      contextFingerprint,
+    };
+
+    // 9a. Client only passes unverified assertion.claims with no real certificate
+    const resNoCert = await mtlsAdapter.verifyAssertion(
+      {
+        token: 'not-a-certificate',
+        binding,
+        claims: {
+          identityId: clientSubject,
+          issuer: 'CN=Fake CA',
+          audience: projectId,
+          subject: clientSubject,
+          actorRole: 'USER',
+          issuedAt: new Date().toISOString(),
+          expiresAt: new Date(Date.now() + 600000).toISOString(),
+          nonce: `nonce-${crypto.randomUUID()}`,
+          authMethod: 'MTLS',
+          publicKeyFingerprint: 'AA:BB:CC:DD:EE:FF',
+        },
+      },
+      binding
+    );
+
+    assert.equal(resNoCert.isValid, false);
+    assert.equal(resNoCert.code, 'BLOCKED_ON_AUTH_CONTEXT');
+    assert.equal(resNoCert.status, 'UNVERIFIED');
+    assert.ok(resNoCert.reason.includes('Client-submitted metadata cannot substitute for TLS certificate verification'));
+
+    // 9b. Genuine TLS connection verifier function succeeds when verified at TLS layer
+    const verifiedMtlsAdapter = new MtlsIdentityProviderAdapter({
+      allowedSubjects: [clientSubject],
+      trustedCaFingerprints: ['AA:BB:CC:DD:EE:FF'],
+      verifyTlsConnectionFn: async (assertion) => {
+        // Authoritative TLS socket verification
+        return assertion.binding.projectId === projectId;
+      },
+    });
+
+    const resVerifiedMtls = await verifiedMtlsAdapter.verifyAssertion(
+      {
+        token: 'tls-channel-token',
+        binding,
+        claims: {
+          identityId: clientSubject,
+          issuer: 'CN=Trusted CA',
+          audience: projectId,
+          subject: clientSubject,
+          actorRole: 'USER',
+          issuedAt: new Date().toISOString(),
+          expiresAt: new Date(Date.now() + 600000).toISOString(),
+          nonce: `nonce-${crypto.randomUUID()}`,
+          authMethod: 'MTLS',
+        },
+      },
+      binding
+    );
+
+    assert.equal(resVerifiedMtls.isValid, true);
+    assert.equal(resVerifiedMtls.status, 'VERIFIED');
+    assert.equal(resVerifiedMtls.code, 'VERIFIED_HUMAN');
+  });
+
+  // SEC-10: Real JWKS resolver with valid JWK imports and verifies signatures
+  it('SEC-10: Real JWKS key resolver imports JWK and verifies valid RSA tokens', async () => {
+    const keyId = 'prod-key-2026-10';
+    const jwk = crypto.createPublicKey(rsaPublicKeyPem).export({ format: 'jwk' });
+
+    const jwksAdapter = new OidcIdentityProviderAdapter({
+      issuer: 'https://auth.company.corp',
+      audience: 'aidm-core-platform',
+      jwksUri: 'https://auth.company.corp/.well-known/jwks.json',
+      fetchJwksFn: async () => ({
+        keys: [{
+          ...jwk,
+          kid: keyId,
+          use: 'sig',
+          alg: 'RS256',
+        }],
+      }),
+    });
+
+    const binding: TrustedApprovalBinding = {
+      projectId,
+      packageId: 'pkg-sec-10',
+      revision: 1,
+      contextFingerprint,
+    };
+    const claims: TrustedIdentityClaim = {
+      identityId: 'id-01',
+      issuer: 'https://auth.company.corp',
+      audience: 'aidm-core-platform',
+      subject: 'alice@company.corp',
+      actorRole: 'PRODUCT_OWNER',
+      issuedAt: new Date().toISOString(),
+      expiresAt: new Date(Date.now() + 600000).toISOString(),
+      nonce: `nonce-${crypto.randomUUID()}`,
+      authMethod: 'OIDC',
+    };
+
+    const token = createSignedJwt(claims, rsaPrivateKeyPem, binding, { kid: keyId });
+    const res = await jwksAdapter.verifyAssertion({ token, binding }, binding);
+
+    assert.equal(res.isValid, true);
+    assert.equal(res.status, 'VERIFIED');
+    assert.equal(res.code, 'VERIFIED_HUMAN');
+    assert.equal(res.claims?.subject, 'alice@company.corp');
+  });
 });
+

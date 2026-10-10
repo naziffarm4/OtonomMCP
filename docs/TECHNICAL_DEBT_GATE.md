@@ -156,21 +156,24 @@
   - P18-04 Trusted Identity Context mimari olarak incelenmiştir: Harici OIDC, mTLS veya bağımsız güvenilir IdP / insan onay yönetim altyapısı henüz mevcut değildir.
   - Sistemin dış onay mekanizması yokken sahte onay beyanlarını (`actor: "USER"`, `isTrustedHumanAuth: true` vb.) reddetmesi ve fail-closed (`BLOCKED_ON_AUTH_CONTEXT`) durumunda durması güvenlik gereğidir.
   - Bu emniyet kilidinin çalışması, arkada gerçek bir insan onay altyapısı olduğu anlamına GELMEZ; dolayısıyla bağımsız insan onay mekanizması kurulana kadar sistemin dondurulması veya genel kullanıma açılması kabul edilemez.
-### WP-10 P18-04 Trusted Identity Context Mimari Sözleşmesi ve Emniyet Kilidi Doğrulama Kanıtı
-- **Amaç:** OtonomMCP'de güvenilir insan kimliği ve hassas işlem onayı için gerçek bir güven sınırı oluşturmak, harici kimlik sağlayıcısı sözleşmesini tasarlamak, istemci ve model kaynaklı sahte onay beyanlarını kesin olarak engellemek, 14 kritik güvenlik senaryosunu test etmek ve harici bağımlılıkları dürüstçe raporlamak.
+### WP-10 P18-04 Trusted Identity Context Mimari Sözleşmesi, OIDC İmza Güvenliği ve Kabul Kapısı Doğrulama Kanıtı
+- **Amaç:** OtonomMCP'de güvenilir insan kimliği ve hassas işlem onayı için gerçek bir güven sınırı oluşturmak, harici kimlik sağlayıcısı sözleşmesini tasarlamak, istemci ve model kaynaklı sahte onay beyanlarını kesin olarak engellemek, OIDC imza doğrulamasını ve claim çıkarma mantığını kriptografik olarak zorunlu kılmak, yarış koşullarına dayanıklı atomik nonce rezervasyon kapısı kurmak, 24 kritik güvenlik senaryosunu test etmek ve harici bağımlılıkları dürüstçe raporlamak.
 - **Mimari Karar (ADR-13):** `docs/ADR-13-TRUSTED-IDENTITY-PROVIDER.md` belgesinde OIDC (WebAuthn/Passkey destekli), mTLS (Karşılıklı TLS x509) ve yerel DPAPI karşılaştırması yapılmış; dağıtık insan onayları için OIDC, kurumsal sıfır güven için mTLS destekleyen adaptör sözleşmesi standardı kabul edilmiştir.
 - **Sözleşme ve Tipler:** `packages/core/src/authorization/trusted-identity-types.ts` içerisinde `ITrustedIdentityProvider`, `TrustedIdentityClaim`, `TrustedApprovalBinding`, `TrustedIdentityAssertion`, `IdentityVerificationResult` tanımlanmıştır.
-- **Sağlayıcı Adaptörleri:** `packages/core/src/authorization/trusted-identity-adapters.ts`:
-  1. `UnconfiguredIdentityProviderAdapter`: Varsayılan fail-closed adaptör (`CONFIG_MISSING` -> `BLOCKED_ON_AUTH_CONTEXT`).
-  2. `OidcIdentityProviderAdapter`: RSA-SHA256 JWT doğrulama, issuer/audience kontrolü, nonce/replay koruması, clock skew toleransı, scope binding (proje, paket, revizyon, context fingerprint, session) ve outage simülasyonu.
-  3. `MtlsIdentityProviderAdapter`: CA fingerprint, subject ve binding doğrulaması.
-  4. `TestDoubleIdentityProviderAdapter`: Yalnızca birim testleri için `isTestDouble: true` işaretli izole test çifti.
+- **Kriptografik OIDC İmza ve Doğrulama Sertleştirmesi (`trusted-identity-adapters.ts`):**
+  1. **İmza Doğrulama Zorunluluğu:** `jwksUri` veya `publicKeyPem` tanımlı olması tek başına yeterli sayılmaz; gerçek kriptografik imza doğrulaması yapılmadan claim kontrolüne veya onay kabulüne izin verilmez. Doğrulayıcı mekanizma yoksa `CONFIG_MISSING` ile fail-closed reddedilir.
+  2. **Algoritma Allowlist:** Yalnızca asimetrik algoritmalar (`RS256`, `RS384`, `RS512`, `ES256`, `ES384`, `ES512`, `EdDSA`) kabul edilir. `alg: none` ve simetrik `HS256`/`HS384`/`HS512` algoritmaları doğrudan `SIGNATURE_INVALID` ile reddedilir.
+  3. **SSRF ve Güvenli JWKS Çözümleme:** `jwksUri` yalnızca `https://` protokolünü kabul eder; link-local bulut metadata adresleri (`169.254.169.254`) engellenir. JWKS ağ hatası veya bozuk JSON yanıtlarında `PROVIDER_OUTAGE` / `SIGNATURE_INVALID` ile fail-closed durulur.
+  4. **Yetkili Claim'lerin İmzalı Payload'dan Çıkarılması:** İstemcinin ayrı gönderdiği `assertion.claims` alanı kimlik kanıtı kabul edilmez. Tüm claim'ler (`sub`, `iss`, `aud`, `actorRole`, `exp`, `iat`, `nbf`, `nonce`) kriptografik olarak doğrulanmış JWT payload'ından ayrıştırılır. İstemci beyanı ile imzalı payload çelişirse istek `UNVERIFIED` ile reddedilir.
+  5. **Kriptografik Bağlam Bağlama (Scope Binding):** Onayın geçerli sayılması için JWT payload'ı içinde `projectId`, `packageId`, `revision`, `contextFingerprint` ve gerekiyorsa `directorSessionId`, `taskId`, `operation` alanlarının bulunması ve beklenen yürütme bağlamıyla birebir örtüşmesi zorunludur. Tek bir alan dahi uyuşmazsa `BINDING_MISMATCH` ile fail-closed durulur.
+  6. **Yarış Koşullarına Dayanıklı Atomik Nonce Tüketimi (`nonce-store.ts`):** Paralel yarış koşullarını önlemek için süreç içi dosya mutex kilidi (`withLock`) ve iki aşamalı tüketim uygulanmıştır: Ön kontrolde `reserveNonce(nonce, ttl)` ile nonce rezerve edilir (aynı anda gelen paralel isteklerden yalnızca biri onay alır, diğerleri anında `REPLAY_DETECTED` alır). Doğrulama adımları başarısız olursa rezervasyon serbest bırakılır (`releaseReservation`); tüm kontroller geçerse `markNonceSeen` ile kalıcı olarak tüketilir.
+  7. **mTLS Sertifikası Güvenlik Sınırı:** İstemcinin gönderdiği metadatanın güvenilirliği reddedilmiş; gerçek X.509 sertifika ayrıştırması veya `verifyTlsConnectionFn` doğrulaması zorunlu tutulmuştur.
 - **Anti-Spoof Güvenlik Kilidi:**
   - `HumanApprovalEngine`: İstemci tarafından sağlanan `isTrustedHumanAuth: true` veya `authStatus: 'VERIFIED_HUMAN'` alanları, geçerli bir harici IdP assertion'ı olmaksızın gönderildiğinde `HumanApprovalValidationError` ile doğrudan fail-closed reddedilir.
   - Normal insan onayında harici assertion yoksa `authStatus: 'UNVERIFIED_CLIENT_INPUT'` olarak işaretlenir.
   - `ExecutionBridge` Check 6 (`6_PRODUCT_OWNER_APPROVAL`): `requireTrustedAuthContext: true` iken harici IdP ile doğrulanmamış (`UNVERIFIED_CLIENT_INPUT` veya `MOCK_TEST`) tüm onayları `BLOCKED_ON_AUTH_CONTEXT` ile engeller.
 - **Hassas Veri Maskeleme:** `packages/core/src/authorization/trusted-identity-sanitizer.ts` (`maskToken`, `sanitizeForAudit`) ile audit kayıtlarında raw JWT, private key ve bearer token'lar otomatik maskelenir.
-- **Güvenlik Test Paketi:** `packages/core/tests/p18-04-trusted-identity-context.test.ts` içerisinde 14 senaryo test edilmiştir:
+- **Genişletilmiş Güvenlik Test Paketi:** `packages/core/tests/p18-04-trusted-identity-context.test.ts` içerisinde 24 kapsamlı senaryo test edilmiştir:
   1. Geçerli OIDC assertion ve kriptografik scope binding -> PASS
   2. Yanlış issuer veya audience -> BLOCKED_ON_AUTH_CONTEXT
   3. Geçersiz veya tahrif edilmiş imza -> SIGNATURE_INVALID / BLOCKED_ON_AUTH_CONTEXT
@@ -185,17 +188,28 @@
   12. Reconnect/resume sırasında onay bağlamının korunması -> RESUME_AUTHORIZED & RESUME_BLOCKED_CONTEXT_MISMATCH
   13. Test double izolasyonu -> TestDoubleIdentityProviderAdapter.isTestDouble === true
   14. Hassas kimlik verisi ve JWT maskeleme -> Raw token maskelemesi ve log sanitization
+  15. (SEC-1) Yalnızca jwksUri tanımlı, imza doğrulayıcısı olmayan adaptör -> BLOCKED_ON_AUTH_CONTEXT
+  16. (SEC-2) Geçerli imzalı token ile sahte assertion.claims yetki yükseltme girişimi -> UNVERIFIED / fail-closed
+  17. (SEC-3) Token payload'ı ile assertion.binding uyuşmazlığı -> BINDING_MISMATCH
+  18. (SEC-4) Desteklenmeyen algoritma (alg: none, HS256) ve geçersiz kid -> SIGNATURE_INVALID
+  19. (SEC-5) Bozuk, kötü biçimlendirilmiş, HTTP veya link-local SSRF JWKS adresleri -> CONFIG_MISSING / SIGNATURE_INVALID
+  20. (SEC-6) Gelecekte düzenlenmiş (iat), süresi dolmuş (exp) veya henüz geçerli olmayan (nbf) token'lar -> fail-closed
+  21. (SEC-7) Paralel yarış koşulunda 15 eşzamanlı istek -> Tam 1 onay, 14 adet REPLAY_DETECTED
+  22. (SEC-8) Başka paket, revizyon, oturum veya operasyon için hazırlanmış onayın yeniden kullanımı -> BINDING_MISMATCH
+  23. (SEC-9) mTLS doğrulamasında sahte istemci metadatasının reddi ve gerçek X.509 kontrolü -> PASS
+  24. (SEC-10) Gerçek JWKS JWK ayrıştırma ve asimetrik RSA imza doğrulaması -> VERIFIED / VERIFIED_HUMAN
 - **Eksik Harici Bağımlılıklar (Canlı IdP):**
-  - Kurumsal OIDC sağlayıcısı (Okta, Keycloak, Auth0, Entra ID) client_id, jwks_uri / public key ve donanım anahtarı (WebAuthn/Passkey) fiili ortamda bulunmamaktadır.
+  - Kurumsal OIDC sağlayıcısı (Okta, Keycloak, Auth0, Entra ID) client_id, jwks_uri / public key ve donanım anahtarı (WebAuthn/Passkey) fiili ortamda henüz kurulmamıştır.
   - Canlı dış IdP yapılandırması uydurulmamış; canlı IdP testi `NOT RUN` olarak bırakılmıştır.
 - **OM-10 ve OM-09 Durumu:**
   - İnsan onayı kapsamı dış IdP bağlanana kadar bilinçli olarak `BLOCKED_ON_AUTH_CONTEXT` durumunda korunmaktadır.
-  - OM-09 genel kabulü **verilmemiştir** (`PARTIALLY_ACCEPTED / BLOCKED_ON_AUTH_CONTEXT`).
+  - Adaptör seviyesinde güvenlik açıklarının kapatılması, gerçek bir IdP'nin kurulduğu veya gerçek insan kimliğinin doğrulandığı anlamına gelmez.
+  - Bu nedenle P18-04 genel kabulü verilmemiştir; canlı dış IdP doğrulanana kadar **`BLOCKED_ON_EXTERNAL_IDP`** durumu korunmaktadır.
   - OM-10 **kesinlikle başlatılmamıştır** (`BLOCKED` olarak mühürlüdür).
 
 ---
 
-## 4. OM-03 / OM-05 / OM-06 / OM-07 / OM-09 Gerçek Kabul Matrisi (WP-7 & WP-8)
+## 4. OM-03 / OM-05 / OM-06 / OM-07 / OM-09 Gerçek Kabul Matrisi (WP-7 & WP-8 & WP-10)
 
 | Aşama Kodu | Gereksinim ve Kabul Kriteri | Test / Kanıt Kaynağı | Test Türü (Gerçek / Mock) | Çalıştırılan Komut | Çıkış Kodu | Sonuç ve Kanıt Dosyası / Commit | Eksik Harici Koşullar | Nihai Karar |
 |:---:|---|---|:---:|---|:---:|---|---|:---:|
@@ -204,8 +218,8 @@
 | **OM-06** | MCP Control Plane: 41 adet MCP aracı, stdio JSON-RPC 2.0 bütünlüğü, yetkilendirme kapıları (`AuthorizationPolicyEngine`), durum otoritesi ve Zod şema sözleşmesi | `phase17-mcp-e2e.test.ts` + `p22-director-mcp-control-plane.test.ts` + `structured-logger.test.ts` | **Gerçek** (stdio / IPC JSON-RPC protokolü) & **Mock** | `pnpm test` | `0` | JSON-RPC 2.0 çerçeveleme bozulmadan çalıştı; yetkisiz araç çağrıları engellendi; stdout sıfır kirlilik sözleşmesi kanıtlandı. Commit: `7109e39` | Yok | **`ACCEPTED`** |
 | **OM-07** | Durable Session & Recovery: İn-flight çökme simülasyonu, `EXECUTION_UNKNOWN` izolasyonu, atomik kalıcı durum, PID `runtime.lock`, bounded corrective task üretimi | `p30-durable-crash-recovery.test.ts` + `atomic-writer.ts` retry mekanizması | **Gerçek** (İşletim sistemi süreci, PID kilit, SQLite, dosya sistemi) | `pnpm test` | `0` | İn-flight çökmede körlemesine yeniden dağıtım engellendi; görev `EXECUTION_UNKNOWN` olarak işaretlendi; FailureDiagnosisEngine üzerinden bağlı düzeltici görev oluşturuldu. Commit: `0e08f6d` | Yok | **`ACCEPTED`** |
 | **OM-09** (Rutin) | Canlı E2E Entegrasyonu: Rutin geliştirme görevlerinin (`ALLOW`) gerçek model ve gerçek AGY CLI ile baştan sona otonom yürütülmesi | `om09-live-e2e.live.test.ts` (13 test) + `single-task-real-execution-e2e.live.test.ts` (4 test) | **Gerçek** (Canlı Host CLI & Canlı Model) | `pnpm test:live` | `0` | 17/17 canlı test PASS; gerçek dosya mutasyonları ve bağımsız delil denetimi mühürlendi. Commit: `0e08f6d` | Yok | **`ACCEPTED`** (Yalnızca rutin otonom alt kapsam) |
-| **OM-09** (İnsan Onayı) | Güvenilir İnsan Onayı Sınırı: İnsan onayı gerektiren hassas işlemlerin fail-closed duruşu (`BLOCKED_ON_AUTH_CONTEXT`) | `om09-live-e2e.live.test.ts` (F05) + `p18-04-real-project-approval.test.ts` | **Gerçek Güvenlik Kilidi** (Fail-Closed Gate) | `pnpm test:live` & `pnpm test` | `0` | ADR-06 ve P18-04 sözleşmesi uyarınca; sahte onay beyanları (`isTrustedHumanAuth: true`, `actor: "USER"`) reddedildi; bağımsız dış kimlik doğrulayıcısı olmadan sistem fail-closed durdu. | P18-04 Trusted Identity Context (Dış güvenilir insan kimliği altyapısı henüz mevcut değildir; fail-closed güvenlik kilidi devrededir). | **`BLOCKED_ON_AUTH_CONTEXT`** (Bilinçli Emniyet Kilidi - Eksik Dış Altyapı) |
-| **OM-09 (Genel)** | OM-09 Aşamasının Tam Kabulü | Yukarıdaki iki alt kapsamın birleşimi | Karma | - | - | Rutin alt kapsam çalışmakta; insan onayı alt kapsamı ise dış kimlik altyapısı eksikliği nedeniyle blokajdadır. | P18-04 Dış İnsan Kimliği ve Onay Altyapısı | **`PARTIALLY_ACCEPTED / BLOCKED`** (Tam kabul verilemez) |
+| **OM-09** (İnsan Onayı) | Güvenilir İnsan Onayı Sınırı: İnsan onayı gerektiren hassas işlemlerin fail-closed duruşu (`BLOCKED_ON_AUTH_CONTEXT`) | `om09-live-e2e.live.test.ts` (F05) + `p18-04-trusted-identity-context.test.ts` | **Gerçek Güvenlik Kilidi** (Fail-Closed Gate) | `pnpm test:live` & `pnpm test` | `0` | ADR-06, ADR-13 ve P18-04 sözleşmesi uyarınca; sahte onay beyanları (`isTrustedHumanAuth: true`, `actor: "USER"`) reddedildi; bağımsız dış kimlik doğrulayıcısı olmadan sistem fail-closed durdu. | P18-04 Canlı Dış IdP (Canlı kurumsal OIDC / mTLS altyapısı fiilen bağlı değildir; fail-closed güvenlik kilidi devrededir). | **`BLOCKED_ON_AUTH_CONTEXT`** (Bilinçli Emniyet Kilidi - Eksik Dış Altyapı) |
+| **OM-09 (Genel)** | OM-09 Aşamasının Tam Kabulü | Yukarıdaki iki alt kapsamın birleşimi | Karma | - | - | Rutin alt kapsam çalışmakta; insan onayı alt kapsamı ise dış kimlik altyapısı eksikliği nedeniyle blokajdadır. | P18-04 Dış İnsan Kimliği ve Canlı IdP Altyapısı | **`PARTIALLY_ACCEPTED / BLOCKED`** (Tam kabul verilemez) |
 
 ---
 
@@ -222,22 +236,22 @@
 | **WP-5** | Tür Güvenliği Borcu: 5 kritik güvenlik modülünde 90 explicit `any` temizlendi | `VERIFIED` | Commit: `84ceb5e` |
 | **WP-6** | Yapılandırılmış Loglama: Sıfır stdout kirliliği, sır maskeleme, fail-safe logging | `VERIFIED` | Commit: `7109e39` |
 | **WP-7** | OM-03/05/06/07/09 Kabul Matrisi | `RE-EVALUATED` | OM-09 çelişkisi giderildi |
-| **WP-8.1** | Gerçek ESLint Kurulumu (eslint 10, typescript-eslint 8, no-explicit-any warn) | `VERIFIED` | Exit Code 0, 0 error, 2083 warning |
-| **WP-8.2** | Test Tip Kontrolü ve strict: false Analizi | `DEBT_RECORDED` | 84 test dosyasında 835 tip hatası mevcut |
-| **WP-8.3** | CI Kalite Kapısı (install -> lint -> typecheck -> typecheck:tests -> build -> test) | `VERIFIED` | .github/workflows/ci.yml güncellendi |
+| **WP-8.1** | Gerçek ESLint Kurulumu (eslint 10, typescript-eslint 8, no-explicit-any warn) | `VERIFIED` | Exit Code 0, 0 error, 2111 warning |
+| **WP-8.2** | Test Tip Kontrolü ve strict: false Analizi | `DEBT_RECORDED` | 84 test dosyasında 835 tip hatası mevcut idi |
+| **WP-8.3** | CI Kalite Kapısı (install -> lint -> typecheck -> build -> typecheck:tests -> test) | `VERIFIED` | .github/workflows/ci.yml güncellendi |
 | **WP-8.4** | OM-09 İnsan Onayı Sınırı ve Güvenlik Riski Değerlendirmesi | `VERIFIED` | Kapsamlar ayrıldı, risk belgelendi |
 | **WP-9** | Test Tip Borcunun Giderilmesi ve P18-04 Kabul Kapısı (835 tip hatası -> 0 error, tsconfig.test.json strict: true, P18-04 fail-closed teyidi) | `VERIFIED` | 84 dosyada 835 tip hatası giderildi, 0 error |
-| **WP-10** | P18-04 Trusted Identity Context (ADR-13, adaptör sözleşmesi, OIDC/mTLS/TestDouble adaptörleri, anti-spoof fail-closed kilidi, 14 test) | `VERIFIED & BLOCKED_ON_EXTERNAL_IDP` | 14/14 PASS; canlı IdP olmadan fail-closed BLOCKED_ON_AUTH_CONTEXT korundu |
+| **WP-10** | P18-04 OIDC İmza Güvenliği, Authoritative Claim Extraction, Kriptografik Scope Binding, Atomik Nonce Replay Gate (24 güvenlik testi) | `VERIFIED & BLOCKED_ON_EXTERNAL_IDP` | 24/24 PASS; canlı IdP bağlanana kadar fail-closed BLOCKED_ON_EXTERNAL_IDP durumu korundu |
 
 ### 5.2 Test ve Kalite Kapıları Doğrulama Çıktıları (WP-8.5 & WP-9 & WP-10)
 
 | Komut | Kapsam | Çıkış Kodu | Hedef | Hata | Başarısızlık | Durum |
 |:---|:---|:---:|:---:|:---:|:---:|:---:|
-| `pnpm lint` | Kod hijyeni ve ESLint kuralları | `0` | Tüm repo | 0 error | 0 | **PASS** (2095 uyarı raporlandı) |
+| `pnpm lint` | Kod hijyeni ve ESLint kuralları | `0` | Tüm repo | 0 error | 0 | **PASS** (2111 uyarı raporlandı, 0 hata) |
 | `pnpm typecheck` | Kaynak kod (`src/**/*`) strict tip denetimi | `0` | Tüm `src/` | 0 error | 0 | **PASS** (Strict 0 error) |
-| `pnpm typecheck:tests` | Test dosyaları (`tests/**/*`) tip denetimi | `0` | 116 test dosyası | 0 error | 0 | **PASS** (Strict: true altında 0 error) |
 | `pnpm build` | Paket derlemesi (`tsc -b`) | `0` | `@aidm/core` | 0 error | 0 | **PASS** (36 subpath d.ts ve js üretildi) |
-| `pnpm test` | Deterministik çevrimdışı test süiti (14 yeni P18-04 güvenlik testi dahil) | `0` | 116 dosya, 295 suite, 2995 test | 0 fail | 0 skipped | **PASS** (2995/2995 PASS, 0 fail) |
+| `pnpm typecheck:tests` | Test dosyaları (`tests/**/*`) tip denetimi | `0` | 116 test dosyası | 0 error | 0 | **PASS** (Strict: true altında 0 error) |
+| `pnpm test` | Deterministik çevrimdışı test süiti (24 adet P18-04 güvenlik testi dahil) | `0` | 116 dosya, 295 suite, 3005 test | 0 fail | 0 skipped | **PASS** (3005/3005 PASS, 0 fail) |
 | `pnpm test:live` | Canlı host AGY CLI ve OpenAI HTTPS E2E | `0` | 2 suite, 17 test | 0 fail | 0 skipped | **PASS** (Canlı ortamda 17/17 PASS) |
 | `pnpm test:p18-04-live-idp` | Canlı Harici OIDC IdP Entegrasyon Testi | `NOT RUN` | Canlı Kurumsal IdP | - | - | **NOT RUN** (Harici IdP bağlantısı ve canlı credentials olmadan uydurulamaz) |
 
@@ -247,7 +261,7 @@
 >
 > **Gerekçe ve Engelleyici Bulgular:**
 > 1. **Test Tip Denetimi Borcu (WP-9):** Başarıyla çözümlenmiştir. Test süitindeki 84 dosyada bulunan 835 adet statik tip hatasının tamamı `tsconfig.test.json` (`strict: true`) altında sıfırlanmış; `any` veya `@ts-ignore` gibi bastırma direktifleri kullanılmadan domain sözleşmelerine uygun mock nesneleriyle 0 hataya indirilmiştir. CI kalite kapısında `typecheck:tests` adımı yeşile geçmiştir.
-> 2. **OM-09 Güvenilir İnsan Onayı ve P18-04 Eksikliği (WP-8.4 & WP-9):** Rutin görevler otonom olarak çalışsa da, P18-04 Trusted Identity Context (güvenilir harici insan kimliği ve onay altyapısı) henüz geliştirilmemiştir. Hassas işlemler mimarinin fail-closed güvenlik gereği `BLOCKED_ON_AUTH_CONTEXT` durumundadır. Dış bağımsız onay mekanizması kurulmadan sistemin OM-10 ile dondurulması veya genel MCP sözleşmesine bağlanması kabul edilemez bir güvenlik riskidir. Director veya AGY kendi kendine yetki veremez.
-> 3. **Kalite Kapısı Bütünlüğü ve Güvenlik İlkesi:** Tip borcunun giderilmesi gerekli bir adımdı; ancak güvenlik kapıları (fail-closed auth gate) eksik dış altyapı nedeniyle henüz üretime hazır değildir. Sahte kabullerle güvenlik kapıları aşılamaz.
+> 2. **P18-04 OIDC Güvenliği ve Canlı Dış IdP Eksikliği (WP-10):** Adaptör seviyesindeki OIDC imza doğrulama, token claim çıkarma, scope binding ve yarış koşullarına dayanıklı atomik nonce koruması kod düzeyinde eksiksiz düzeltilmiş ve 24 negatif/pozitif güvenlik testiyle doğrulanmıştır. Ancak canlı kurumsal IdP (Okta, Keycloak vb.) henüz fiziksel olarak bağlanmamıştır. Mimarinin fail-closed güvenlik ilkesi gereğince sistem `BLOCKED_ON_AUTH_CONTEXT` / `BLOCKED_ON_EXTERNAL_IDP` durumunda tutulmaktadır.
+> 3. **OM-10 İle İlişki ve Güvenlik Riski:** Dış bağımsız onay mekanizması olmadan sistemin OM-10 ile dondurulması veya genel MCP sözleşmesine bağlanması kabul edilemez bir güvenlik riskidir. Director veya AGY kendi kendine yetki veremez.
 >
-> **Sonuç:** OtonomMCP çekirdeğinde OM-10 uygulamasına (sürümleme, genel sözleşme dondurma, git tag vb.) **BAŞLANMAYACAKTIR**. OM-10 kapısı KESİNLİKLE BLOCKED olarak mühürlenmiştir. Öncelikli olarak P18-04 Dış İnsan Onayı Altyapısı geliştirilmeli ve bağımsız onay otoritesi fiziksel olarak temin edilmelidir.
+> **Sonuç:** OtonomMCP çekirdeğinde OM-10 uygulamasına (sürümleme, genel sözleşme dondurma, git tag vb.) **BAŞLANMAYACAKTIR**. OM-10 kapısı KESİNLİKLE BLOCKED olarak mühürlü kalacaktır. P18-04 genel kabulü ancak canlı kurumsal IdP entegrasyonu tamamlandığında verilebilir.
