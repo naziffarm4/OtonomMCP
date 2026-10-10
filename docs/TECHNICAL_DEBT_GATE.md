@@ -35,8 +35,7 @@
 - [x] **WP-6: Yapılandırılmış Loglama** (MCP stdio protokol bütünlüğü, log seviyeleri, sır maskeleme, sıfır stdout kirliliği) — `FIXED` (Commit: `7109e39`).
 - [x] **WP-7: OM-03/05/06/07/09 Kabul Matrisi ve Karar Kapısı** (Objektif kabul matrisi ve OM-10 nihai kararı) — `RE-EVALUATED`.
 - [x] **WP-8.1: Gerçek ESLint Kurulumu ve Doğrulaması** (eslint 10, typescript-eslint 8, @typescript-eslint/no-explicit-any warn seviyesinde, 0 error, 2083 warning) — `FIXED`.
-- [x] **WP-8.2: Test Tip Kontrolü ve strict: false Analizi** (tsconfig.test.json strict mod analizi, 84 dosyada 835 tip hatası tespiti, teknik borcun dürüstçe belgelenmesi) — `ANALYZED_DEBT_DOCUMENTED`.
-- [x] **WP-8.3: CI Kalite Kapısı Sıralaması** (.github/workflows/ci.yml: install -> lint -> typecheck -> typecheck:tests -> build -> test, Node .nvmrc ve pnpm 12.3.4 uyumu) — `FIXED`.
+- [x] **WP-8.3: CI Kalite Kapısı Sıralaması** (.github/workflows/ci.yml: install -> lint -> typecheck -> build -> typecheck:tests -> test, Node .nvmrc ve pnpm 12.3.4 uyumu) — `FIXED`.
 - [x] **WP-8.4: OM-09 İnsan Onayı Sınırı ve OM-10 Karar Düzeltmesi** (Rutin görev kabulü ile insan onayı ayrımı, P18-04 BLOCKED_ON_AUTH_CONTEXT mühürlenmesi, OM-10 geçişinin dürüstçe BLOCKED ilan edilmesi) — `CORRECTED`.
 - [x] **WP-9: Test Tip Borcunun Tamamen Giderilmesi ve P18-04 Kabul Kapısı** (84 test dosyasındaki 835 tip hatasının sıfırlanması, tsconfig.test.json strict: true altında 0 error, P18-04 fail-closed teyidi, OM-10 kapısının BLOCKED olarak mühürlenmesi) — `FIXED`.
 
@@ -121,8 +120,8 @@
   1. `pnpm install --frozen-lockfile` (pnpm 12.3.4 ile)
   2. `pnpm lint` (Gerçek ESLint)
   3. `pnpm typecheck` (Kaynak tip kontrolü - strict)
-  4. `pnpm typecheck:tests` (Test tip kontrolü - kalite kapısı)
-  5. `pnpm build` (`tsc -b`)
+  4. `pnpm build` (`tsc -b` - paket çıktılarının üretilmesi)
+  5. `pnpm typecheck:tests` (Test tip kontrolü - kalite kapısı)
   6. `pnpm test` (Deterministik çevrimdışı testler)
 - Sürüm Tutarlılığı: `.nvmrc` (`22.19.0`), `package.json` engines (`>=22.6.0`), `packageManager` (`pnpm@12.3.4`) ve CI `node-version-file: '.nvmrc'` tam uyumlu hale getirilmiştir. Canlı testler (`test:live`) CI varsayılanından ayrı tutulmuştur.
 

@@ -34,11 +34,11 @@ jobs:
       - name: Typecheck sources
         run: pnpm typecheck
 
-      - name: Typecheck tests
-        run: pnpm typecheck:tests
-
       - name: Build packages
         run: pnpm build
+
+      - name: Typecheck tests
+        run: pnpm typecheck:tests
 
       - name: Run deterministic tests
         run: pnpm test
