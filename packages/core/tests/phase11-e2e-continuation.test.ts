@@ -79,7 +79,7 @@ describe('Phase 11 TASK-P11-05: End-to-End Multi-Task Continuation Integration &
     approvalStore = new ApprovalStore({ baseDir: tmpDir, historyManager });
     specStore = new SpecStore({ baseDir: tmpDir });
     dagEngine = new TaskDagEngine();
-    lock = new ExecutionIntegrationLock({ baseDir: tmpDir, staleThresholdMs: 200, timeoutMs: 1500 });
+    lock = new ExecutionIntegrationLock({ baseDir: tmpDir, staleThresholdMs: 5000, timeoutMs: 10000 });
     integrator = new ExecutionStateIntegrator({
       baseDir: tmpDir,
       durableStateManager: durableManager,

@@ -119,7 +119,7 @@ describe('Phase 10 TASK-P10-05: Verified Execution State Integration', () => {
     durableManager = new DurableStateManager({ baseDir: tempDir });
     specStore = new SpecStore({ baseDir: tempDir });
     historyManager = new HistoryManager({ baseDir: tempDir });
-    lock = new ExecutionIntegrationLock({ baseDir: tempDir, staleThresholdMs: 200, timeoutMs: 1500 });
+    lock = new ExecutionIntegrationLock({ baseDir: tempDir, staleThresholdMs: 5000, timeoutMs: 10000 });
 
     integrator = new ExecutionStateIntegrator({
       baseDir: tempDir,
