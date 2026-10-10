@@ -5,26 +5,37 @@ import { atomicWriteJson, readJsonFile } from '../storage/atomic-writer.js';
 
 export interface PersistedNonceData {
   seen: string[];
+  seenUntil?: Record<string, number>; // nonce -> retentionUntil timestamp (epoch ms)
   reserved: Record<string, number>; // nonce -> expiresAt (epoch ms)
 }
 
 // Process-wide mutex per normalized file path to serialize async operations within the same process
-const inProcessLockQueues = new Map<string, Promise<unknown>>();
+export const inProcessLockQueues = new Map<string, Promise<void>>();
 
-function withInProcessLock<T>(filePath: string, operation: () => Promise<T>): Promise<T> {
+export function withInProcessLock<T>(filePath: string, operation: () => Promise<T>): Promise<T> {
   const normalizedPath = path.resolve(filePath);
-  const currentLock = inProcessLockQueues.get(normalizedPath) ?? Promise.resolve();
-  let release: () => void = () => {};
-  const newLock = new Promise<void>((resolve) => {
-    release = resolve;
-  });
-  inProcessLockQueues.set(normalizedPath, currentLock.then(() => newLock));
+  const prevLock = inProcessLockQueues.get(normalizedPath) ?? Promise.resolve();
 
-  return currentLock
+  let releaseLock: () => void = () => {};
+  const lockPromise = new Promise<void>((resolve) => {
+    releaseLock = resolve;
+  });
+
+  // Tail promise settles after prevLock settles and our operation releases the lock.
+  // Using .catch(() => {}) ensures an earlier operation's rejection does not poison subsequent operations.
+  const tailPromise = prevLock
+    .catch(() => {})
+    .then(() => lockPromise);
+
+  inProcessLockQueues.set(normalizedPath, tailPromise);
+
+  return prevLock
+    .catch(() => {})
     .then(operation)
     .finally(() => {
-      release();
-      if (inProcessLockQueues.get(normalizedPath) === currentLock.then(() => newLock)) {
+      releaseLock();
+      // Clean up the queue entry only if no newer operation has queued behind us
+      if (inProcessLockQueues.get(normalizedPath) === tailPromise) {
         inProcessLockQueues.delete(normalizedPath);
       }
     });
@@ -60,7 +71,6 @@ export async function withCrossProcessNonceLock<T>(
       try {
         db = new DatabaseSync(lockDbPath);
         db.exec('PRAGMA busy_timeout = 0;');
-        db.exec('CREATE TABLE IF NOT EXISTS _nonce_lock (id INTEGER PRIMARY KEY, pid INTEGER, acquired_at INTEGER);');
         db.exec('BEGIN EXCLUSIVE;');
         // Lock acquired exclusively across all processes and threads
         break;
@@ -117,20 +127,35 @@ export async function withCrossProcessNonceLock<T>(
   });
 }
 
+export interface NonceStoreOptions {
+  baseDir?: string;
+  filePath?: string;
+  defaultRetentionMs?: number; // default: 24 hours (86,400,000 ms)
+  clockSkewMs?: number; // default: 5 minutes (300,000 ms)
+}
+
 export class NonceStore {
   readonly filePath: string;
+  readonly defaultRetentionMs: number;
+  readonly clockSkewMs: number;
 
-  constructor(options?: { baseDir?: string; filePath?: string }) {
+  constructor(options?: NonceStoreOptions) {
     if (options?.filePath) {
       this.filePath = options.filePath;
     } else {
       const baseDir = options?.baseDir ?? process.cwd();
       this.filePath = path.join(baseDir, '.ai-manager', 'state', 'seen-nonces.json');
     }
+    this.defaultRetentionMs = options?.defaultRetentionMs ?? 24 * 60 * 60 * 1000;
+    this.clockSkewMs = options?.clockSkewMs ?? 5 * 60 * 1000;
   }
 
   /**
-   * Reads fresh persistent state under cross-process lock and cleans up expired reservations.
+   * Reads fresh persistent state under cross-process lock and cleans up expired reservations
+   * and seen nonces whose retention period has expired.
+   *
+   * Note: Seen nonces are NEVER pruned simply because the list reached an arbitrary count (such as 2,000).
+   * They are strictly retained until their cryptographic validity/retention period has passed.
    */
   private async readStateUnderLock(): Promise<PersistedNonceData> {
     const now = Date.now();
@@ -140,30 +165,56 @@ export class NonceStore {
         // Legacy format compatibility: plain string[] of seen nonces
         return {
           seen: raw.filter((s): s is string => typeof s === 'string'),
+          seenUntil: {},
           reserved: {},
         };
       }
       if (raw && typeof raw === 'object') {
         const obj = raw as Record<string, unknown>;
-        const seen = Array.isArray(obj.seen)
+        const rawSeen = Array.isArray(obj.seen)
           ? obj.seen.filter((s): s is string => typeof s === 'string')
           : [];
+        const rawSeenUntil =
+          obj.seenUntil && typeof obj.seenUntil === 'object'
+            ? (obj.seenUntil as Record<string, unknown>)
+            : {};
         const rawReserved =
           obj.reserved && typeof obj.reserved === 'object'
             ? (obj.reserved as Record<string, unknown>)
             : {};
+
         const reserved: Record<string, number> = {};
         for (const [k, v] of Object.entries(rawReserved)) {
           if (typeof v === 'number' && v > now) {
             reserved[k] = v;
           }
         }
-        return { seen, reserved };
+
+        // Time-based retention cleanup:
+        // A seen nonce is ONLY pruned if its retention timestamp has expired (until <= now).
+        // It is NEVER pruned simply because the list size exceeded 2,000!
+        // If seenUntil timestamp is absent (legacy entries), retain by default to be fail-closed.
+        const seen: string[] = [];
+        const seenUntil: Record<string, number> = {};
+        for (const nonce of rawSeen) {
+          const until = rawSeenUntil[nonce];
+          if (typeof until === 'number') {
+            if (until > now) {
+              seen.push(nonce);
+              seenUntil[nonce] = until;
+            }
+          } else {
+            // Legacy entry without timestamp - retain safely
+            seen.push(nonce);
+          }
+        }
+
+        return { seen, seenUntil, reserved };
       }
     } catch {
       // File does not exist yet or unreadable
     }
-    return { seen: [], reserved: {} };
+    return { seen: [], seenUntil: {}, reserved: {} };
   }
 
   /**
@@ -206,8 +257,14 @@ export class NonceStore {
   /**
    * Atomically mark nonce as permanently consumed and persist to storage.
    * Cross-process atomic: returns true if successfully marked, false if already consumed or duplicate.
+   *
+   * @param nonce The unique nonce to mark as consumed.
+   * @param optionsOrExpiresAt Optional expiration epoch ms or options with expiresAt/ttlMs.
    */
-  async markNonceSeen(nonce: string): Promise<boolean> {
+  async markNonceSeen(
+    nonce: string,
+    optionsOrExpiresAt?: number | { expiresAt?: number; ttlMs?: number }
+  ): Promise<boolean> {
     return withCrossProcessNonceLock(this.filePath, async () => {
       const state = await this.readStateUnderLock();
 
@@ -215,16 +272,73 @@ export class NonceStore {
         return false;
       }
 
-      state.seen.push(nonce);
-      delete state.reserved[nonce];
+      const now = Date.now();
+      let retentionUntil: number;
 
-      // Keep only last 2000 nonces to prevent unbounded growth
-      if (state.seen.length > 2000) {
-        state.seen = state.seen.slice(-2000);
+      if (typeof optionsOrExpiresAt === 'number') {
+        if (optionsOrExpiresAt > 1e11) {
+          retentionUntil = Math.max(optionsOrExpiresAt + this.clockSkewMs, now + this.defaultRetentionMs);
+        } else if (optionsOrExpiresAt > 1e9) {
+          retentionUntil = Math.max(optionsOrExpiresAt * 1000 + this.clockSkewMs, now + this.defaultRetentionMs);
+        } else {
+          retentionUntil = now + Math.max(optionsOrExpiresAt, this.defaultRetentionMs);
+        }
+      } else if (optionsOrExpiresAt && typeof optionsOrExpiresAt === 'object') {
+        if (typeof optionsOrExpiresAt.expiresAt === 'number') {
+          const expMs = optionsOrExpiresAt.expiresAt > 1e11 ? optionsOrExpiresAt.expiresAt : optionsOrExpiresAt.expiresAt * 1000;
+          retentionUntil = Math.max(expMs + this.clockSkewMs, now + this.defaultRetentionMs);
+        } else if (typeof optionsOrExpiresAt.ttlMs === 'number') {
+          retentionUntil = now + Math.max(optionsOrExpiresAt.ttlMs, this.defaultRetentionMs);
+        } else {
+          retentionUntil = now + this.defaultRetentionMs;
+        }
+      } else {
+        retentionUntil = now + this.defaultRetentionMs;
       }
+
+      state.seen.push(nonce);
+      state.seenUntil = state.seenUntil ?? {};
+      state.seenUntil[nonce] = retentionUntil;
+      delete state.reserved[nonce];
 
       await atomicWriteJson(this.filePath, state);
       return true;
+    });
+  }
+
+  /**
+   * Batch mark multiple nonces as consumed under a single atomic lock.
+   */
+  async markNoncesSeenBatch(
+    nonces: string[],
+    optionsOrExpiresAt?: number | { expiresAt?: number; ttlMs?: number }
+  ): Promise<number> {
+    return withCrossProcessNonceLock(this.filePath, async () => {
+      const state = await this.readStateUnderLock();
+      const now = Date.now();
+      let retentionUntil = now + this.defaultRetentionMs;
+
+      if (typeof optionsOrExpiresAt === 'number') {
+        if (optionsOrExpiresAt > 1e11) {
+          retentionUntil = Math.max(optionsOrExpiresAt + this.clockSkewMs, now + this.defaultRetentionMs);
+        } else if (optionsOrExpiresAt > 1e9) {
+          retentionUntil = Math.max(optionsOrExpiresAt * 1000 + this.clockSkewMs, now + this.defaultRetentionMs);
+        }
+      }
+
+      state.seenUntil = state.seenUntil ?? {};
+      let added = 0;
+      for (const nonce of nonces) {
+        if (!state.seen.includes(nonce)) {
+          state.seen.push(nonce);
+          state.seenUntil[nonce] = retentionUntil;
+          delete state.reserved[nonce];
+          added++;
+        }
+      }
+
+      await atomicWriteJson(this.filePath, state);
+      return added;
     });
   }
 

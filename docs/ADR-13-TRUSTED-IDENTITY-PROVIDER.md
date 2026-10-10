@@ -84,12 +84,20 @@ Her onay talebi (`TrustedApprovalBinding`), imzalı JWT payload'ı içinde doğr
 - **İstemci Binding Bağımsızlığı:** İstemcinin gönderdiği `assertion.binding` nesnesi asla imzalı token payload'ının veya beklenen yürütme bağlamının yerine geçemez. İstemci binding'i doğru görünse bile imzalı token payload'ı eksik veya uyuşmazsa talep derhal reddedilir.
 - Beklenen yürütme bağlamıyla tek bir alan dahi uyuşmazsa `BINDING_MISMATCH` ile fail-closed durulur.
 
-### 3.5. Replay ve Çok Süreçli Atomik Nonce Tüketimi (OS Kernel SQLite Kilitleri)
+### 3.5. Replay ve Çok Süreçli Atomik Nonce Tüketimi (OS Kernel SQLite Kilitleri ve Bellek Yönetimi)
 - Her onay iddiası zorunlu bir `nonce` (veya `jti`) içermelidir (en az 8 karakter).
 - **İşletim Sistemi Çekirdeği Kilit Sözleşmesi (OS Byte-Range File Locking):**
   - Dosya sistemi tabanlı manuel süre eşikli kilitler (`staleThresholdMs = 4000ms`) yarış koşullarına ve uzun süren süreçlerin kilitlerinin çalınmasına yol açabilir.
   - Bu nedenle `NonceStore`, kilit koordinasyonunu işletim sistemi çekirdeği tarafından garanti edilen SQLite transaction kilit mekanizmasına (`DatabaseSync` ile `BEGIN EXCLUSIVE` ve `PRAGMA busy_timeout = 0`) devretmiştir.
   - Windows üzerinde `LockFileEx`, POSIX sistemlerinde fcntl/flock çekirdek düzeyinde dosya kilitlerini kullanır.
+- **Süreç İçi (In-Process) Mutex Kilit Kuyruğu Temizliği (`withInProcessLock`):**
+  - Aynı dosya yoluna eşzamanlı gelen işlemler `tailPromise` ile sıralı zincirlenir (`promise.then(fn, fn)`).
+  - Kuyruk promise kimliği doğru izlenir; işlem tamamlandığında (`then` ve `catch` sonrasında) kuyruk kuyruk başı ile eşleştiğinde `inProcessLockQueues` haritasından kaydı silinir.
+  - Farklı dosya yolları üzerinde tamamlanan operasyonlar sonrasında sıfır bellek sızıntısı (zero leak) ve güvenli temizlik garanti edilir. Hatalı veya reddedilen operasyonlar sonraki bekleyen işlemleri bloke etmez.
+- **Kalıcı Nonce Replay Saklama Politikası (`seenUntil` / Time-Based Retention):**
+  - Keyfi liste boyutu sınırı (`state.seen.slice(-2000)`) güvenlik zafiyeti yarattığından kaldırılmıştır.
+  - Nonce'lar token'ın `exp` değeri, saat sapması toleransı (`clockSkewMs = 5 dk`) ve varsayılan saklama süresi (`defaultRetentionMs = 24 saat`) dikkate alınarak saklanır (`seenUntil: Record<string, number>`).
+  - 2.000'den fazla farklı nonce tüketilse dahi, süresi dolmamış hiçbir nonce replay korumasından çıkarılamaz; ilk nonce tekrar sunulduğunda derhal `REPLAY_DETECTED` ile reddedilir.
 - **Salt Süre Eşiğine Dayanmayan Aktif Kilit Güvencesi:**
   - Kilit sahibi 4 saniyeden uzun süre işlem yapsa dahi kilidi asla başka bir süreç tarafından "stale" sayılarak silinemez veya çalınamaz.
   - Kilit serbest kalana kadar diğer yarışan süreçler jitter ve exponential backoff ile `timeoutMs` süresince sıraya girer; kazanan süreç tekildir.
@@ -97,7 +105,7 @@ Her onay talebi (`TrustedApprovalBinding`), imzalı JWT payload'ı içinde doğr
   - Bir süreç işlem ortasında beklenmedik şekilde sonlandırılırsa (çökme, `SIGKILL` veya process termination), işletim sistemi çekirdeği açık dosya tanıtıcısını derhal kapatır ve SQLite kilitlerini anında serbest bırakır.
   - Yetim (orphaned) kilit dosyası riski sıfırlanmıştır; arkadan gelen süreçler kilit dosyasını temizlemeye çalışırken yeni bir sürecin kilidini silme riski taşımadan kilidi güvenle devralır.
 - **Kalıcı Durum ve İki Aşamalı Atomik Rezervasyon:**
-  - Görülmüş nonce'lar (`seen`) ve aktif rezervasyonlar (`reserved`) diske senkronize yazılır. Süreç yeniden başlatılsa bile kullanılmış bir nonce asla yeniden tüketilemez.
+  - Görülmüş nonce'lar (`seen`, `seenUntil`) ve aktif rezervasyonlar (`reserved`) diske senkronize yazılır. Süreç yeniden başlatılsa bile kullanılmış bir nonce asla yeniden tüketilemez.
   - **Rezervasyon:** `reserveNonce(nonce, ttl)` çağrısı çekirdek kilidi altında işletilir. Eşzamanlı gelen çoklu süreçlerden/isteklerden yalnızca biri rezervasyonu alır; diğer tüm eşzamanlı süreçler anında `REPLAY_DETECTED` ile fail-closed durur.
   - **Tüketim veya İptal:** Kriptografik imza veya bağlam kontrolleri başarısız olursa kilit altında rezervasyon serbest bırakılır (`releaseReservation`); kontroller eksiksiz geçerse `markNonceSeen` ile kalıcı olarak harcanır.
 - Süresi dolmuş (`exp`), gelecekte düzenlenmiş (`iat`) veya henüz yürürlüğe girmemiş (`nbf`) token'lar reddedilir.
@@ -109,11 +117,24 @@ Her onay talebi (`TrustedApprovalBinding`), imzalı JWT payload'ı içinde doğr
 - Ham JWT belirteçleri, authorization header'ları, özel anahtarlar ve PII (kişisel tanımlayıcı veriler) `TrustedIdentitySanitizer` tarafından maskelenmeden `HistoryManager` veya kalıcı defterlere yazılamaz.
 - Loglarda yalnızca kimlik sağlayıcısı, kullanıcı konusu (`sub`), maskelenmiş parmak izi ve bağlam özetleri yer alır.
 
-### 3.8. Fail-Closed Davranış Güvencesi
+### 3.8. JWKS SSRF ve Kapsamlı IPv4 / IPv6 Savunması
+- **CIDR Kapsamı ve Normalizasyon:**
+  - IPv4: Loopback (`127.0.0.0/8`), Özel (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`), Link-local (`169.254.0.0/16`), CGNAT (`100.64.0.0/10`), Dokümantasyon (`192.0.2.0/24`, `198.51.100.0/24`, `203.0.113.0/24`), Benchmarking (`198.18.0.0/15`), Multicast (`224.0.0.0/4`), Unspecified/Broadcast (`0.0.0.0/8`, `255.255.255.255/32`).
+  - IPv6: Unspecified (`::/128`), Loopback (`::1/128`), Unique Local (ULA `fc00::/7`), Link-local (`fe80::/10`), Multicast (`ff00::/8`), Dokümantasyon (`2001:db8::/32`), ORCHIDv2 (`2001:20::/28`), IPv4-mapped (`::ffff:0:0/96`), IPv4-compatible (`::/96`), NAT64/DNS64 (`64:ff9b::/96`), 6to4 (`2002::/16`).
+  - IPv4-mapped IPv6 adresleri (`::ffff:127.0.0.1`, `::ffff:169.254.169.254`, `::ffff:10.0.0.1` vb.) ve alternatif gösterimler normalleştirilerek hem IPv6 hem de gömülü IPv4 kurallarıyla denetlenir.
+- **DNS Ön Kontrolü ve Uçuş Sırası (In-Flight Socket) Doğrulaması:**
+  - Ön kontrol (`validateJwksHostDns`) ve gerçek HTTPS bağlantı anındaki TLS soket çözümlemesi (`ssrfGuardedLookup`) birebir aynı güvenlik politikasını uygular.
+  - `lookup` fonksiyonu hem tekil hem de çoklu DNS yanıtlarını (`all: true`) destekler; bir DNS yanıtındaki IP adreslerinden herhangi biri yasaklı aralıktaysa bağlantı kurulmadan istek derhal reddedilir.
+  - **DNS Rebinding (TOCTOU) Engeli:** Ön kontrolde genel/geçerli bir IP dönse dahi, TLS soketi açılırken gerçekleşen ikinci çözümlemede dönen IP özel/yasaklı ise bağlantı kurulmadan fail-closed durulur.
+  - DNS çözümleme hataları, boş yanıtlar ve hatalı IP biçimleri fail-closed reddedilir.
+  - TLS sertifika doğrulaması (`servername`) bozulmaz; HTTP 3xx yönlendirmeleri (`followRedirects: false`) izlenmez.
+
+### 3.9. Fail-Closed Davranış Güvencesi
 - Sağlayıcı yapılandırılmamışsa (`UnconfiguredIdentityProviderAdapter`): `BLOCKED_ON_AUTH_CONTEXT`.
 - Sağlayıcıya ulaşılamıyorsa (network timeout, DNS hatası, IdP 5xx): `BLOCKED_ON_AUTH_CONTEXT`.
 - İmza geçersizse veya issuer/audience uyuşmuyorsa: `BLOCKED_ON_AUTH_CONTEXT`.
 - İptal edilmiş kimlik veya bağlam uyuşmazlığı varsa: `BLOCKED_ON_AUTH_CONTEXT`.
+- DNS hatası veya SSRF/Rebinding şüphesi varsa: `BLOCKED_ON_AUTH_CONTEXT`.
 
 ---
 

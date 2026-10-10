@@ -104,37 +104,195 @@ export interface OidcIdentityProviderOptions {
 }
 
 /**
- * IP and SSRF validation helpers.
+ * CIDR definitions for forbidden IP ranges.
  */
-function isPrivateOrSpecialIp(ip: string): boolean {
-  const cleanIp = ip.startsWith('::ffff:') ? ip.slice(7) : ip;
+export interface IpCidrRange {
+  readonly prefix: string;
+  readonly length: number;
+  readonly description: string;
+}
 
-  const ipv4Parts = cleanIp.split('.').map((p) => Number(p));
-  if (ipv4Parts.length === 4 && ipv4Parts.every((p) => !isNaN(p) && p >= 0 && p <= 255)) {
-    const [b0, b1] = ipv4Parts;
-    if (b0 === 0) return true; // 0.0.0.0/8
-    if (b0 === 10) return true; // 10.0.0.0/8
-    if (b0 === 127) return true; // 127.0.0.0/8
-    if (b0 === 169 && b1 === 254) return true; // 169.254.0.0/16 (link-local, cloud metadata)
-    if (b0 === 172 && b1 >= 16 && b1 <= 31) return true; // 172.16.0.0/12
-    if (b0 === 192 && b1 === 168) return true; // 192.168.0.0/16
-    if (b0 === 100 && b1 >= 64 && b1 <= 127) return true; // 100.64.0.0/10
-    if (b0 === 192 && b1 === 0) return true;
-    if (b0 === 198 && (b1 === 18 || b1 === 19 || b1 === 51)) return true;
-    if (b0 === 203 && b1 === 0) return true;
-    if (b0 >= 224) return true; // Multicast & Reserved
-    return false;
+export const FORBIDDEN_IPV4_RANGES: readonly IpCidrRange[] = [
+  { prefix: '0.0.0.0', length: 8, description: 'Current network (RFC 1122)' },
+  { prefix: '10.0.0.0', length: 8, description: 'Private-Use (RFC 1918)' },
+  { prefix: '100.64.0.0', length: 10, description: 'Shared Address Space / CGNAT (RFC 6598)' },
+  { prefix: '127.0.0.0', length: 8, description: 'Loopback (RFC 1122)' },
+  { prefix: '169.254.0.0', length: 16, description: 'Link-Local / Cloud Metadata (RFC 3927)' },
+  { prefix: '172.16.0.0', length: 12, description: 'Private-Use (RFC 1918)' },
+  { prefix: '192.0.0.0', length: 24, description: 'IETF Protocol Assignments (RFC 6890)' },
+  { prefix: '192.0.2.0', length: 24, description: 'TEST-NET-1 Documentation (RFC 5737)' },
+  { prefix: '192.88.99.0', length: 24, description: '6to4 Relay Anycast (RFC 7526)' },
+  { prefix: '192.168.0.0', length: 16, description: 'Private-Use (RFC 1918)' },
+  { prefix: '198.18.0.0', length: 15, description: 'Benchmarking (RFC 2544)' },
+  { prefix: '198.51.100.0', length: 24, description: 'TEST-NET-2 Documentation (RFC 5737)' },
+  { prefix: '203.0.113.0', length: 24, description: 'TEST-NET-3 Documentation (RFC 5737)' },
+  { prefix: '224.0.0.0', length: 4, description: 'Multicast (RFC 5771)' },
+  { prefix: '240.0.0.0', length: 4, description: 'Reserved for Future Use / Class E (RFC 1112)' },
+  { prefix: '255.255.255.255', length: 32, description: 'Limited Broadcast (RFC 919)' },
+] as const;
+
+export const FORBIDDEN_IPV6_RANGES: readonly IpCidrRange[] = [
+  { prefix: '::', length: 128, description: 'Unspecified address (RFC 4291)' },
+  { prefix: '::1', length: 128, description: 'Loopback address (RFC 4291)' },
+  { prefix: '100::', length: 64, description: 'Discard-only prefix (RFC 6666)' },
+  { prefix: '2001:2::', length: 48, description: 'Benchmarking (RFC 5180)' },
+  { prefix: '2001:db8::', length: 32, description: 'Documentation (RFC 3849)' },
+  { prefix: '2001:20::', length: 28, description: 'ORCHIDv2 (RFC 7343)' },
+  { prefix: '64:ff9b:1::', length: 48, description: 'Local-Use IPv4/IPv6 translation (RFC 8215)' },
+  { prefix: 'fc00::', length: 7, description: 'Unique Local Unicast (ULA, RFC 4193)' },
+  { prefix: 'fe80::', length: 10, description: 'Link-Local Unicast (RFC 4291)' },
+  { prefix: 'ff00::', length: 8, description: 'Multicast (RFC 4291)' },
+] as const;
+
+/**
+ * Parses an IPv4 dotted decimal string into an unsigned 32-bit integer.
+ * Returns null if invalid or not standard 4 octets.
+ */
+export function ipV4ToNumber(ip: string): number | null {
+  const parts = ip.trim().split('.');
+  if (parts.length !== 4) return null;
+  const nums: number[] = [];
+  for (const part of parts) {
+    if (!/^\d+$/.test(part)) return null;
+    const n = Number(part);
+    if (isNaN(n) || n < 0 || n > 255) return null;
+    if (part.length > 1 && part.startsWith('0')) return null; // Reject octal leading zeros
+    nums.push(n);
+  }
+  return ((nums[0] << 24) >>> 0) + ((nums[1] << 16) | (nums[2] << 8) | nums[3]);
+}
+
+/**
+ * Checks whether an IPv4 address (as 32-bit number) falls into any forbidden range.
+ */
+export function isForbiddenIpv4(ipNum: number): boolean {
+  for (const range of FORBIDDEN_IPV4_RANGES) {
+    const prefixNum = ipV4ToNumber(range.prefix);
+    if (prefixNum === null) continue;
+    const mask = range.length === 0 ? 0 : (~0 << (32 - range.length)) >>> 0;
+    if ((ipNum & mask) === (prefixNum & mask)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Parses an IPv6 string into a canonical 128-bit BigInt.
+ * Handles alternative representations, compressed zeros (::), and embedded IPv4.
+ * Returns null if invalid.
+ */
+export function parseIpv6(ipStr: string): { words: number[]; bigInt: bigint } | null {
+  let clean = ipStr.replace(/^\[|\]$/g, '').split('%')[0].toLowerCase().trim();
+  const lastColon = clean.lastIndexOf(':');
+  if (lastColon !== -1) {
+    const after = clean.slice(lastColon + 1);
+    if (after.includes('.')) {
+      // Embedded IPv4 dotted quad
+      const parts = after.split('.').map(Number);
+      if (parts.length === 4 && parts.every((p) => !isNaN(p) && p >= 0 && p <= 255)) {
+        const hex1 = ((parts[0] << 8) | parts[1]).toString(16);
+        const hex2 = ((parts[2] << 8) | parts[3]).toString(16);
+        clean = clean.slice(0, lastColon + 1) + hex1 + ':' + hex2;
+      } else {
+        return null;
+      }
+    }
   }
 
-  const lowerIp = cleanIp.toLowerCase().replace(/^\[|\]$/g, '');
-  if (
-    lowerIp === '::' ||
-    lowerIp === '::1' ||
-    lowerIp.startsWith('fe80:') ||
-    lowerIp.startsWith('fc') ||
-    lowerIp.startsWith('fd')
-  ) {
+  let words: string[];
+  if (clean.includes('::')) {
+    const halves = clean.split('::');
+    if (halves.length !== 2) return null; // Only one :: allowed
+    const [left, right] = halves;
+    const leftWords = left ? left.split(':').filter(Boolean) : [];
+    const rightWords = right ? right.split(':').filter(Boolean) : [];
+    const missing = 8 - (leftWords.length + rightWords.length);
+    if (missing < 0) return null;
+    words = [...leftWords, ...Array(missing).fill('0'), ...rightWords];
+  } else {
+    words = clean.split(':');
+  }
+
+  if (words.length !== 8) return null;
+  const numWords: number[] = [];
+  for (const w of words) {
+    if (!/^[0-9a-f]{1,4}$/i.test(w)) return null;
+    const val = parseInt(w, 16);
+    if (isNaN(val) || val < 0 || val > 0xffff) return null;
+    numWords.push(val);
+  }
+
+  let bigInt = 0n;
+  for (const w of numWords) {
+    bigInt = (bigInt << 16n) | BigInt(w);
+  }
+  return { words: numWords, bigInt };
+}
+
+/**
+ * Checks whether an IPv6 128-bit BigInt matches a CIDR prefix.
+ */
+export function matchesIpv6Prefix(ip128: bigint, prefixStr: string, prefixLen: number): boolean {
+  const prefixParsed = parseIpv6(prefixStr);
+  if (!prefixParsed) return false;
+  const shift = 128n - BigInt(prefixLen);
+  return (ip128 >> shift) === (prefixParsed.bigInt >> shift);
+}
+
+/**
+ * Evaluates whether an IP address (IPv4 or IPv6 in any representation) is private,
+ * loopback, link-local, cloud metadata, ULA, multicast, or non-routable/reserved.
+ * Returns true if the address is forbidden or invalid (fail-closed).
+ */
+export function isPrivateOrSpecialIp(ip: string): boolean {
+  if (typeof ip !== 'string' || ip.trim().length === 0) return true;
+  const clean = ip.replace(/^\[|\]$/g, '').split('%')[0].trim();
+
+  // Try IPv4 first
+  const v4Num = ipV4ToNumber(clean);
+  if (v4Num !== null) {
+    return isForbiddenIpv4(v4Num);
+  }
+
+  // Try IPv6
+  const parsed6 = parseIpv6(clean);
+  if (!parsed6) {
+    // Malformed/unparseable address format -> fail-closed
     return true;
+  }
+
+  const { bigInt } = parsed6;
+
+  // 1. Direct IPv6 CIDR prefix checks
+  for (const range of FORBIDDEN_IPV6_RANGES) {
+    if (matchesIpv6Prefix(bigInt, range.prefix, range.length)) {
+      return true;
+    }
+  }
+
+  // 2. IPv4-compatible IPv6 (::/96) - deprecated, lower 32 bits embed IPv4
+  if (matchesIpv6Prefix(bigInt, '::', 96)) {
+    const embeddedV4 = Number(bigInt & 0xffffffffn);
+    return isForbiddenIpv4(embeddedV4);
+  }
+
+  // 3. IPv4-mapped IPv6 (::ffff:0:0/96) - lower 32 bits embed IPv4
+  if (matchesIpv6Prefix(bigInt, '::ffff:0:0', 96)) {
+    const embeddedV4 = Number(bigInt & 0xffffffffn);
+    return isForbiddenIpv4(embeddedV4);
+  }
+
+  // 4. Well-Known Prefix IPv4/IPv6 translation (64:ff9b::/96)
+  if (matchesIpv6Prefix(bigInt, '64:ff9b::', 96)) {
+    const embeddedV4 = Number(bigInt & 0xffffffffn);
+    return isForbiddenIpv4(embeddedV4);
+  }
+
+  // 5. 6to4 Anycast (2002::/16) - embeds IPv4 in bits 16..47
+  if (matchesIpv6Prefix(bigInt, '2002::', 16)) {
+    const embeddedV4 = Number((bigInt >> 80n) & 0xffffffffn);
+    return isForbiddenIpv4(embeddedV4);
   }
 
   return false;
@@ -169,7 +327,7 @@ export function validateJwksUri(uriString: string): void {
     }
   }
 
-  const host = parsed.hostname.toLowerCase().replace(/^\[|\]$/g, '');
+  const host = parsed.hostname.toLowerCase().replace(/^\[|\]$/g, '').split('%')[0].trim();
   if (
     host === '169.254.169.254' ||
     host.startsWith('169.254.') ||
@@ -178,7 +336,7 @@ export function validateJwksUri(uriString: string): void {
     throw new Error(`JWKS URI targets forbidden cloud metadata IP ('${parsed.hostname}'). Rejected for SSRF defense.`);
   }
 
-  if (isPrivateOrSpecialIp(host)) {
+  if (net.isIP(host) && isPrivateOrSpecialIp(host)) {
     const isLocalhost = host === '127.0.0.1' || host === '::1';
     if (!isLocalhost || process.env.NODE_ENV === 'production') {
       throw new Error(`JWKS URI targets forbidden private/link-local/metadata IP ('${parsed.hostname}'). Rejected for SSRF defense.`);
@@ -200,7 +358,7 @@ export async function validateJwksHostDns(
   hostname: string,
   dnsLookupFn?: (hostname: string) => Promise<{ address: string; family: number }[]>
 ): Promise<void> {
-  const host = hostname.toLowerCase().replace(/^\[|\]$/g, '');
+  const host = hostname.toLowerCase().replace(/^\[|\]$/g, '').split('%')[0].trim();
   const isLocalhost = host === 'localhost' || host === '127.0.0.1' || host === '::1';
 
   if (isLocalhost && process.env.NODE_ENV !== 'production') {
@@ -239,7 +397,7 @@ export async function validateJwksHostDns(
 
   for (const entry of addresses) {
     const ip = entry.address;
-    if (ip === '169.254.169.254' || ip.startsWith('169.254.')) {
+    if (ip === '169.254.169.254' || ip.startsWith('169.254.') || ip === '::ffff:169.254.169.254') {
       throw new Error(`JWKS URI resolves to forbidden cloud metadata IP '${ip}' for host '${hostname}'. Rejected for SSRF defense.`);
     }
     if (isPrivateOrSpecialIp(ip)) {
@@ -254,7 +412,7 @@ export async function validateJwksHostDns(
  * Performs secure JWKS fetch over HTTPS with in-flight DNS lookup validation
  * to eliminate DNS rebinding (TOCTOU) and strictly blocks HTTP redirects.
  */
-async function fetchSecureJwks(
+export async function fetchSecureJwks(
   jwksUri: string,
   timeoutMs: number,
   dnsLookupFn?: (hostname: string) => Promise<{ address: string; family: number }[]>
@@ -274,51 +432,90 @@ async function fetchSecureJwks(
       }
     }
 
-    const host = parsed.hostname.toLowerCase().replace(/^\[|\]$/g, '');
+    const host = parsed.hostname.toLowerCase().replace(/^\[|\]$/g, '').split('%')[0].trim();
     const isLocalhost = host === 'localhost' || host === '127.0.0.1' || host === '::1';
 
     const ssrfGuardedLookup = (
-      hostname: string,
+      lookupHostname: string,
       options: unknown,
-      callback: (err: Error | null, address?: any, family?: number) => void
+      callback: (err: NodeJS.ErrnoException | null, address: string | dns.LookupAddress[], family?: number) => void
     ) => {
+      const isAll = typeof options === 'object' && options !== null && Boolean((options as Record<string, unknown>).all);
+
       if (dnsLookupFn) {
-        dnsLookupFn(hostname)
+        dnsLookupFn(lookupHostname)
           .then((records) => {
+            if (!records || records.length === 0) {
+              return callback(
+                new Error(
+                  `In-flight DNS resolution for '${lookupHostname}' returned zero records. Rejected fail-closed for SSRF defense.`
+                ) as NodeJS.ErrnoException,
+                []
+              );
+            }
             for (const r of records) {
               const ip = r.address;
               if (
-                ip === '169.254.169.254' ||
-                ip.startsWith('169.254.') ||
-                (isPrivateOrSpecialIp(ip) && (!isLocalhost || process.env.NODE_ENV === 'production'))
+                isPrivateOrSpecialIp(ip) &&
+                (!isLocalhost || process.env.NODE_ENV === 'production')
               ) {
-                return callback(new Error(`In-flight socket connection blocked: '${hostname}' resolved to forbidden IP '${ip}'. Rejected for SSRF defense.`));
+                return callback(
+                  new Error(
+                    `In-flight socket connection blocked: '${lookupHostname}' resolved to forbidden IP '${ip}'. Rejected for SSRF defense.`
+                  ) as NodeJS.ErrnoException,
+                  []
+                );
               }
             }
-            if (records.length > 0) {
-              callback(null, records[0].address, records[0].family);
+            if (isAll) {
+              callback(null, records as dns.LookupAddress[]);
             } else {
-              callback(new Error(`DNS resolution for '${hostname}' returned empty records`));
+              callback(null, records[0].address as unknown as dns.LookupAddress[], records[0].family);
             }
           })
-          .catch((err) => callback(err));
+          .catch((err) => callback(err instanceof Error ? (err as NodeJS.ErrnoException) : new Error(String(err)), []));
         return;
       }
 
-      dns.lookup(hostname, options as any, (err, address, family) => {
-        if (err) return callback(err, address, family);
-        const addresses = Array.isArray(address) ? address : [{ address, family }];
-        for (const entry of addresses) {
-          const ip = typeof entry === 'string' ? entry : entry.address;
+      dns.lookup(lookupHostname, { ...(typeof options === 'object' && options !== null ? options : {}), all: true }, (err, addresses) => {
+        if (err) return callback(err, []);
+        const list = Array.isArray(addresses) ? addresses : [addresses];
+        if (list.length === 0) {
+          return callback(
+            new Error(`In-flight DNS resolution for '${lookupHostname}' returned zero records. Rejected fail-closed for SSRF defense.`) as NodeJS.ErrnoException,
+            []
+          );
+        }
+        for (const entry of list) {
+          const ip = typeof entry === 'string' ? entry : entry?.address;
+          if (!ip) {
+            return callback(
+              new Error(`In-flight DNS lookup returned empty IP for '${lookupHostname}'. Rejected fail-closed.`) as NodeJS.ErrnoException,
+              []
+            );
+          }
           if (
-            ip === '169.254.169.254' ||
-            ip.startsWith('169.254.') ||
-            (isPrivateOrSpecialIp(ip) && (!isLocalhost || process.env.NODE_ENV === 'production'))
+            isPrivateOrSpecialIp(ip) &&
+            (!isLocalhost || process.env.NODE_ENV === 'production')
           ) {
-            return callback(new Error(`In-flight socket connection blocked: '${hostname}' resolved to forbidden IP '${ip}'. Rejected for SSRF defense.`));
+            return callback(
+              new Error(
+                `In-flight socket connection blocked: '${lookupHostname}' resolved to forbidden IP '${ip}'. Rejected for SSRF defense.`
+              ) as NodeJS.ErrnoException,
+              []
+            );
           }
         }
-        callback(null, address, family);
+        if (isAll) {
+          callback(null, list as dns.LookupAddress[]);
+        } else {
+          const first = list[0];
+          if (typeof first === 'string') {
+            callback(null, first as unknown as dns.LookupAddress[], 4);
+          } else {
+            callback(null, first.address as unknown as dns.LookupAddress[], first.family);
+          }
+        }
       });
     };
 
@@ -326,11 +523,11 @@ async function fetchSecureJwks(
       {
         protocol: parsed.protocol,
         hostname: parsed.hostname,
-        port: parsed.port || 443,
+        port: parsed.port ? parseInt(parsed.port, 10) : 443,
         path: `${parsed.pathname}${parsed.search}`,
         method: 'GET',
         headers: { Accept: 'application/json' },
-        lookup: ssrfGuardedLookup,
+        lookup: ssrfGuardedLookup as unknown as https.RequestOptions['lookup'],
         timeout: timeoutMs,
       },
       (res) => {
@@ -1229,7 +1426,8 @@ export class OidcIdentityProviderAdapter implements ITrustedIdentityProvider {
 
     // Mark nonce permanently seen/consumed now that all checks passed
     if (this.nonceStore && !options?.dryRun) {
-      await this.nonceStore.markNonceSeen(nonce);
+      const tokenExpMs = typeof exp === 'number' ? parseJwtDateMs(exp) : undefined;
+      await this.nonceStore.markNonceSeen(nonce, tokenExpMs);
     }
 
     // 7. Successful External Verification

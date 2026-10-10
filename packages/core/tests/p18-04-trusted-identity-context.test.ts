@@ -26,6 +26,7 @@ import * as fs from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import * as cp from 'node:child_process';
+import * as https from 'node:https';
 
 import {
   HumanApprovalEngine,
@@ -37,11 +38,17 @@ import {
   HistoryManager,
   DurableStateManager,
   NonceStore,
+  withInProcessLock,
+  inProcessLockQueues,
   withCrossProcessNonceLock,
   OidcIdentityProviderAdapter,
   MtlsIdentityProviderAdapter,
   UnconfiguredIdentityProviderAdapter,
   TestDoubleIdentityProviderAdapter,
+  fetchSecureJwks,
+  isPrivateOrSpecialIp,
+  validateJwksHostDns,
+  validateJwksUri,
   maskToken,
   sanitizeForAudit,
   ExecutionBridge,
@@ -2166,6 +2173,391 @@ describe('Phase 18 TASK-P18-04 — Trusted Identity Context Architecture & Verif
     assert.equal(resUnresolvable.isValid, false);
     assert.equal(resUnresolvable.status, 'CONFIG_MISSING');
     assert.ok(resUnresolvable.reason.includes('could not be resolved via DNS'));
+  });
+
+  // SEC-21: Comprehensive IPv4 and IPv6 SSRF defense across loopback, private, link-local, cloud metadata, ULA, multicast, and IPv4-mapped representations
+  it('SEC-21: Comprehensive IPv4 and IPv6 SSRF defense across loopback, private, link-local, metadata, ULA, multicast, and IPv4-mapped representations', () => {
+    // Proves: All forbidden RFC address families (private, loopback, link-local, metadata, ULA, multicast, IPv4-mapped, IPv4-compatible, reserved)
+    // are rejected fail-closed, while valid public IPv4 and IPv6 addresses are permitted.
+    const forbiddenAddresses = [
+      // IPv4 Loopback & Private
+      '127.0.0.1',
+      '127.255.255.255',
+      '10.0.0.1',
+      '10.255.255.254',
+      '172.16.0.1',
+      '172.31.255.255',
+      '192.168.0.1',
+      '192.168.255.254',
+      // IPv4 Link-Local & Cloud Metadata
+      '169.254.169.254',
+      '169.254.1.1',
+      // IPv4 CGNAT & Protocol Assignments & Test nets & Multicast & Reserved
+      '100.64.0.1',
+      '100.127.255.255',
+      '192.0.2.1',
+      '198.18.0.1',
+      '198.51.100.1',
+      '203.0.113.1',
+      '224.0.0.1',
+      '239.255.255.255',
+      '240.0.0.1',
+      '255.255.255.255',
+      '0.0.0.0',
+      // IPv6 Loopback & Unspecified
+      '::1',
+      '0:0:0:0:0:0:0:1',
+      '0000:0000:0000:0000:0000:0000:0000:0001',
+      '::',
+      '0:0:0:0:0:0:0:0',
+      // IPv6 Link-Local
+      'fe80::1',
+      'fe80::dead:beef',
+      'febf:ffff:ffff:ffff:ffff:ffff:ffff:ffff',
+      // IPv6 Unique Local Address (ULA)
+      'fc00::1',
+      'fd00::1',
+      'fd12:3456:789a:1::1',
+      // IPv6 Multicast
+      'ff02::1',
+      'ff05::2',
+      // IPv6 Documentation & Benchmarking & ORCHID
+      '2001:db8::1',
+      '2001:2::1',
+      '2001:20::1',
+      // IPv4-mapped IPv6
+      '::ffff:127.0.0.1',
+      '::ffff:10.0.0.1',
+      '::ffff:169.254.169.254',
+      '::ffff:192.168.1.1',
+      '[::ffff:127.0.0.1]',
+      // IPv4-compatible IPv6 (deprecated)
+      '::127.0.0.1',
+      '::10.0.0.1',
+      // IPv4/IPv6 translation
+      '64:ff9b::10.0.0.1',
+      '64:ff9b:1::1',
+      // 6to4 embedding private IPv4
+      '2002:0a00:0001::',
+      // Malformed / Non-canonical IP formats (fail-closed)
+      '999.999.999.999',
+      '0177.0.0.1', // octal bypass attempt
+      'invalid:::ipv6',
+      '',
+    ];
+
+    for (const ip of forbiddenAddresses) {
+      assert.equal(
+        isPrivateOrSpecialIp(ip),
+        true,
+        `Forbidden IP '${ip}' MUST be rejected by SSRF defense`
+      );
+    }
+
+    // Public IPs must not be falsely blocked
+    const legitimatePublicIps = [
+      '93.184.216.34', // example.com
+      '8.8.8.8', // Google DNS
+      '1.1.1.1', // Cloudflare DNS
+      '2606:4700:4700::1111', // Cloudflare public IPv6
+      '2001:4860:4860::8888', // Google public IPv6
+    ];
+
+    for (const pubIp of legitimatePublicIps) {
+      assert.equal(
+        isPrivateOrSpecialIp(pubIp),
+        false,
+        `Legitimate public IP '${pubIp}' should not be blocked`
+      );
+    }
+  });
+
+  // SEC-22: Real DNS rebinding (TOCTOU) defense rejects in-flight connection before socket is opened
+  it('SEC-22: Real DNS rebinding (TOCTOU) defense rejects in-flight connection before socket is opened', async () => {
+    // Proves: Even if pre-flight DNS lookup resolves to a legitimate public IP, when the in-flight
+    // TLS connection lookup resolves to a forbidden IP (e.g. 127.0.0.1, 169.254.169.254, or fe80::1),
+    // fetchSecureJwks intercepts it at socket creation, aborts immediately, and verifies assertion fails closed.
+    const binding: TrustedApprovalBinding = {
+      projectId,
+      packageId: 'pkg-sec-22',
+      revision: 1,
+      contextFingerprint,
+    };
+    const claims: TrustedIdentityClaim = {
+      identityId: 'id-01',
+      issuer: 'https://auth.company.corp',
+      audience: 'aidm-core-platform',
+      subject: 'alice@company.corp',
+      actorRole: 'PRODUCT_OWNER',
+      issuedAt: new Date().toISOString(),
+      expiresAt: new Date(Date.now() + 600000).toISOString(),
+      nonce: `nonce-${crypto.randomUUID()}`,
+      authMethod: 'OIDC',
+    };
+    const token = createSignedJwt(claims, rsaPrivateKeyPem, binding);
+
+    let rebindingCallCount = 0;
+    const dnsLookupFn = async () => {
+      rebindingCallCount++;
+      if (rebindingCallCount === 1) {
+        // Pre-flight check sees a public IP
+        return [{ address: '93.184.216.34', family: 4 }];
+      }
+      // In-flight connection lookup rebinds to internal loopback!
+      return [{ address: '127.0.0.1', family: 4 }];
+    };
+
+    const rebindAdapter = new OidcIdentityProviderAdapter({
+      issuer: 'https://auth.company.corp',
+      audience: 'aidm-core-platform',
+      jwksUri: 'https://rebind-attack.victim.corp/keys',
+      dnsLookupFn,
+    });
+
+    const res = await rebindAdapter.verifyAssertion({ token, binding }, binding);
+    assert.equal(res.isValid, false);
+    assert.equal(res.status, 'PROVIDER_OUTAGE');
+    assert.equal(res.code, 'BLOCKED_ON_AUTH_CONTEXT');
+    assert.ok(
+      res.reason.includes('In-flight socket connection blocked'),
+      `Expected in-flight rejection reason, got: ${res.reason}`
+    );
+
+    // Direct test of fetchSecureJwks proving in-flight rejection error
+    const directDnsRebind = async () => {
+      return [{ address: '169.254.169.254', family: 4 }];
+    };
+
+    await assert.rejects(
+      async () => {
+        await fetchSecureJwks('https://rebind-attack.victim.corp/keys', 5000, directDnsRebind);
+      },
+      /In-flight socket connection blocked: 'rebind-attack\.victim\.corp' resolved to forbidden IP '169\.254\.169\.254'/
+    );
+  });
+
+  // SEC-23: Multiple DNS records with any forbidden address strictly fail closed
+  it('SEC-23: Multiple DNS records with any forbidden address strictly fail closed', async () => {
+    // Proves: If a domain resolves to multiple A/AAAA records where one is public and one is private,
+    // both pre-flight DNS validation and in-flight socket lookup fail closed.
+    const multiRecordDns = async () => [
+      { address: '93.184.216.34', family: 4 },
+      { address: '10.0.0.1', family: 4 }, // RFC1918 poison
+    ];
+
+    await assert.rejects(
+      async () => {
+        await validateJwksHostDns('dual-homed.evil.corp', multiRecordDns);
+      },
+      /JWKS URI resolves to forbidden private\/link-local\/metadata IP '10\.0\.0\.1'/
+    );
+
+    // Also in-flight fetchSecureJwks rejection
+    await assert.rejects(
+      async () => {
+        await fetchSecureJwks('https://dual-homed.evil.corp/keys', 5000, multiRecordDns);
+      },
+      /In-flight socket connection blocked: 'dual-homed\.evil\.corp' resolved to forbidden IP '10\.0\.0\.1'/
+    );
+
+    // IPv6 poison in multiple records
+    const multiIpv6Dns = async () => [
+      { address: '2606:4700:4700::1111', family: 6 },
+      { address: '::1', family: 6 }, // Loopback poison
+    ];
+
+    await assert.rejects(
+      async () => {
+        await validateJwksHostDns('dual-homed-ipv6.evil.corp', multiIpv6Dns);
+      },
+      /JWKS URI resolves to forbidden private\/link-local\/metadata IP '::1'/
+    );
+  });
+
+  // SEC-24: Fail-closed handling of DNS resolution errors, empty responses, and malformed address entries
+  it('SEC-24: Fail-closed handling of DNS resolution errors, empty responses, and malformed address entries', async () => {
+    // Proves: DNS lookups yielding errors, 0 records, or malformed entries fail closed without connecting.
+    const errorDns = async () => {
+      throw new Error('getaddrinfo ENOTFOUND nxdomain.corp');
+    };
+
+    await assert.rejects(
+      async () => {
+        await validateJwksHostDns('nxdomain.corp', errorDns);
+      },
+      /could not be resolved via DNS/
+    );
+
+    const emptyDns = async () => [];
+    await assert.rejects(
+      async () => {
+        await validateJwksHostDns('empty.corp', emptyDns);
+      },
+      /yielded zero DNS address records/
+    );
+
+    await assert.rejects(
+      async () => {
+        await fetchSecureJwks('https://empty.corp/keys', 5000, emptyDns);
+      },
+      /In-flight DNS resolution for 'empty\.corp' returned zero records/
+    );
+
+    const malformedIpDns = async () => [{ address: 'not-an-ip-address', family: 4 }];
+    await assert.rejects(
+      async () => {
+        await validateJwksHostDns('malformed.corp', malformedIpDns);
+      },
+      /forbidden private\/link-local\/metadata IP/
+    );
+  });
+
+  // SEC-25: In-flight HTTP redirect blocking and metadata host defense
+  it('SEC-25: In-flight HTTP redirect blocking and metadata host defense', async () => {
+    // Proves: HTTP 3xx redirects over genuine TLS connection are blocked, and metadata hosts/credentials fail-closed.
+    const pfxBase64 = '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';
+    const originalRejectUnauthorized = process.env.NODE_TLS_REJECT_UNAUTHORIZED;
+    process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
+
+    const testServer = https.createServer(
+      { pfx: Buffer.from(pfxBase64, 'base64'), passphrase: 'test' },
+      (_req, res) => {
+        res.writeHead(302, { Location: 'https://169.254.169.254/latest/meta-data' });
+        res.end();
+      }
+    );
+
+    await new Promise<void>((resolve) => {
+      testServer.listen(0, '127.0.0.1', () => resolve());
+    });
+
+    const port = (testServer.address() as any).port;
+
+    try {
+      await assert.rejects(
+        async () => {
+          await fetchSecureJwks(`https://127.0.0.1:${port}/keys`, 5000);
+        },
+        /JWKS endpoint attempted redirect to 'https:\/\/169\.254\.169\.254\/latest\/meta-data'\. Automatic redirects are blocked for SSRF defense\./
+      );
+    } finally {
+      process.env.NODE_TLS_REJECT_UNAUTHORIZED = originalRejectUnauthorized;
+      await new Promise<void>((resolve) => testServer.close(() => resolve()));
+    }
+
+    // Direct syntactic checks on metadata hostnames and user credentials
+    assert.throws(
+      () => validateJwksUri('https://metadata.google.internal/computeMetadata/v1/'),
+      /targets forbidden cloud metadata IP/
+    );
+
+    assert.throws(
+      () => validateJwksUri('https://169.254.169.254/keys'),
+      /targets forbidden cloud metadata IP/
+    );
+
+    assert.throws(
+      () => validateJwksUri('https://admin:secret@auth.company.corp/keys'),
+      /must not contain embedded user credentials/
+    );
+
+    assert.throws(
+      () => validateJwksUri('https://auth.company.corp:8080/keys'),
+      /Non-standard port '8080' on JWKS URI is prohibited/
+    );
+  });
+
+  // SEC-26: In-process mutex queue clean lifecycle and zero-leak cleanup
+  it('SEC-26: In-process mutex queue clean lifecycle and zero-leak cleanup', async () => {
+    // Proves: withInProcessLock retains identical promise identity, executes sequentially without race,
+    // cleans up map entries back to 0, handles operation rejections without poisoning, and doesn't leak on 50+ paths.
+    const fileA = path.join(tempDir, `lock-a-${crypto.randomUUID()}.json`);
+
+    const executionLog: string[] = [];
+
+    // 26a. Concurrent operations on same file execute in strict sequence
+    const op1 = withInProcessLock(fileA, async () => {
+      await new Promise((r) => setTimeout(r, 60));
+      executionLog.push('op1');
+      return 1;
+    });
+
+    const op2 = withInProcessLock(fileA, async () => {
+      executionLog.push('op2');
+      return 2;
+    });
+
+    const op3 = withInProcessLock(fileA, async () => {
+      executionLog.push('op3');
+      throw new Error('op3 expected failure');
+    });
+
+    const op4 = withInProcessLock(fileA, async () => {
+      executionLog.push('op4');
+      return 4;
+    });
+
+    const results = await Promise.allSettled([op1, op2, op3, op4]);
+    assert.deepEqual(executionLog, ['op1', 'op2', 'op3', 'op4'], 'Operations MUST execute in strict serialization');
+    assert.equal(results[0].status, 'fulfilled');
+    assert.equal(results[1].status, 'fulfilled');
+    assert.equal(results[2].status, 'rejected');
+    assert.equal(results[3].status, 'fulfilled', 'op4 MUST NOT be poisoned by op3 rejection');
+
+    // Queue for fileA must be cleanly deleted from Map
+    const normA = path.resolve(fileA);
+    assert.equal(inProcessLockQueues.has(normA), false, 'Queue entry for fileA must be deleted after settlement');
+
+    // 26b. High cardinality distinct paths must not accumulate queue entries
+    const distinctOps = [];
+    for (let i = 0; i < 60; i++) {
+      const distinctFile = path.join(tempDir, `distinct-path-${i}.json`);
+      distinctOps.push(
+        withInProcessLock(distinctFile, async () => {
+          return i * 2;
+        })
+      );
+    }
+
+    const distinctResults = await Promise.all(distinctOps);
+    assert.equal(distinctResults.length, 60);
+    assert.equal(inProcessLockQueues.size, 0, 'inProcessLockQueues Map must have 0 size after all operations complete');
+  });
+
+  // SEC-27: Persistent nonce replay retention beyond 2,000 nonces and restart durability
+  it('SEC-27: Persistent nonce replay retention beyond 2,000 nonces and restart durability', async () => {
+    // Proves: The vulnerable 2,000 nonce list slice is eliminated. Consuming >2,000 unique nonces
+    // does not evict valid nonces, and attempts to replay the first nonce are strictly rejected across restarts.
+    const customNonceFile = path.join(tempDir, `large-nonce-store-${crypto.randomUUID()}.json`);
+    const store = new NonceStore({ filePath: customNonceFile });
+
+    const firstNonce = `first-critical-nonce-${crypto.randomUUID()}`;
+    const initialMarked = await store.markNonceSeen(firstNonce);
+    assert.equal(initialMarked, true, 'First nonce must be marked seen initially');
+
+    // Consume 2,050 unique nonces
+    const largeBatch: string[] = [];
+    for (let i = 1; i <= 2050; i++) {
+      largeBatch.push(`batch-nonce-${i}-${crypto.randomUUID()}`);
+    }
+
+    const batchCount = await store.markNoncesSeenBatch(largeBatch);
+    assert.equal(batchCount, 2050, 'All 2,050 batch nonces must be persisted');
+
+    // Replay attempt on the first nonce MUST FAIL (firstNonce must NOT have been evicted!)
+    const replayAttempt = await store.markNonceSeen(firstNonce);
+    assert.equal(replayAttempt, false, 'First nonce MUST NOT be evicted or accepted for replay after 2,050 nonces');
+
+    const isFirstSeen = await store.isNonceSeen(firstNonce);
+    assert.equal(isFirstSeen, true, 'First nonce must be reported as seen');
+
+    // Restart verification: Independent NonceStore instance simulating process restart
+    const restartedStore = new NonceStore({ filePath: customNonceFile });
+    const restartReplayAttempt = await restartedStore.markNonceSeen(firstNonce);
+    assert.equal(restartReplayAttempt, false, 'Restarted store MUST detect replay of first nonce');
+
+    const restartIsSeen = await restartedStore.isNonceSeen(firstNonce);
+    assert.equal(restartIsSeen, true, 'Restarted store must find first nonce in persistent storage');
   });
 });
 
