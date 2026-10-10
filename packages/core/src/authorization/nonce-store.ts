@@ -23,6 +23,243 @@ export function isValidNonceTimestamp(val: unknown): val is number {
 }
 
 /**
+ * Computes and strictly validates the expiration timestamp for a nonce reservation.
+ *
+ * Requirements & Unit Semantics:
+ * - `now`: Current epoch timestamp in milliseconds (Date.now()). Must satisfy `isValidNonceTimestamp(now)`.
+ * - `ttlMs`: Requested time-to-live duration in milliseconds. Must be a positive finite safe number (> 0 and <= Number.MAX_SAFE_INTEGER).
+ * - Calculation: `now + ttlMs`.
+ * - Persistence constraint: Must satisfy `isValidNonceTimestamp(expiresAt)` (finite, non-negative, <= Number.MAX_SAFE_INTEGER).
+ *
+ * Fail-Closed Defense:
+ * Even if `ttlMs` independently passes input checking (e.g. `Number.MAX_SAFE_INTEGER`),
+ * the resulting addition `now + ttlMs` exceeds `Number.MAX_SAFE_INTEGER` and overflows JavaScript safe
+ * integer arithmetic. This function detects arithmetic overflow post-calculation and throws `StorageError`
+ * before any persistent mutation or disk write occurs.
+ *
+ * @param now Current epoch timestamp in milliseconds
+ * @param ttlMs Time-to-live duration in milliseconds
+ * @param filePath Nonce store file path for error context
+ * @returns Safe reservation expiration epoch timestamp in milliseconds
+ * @throws StorageError if input or calculated timestamp exceeds safe integer bounds
+ */
+export function computeReservationExpiresAt(
+  now: number,
+  ttlMs: number,
+  filePath: string
+): number {
+  if (!isValidNonceTimestamp(now)) {
+    throw new StorageError(
+      `Invalid current timestamp: ${now}. Must be non-negative finite safe number.`,
+      { filePath, operation: 'reserveNonce' }
+    );
+  }
+
+  if (!isValidNonceTimestamp(ttlMs) || ttlMs === 0) {
+    throw new StorageError(
+      `Invalid ttlMs: ${ttlMs}. Expected positive finite safe number.`,
+      { filePath, operation: 'reserveNonce' }
+    );
+  }
+
+  const expiresAt = now + ttlMs;
+  if (!isValidNonceTimestamp(expiresAt)) {
+    throw new StorageError(
+      `Calculated reservation expiration timestamp (${now} + ${ttlMs} = ${expiresAt}) exceeds safe bounds (0 - Number.MAX_SAFE_INTEGER).`,
+      { filePath, operation: 'reserveNonce' }
+    );
+  }
+
+  return expiresAt;
+}
+
+/**
+ * Computes and strictly validates the retention expiration timestamp (`retentionUntil`)
+ * for seen nonces.
+ *
+ * Input type, unit semantics, and compatibility rules:
+ * 1. `optionsOrExpiresAt` = undefined | null:
+ *    - Uses default retention window: `now + defaultRetentionMs`.
+ *
+ * 2. `optionsOrExpiresAt` = number:
+ *    - Must satisfy `isValidNonceTimestamp(optionsOrExpiresAt)`.
+ *    - If `> 1e11`: Treated as absolute Unix epoch milliseconds (e.g. standard timestamps > 1973 AD).
+ *      Calculated candidate: `optionsOrExpiresAt + clockSkewMs`.
+ *      Retention is `Math.max(calculated, now + defaultRetentionMs)`.
+ *    - If `> 1e9` and `<= 1e11`: Treated as absolute Unix epoch seconds (Unix timestamp).
+ *      Converted to ms: `optionsOrExpiresAt * 1000`.
+ *      Calculated candidate: `(optionsOrExpiresAt * 1000) + clockSkewMs`.
+ *      Retention is `Math.max(calculated, now + defaultRetentionMs)`.
+ *    - If `<= 1e9`: Treated as relative TTL duration in milliseconds (up to ~11.5 days).
+ *      Calculated candidate: `now + Math.max(optionsOrExpiresAt, defaultRetentionMs)`.
+ *
+ * 3. `optionsOrExpiresAt` = object (`{ expiresAt?: number; ttlMs?: number }`):
+ *    - If `expiresAt` is present:
+ *      Must satisfy `isValidNonceTimestamp(expiresAt)`.
+ *      Converted: `expMs = expiresAt > 1e11 ? expiresAt : expiresAt * 1000`.
+ *      Calculated candidate: `expMs + clockSkewMs`.
+ *      Retention is `Math.max(calculated, now + defaultRetentionMs)`.
+ *    - Else if `ttlMs` is present:
+ *      Must satisfy `isValidNonceTimestamp(ttlMs)`.
+ *      Calculated candidate: `now + Math.max(ttlMs, defaultRetentionMs)`.
+ *    - Else:
+ *      Calculated candidate: `now + defaultRetentionMs`.
+ *
+ * Fail-Closed Post-Calculation Validation:
+ * - Every arithmetic step (`optionsOrExpiresAt + clockSkewMs`, `expMs + clockSkewMs`, `now + ttlMs`, `now + defaultRetentionMs`)
+ *   is strictly bounded: candidate <= Number.MAX_SAFE_INTEGER and Number.isFinite(candidate).
+ * - If any calculation overflows Number.MAX_SAFE_INTEGER (e.g. expiresAt = Number.MAX_SAFE_INTEGER or ttlMs = Number.MAX_SAFE_INTEGER),
+ *   it is rejected immediately with `StorageError` before acquiring locks or mutating state.
+ *
+ * @param now Current epoch timestamp in milliseconds
+ * @param optionsOrExpiresAt Expiration or TTL specification
+ * @param defaultRetentionMs Default retention period in milliseconds
+ * @param clockSkewMs Allowed clock skew tolerance in milliseconds
+ * @param filePath Nonce store file path for error context
+ * @param operation Operation name for error context
+ * @returns Safe retention epoch timestamp in milliseconds
+ * @throws StorageError if input or calculated timestamp exceeds safe bounds
+ */
+export function calculateRetentionUntil(
+  now: number,
+  optionsOrExpiresAt: number | { expiresAt?: number; ttlMs?: number } | undefined,
+  defaultRetentionMs: number,
+  clockSkewMs: number,
+  filePath: string,
+  operation: string
+): number {
+  if (!isValidNonceTimestamp(now)) {
+    throw new StorageError(
+      `Invalid current timestamp: ${now}. Must be non-negative finite safe number.`,
+      { filePath, operation }
+    );
+  }
+  if (!isValidNonceTimestamp(defaultRetentionMs)) {
+    throw new StorageError(
+      `Invalid defaultRetentionMs: ${defaultRetentionMs}. Must be non-negative finite safe number.`,
+      { filePath, operation }
+    );
+  }
+  if (!isValidNonceTimestamp(clockSkewMs)) {
+    throw new StorageError(
+      `Invalid clockSkewMs: ${clockSkewMs}. Must be non-negative finite safe number.`,
+      { filePath, operation }
+    );
+  }
+
+  const defaultRetentionUntil = now + defaultRetentionMs;
+  if (!isValidNonceTimestamp(defaultRetentionUntil)) {
+    throw new StorageError(
+      `Calculated default retention timestamp (${now} + ${defaultRetentionMs} = ${defaultRetentionUntil}) exceeds safe bounds (0 - Number.MAX_SAFE_INTEGER).`,
+      { filePath, operation }
+    );
+  }
+
+  let retentionUntil: number;
+
+  if (typeof optionsOrExpiresAt === 'number') {
+    if (!isValidNonceTimestamp(optionsOrExpiresAt)) {
+      throw new StorageError(
+        `Invalid expiration/ttl timestamp: ${optionsOrExpiresAt}. Must be non-negative finite safe number.`,
+        { filePath, operation }
+      );
+    }
+
+    if (optionsOrExpiresAt > 1e11) {
+      const expCandidate = optionsOrExpiresAt + clockSkewMs;
+      if (!isValidNonceTimestamp(expCandidate)) {
+        throw new StorageError(
+          `Calculated retention timestamp (${optionsOrExpiresAt} + clockSkewMs ${clockSkewMs} = ${expCandidate}) exceeds safe bounds (0 - Number.MAX_SAFE_INTEGER).`,
+          { filePath, operation }
+        );
+      }
+      retentionUntil = Math.max(expCandidate, defaultRetentionUntil);
+    } else if (optionsOrExpiresAt > 1e9) {
+      const expMs = optionsOrExpiresAt * 1000;
+      if (!isValidNonceTimestamp(expMs)) {
+        throw new StorageError(
+          `Calculated expiration timestamp in milliseconds (${optionsOrExpiresAt} * 1000 = ${expMs}) exceeds safe bounds.`,
+          { filePath, operation }
+        );
+      }
+      const expCandidate = expMs + clockSkewMs;
+      if (!isValidNonceTimestamp(expCandidate)) {
+        throw new StorageError(
+          `Calculated retention timestamp (${expMs} + clockSkewMs ${clockSkewMs} = ${expCandidate}) exceeds safe bounds (0 - Number.MAX_SAFE_INTEGER).`,
+          { filePath, operation }
+        );
+      }
+      retentionUntil = Math.max(expCandidate, defaultRetentionUntil);
+    } else {
+      const candidate = now + Math.max(optionsOrExpiresAt, defaultRetentionMs);
+      if (!isValidNonceTimestamp(candidate)) {
+        throw new StorageError(
+          `Calculated retention timestamp (${now} + TTL ${optionsOrExpiresAt} = ${candidate}) exceeds safe bounds (0 - Number.MAX_SAFE_INTEGER).`,
+          { filePath, operation }
+        );
+      }
+      retentionUntil = candidate;
+    }
+  } else if (optionsOrExpiresAt && typeof optionsOrExpiresAt === 'object') {
+    if (optionsOrExpiresAt.expiresAt !== undefined) {
+      if (!isValidNonceTimestamp(optionsOrExpiresAt.expiresAt)) {
+        throw new StorageError(
+          `Invalid expiresAt timestamp: ${optionsOrExpiresAt.expiresAt}. Must be non-negative finite safe number.`,
+          { filePath, operation }
+        );
+      }
+      const expMs =
+        optionsOrExpiresAt.expiresAt > 1e11
+          ? optionsOrExpiresAt.expiresAt
+          : optionsOrExpiresAt.expiresAt * 1000;
+      if (!isValidNonceTimestamp(expMs)) {
+        throw new StorageError(
+          `Calculated expiresAt in milliseconds (${expMs}) exceeds safe bounds.`,
+          { filePath, operation }
+        );
+      }
+      const expCandidate = expMs + clockSkewMs;
+      if (!isValidNonceTimestamp(expCandidate)) {
+        throw new StorageError(
+          `Calculated retention timestamp (${expMs} + clockSkewMs ${clockSkewMs} = ${expCandidate}) exceeds safe bounds (0 - Number.MAX_SAFE_INTEGER).`,
+          { filePath, operation }
+        );
+      }
+      retentionUntil = Math.max(expCandidate, defaultRetentionUntil);
+    } else if (optionsOrExpiresAt.ttlMs !== undefined) {
+      if (!isValidNonceTimestamp(optionsOrExpiresAt.ttlMs)) {
+        throw new StorageError(
+          `Invalid ttlMs: ${optionsOrExpiresAt.ttlMs}. Must be non-negative finite safe number.`,
+          { filePath, operation }
+        );
+      }
+      const candidate = now + Math.max(optionsOrExpiresAt.ttlMs, defaultRetentionMs);
+      if (!isValidNonceTimestamp(candidate)) {
+        throw new StorageError(
+          `Calculated retention timestamp (${now} + TTL ${optionsOrExpiresAt.ttlMs} = ${candidate}) exceeds safe bounds (0 - Number.MAX_SAFE_INTEGER).`,
+          { filePath, operation }
+        );
+      }
+      retentionUntil = candidate;
+    } else {
+      retentionUntil = defaultRetentionUntil;
+    }
+  } else {
+    retentionUntil = defaultRetentionUntil;
+  }
+
+  if (!isValidNonceTimestamp(retentionUntil)) {
+    throw new StorageError(
+      `Calculated retention timestamp ${retentionUntil} is invalid or exceeds safe bounds (0 - Number.MAX_SAFE_INTEGER).`,
+      { filePath, operation }
+    );
+  }
+
+  return retentionUntil;
+}
+
+
+/**
  * Persisted schema specification and backward-compatibility rules:
  *
  * 1. Root structure:
@@ -189,8 +426,30 @@ export class NonceStore {
       const baseDir = options?.baseDir ?? process.cwd();
       this.filePath = path.join(baseDir, '.ai-manager', 'state', 'seen-nonces.json');
     }
-    this.defaultRetentionMs = options?.defaultRetentionMs ?? 24 * 60 * 60 * 1000;
-    this.clockSkewMs = options?.clockSkewMs ?? 5 * 60 * 1000;
+
+    if (options?.defaultRetentionMs !== undefined) {
+      if (!isValidNonceTimestamp(options.defaultRetentionMs)) {
+        throw new StorageError(
+          `Invalid defaultRetentionMs: ${options.defaultRetentionMs}. Must be non-negative finite safe number.`,
+          { filePath: this.filePath, operation: 'constructor' }
+        );
+      }
+      this.defaultRetentionMs = options.defaultRetentionMs;
+    } else {
+      this.defaultRetentionMs = 24 * 60 * 60 * 1000;
+    }
+
+    if (options?.clockSkewMs !== undefined) {
+      if (!isValidNonceTimestamp(options.clockSkewMs)) {
+        throw new StorageError(
+          `Invalid clockSkewMs: ${options.clockSkewMs}. Must be non-negative finite safe number.`,
+          { filePath: this.filePath, operation: 'constructor' }
+        );
+      }
+      this.clockSkewMs = options.clockSkewMs;
+    } else {
+      this.clockSkewMs = 5 * 60 * 1000;
+    }
   }
 
   /**
@@ -405,6 +664,7 @@ export class NonceStore {
     return withCrossProcessNonceLock(this.filePath, async () => {
       const state = await this.readStateUnderLock();
       const now = Date.now();
+      const expiresAt = computeReservationExpiresAt(now, ttlMs, this.filePath);
 
       if (state.seen.includes(nonce)) {
         return false;
@@ -414,7 +674,7 @@ export class NonceStore {
         return false;
       }
 
-      state.reserved[nonce] = now + ttlMs;
+      state.reserved[nonce] = expiresAt;
       await atomicWriteJson(this.filePath, state);
       return true;
     });
@@ -461,63 +721,18 @@ export class NonceStore {
 
     return withCrossProcessNonceLock(this.filePath, async () => {
       const state = await this.readStateUnderLock();
+      const now = Date.now();
+      const retentionUntil = calculateRetentionUntil(
+        now,
+        optionsOrExpiresAt,
+        this.defaultRetentionMs,
+        this.clockSkewMs,
+        this.filePath,
+        'markNonceSeen'
+      );
 
       if (state.seen.includes(nonce)) {
         return false;
-      }
-
-      const now = Date.now();
-      let retentionUntil: number;
-
-      if (typeof optionsOrExpiresAt === 'number') {
-        if (!isValidNonceTimestamp(optionsOrExpiresAt)) {
-          throw new StorageError(
-            `Invalid expiration/ttl timestamp: ${optionsOrExpiresAt}. Must be non-negative finite safe number.`,
-            {
-              filePath: this.filePath,
-              operation: 'markNonceSeen',
-            }
-          );
-        }
-        if (optionsOrExpiresAt > 1e11) {
-          retentionUntil = Math.max(optionsOrExpiresAt + this.clockSkewMs, now + this.defaultRetentionMs);
-        } else if (optionsOrExpiresAt > 1e9) {
-          retentionUntil = Math.max(optionsOrExpiresAt * 1000 + this.clockSkewMs, now + this.defaultRetentionMs);
-        } else {
-          retentionUntil = now + Math.max(optionsOrExpiresAt, this.defaultRetentionMs);
-        }
-      } else if (optionsOrExpiresAt && typeof optionsOrExpiresAt === 'object') {
-        if (optionsOrExpiresAt.expiresAt !== undefined) {
-          if (!isValidNonceTimestamp(optionsOrExpiresAt.expiresAt)) {
-            throw new StorageError(
-              `Invalid expiresAt timestamp: ${optionsOrExpiresAt.expiresAt}. Must be non-negative finite safe number.`,
-              {
-                filePath: this.filePath,
-                operation: 'markNonceSeen',
-              }
-            );
-          }
-          const expMs =
-            optionsOrExpiresAt.expiresAt > 1e11
-              ? optionsOrExpiresAt.expiresAt
-              : optionsOrExpiresAt.expiresAt * 1000;
-          retentionUntil = Math.max(expMs + this.clockSkewMs, now + this.defaultRetentionMs);
-        } else if (optionsOrExpiresAt.ttlMs !== undefined) {
-          if (!isValidNonceTimestamp(optionsOrExpiresAt.ttlMs)) {
-            throw new StorageError(
-              `Invalid ttlMs: ${optionsOrExpiresAt.ttlMs}. Must be non-negative finite safe number.`,
-              {
-                filePath: this.filePath,
-                operation: 'markNonceSeen',
-              }
-            );
-          }
-          retentionUntil = now + Math.max(optionsOrExpiresAt.ttlMs, this.defaultRetentionMs);
-        } else {
-          retentionUntil = now + this.defaultRetentionMs;
-        }
-      } else {
-        retentionUntil = now + this.defaultRetentionMs;
       }
 
       state.seen.push(nonce);
@@ -547,52 +762,14 @@ export class NonceStore {
     return withCrossProcessNonceLock(this.filePath, async () => {
       const state = await this.readStateUnderLock();
       const now = Date.now();
-      let retentionUntil = now + this.defaultRetentionMs;
-
-      if (typeof optionsOrExpiresAt === 'number') {
-        if (!isValidNonceTimestamp(optionsOrExpiresAt)) {
-          throw new StorageError(
-            `Invalid expiration/ttl timestamp: ${optionsOrExpiresAt}. Must be non-negative finite safe number.`,
-            {
-              filePath: this.filePath,
-              operation: 'markNoncesSeenBatch',
-            }
-          );
-        }
-        if (optionsOrExpiresAt > 1e11) {
-          retentionUntil = Math.max(optionsOrExpiresAt + this.clockSkewMs, now + this.defaultRetentionMs);
-        } else if (optionsOrExpiresAt > 1e9) {
-          retentionUntil = Math.max(optionsOrExpiresAt * 1000 + this.clockSkewMs, now + this.defaultRetentionMs);
-        }
-      } else if (optionsOrExpiresAt && typeof optionsOrExpiresAt === 'object') {
-        if (optionsOrExpiresAt.expiresAt !== undefined) {
-          if (!isValidNonceTimestamp(optionsOrExpiresAt.expiresAt)) {
-            throw new StorageError(
-              `Invalid expiresAt timestamp: ${optionsOrExpiresAt.expiresAt}. Must be non-negative finite safe number.`,
-              {
-                filePath: this.filePath,
-                operation: 'markNoncesSeenBatch',
-              }
-            );
-          }
-          const expMs =
-            optionsOrExpiresAt.expiresAt > 1e11
-              ? optionsOrExpiresAt.expiresAt
-              : optionsOrExpiresAt.expiresAt * 1000;
-          retentionUntil = Math.max(expMs + this.clockSkewMs, now + this.defaultRetentionMs);
-        } else if (optionsOrExpiresAt.ttlMs !== undefined) {
-          if (!isValidNonceTimestamp(optionsOrExpiresAt.ttlMs)) {
-            throw new StorageError(
-              `Invalid ttlMs: ${optionsOrExpiresAt.ttlMs}. Must be non-negative finite safe number.`,
-              {
-                filePath: this.filePath,
-                operation: 'markNoncesSeenBatch',
-              }
-            );
-          }
-          retentionUntil = now + Math.max(optionsOrExpiresAt.ttlMs, this.defaultRetentionMs);
-        }
-      }
+      const retentionUntil = calculateRetentionUntil(
+        now,
+        optionsOrExpiresAt,
+        this.defaultRetentionMs,
+        this.clockSkewMs,
+        this.filePath,
+        'markNoncesSeenBatch'
+      );
 
       state.seenUntil = state.seenUntil ?? {};
       let added = 0;

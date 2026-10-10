@@ -170,6 +170,34 @@ Her onay talebi (`TrustedApprovalBinding`), imzalı JWT payload'ı içinde doğr
 - **Kilit Kuyruğu Güvencesi:**
   - Başarılı, şema hatası alan veya taşma içeren operasyonlar sonrasında `inProcessLockQueues` haritası sıfır sızıntı ile temizlenir; deadlock veya sonraki işlemleri engelleme riski ortadan kaldırılmıştır.
 
+### 3.12. Hesaplanan Zaman Damgalarının Güvenli Sınırlandırılması ve Aritmetik Taşma Savunması (TASK-P18-04 / WP-16)
+- **Problem ve Girdi Doğrulamasının Yetersizliği:**
+  - Tek başına girdi parametresi doğrulaması (`isValidNonceTimestamp(ttlMs)`) yeterli değildir; örneğin `ttlMs = Number.MAX_SAFE_INTEGER` tekil olarak geçerli bir tamsayı olsa da, `now + ttlMs` hesaplaması JavaScript'in güvenli tamsayı tavanını (`Number.MAX_SAFE_INTEGER`) aşarak aritmetik taşmaya veya hassasiyet kaybına yol açar.
+  - Aynı şekilde `expiresAt + clockSkewMs` ve `expiresAt * 1000 + clockSkewMs` hesaplamalarında tavan sınırına yakın geçerli değerler saat sapması eklendiğinde güvenli sınırı aşabilir.
+- **Merkezileştirilmiş Hesaplama Yardımcıları:**
+  - `computeReservationExpiresAt(now, ttlMs, filePath)`:
+    - Rezervasyon bitiş zamanını hesaplar (`now + ttlMs`).
+    - `now` ve `ttlMs` değerlerinin pozitif ve güvenli olduğunu doğrular.
+    - Hesaplanan `expiresAt` değerinin `0 <= expiresAt <= Number.MAX_SAFE_INTEGER` ve sonlu olduğunu kontrol eder; sınır aşımı tespit edildiğinde `StorageError` fırlatır.
+  - `calculateRetentionUntil(now, optionsOrExpiresAt, defaultRetentionMs, clockSkewMs, filePath, operation)`:
+    - Nonce retention zaman damgasını hesaplar.
+    - Girdi türlerini ve birimlerini standart kurallara göre yorumlar:
+      - `optionsOrExpiresAt > 1e11`: Epoch milisaniye. `optionsOrExpiresAt + clockSkewMs` hesaplanır.
+      - `1e9 < optionsOrExpiresAt <= 1e11`: Epoch saniye. `(optionsOrExpiresAt * 1000) + clockSkewMs` hesaplanır.
+      - `optionsOrExpiresAt <= 1e9`: Göreceli TTL süresi. `now + Math.max(optionsOrExpiresAt, defaultRetentionMs)` hesaplanır.
+      - `{ expiresAt }`: Milisaniye (> 1e11) veya saniye (<= 1e11) dönüşümü sonrası `expMs + clockSkewMs` hesaplanır.
+      - `{ ttlMs }`: Göreceli TTL süresi. `now + Math.max(ttlMs, defaultRetentionMs)` hesaplanır.
+      - Tanımsız / boş girdi: `now + defaultRetentionMs` varsayılan penceresi kullanılır.
+- **Aritmetik Sonrası Fail-Closed Denetim:**
+  - Her hesaplama adımında (`now + ttlMs`, `expMs + clockSkewMs`, `now + duration`, `now + defaultRetentionMs`) üretilen aday değer `isValidNonceTimestamp()` ile denetlenir.
+  - Sonuç `Number.MAX_SAFE_INTEGER` sınırını aşarsa veya sonlu değilse işlem anında `StorageError` ile iptal edilir.
+- **Bayt Seviyesinde Adli Dosya Koruma (Byte-for-Byte Preservation):**
+  - Hesaplama hatası `withCrossProcessNonceLock` içinde `atomicWriteJson` çağrılmadan önce fırlatılır.
+  - SQLite transaction'ı derhal `ROLLBACK` edilir; diskteki mevcut nonce dosyası asla değiştirilmez, silinmez veya bozuk değerlerle ezilmez (hata öncesi ve sonrası bayt eşitliği garanti edilir).
+- **Hata Sonrası Dayanıklılık ve Kilit Temizliği:**
+  - Hesaplama hatası sonrasında `inProcessLockQueues` kuyruğu temizlenir, kilit serbest bırakılır.
+  - Nonce deposu kullanıma hazır kalır ve sonraki geçerli rezervasyon/tüketim operasyonları hatasız çalışır.
+
 ---
 
 ## 4. Kararın Etkileri

@@ -39,6 +39,8 @@ import {
   DurableStateManager,
   NonceStore,
   isValidNonceTimestamp,
+  computeReservationExpiresAt,
+  calculateRetentionUntil,
   withInProcessLock,
   inProcessLockQueues,
   withCrossProcessNonceLock,
@@ -3277,6 +3279,291 @@ describe('Phase 18 TASK-P18-04 — Trusted Identity Context Architecture & Verif
     // Subsequent operation runs without hindrance
     assert.equal(await storeGood.markNonceSeen('mixed-good-final'), true);
     assert.equal(inProcessLockQueues.size, 0);
+  });
+
+  // 17. reserveNonce() için çok büyük fakat girdi kontrolünden geçen TTL fail-closed StorageError ile reddedilir
+  it('SEC-44: Calculated reservation timestamp overflow in reserveNonce() rejects fail-closed with StorageError without corrupting storage or breaking subsequent ops', async () => {
+    const filePath = path.join(tempDir, `sec44-res-overflow-${crypto.randomUUID()}.json`);
+    const store = new NonceStore({ filePath });
+
+    // Step 1: Establish baseline file state with an already consumed nonce
+    const priorNonce = `prior-nonce-${crypto.randomUUID()}`;
+    assert.equal(await store.markNonceSeen(priorNonce), true, 'Prior nonce must be consumed successfully');
+
+    const originalBytes = await fs.readFile(filePath);
+    assert.ok(originalBytes.length > 0, 'Original file must have content');
+
+    // Step 2: Attempt reserveNonce with TTL = Number.MAX_SAFE_INTEGER
+    // passes isValidNonceTimestamp(ttlMs) because val <= Number.MAX_SAFE_INTEGER,
+    // but now + ttlMs strictly exceeds Number.MAX_SAFE_INTEGER!
+    const overflowNonce1 = `res-ovf-1-${crypto.randomUUID()}`;
+    await assert.rejects(
+      async () => store.reserveNonce(overflowNonce1, Number.MAX_SAFE_INTEGER),
+      (err: unknown) => {
+        assert.ok(err instanceof StorageError, 'Must throw StorageError on calculated reservation overflow');
+        assert.match((err as Error).message, /exceeds safe bounds/i);
+        return true;
+      },
+      'reserveNonce with Number.MAX_SAFE_INTEGER must fail closed with StorageError'
+    );
+
+    // Step 3: Attempt reserveNonce with TTL = Number.MAX_SAFE_INTEGER - 1000
+    const overflowNonce2 = `res-ovf-2-${crypto.randomUUID()}`;
+    await assert.rejects(
+      async () => store.reserveNonce(overflowNonce2, Number.MAX_SAFE_INTEGER - 1000),
+      (err: unknown) => err instanceof StorageError,
+      'reserveNonce with near-max TTL must fail closed with StorageError'
+    );
+
+    // Step 4: Strict byte-for-byte equality verification - file on disk MUST NOT have changed
+    const bytesAfterFailures = await fs.readFile(filePath);
+    assert.deepEqual(bytesAfterFailures, originalBytes, 'File on disk must remain strictly byte-for-byte identical');
+
+    // Step 5: Verify persistent state integrity
+    assert.equal(await store.isNonceSeen(priorNonce), true, 'Prior consumed nonce must remain consumed');
+    assert.equal(await store.isNonceSeen(overflowNonce1), false, 'Overflow nonce 1 must NOT be reserved or seen');
+    assert.equal(await store.isNonceSeen(overflowNonce2), false, 'Overflow nonce 2 must NOT be reserved or seen');
+
+    // Step 6: Verify in-process lock queue was cleanly freed
+    assert.equal(inProcessLockQueues.has(path.resolve(filePath)), false, 'Lock queue must be completely clear');
+
+    // Step 7: Subsequent valid reservation and release succeed unhindered
+    const validResNonce = `valid-res-${crypto.randomUUID()}`;
+    assert.equal(await store.reserveNonce(validResNonce, 15000), true, 'Subsequent valid reservation must succeed');
+    assert.equal(await store.isNonceSeen(validResNonce), true, 'Reserved nonce must be seen during active TTL');
+    await store.releaseReservation(validResNonce);
+    assert.equal(await store.isNonceSeen(validResNonce), false, 'Released reservation must no longer be seen');
+    assert.equal(inProcessLockQueues.has(path.resolve(filePath)), false, 'Lock queue must remain clean after release');
+  });
+
+  // 18. markNonceSeen() için sınırı aşan expiresAt + clockSkewMs ve taşmaya yol açan TTL/retention hesabı fail-closed reddedilir
+  it('SEC-45: Calculated retention timestamp overflow in markNonceSeen() across numeric and object options fails closed with byte-level storage preservation', async () => {
+    const filePath = path.join(tempDir, `sec45-seen-overflow-${crypto.randomUUID()}.json`);
+    const store = new NonceStore({ filePath });
+
+    // Step 1: Pre-populate file with consumed nonces
+    const keptNonce1 = `kept-1-${crypto.randomUUID()}`;
+    const keptNonce2 = `kept-2-${crypto.randomUUID()}`;
+    assert.equal(await store.markNonceSeen(keptNonce1), true);
+    assert.equal(await store.markNonceSeen(keptNonce2), true);
+
+    const originalBytes = await fs.readFile(filePath);
+    assert.ok(originalBytes.length > 0);
+
+    // Case A: Numeric expiresAt = Number.MAX_SAFE_INTEGER
+    // passes isValidNonceTimestamp, but expiresAt + clockSkewMs overflows Number.MAX_SAFE_INTEGER
+    const numOvfNonce = `num-ovf-${crypto.randomUUID()}`;
+    await assert.rejects(
+      async () => store.markNonceSeen(numOvfNonce, Number.MAX_SAFE_INTEGER),
+      (err: unknown) => {
+        assert.ok(err instanceof StorageError, 'Must be StorageError');
+        assert.match((err as Error).message, /exceeds safe bounds/i);
+        return true;
+      }
+    );
+    assert.deepEqual(await fs.readFile(filePath), originalBytes, 'File unchanged after numeric overflow');
+
+    // Case B: Numeric expiresAt = Number.MAX_SAFE_INTEGER - 100
+    const numSkewOvfNonce = `num-skew-ovf-${crypto.randomUUID()}`;
+    await assert.rejects(
+      async () => store.markNonceSeen(numSkewOvfNonce, Number.MAX_SAFE_INTEGER - 100),
+      (err: unknown) => err instanceof StorageError
+    );
+    assert.deepEqual(await fs.readFile(filePath), originalBytes, 'File unchanged after numeric skew overflow');
+
+    // Case C: Object with { expiresAt: Number.MAX_SAFE_INTEGER }
+    const objExpOvfNonce = `obj-exp-ovf-${crypto.randomUUID()}`;
+    await assert.rejects(
+      async () => store.markNonceSeen(objExpOvfNonce, { expiresAt: Number.MAX_SAFE_INTEGER }),
+      (err: unknown) => {
+        assert.ok(err instanceof StorageError, 'Must be StorageError');
+        assert.match((err as Error).message, /exceeds safe bounds/i);
+        return true;
+      }
+    );
+    assert.deepEqual(await fs.readFile(filePath), originalBytes, 'File unchanged after object expiresAt overflow');
+
+    // Case D: Object with { expiresAt: Number.MAX_SAFE_INTEGER - 50 }
+    const objExpSkewOvfNonce = `obj-exp-skew-ovf-${crypto.randomUUID()}`;
+    await assert.rejects(
+      async () => store.markNonceSeen(objExpSkewOvfNonce, { expiresAt: Number.MAX_SAFE_INTEGER - 50 }),
+      (err: unknown) => err instanceof StorageError
+    );
+    assert.deepEqual(await fs.readFile(filePath), originalBytes, 'File unchanged after object expiresAt skew overflow');
+
+    // Case E: Object with { ttlMs: Number.MAX_SAFE_INTEGER }
+    // passes isValidNonceTimestamp(ttlMs), but now + ttlMs overflows Number.MAX_SAFE_INTEGER
+    const objTtlOvfNonce = `obj-ttl-ovf-${crypto.randomUUID()}`;
+    await assert.rejects(
+      async () => store.markNonceSeen(objTtlOvfNonce, { ttlMs: Number.MAX_SAFE_INTEGER }),
+      (err: unknown) => {
+        assert.ok(err instanceof StorageError, 'Must be StorageError');
+        assert.match((err as Error).message, /exceeds safe bounds/i);
+        return true;
+      }
+    );
+    assert.deepEqual(await fs.readFile(filePath), originalBytes, 'File unchanged after object ttlMs overflow');
+
+    // Step 2: Verify all original nonces are preserved and uncorrupted
+    assert.equal(await store.isNonceSeen(keptNonce1), true);
+    assert.equal(await store.isNonceSeen(keptNonce2), true);
+
+    // Step 3: Verify none of the overflow nonces were recorded as seen
+    assert.equal(await store.isNonceSeen(numOvfNonce), false);
+    assert.equal(await store.isNonceSeen(numSkewOvfNonce), false);
+    assert.equal(await store.isNonceSeen(objExpOvfNonce), false);
+    assert.equal(await store.isNonceSeen(objExpSkewOvfNonce), false);
+    assert.equal(await store.isNonceSeen(objTtlOvfNonce), false);
+
+    // Step 4: Verify lock queue is completely clean
+    assert.equal(inProcessLockQueues.has(path.resolve(filePath)), false);
+
+    // Step 5: Subsequent valid markNonceSeen succeeds
+    const validFreshNonce = `valid-fresh-${crypto.randomUUID()}`;
+    assert.equal(await store.markNonceSeen(validFreshNonce, { ttlMs: 60000 }), true);
+    assert.equal(await store.isNonceSeen(validFreshNonce), true);
+    assert.equal(inProcessLockQueues.has(path.resolve(filePath)), false);
+  });
+
+  // 19. markNoncesSeenBatch() için aynı sınır durumları fail-closed StorageError ile reddedilir
+  it('SEC-46: Calculated retention timestamp overflow in markNoncesSeenBatch() across numeric and object options fails closed with byte-level storage preservation', async () => {
+    const filePath = path.join(tempDir, `sec46-batch-overflow-${crypto.randomUUID()}.json`);
+    const store = new NonceStore({ filePath });
+
+    // Step 1: Pre-populate store
+    const existingNonce = `existing-batch-nonce-${crypto.randomUUID()}`;
+    assert.equal(await store.markNonceSeen(existingNonce), true);
+
+    const originalBytes = await fs.readFile(filePath);
+
+    // Case A: Batch with numeric Number.MAX_SAFE_INTEGER
+    const batchOvf1 = [`b-ovf-1-${crypto.randomUUID()}`, `b-ovf-2-${crypto.randomUUID()}`];
+    await assert.rejects(
+      async () => store.markNoncesSeenBatch(batchOvf1, Number.MAX_SAFE_INTEGER),
+      (err: unknown) => {
+        assert.ok(err instanceof StorageError, 'Must be StorageError');
+        assert.match((err as Error).message, /exceeds safe bounds/i);
+        return true;
+      }
+    );
+    assert.deepEqual(await fs.readFile(filePath), originalBytes, 'Batch numeric overflow must not mutate file');
+
+    // Case B: Batch with numeric near-max (Number.MAX_SAFE_INTEGER - 100)
+    const batchOvf2 = [`b-ovf-3-${crypto.randomUUID()}`];
+    await assert.rejects(
+      async () => store.markNoncesSeenBatch(batchOvf2, Number.MAX_SAFE_INTEGER - 100),
+      (err: unknown) => err instanceof StorageError
+    );
+    assert.deepEqual(await fs.readFile(filePath), originalBytes, 'Batch near-max numeric must not mutate file');
+
+    // Case C: Batch with { expiresAt: Number.MAX_SAFE_INTEGER }
+    const batchOvf3 = [`b-ovf-4-${crypto.randomUUID()}`, `b-ovf-5-${crypto.randomUUID()}`];
+    await assert.rejects(
+      async () => store.markNoncesSeenBatch(batchOvf3, { expiresAt: Number.MAX_SAFE_INTEGER }),
+      (err: unknown) => err instanceof StorageError
+    );
+    assert.deepEqual(await fs.readFile(filePath), originalBytes, 'Batch object expiresAt overflow must not mutate file');
+
+    // Case D: Batch with { ttlMs: Number.MAX_SAFE_INTEGER }
+    const batchOvf4 = [`b-ovf-6-${crypto.randomUUID()}`];
+    await assert.rejects(
+      async () => store.markNoncesSeenBatch(batchOvf4, { ttlMs: Number.MAX_SAFE_INTEGER }),
+      (err: unknown) => err instanceof StorageError
+    );
+    assert.deepEqual(await fs.readFile(filePath), originalBytes, 'Batch object ttlMs overflow must not mutate file');
+
+    // Step 2: Verify existing nonce is preserved and none of the batch nonces are seen
+    assert.equal(await store.isNonceSeen(existingNonce), true);
+    for (const n of [...batchOvf1, ...batchOvf2, ...batchOvf3, ...batchOvf4]) {
+      assert.equal(await store.isNonceSeen(n), false, `Batch overflow nonce ${n} must NOT be seen`);
+    }
+
+    // Step 3: Lock queue check
+    assert.equal(inProcessLockQueues.has(path.resolve(filePath)), false);
+
+    // Step 4: Subsequent valid batch succeeds
+    const validBatch = [`b-valid-1-${crypto.randomUUID()}`, `b-valid-2-${crypto.randomUUID()}`];
+    const added = await store.markNoncesSeenBatch(validBatch, { ttlMs: 120000 });
+    assert.equal(added, 2, 'Subsequent valid batch must add 2 nonces');
+    assert.equal(await store.isNonceSeen(validBatch[0]), true);
+    assert.equal(await store.isNonceSeen(validBatch[1]), true);
+    assert.equal(inProcessLockQueues.has(path.resolve(filePath)), false);
+  });
+
+  // 20. Normal geçerli girdiler, varsayılan retention, clock skew ve eski dosya formatı uyumluluğu
+  it('SEC-47: Normal valid numeric, object, and default options compute safe retention timestamps and enforce replay protection', async () => {
+    const filePath = path.join(tempDir, `sec47-valid-options-${crypto.randomUUID()}.json`);
+    const store = new NonceStore({
+      filePath,
+      defaultRetentionMs: 3600000, // 1 hour
+      clockSkewMs: 60000,          // 1 minute
+    });
+
+    const now = Date.now();
+
+    // 1. Default undefined options
+    const nDefault = `n-default-${crypto.randomUUID()}`;
+    assert.equal(await store.markNonceSeen(nDefault), true);
+    assert.equal(await store.markNonceSeen(nDefault), false, 'Replay must be blocked');
+
+    // 2. Epoch milliseconds (> 1e11)
+    const futureMs = now + 7200000; // 2 hours in future
+    const nMs = `n-ms-${crypto.randomUUID()}`;
+    assert.equal(await store.markNonceSeen(nMs, futureMs), true);
+    assert.equal(await store.markNonceSeen(nMs, futureMs), false, 'Replay must be blocked');
+
+    // 3. Epoch seconds (> 1e9 and <= 1e11)
+    const futureSec = Math.floor((now + 7200000) / 1000);
+    const nSec = `n-sec-${crypto.randomUUID()}`;
+    assert.equal(await store.markNonceSeen(nSec, futureSec), true);
+    assert.equal(await store.markNonceSeen(nSec, futureSec), false, 'Replay must be blocked');
+
+    // 4. Relative TTL milliseconds (<= 1e9)
+    const nTtl = `n-ttl-${crypto.randomUUID()}`;
+    assert.equal(await store.markNonceSeen(nTtl, 300000), true); // 5 minutes TTL
+    assert.equal(await store.markNonceSeen(nTtl), false, 'Replay must be blocked');
+
+    // 5. Object with expiresAt
+    const nObjExp = `n-obj-exp-${crypto.randomUUID()}`;
+    assert.equal(await store.markNonceSeen(nObjExp, { expiresAt: futureMs }), true);
+    assert.equal(await store.markNonceSeen(nObjExp), false, 'Replay must be blocked');
+
+    // 6. Object with ttlMs
+    const nObjTtl = `n-obj-ttl-${crypto.randomUUID()}`;
+    assert.equal(await store.markNonceSeen(nObjTtl, { ttlMs: 5000000 }), true);
+    assert.equal(await store.markNonceSeen(nObjTtl), false, 'Replay must be blocked');
+
+    // 7. Batch with normal options
+    const nBatch = [`n-batch-1-${crypto.randomUUID()}`, `n-batch-2-${crypto.randomUUID()}`];
+    const batchCount = await store.markNoncesSeenBatch(nBatch, { ttlMs: 1800000 });
+    assert.equal(batchCount, 2);
+    assert.equal(await store.markNoncesSeenBatch(nBatch), 0, 'Replay of batch must add 0 nonces');
+
+    // Read on-disk file and inspect timestamps
+    const diskContent = JSON.parse(await fs.readFile(filePath, 'utf8'));
+    assert.ok(Array.isArray(diskContent.seen));
+    assert.equal(diskContent.seen.length, 8);
+
+    for (const nonce of [nDefault, nMs, nSec, nTtl, nObjExp, nObjTtl, ...nBatch]) {
+      const ts = diskContent.seenUntil[nonce];
+      assert.ok(isValidNonceTimestamp(ts), `Timestamp for ${nonce} must be valid safe integer`);
+      assert.ok(ts > now, `Timestamp for ${nonce} must be in the future`);
+      assert.ok(ts <= Number.MAX_SAFE_INTEGER, `Timestamp for ${nonce} must be <= Number.MAX_SAFE_INTEGER`);
+    }
+
+    // Direct helper function testing
+    const calculatedRes = computeReservationExpiresAt(1000, 5000, filePath);
+    assert.equal(calculatedRes, 6000);
+
+    const calculatedRet = calculateRetentionUntil(
+      1000000,
+      { ttlMs: 2000 },
+      10000,
+      500,
+      filePath,
+      'test'
+    );
+    assert.equal(calculatedRet, 1000000 + 10000); // max(2000, 10000)
   });
 });
 
