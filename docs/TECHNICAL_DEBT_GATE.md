@@ -45,6 +45,7 @@
 - [x] **WP-14: Nonce Durumunun Fail-Closed Kurtarılması, Şema Doğrulaması ve Nihai Güvenlik Kapısı** (readStateUnderLock() ENOENT ayrımı, bozuk/kesilmiş/null JSON ret, şema doğrulaması, adli kanıt koruma [no silent overwrite], bağımsız örnek/süreç tutarlılığı, fec0::/10 ve gelişmiş IPv6 SSRF ayrıştırması, 51/51 güvenlik testi) — `VERIFIED & BLOCKED_ON_EXTERNAL_IDP`.
 - [x] **WP-15: Nonce Zaman Damgası Şema Sertleştirmesi, Sayısal Taşma (Overflow) Koruması ve Nihai Güvenlik Kapısı** (isValidNonceTimestamp, Number.isFinite, 1e999/-1e999/1e300 fail-closed StorageError, bozuk dosyanın bayt bayt korunması, önceden tüketilmiş nonce'ın silinmemesi/tekrar kabul edilmemesi, eski format ve süresi dolmuş rezervasyonların korunması, kilit kuyruğu temizliği, 57/57 güvenlik testi) — `VERIFIED & BLOCKED_ON_EXTERNAL_IDP`.
 - [x] **WP-16: Hesaplanan Nonce Zaman Damgalarının Güvenli Sınırlandırılması ve Aritmetik Taşma Savunması** (computeReservationExpiresAt, calculateRetentionUntil, now + ttlMs, expiresAt + clockSkewMs, expiresAt * 1000 + clockSkewMs ve retention hesaplama denetimleri, StorageError fail-closed ret, dosya öncesi/sonrası bayt eşitliği, kilit kuyruğu temizliği ve sıfır sızıntı, 61/61 güvenlik testi) — `VERIFIED & BLOCKED_ON_EXTERNAL_IDP`.
+- [x] **WP-17: Kesirli Zaman Damgalarının Reddedilmesi ve Tamsayı Şema Sertleştirmesi** (isValidNonceTimestamp Number.isSafeInteger denetimi, ttlMs: 1.5 gibi kesirli değerlerin StorageError ile fail-closed reddi, calculateRetentionUntil girdileri ve ara hesaplama kontrolleri, diske yazılan ve hesaplanan reserved ve seenUntil değerlerinin tamsayı bütünlüğü, no silent rounding, dosya bayt bayt eşitlik koruması, kilit temizliği, 65/65 güvenlik testi) — `VERIFIED & BLOCKED_ON_EXTERNAL_IDP`.
 
 ---
 
@@ -291,16 +292,18 @@
 | **WP-14** | Nonce Durumunun Fail-Closed Kurtarılması, Şema Doğrulaması ve Nihai Güvenlik Kapısı (readStateUnderLock() ENOENT ayrımı, bozuk/kesilmiş/null JSON ret, şema doğrulaması, adli kanıt koruma [no silent overwrite], bağımsız örnek/süreç tutarlılığı, fec0::/10 ve gelişmiş IPv6 SSRF ayrıştırması, 51/51 güvenlik testi) | `VERIFIED & BLOCKED_ON_EXTERNAL_IDP` | 51/51 PASS; canlı IdP bağlanana kadar fail-closed BLOCKED_ON_EXTERNAL_IDP durumu korundu |
 | **WP-15** | Nonce Zaman Damgası Şema Sertleştirmesi, Sayısal Taşma (Overflow) Koruması, Bayt Bayt Adli Bütünlük ve Replay Güvencesi (57 güvenlik testi) | `VERIFIED & BLOCKED_ON_EXTERNAL_IDP` | 57/57 PASS; canlı IdP bağlanana kadar fail-closed BLOCKED_ON_EXTERNAL_IDP durumu korundu |
 | **WP-16** | Hesaplanan Nonce Zaman Damgalarının Güvenli Sınırlandırılması ve Aritmetik Taşma Savunması (61 güvenlik testi) | `VERIFIED & BLOCKED_ON_EXTERNAL_IDP` | 61/61 PASS; canlı IdP bağlanana kadar fail-closed BLOCKED_ON_EXTERNAL_IDP durumu korundu |
+| **WP-17** | Kesirli Zaman Damgalarının Reddedilmesi ve Tamsayı Şema Sertleştirmesi (isValidNonceTimestamp Number.isSafeInteger, ttlMs 1.5 ret, diske yazılan tamsayı güvencesi, no silent rounding, 65 güvenlik testi) | `VERIFIED & BLOCKED_ON_EXTERNAL_IDP` | 65/65 PASS; canlı IdP bağlanana kadar fail-closed BLOCKED_ON_EXTERNAL_IDP durumu korundu |
 
-### 5.2 Test ve Kalite Kapıları Doğrulama Çıktıları (WP-8.5 & WP-9 & WP-10 & WP-11 & WP-12 & WP-13 & WP-14 & WP-15 & WP-16)
+### 5.2 Test ve Kalite Kapıları Doğrulama Çıktıları (WP-8.5 & WP-9 & WP-10 & WP-11 & WP-12 & WP-13 & WP-14 & WP-15 & WP-16 & WP-17)
 
 | Komut | Kapsam | Çıkış Kodu | Hedef | Hata | Başarısızlık | Durum |
 |:---|:---|:---:|:---|:---:|:---:|:---:|
-| `pnpm lint` | Kod hijyeni ve ESLint kuralları | `0` | Tüm repo | 0 error | 0 | **PASS** (2136 uyarı raporlandı, 0 hata) |
+| `pnpm lint` | Kod hijyeni ve ESLint kuralları | `0` | Tüm repo | 0 error | 0 | **PASS** (2137 uyarı raporlandı, 0 hata) |
 | `pnpm typecheck` | Kaynak kod (`src/**/*`) strict tip denetimi | `0` | Tüm `src/` | 0 error | 0 | **PASS** (Strict 0 error) |
 | `pnpm build` | Paket derlemesi (`tsc -b`) | `0` | `@aidm/core` | 0 error | 0 | **PASS** (36 subpath d.ts ve js üretildi) |
 | `pnpm typecheck:tests` | Test dosyaları (`tests/**/*`) tip denetimi | `0` | 116 test dosyası | 0 error | 0 | **PASS** (Strict: true altında 0 error) |
-| `pnpm test` | Deterministik çevrimdışı test süiti (61 adet P18-04 güvenlik testi dahil) | `0` | 116 dosya, 295 suite, 3042 test | 0 fail | 0 skipped | **PASS** (3042/3042 PASS, 0 fail) |
+| `pnpm test` | Deterministik çevrimdışı test süiti (65 adet P18-04 güvenlik testi dahil) | `0` | 116 dosya, 295 suite, 3046 test | 0 fail | 0 skipped | **PASS** (3046/3046 PASS, 0 fail) |
+| `node --test packages/core/tests/p18-04-trusted-identity-context.test.ts` | P18-04 Güvenlik ve Şema Sertleştirme Süiti | `0` | 1 dosya, 1 suite, 65 test | 0 error | 0 | **PASS** (65/65 PASS, 0 fail) |
 | `pnpm test:live` | Canlı host AGY CLI ve OpenAI HTTPS E2E | `0` | 2 suite, 17 test | 0 fail | 0 skipped | **PASS** (Canlı ortamda 17/17 PASS) |
 | `pnpm test:p18-04-live-idp` | Canlı Harici OIDC IdP Entegrasyon Testi | `NOT RUN` | Canlı Kurumsal IdP | - | - | **NOT RUN** (Harici IdP bağlantısı ve canlı credentials olmadan uydurulamaz) |
 

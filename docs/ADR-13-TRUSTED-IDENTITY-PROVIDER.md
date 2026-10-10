@@ -198,6 +198,28 @@ Her onay talebi (`TrustedApprovalBinding`), imzalı JWT payload'ı içinde doğr
   - Hesaplama hatası sonrasında `inProcessLockQueues` kuyruğu temizlenir, kilit serbest bırakılır.
   - Nonce deposu kullanıma hazır kalır ve sonraki geçerli rezervasyon/tüketim operasyonları hatasız çalışır.
 
+### 3.13. Kesirli Zaman Damgalarının Reddedilmesi ve Tamsayı Şema Sertleştirmesi (TASK-P18-04 / WP-17)
+- **Problem ve Kayan Nokta (Float) Zafiyeti:**
+  - Zaman damgası ve süre kontrollerinde yalnızca `typeof val === 'number'` ve `Number.isFinite(val)` kullanılması, `1.5`, `0.5` veya `1000.25` gibi kesirli kayan noktalı sayıların doğrulamayı aşmasına olanak tanıyabilirdi.
+  - Kesirli değerlerin sistemde kabul edilmesi durumunda ya sessiz yuvarlama (`Math.floor` / `Math.round`) ile sözleşme ihlali oluşur ya da diske kesirli milisaniyeler yazılarak şema bütünlüğü ve adli kanıt tutarlılığı bozulurdu.
+- **Kesin Tamsayı Doğrulaması (`Number.isSafeInteger`):**
+  - `isValidNonceTimestamp(val)` fonksiyonu `Number.isSafeInteger(val)` denetimi ile sertleştirilmiştir.
+  - Fonksiyon; değerin sayı olduğunu, güvenli tamsayı olduğunu, sonlu olduğunu (`Number.isFinite`), negatif olmadığını (`>= 0`) ve güvenli tamsayı tavanını (`val <= Number.MAX_SAFE_INTEGER`) aşmadığını tek bir merkezden garanti eder.
+  - Kesirli değerler (`1.5`, `0.1`, `100.0001`), NaN, Infinity ve güvenli aralık dışındaki sayılar derhal `false` döner.
+- **Sessiz Yuvarlama/Kesme Yasağı (No Silent Rounding):**
+  - Kesirli girdiler kesinlikle sessizce yuvarlanmaz, yukarıya/aşağıya tamamlanmaz veya kesilmez.
+  - `reserveNonce(nonce, ttlMs)` çağrısında `ttlMs: 1.5` gibi bir değer iletildiğinde işlem anında `StorageError` fırlatarak fail-closed durur.
+  - `calculateRetentionUntil()` çağrısında `expiresAt`, `ttlMs`, `defaultRetentionMs`, `clockSkewMs` veya `now` değerlerinden herhangi biri kesirli ise fail-closed `StorageError` fırlatılır.
+- **Diske Yazılan ve Hesaplanan Değerlerin Tamsayı Bütünlüğü:**
+  - Diske yazılan tüm `reserved[nonce]` (rezervasyon bitişi) ve `seenUntil[nonce]` (saklama süresi) değerlerinin kesin olarak güvenli, sonlu ve negatif olmayan tamsayılar olduğu matematiksel olarak garanti edilmiştir.
+  - Diskteki kalıcı durum dosyasında (`seenUntil` veya `reserved`) kesirli bir zaman damgası tespit edilirse, `readStateUnderLock()` derhal fail-closed olarak `StorageError` fırlatır; dosya temizlenmez veya sessizce ezilmez.
+- **Bayt Seviyesinde Dosya Bütünlüğü ve Kilit Kuyruğu Temizliği:**
+  - Kesirli girdiyle yapılan hatalı işlemler sonrasında diskteki dosyanın bayt seviyesinde değişmediği (`originalBytes` ile tam eşitlik) doğrulanmıştır.
+  - Önceden görülmüş nonce'lar ve replay koruması eksiksiz devam eder.
+  - Hatalı işlem sonrası `inProcessLockQueues` kuyruğu temizlenir; sonraki geçerli tamsayı işlemleri başarıyla tamamlanır.
+- **Regresyon Test Kapsamı:**
+  - `p18-04-trusted-identity-context.test.ts` süiti SEC-48, SEC-49, SEC-50 ve SEC-51 testleri ile toplam 65 teste genişletilmiş ve tamamı PASS vermiştir.
+
 ---
 
 ## 4. Kararın Etkileri

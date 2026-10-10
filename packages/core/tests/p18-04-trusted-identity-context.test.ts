@@ -3565,5 +3565,356 @@ describe('Phase 18 TASK-P18-04 — Trusted Identity Context Architecture & Verif
     );
     assert.equal(calculatedRet, 1000000 + 10000); // max(2000, 10000)
   });
+
+  // 21. reserveNonce() için kesirli ttlMs (ör. 1.5, 0.5, 1000.25) StorageError ile fail-closed reddedilir
+  it('SEC-48: Fractional reservation TTL in reserveNonce() is rejected fail-closed with StorageError and byte-level preservation', async () => {
+    const filePath = path.join(tempDir, `sec48-fractional-res-${crypto.randomUUID()}.json`);
+    const store = new NonceStore({ filePath });
+
+    // Step 1: Establish baseline with an existing consumed nonce
+    const priorNonce = `prior-consumed-${crypto.randomUUID()}`;
+    assert.equal(await store.markNonceSeen(priorNonce), true, 'Prior nonce must be marked seen');
+
+    const originalBytes = await fs.readFile(filePath);
+    assert.ok(originalBytes.length > 0, 'Original file must have content');
+
+    // Step 2: Attempt reserveNonce with fractional ttlMs: 1.5, 0.5, 1000.25
+    const fracNonce1 = `frac-res-1-${crypto.randomUUID()}`;
+    await assert.rejects(
+      async () => store.reserveNonce(fracNonce1, 1.5),
+      (err: unknown) => {
+        assert.ok(err instanceof StorageError, 'Must throw StorageError on fractional ttlMs: 1.5');
+        assert.match((err as Error).message, /invalid ttlms/i);
+        return true;
+      },
+      'reserveNonce with ttlMs: 1.5 must fail closed with StorageError'
+    );
+
+    const fracNonce2 = `frac-res-2-${crypto.randomUUID()}`;
+    await assert.rejects(
+      async () => store.reserveNonce(fracNonce2, 0.5),
+      (err: unknown) => {
+        assert.ok(err instanceof StorageError, 'Must throw StorageError on fractional ttlMs: 0.5');
+        assert.match((err as Error).message, /invalid ttlms/i);
+        return true;
+      }
+    );
+
+    const fracNonce3 = `frac-res-3-${crypto.randomUUID()}`;
+    await assert.rejects(
+      async () => store.reserveNonce(fracNonce3, 1000.25),
+      (err: unknown) => {
+        assert.ok(err instanceof StorageError, 'Must throw StorageError on fractional ttlMs: 1000.25');
+        assert.match((err as Error).message, /invalid ttlms/i);
+        return true;
+      }
+    );
+
+    // Step 3: Strict byte-for-byte equality verification - file on disk MUST NOT have changed
+    const bytesAfterFailures = await fs.readFile(filePath);
+    assert.deepEqual(bytesAfterFailures, originalBytes, 'File on disk must remain strictly byte-for-byte identical');
+
+    // Step 4: Verify persistent state integrity
+    assert.equal(await store.isNonceSeen(priorNonce), true, 'Prior consumed nonce must remain consumed');
+    assert.equal(await store.isNonceSeen(fracNonce1), false, 'Fractional nonce 1 must NOT be reserved or seen');
+    assert.equal(await store.isNonceSeen(fracNonce2), false, 'Fractional nonce 2 must NOT be reserved or seen');
+    assert.equal(await store.isNonceSeen(fracNonce3), false, 'Fractional nonce 3 must NOT be reserved or seen');
+
+    // Step 5: Verify in-process lock queue was cleanly freed
+    assert.equal(inProcessLockQueues.has(path.resolve(filePath)), false, 'Lock queue must be completely clear');
+
+    // Step 6: Subsequent valid reservation and release succeed unhindered
+    const validResNonce = `valid-res-${crypto.randomUUID()}`;
+    assert.equal(await store.reserveNonce(validResNonce, 20000), true, 'Subsequent valid reservation must succeed');
+    assert.equal(await store.isNonceSeen(validResNonce), true, 'Reserved nonce must be seen during active TTL');
+    await store.releaseReservation(validResNonce);
+    assert.equal(await store.isNonceSeen(validResNonce), false, 'Released reservation must no longer be seen');
+    assert.equal(inProcessLockQueues.has(path.resolve(filePath)), false, 'Lock queue must remain clean after release');
+  });
+
+  // 22. Kesirli expiresAt, ttlMs, clockSkewMs ve defaultRetentionMs değerlerinin uygun sınırda reddedilmesi
+  it('SEC-49: Fractional expiresAt, ttlMs, clockSkewMs, and defaultRetentionMs across markNonceSeen, markNoncesSeenBatch, and constructor fail closed with StorageError', async () => {
+    const filePath = path.join(tempDir, `sec49-frac-options-${crypto.randomUUID()}.json`);
+
+    // Constructor validation with fractional defaults
+    assert.throws(
+      () => new NonceStore({ filePath, defaultRetentionMs: 3600000.5 }),
+      (err: unknown) => {
+        assert.ok(err instanceof StorageError);
+        assert.match((err as Error).message, /invalid defaultretentionms/i);
+        return true;
+      },
+      'Constructor with fractional defaultRetentionMs must fail closed'
+    );
+
+    assert.throws(
+      () => new NonceStore({ filePath, clockSkewMs: 60000.5 }),
+      (err: unknown) => {
+        assert.ok(err instanceof StorageError);
+        assert.match((err as Error).message, /invalid clockskewms/i);
+        return true;
+      },
+      'Constructor with fractional clockSkewMs must fail closed'
+    );
+
+    const store = new NonceStore({ filePath });
+
+    // Step 1: Pre-populate store with baseline nonces
+    const keptNonce = `kept-nonce-${crypto.randomUUID()}`;
+    assert.equal(await store.markNonceSeen(keptNonce), true);
+
+    const originalBytes = await fs.readFile(filePath);
+    assert.ok(originalBytes.length > 0);
+
+    // Case A: markNonceSeen with fractional numeric ms timestamp (> 1e11)
+    const fracMsNonce = `frac-ms-${crypto.randomUUID()}`;
+    await assert.rejects(
+      async () => store.markNonceSeen(fracMsNonce, 1728550000000.5),
+      (err: unknown) => {
+        assert.ok(err instanceof StorageError);
+        assert.match((err as Error).message, /invalid expiration\/ttl timestamp/i);
+        return true;
+      }
+    );
+    assert.deepEqual(await fs.readFile(filePath), originalBytes, 'File unchanged after fractional ms');
+
+    // Case B: markNonceSeen with fractional numeric sec timestamp (> 1e9 and <= 1e11)
+    const fracSecNonce = `frac-sec-${crypto.randomUUID()}`;
+    await assert.rejects(
+      async () => store.markNonceSeen(fracSecNonce, 1728550000.5),
+      (err: unknown) => err instanceof StorageError
+    );
+    assert.deepEqual(await fs.readFile(filePath), originalBytes, 'File unchanged after fractional sec');
+
+    // Case C: markNonceSeen with fractional numeric relative TTL (<= 1e9)
+    const fracTtlNonce = `frac-ttl-${crypto.randomUUID()}`;
+    await assert.rejects(
+      async () => store.markNonceSeen(fracTtlNonce, 60000.5),
+      (err: unknown) => err instanceof StorageError
+    );
+    assert.deepEqual(await fs.readFile(filePath), originalBytes, 'File unchanged after fractional relative TTL');
+
+    // Case D: markNonceSeen with object { expiresAt: 1728550000000.5 }
+    const fracObjExpNonce = `frac-obj-exp-${crypto.randomUUID()}`;
+    await assert.rejects(
+      async () => store.markNonceSeen(fracObjExpNonce, { expiresAt: 1728550000000.5 }),
+      (err: unknown) => {
+        assert.ok(err instanceof StorageError);
+        assert.match((err as Error).message, /invalid expiresat timestamp/i);
+        return true;
+      }
+    );
+    assert.deepEqual(await fs.readFile(filePath), originalBytes, 'File unchanged after object fractional expiresAt');
+
+    // Case E: markNonceSeen with object { ttlMs: 15000.75 }
+    const fracObjTtlNonce = `frac-obj-ttl-${crypto.randomUUID()}`;
+    await assert.rejects(
+      async () => store.markNonceSeen(fracObjTtlNonce, { ttlMs: 15000.75 }),
+      (err: unknown) => {
+        assert.ok(err instanceof StorageError);
+        assert.match((err as Error).message, /invalid ttlms/i);
+        return true;
+      }
+    );
+    assert.deepEqual(await fs.readFile(filePath), originalBytes, 'File unchanged after object fractional ttlMs');
+
+    // Case F: markNoncesSeenBatch with fractional numeric
+    const batchFrac1 = [`b-f1-${crypto.randomUUID()}`];
+    await assert.rejects(
+      async () => store.markNoncesSeenBatch(batchFrac1, 1728550000000.5),
+      (err: unknown) => err instanceof StorageError
+    );
+    assert.deepEqual(await fs.readFile(filePath), originalBytes, 'File unchanged after batch fractional numeric');
+
+    // Case G: markNoncesSeenBatch with object { ttlMs: 30000.5 }
+    const batchFrac2 = [`b-f2-${crypto.randomUUID()}`];
+    await assert.rejects(
+      async () => store.markNoncesSeenBatch(batchFrac2, { ttlMs: 30000.5 }),
+      (err: unknown) => err instanceof StorageError
+    );
+    assert.deepEqual(await fs.readFile(filePath), originalBytes, 'File unchanged after batch fractional object');
+
+    // Step 2: Verify existing nonce is preserved and replay prevention holds
+    assert.equal(await store.isNonceSeen(keptNonce), true);
+    assert.equal(await store.markNonceSeen(keptNonce), false, 'Replay of kept nonce must still be blocked');
+
+    // Step 3: Verify none of the fractional nonces were recorded as seen
+    for (const n of [fracMsNonce, fracSecNonce, fracTtlNonce, fracObjExpNonce, fracObjTtlNonce, ...batchFrac1, ...batchFrac2]) {
+      assert.equal(await store.isNonceSeen(n), false, `Fractional nonce ${n} must NOT be recorded as seen`);
+    }
+
+    // Step 4: Verify in-process lock queue was cleanly freed
+    assert.equal(inProcessLockQueues.has(path.resolve(filePath)), false);
+
+    // Step 5: Subsequent valid markNonceSeen succeeds
+    const validNonce = `valid-post-frac-${crypto.randomUUID()}`;
+    assert.equal(await store.markNonceSeen(validNonce, { ttlMs: 60000 }), true);
+    assert.equal(await store.isNonceSeen(validNonce), true);
+    assert.equal(inProcessLockQueues.has(path.resolve(filePath)), false);
+  });
+
+  // 23. Diskteki persistant durumda kesirli zaman damgası bulunan dosya fail-closed reddedilir ve bayt bayt korunur
+  it('SEC-50: Persisted state containing fractional timestamps in seenUntil or reserved fails closed on read with StorageError and byte-for-byte preservation', async () => {
+    const filePath = path.join(tempDir, `sec50-persisted-frac-${crypto.randomUUID()}.json`);
+
+    // File A: fractional timestamp in seenUntil
+    const corruptContentSeen = JSON.stringify({
+      seen: ['consumed-1', 'consumed-2'],
+      seenUntil: {
+        'consumed-1': 1728550000000,
+        'consumed-2': 1728550000000.5, // fractional float
+      },
+      reserved: {},
+    });
+    await fs.writeFile(filePath, corruptContentSeen, 'utf8');
+    const originalBytesA = await fs.readFile(filePath);
+
+    const storeA = new NonceStore({ filePath });
+
+    await assert.rejects(
+      async () => storeA.isNonceSeen('consumed-1'),
+      (err: unknown) => {
+        assert.ok(err instanceof StorageError);
+        assert.match((err as Error).message, /invalid timestamp in 'seenUntil'/i);
+        return true;
+      },
+      'isNonceSeen on fractional seenUntil must fail closed with StorageError'
+    );
+
+    await assert.rejects(
+      async () => storeA.markNonceSeen('new-nonce-1'),
+      (err: unknown) => err instanceof StorageError
+    );
+
+    await assert.rejects(
+      async () => storeA.reserveNonce('new-nonce-2'),
+      (err: unknown) => err instanceof StorageError
+    );
+
+    // Byte-for-byte preservation
+    assert.deepEqual(await fs.readFile(filePath), originalBytesA, 'File with fractional seenUntil must remain byte-for-byte identical');
+    assert.equal(inProcessLockQueues.has(path.resolve(filePath)), false);
+
+    // File B: fractional timestamp in reserved
+    const corruptContentReserved = JSON.stringify({
+      seen: ['consumed-ok'],
+      seenUntil: { 'consumed-ok': 1728550000000 },
+      reserved: {
+        'res-frac': 1728550000000.75, // fractional float
+      },
+    });
+    await fs.writeFile(filePath, corruptContentReserved, 'utf8');
+    const originalBytesB = await fs.readFile(filePath);
+
+    const storeB = new NonceStore({ filePath });
+
+    await assert.rejects(
+      async () => storeB.isNonceSeen('res-frac'),
+      (err: unknown) => {
+        assert.ok(err instanceof StorageError);
+        assert.match((err as Error).message, /invalid timestamp in 'reserved'/i);
+        return true;
+      },
+      'isNonceSeen on fractional reserved must fail closed with StorageError'
+    );
+
+    await assert.rejects(
+      async () => storeB.reserveNonce('another-res'),
+      (err: unknown) => err instanceof StorageError
+    );
+
+    await assert.rejects(
+      async () => storeB.markNonceSeen('another-seen'),
+      (err: unknown) => err instanceof StorageError
+    );
+
+    // Byte-for-byte preservation
+    assert.deepEqual(await fs.readFile(filePath), originalBytesB, 'File with fractional reserved must remain byte-for-byte identical');
+    assert.equal(inProcessLockQueues.has(path.resolve(filePath)), false);
+  });
+
+  // 24. Yardımcı fonksiyonların (isValidNonceTimestamp, computeReservationExpiresAt, calculateRetentionUntil) doğrudan kesirli değer reddi
+  it('SEC-51: Helper functions isValidNonceTimestamp, computeReservationExpiresAt, and calculateRetentionUntil strictly reject fractional values without silent rounding', async () => {
+    const dummyPath = path.join(tempDir, 'dummy-path.json');
+
+    // isValidNonceTimestamp
+    assert.equal(isValidNonceTimestamp(0), true, '0 must be valid safe integer');
+    assert.equal(isValidNonceTimestamp(100), true, '100 must be valid safe integer');
+    assert.equal(isValidNonceTimestamp(Number.MAX_SAFE_INTEGER), true, 'MAX_SAFE_INTEGER must be valid');
+    assert.equal(isValidNonceTimestamp(1.5), false, '1.5 must be rejected (fractional)');
+    assert.equal(isValidNonceTimestamp(0.1), false, '0.1 must be rejected (fractional)');
+    assert.equal(isValidNonceTimestamp(1000.0001), false, '1000.0001 must be rejected (fractional)');
+    assert.equal(isValidNonceTimestamp(-1), false, '-1 must be rejected (negative)');
+    assert.equal(isValidNonceTimestamp(-0.5), false, '-0.5 must be rejected');
+    assert.equal(isValidNonceTimestamp(Number.MAX_SAFE_INTEGER + 1), false, 'MAX_SAFE_INTEGER + 1 must be rejected');
+    assert.equal(isValidNonceTimestamp(NaN), false, 'NaN must be rejected');
+    assert.equal(isValidNonceTimestamp(Infinity), false, 'Infinity must be rejected');
+    assert.equal(isValidNonceTimestamp(-Infinity), false, '-Infinity must be rejected');
+    assert.equal(isValidNonceTimestamp('100'), false, 'String must be rejected');
+    assert.equal(isValidNonceTimestamp(null), false, 'null must be rejected');
+    assert.equal(isValidNonceTimestamp(undefined), false, 'undefined must be rejected');
+
+    // computeReservationExpiresAt
+    assert.throws(
+      () => computeReservationExpiresAt(1000.5, 5000, dummyPath),
+      (err: unknown) => {
+        assert.ok(err instanceof StorageError);
+        assert.match((err as Error).message, /invalid current timestamp/i);
+        return true;
+      },
+      'computeReservationExpiresAt must reject fractional now'
+    );
+    assert.throws(
+      () => computeReservationExpiresAt(1000, 1.5, dummyPath),
+      (err: unknown) => {
+        assert.ok(err instanceof StorageError);
+        assert.match((err as Error).message, /invalid ttlms/i);
+        return true;
+      },
+      'computeReservationExpiresAt must reject fractional ttlMs'
+    );
+    assert.equal(computeReservationExpiresAt(1000, 5000, dummyPath), 6000, 'Valid integers must compute exactly');
+
+    // calculateRetentionUntil
+    assert.throws(
+      () => calculateRetentionUntil(1000.5, 5000, 10000, 500, dummyPath, 'test'),
+      (err: unknown) => err instanceof StorageError,
+      'calculateRetentionUntil must reject fractional now'
+    );
+    assert.throws(
+      () => calculateRetentionUntil(1000, 1000.5, 10000, 500, dummyPath, 'test'),
+      (err: unknown) => err instanceof StorageError,
+      'calculateRetentionUntil must reject fractional numeric optionsOrExpiresAt'
+    );
+    assert.throws(
+      () => calculateRetentionUntil(1000, { expiresAt: 1000.5 }, 10000, 500, dummyPath, 'test'),
+      (err: unknown) => err instanceof StorageError,
+      'calculateRetentionUntil must reject fractional expiresAt in object'
+    );
+    assert.throws(
+      () => calculateRetentionUntil(1000, { ttlMs: 1000.5 }, 10000, 500, dummyPath, 'test'),
+      (err: unknown) => err instanceof StorageError,
+      'calculateRetentionUntil must reject fractional ttlMs in object'
+    );
+    assert.throws(
+      () => calculateRetentionUntil(1000, undefined, 10000.5, 500, dummyPath, 'test'),
+      (err: unknown) => err instanceof StorageError,
+      'calculateRetentionUntil must reject fractional defaultRetentionMs'
+    );
+    assert.throws(
+      () => calculateRetentionUntil(1000, undefined, 10000, 500.5, dummyPath, 'test'),
+      (err: unknown) => err instanceof StorageError,
+      'calculateRetentionUntil must reject fractional clockSkewMs'
+    );
+    assert.throws(
+      () => calculateRetentionUntil(1000, [] as any, 10000, 500, dummyPath, 'test'),
+      (err: unknown) => err instanceof StorageError,
+      'calculateRetentionUntil must reject array optionsOrExpiresAt'
+    );
+
+    const validRes = calculateRetentionUntil(1000, { ttlMs: 2000 }, 10000, 500, dummyPath, 'test');
+    assert.equal(validRes, 11000, 'Valid integer inputs must compute exact integer retention');
+  });
 });
+
 
