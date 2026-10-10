@@ -242,6 +242,35 @@
   59. (SEC-45) markNonceSeen() içinde sayısal ve nesne biçimindeki expiresAt + clockSkewMs ve ttlMs retention hesaplama taşmaları -> StorageError fail-closed ret, dosyanın bayt bayt korunması ve sonraki operasyonların başarısı -> PASS
   60. (SEC-46) markNoncesSeenBatch() içinde sayısal ve nesne biçimindeki taşmalar -> StorageError fail-closed ret, batch noncelerinin kaydedilmemesi ve dosyanın bayt bayt korunması -> PASS
   61. (SEC-47) Normal geçerli epoch ms, epoch saniye, göreceli TTL ve nesne opsiyonlarının doğru retentionUntil hesaplaması ve replay engellemesi -> PASS
+  62. (SEC-48) reserveNonce() içinde kesirli ttlMs (1.5, 0.5 vb.) StorageError ile fail-closed ret, bayt bayt diskin korunması -> PASS
+  63. (SEC-49) markNonceSeen, markNoncesSeenBatch ve constructor içinde kesirli parametrelerin StorageError ile reddi -> PASS
+  64. (SEC-50) seenUntil veya reserved içinde kesirli zaman damgası bulunan dosyanın fail-closed okunması ve bozulmadan korunması -> PASS
+  65. (SEC-51) Yardımcı fonksiyonların (isValidNonceTimestamp, computeReservationExpiresAt, calculateRetentionUntil) kesirli değerleri yuvarlamadan doğrudan reddetmesi -> PASS
+
+### WP-18 Doğrulama Kanıtı
+- Kapsam: Test Runner Güvenli Filtreleme ve CI Concurrency Optimizasyonu
+- Yapılan Değişiklikler:
+  1. `packages/core/scripts/run-tests.js`:
+     - Güvenli dosya adı/desen filtresi eklendi (alt dize, tam isim ve wildcard `*`, `?` desteği).
+     - Girdi yolları `path.basename` ve ayırıcı normalizasyonu ile temizlenerek test dizini dışına çıkılması (path traversal) engellendi.
+     - `--dry-run` / `--list` bayrağı ile testleri koşturmadan eşleşen dosyaları sayma ve listeleme yeteneği eklendi.
+     - Eşleşmeyen desen verildiğinde (örn. `pnpm test nonce`) açık hata mesajı ve çıkış kodu `1` ile fail-closed durma sağlandı.
+     - Argüman verilmediğinde (`pnpm test` ve `pnpm test:live`) orijinal deterministik/canlı süit davranışının eksiksiz korunduğu doğrulandı.
+  2. `.github/workflows/ci.yml`:
+     - `concurrency: group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}, cancel-in-progress: true` bloğu eklendi.
+     - Aynı ref üzerindeki eski CI çalışmalarının otomatik iptali sağlanarak gereksiz tekrarlı CI kuyruğu ve Windows runner dakikaları önlendi.
+  3. `packages/core/tests/run-tests-filter.test.ts`:
+     - Test runner filtresinin varsayılan davranışı, canlı bayrağı, desen eşleşmesi, eşleşmeme durumu, yol normalizasyonu, wildcard desteği, `--` argüman ayrıştırma ve yol traversal güvenliğini doğrulayan 10 adet deterministik birim testi oluşturuldu.
+- Doğrulama Çıktıları:
+  - `pnpm test run-tests-filter`: 1 suite, 10/10 PASS, 0 fail.
+  - `pnpm test nonce`: Exit Code 1 (`Error: No deterministic test files matched pattern(s): "nonce"`).
+  - `pnpm test p18-04`: 2 suite, 74 test PASS (33 saniye).
+  - `pnpm test --dry-run`: 117 deterministik dosya seçildi.
+  - `pnpm test:live --dry-run`: 2 canlı dosya seçildi.
+  - `pnpm lint`: 0 error.
+  - `pnpm typecheck`: 0 error.
+  - `pnpm build`: 0 error.
+  - `pnpm typecheck:tests`: 0 error.
 - **Eksik Harici Bağımlılıklar (Canlı IdP):**
   - Kurumsal OIDC sağlayıcısı (Okta, Keycloak, Auth0, Entra ID) client_id, jwks_uri / public key ve donanım anahtarı (WebAuthn/Passkey) fiili ortamda henüz kurulmamıştır.
   - Canlı dış IdP yapılandırması uydurulmamış; canlı IdP testi `NOT RUN` olarak bırakılmıştır.
@@ -293,17 +322,21 @@
 | **WP-15** | Nonce Zaman Damgası Şema Sertleştirmesi, Sayısal Taşma (Overflow) Koruması, Bayt Bayt Adli Bütünlük ve Replay Güvencesi (57 güvenlik testi) | `VERIFIED & BLOCKED_ON_EXTERNAL_IDP` | 57/57 PASS; canlı IdP bağlanana kadar fail-closed BLOCKED_ON_EXTERNAL_IDP durumu korundu |
 | **WP-16** | Hesaplanan Nonce Zaman Damgalarının Güvenli Sınırlandırılması ve Aritmetik Taşma Savunması (61 güvenlik testi) | `VERIFIED & BLOCKED_ON_EXTERNAL_IDP` | 61/61 PASS; canlı IdP bağlanana kadar fail-closed BLOCKED_ON_EXTERNAL_IDP durumu korundu |
 | **WP-17** | Kesirli Zaman Damgalarının Reddedilmesi ve Tamsayı Şema Sertleştirmesi (isValidNonceTimestamp Number.isSafeInteger, ttlMs 1.5 ret, diske yazılan tamsayı güvencesi, no silent rounding, 65 güvenlik testi) | `VERIFIED & BLOCKED_ON_EXTERNAL_IDP` | 65/65 PASS; canlı IdP bağlanana kadar fail-closed BLOCKED_ON_EXTERNAL_IDP durumu korundu |
+| **WP-18** | Test Runner Güvenli Filtreleme ve CI Concurrency Optimizasyonu (`run-tests.js` dosya/desen filtresi, `--dry-run`, fail-closed sıfır eşleşme, `.github/workflows/ci.yml` concurrency cancel-in-progress, 10 birim testi) | `VERIFIED` | 10/10 PASS; `pnpm test nonce` (fail-closed exit 1) ve `pnpm test p18-04` (hedefli 74 test 33s) doğrulandı |
 
-### 5.2 Test ve Kalite Kapıları Doğrulama Çıktıları (WP-8.5 & WP-9 & WP-10 & WP-11 & WP-12 & WP-13 & WP-14 & WP-15 & WP-16 & WP-17)
+### 5.2 Test ve Kalite Kapıları Doğrulama Çıktıları (WP-8.5 & WP-9 & WP-10 & WP-11 & WP-12 & WP-13 & WP-14 & WP-15 & WP-16 & WP-17 & WP-18)
 
 | Komut | Kapsam | Çıkış Kodu | Hedef | Hata | Başarısızlık | Durum |
 |:---|:---|:---:|:---|:---:|:---:|:---:|
-| `pnpm lint` | Kod hijyeni ve ESLint kuralları | `0` | Tüm repo | 0 error | 0 | **PASS** (2137 uyarı raporlandı, 0 hata) |
+| `pnpm lint` | Kod hijyeni ve ESLint kuralları | `0` | Tüm repo | 0 error | 0 | **PASS** (2139 uyarı raporlandı, 0 hata) |
 | `pnpm typecheck` | Kaynak kod (`src/**/*`) strict tip denetimi | `0` | Tüm `src/` | 0 error | 0 | **PASS** (Strict 0 error) |
 | `pnpm build` | Paket derlemesi (`tsc -b`) | `0` | `@aidm/core` | 0 error | 0 | **PASS** (36 subpath d.ts ve js üretildi) |
-| `pnpm typecheck:tests` | Test dosyaları (`tests/**/*`) tip denetimi | `0` | 116 test dosyası | 0 error | 0 | **PASS** (Strict: true altında 0 error) |
-| `pnpm test` | Deterministik çevrimdışı test süiti (65 adet P18-04 güvenlik testi dahil) | `0` | 116 dosya, 295 suite, 3046 test | 0 fail | 0 skipped | **PASS** (3046/3046 PASS, 0 fail) |
-| `node --test packages/core/tests/p18-04-trusted-identity-context.test.ts` | P18-04 Güvenlik ve Şema Sertleştirme Süiti | `0` | 1 dosya, 1 suite, 65 test | 0 error | 0 | **PASS** (65/65 PASS, 0 fail) |
+| `pnpm typecheck:tests` | Test dosyaları (`tests/**/*`) tip denetimi | `0` | 117 test dosyası | 0 error | 0 | **PASS** (Strict: true altında 0 error) |
+| `pnpm test run-tests-filter` | Test runner güvenli filtreleme ve argüman yönetimi | `0` | 1 dosya, 1 suite, 10 test | 0 error | 0 | **PASS** (10/10 PASS, 0 fail, ~1.2s) |
+| `pnpm test nonce` | Eşleşmeyen desen fail-closed testi | `1` | 0 dosya eşleşmesi | 0 | 1 | **FAIL_CLOSED** (Açık hata mesajı ve çıkış kodu 1) |
+| `pnpm test p18-04` | Hedefli P18-04 test filtresi çalıştırması | `0` | 2 dosya, 2 suite, 74 test | 0 error | 0 | **PASS** (74/74 PASS, 33 saniyede tamamlandı) |
+| `pnpm test --dry-run` | Deterministik test süiti dosya seçimi listelemesi | `0` | 117 test dosyası | 0 error | 0 | **PASS** (Varsayılan seçim davranışı korundu) |
+| `pnpm test:live --dry-run` | Canlı test süiti dosya seçimi listelemesi | `0` | 2 test dosyası | 0 error | 0 | **PASS** (Canlı test ayrımı korundu) |
 | `pnpm test:live` | Canlı host AGY CLI ve OpenAI HTTPS E2E | `0` | 2 suite, 17 test | 0 fail | 0 skipped | **PASS** (Canlı ortamda 17/17 PASS) |
 | `pnpm test:p18-04-live-idp` | Canlı Harici OIDC IdP Entegrasyon Testi | `NOT RUN` | Canlı Kurumsal IdP | - | - | **NOT RUN** (Harici IdP bağlantısı ve canlı credentials olmadan uydurulamaz) |
 
