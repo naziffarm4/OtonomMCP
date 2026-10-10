@@ -59,12 +59,13 @@ export interface ITrustedIdentityProvider {
 - Gerçek kriptografik imza doğrulayıcısı (Node `crypto.verify` veya asenkron JWKS resolver) bulunmuyorsa doğrulama `CONFIG_MISSING` / `BLOCKED_ON_AUTH_CONTEXT` ile reddedilir.
 - Yalnızca asimetrik algoritmalar (`RS256`, `RS384`, `RS512`, `ES256`, `ES384`, `ES512`, `EdDSA`) kabul edilir. `alg: none` ve simetrik `HS256`/`HS384`/`HS512` algoritmaları doğrudan reddedilir (`SIGNATURE_INVALID`).
 - **JWK ve Algoritma Uyumu:** JWK içerisindeki anahtar türü (`kty`) ile algoritma (`alg`) tam uyumlu olmalıdır (`RS*` -> `RSA`, `ES*` -> `EC`, `EdDSA` -> `OKP` veya `EC`). Ayrıca token başlığındaki `alg` ile JWK üzerindeki `alg` uyuşmak zorundadır; uyuşmazlıklar fail-closed reddedilir.
-- **JWKS SSRF ve Ağ Güvenliği:**
+- **JWKS SSRF ve DNS Rebinding Savunması:**
   - `jwksUri` kesinlikle `https://` protokolünü kullanmalıdır; `http://` fail-closed reddedilir.
   - URL içinde gömülü kullanıcı bilgisi (`username:password@`) bulunması yasaktır.
   - Standart dışı portlar engellenir (yalnızca 443 veya varsayılan HTTPS portu).
-  - Özel, yerel ve ayrılmış IP aralıklarına erişim engellenir: Loopback (`127.0.0.0/8`, `::1`), RFC1918 özel ağlar (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`), Link-local ve bulut metadata adresleri (`169.254.0.0/16`), Carrier-grade NAT (`100.64.0.0/10`), Multicast ve ayrılmış adresler.
-  - **Yönlendirme (Redirect) Engeli:** HTTP 3xx yönlendirmeleri (`redirect: 'manual'`) takip edilmez; yönlendirme yanıtı dönen sağlayıcılar fail-closed olarak `PROVIDER_OUTAGE` ile reddedilir (SSRF kör noktası önleme).
+  - **DNS Ön Doğrulaması:** JWKS host adı bağlantı öncesinde tüm A ve AAAA kayıtları taranarak çözümlenir (`dns.promises.lookup`). Çözümlenen IP adreslerinden herhangi biri Loopback (`127.0.0.0/8`, `::1`), RFC1918 özel ağlar (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`), Link-local ve bulut metadata adresleri (`169.254.0.0/16`, `169.254.169.254`), Carrier-grade NAT (`100.64.0.0/10`), Multicast veya ayrılmış adresler kapsamındaysa istek anında reddedilir.
+  - **Uçuş Sırası (In-Flight) Soket Koruması & DNS Rebinding Engeli:** DNS TTL manipülasyonu veya TOCTOU (Time-of-check to time-of-use) tabanlı DNS rebinding saldırılarını önlemek için, HTTP istemcisi `node:https.request` seviyesinde özel `lookup` callback'i (`ssrfGuardedLookup`) ile donatılmıştır. TLS soketi bağlanırken çözümlenen IP adresi soket açılmadan hemen önce doğrulanır; izin verilmeyen IP tespit edildiğinde bağlantı anında kesilir ve fail-closed durulur.
+  - **Yönlendirme (Redirect) Engeli:** HTTP 3xx yönlendirmeleri (`redirect: 'manual'`) takip edilmez; yönlendirme yanıtı dönen sağlayıcılar fail-closed olarak `PROVIDER_OUTAGE` ile reddedilir.
 
 ### 3.3. Doğrulanmış Payload'dan Yetkili Claim Çıkarımı (Authoritative Claims Extraction)
 - İstemcinin ayrı gönderdiği `assertion.claims` alanı kimlik kanıtı olarak asla kabul edilmez.
@@ -83,13 +84,22 @@ Her onay talebi (`TrustedApprovalBinding`), imzalı JWT payload'ı içinde doğr
 - **İstemci Binding Bağımsızlığı:** İstemcinin gönderdiği `assertion.binding` nesnesi asla imzalı token payload'ının veya beklenen yürütme bağlamının yerine geçemez. İstemci binding'i doğru görünse bile imzalı token payload'ı eksik veya uyuşmazsa talep derhal reddedilir.
 - Beklenen yürütme bağlamıyla tek bir alan dahi uyuşmazsa `BINDING_MISMATCH` ile fail-closed durulur.
 
-### 3.5. Replay ve Çok Süreçli Atomik Nonce Tüketimi (Cross-Process Nonce Atomicity)
+### 3.5. Replay ve Çok Süreçli Atomik Nonce Tüketimi (OS Kernel SQLite Kilitleri)
 - Her onay iddiası zorunlu bir `nonce` (veya `jti`) içermelidir (en az 8 karakter).
-- **Süreç İçi ve Çok Süreçli Atomiklik Sınırı:** Süreç içi bellek kilitleri (in-process mutex) birden fazla `NonceStore` örneği, yeniden başlatmalar veya eşzamanlı işletim sistemi süreçleri arasında atomiklik sağlayamaz. Bu nedenle `NonceStore` kalıcı depolamada dosya kilidi (`O_CREAT | O_EXCL` tabanlı `.lock` mekanizması) ile donatılmıştır.
-- **Kalıcı Durum ve Çökme Dayanıklılığı:** Görülmüş nonce'lar (`seen`) ve aktif rezervasyonlar (`reserved`) diske senkronize yazılır. Süreç yeniden başlatılsa bile kullanılmış bir nonce asla yeniden tüketilemez.
-- **İki Aşamalı Atomik Rezervasyon:**
-  1. **Rezervasyon:** `reserveNonce(nonce, ttl)` çağrısı kalıcı kilit altında işletilir. Eşzamanlı gelen çoklu süreçlerden/isteklerden yalnızca biri rezervasyonu alır; diğer tüm eşzamanlı süreçler anında `REPLAY_DETECTED` ile fail-closed durur.
-  2. **Tüketim veya İptal:** Kriptografik imza veya bağlam kontrolleri başarısız olursa kilit altında rezervasyon serbest bırakılır (`releaseReservation`); kontroller eksiksiz geçerse `markNonceSeen` ile kalıcı olarak harcanır.
+- **İşletim Sistemi Çekirdeği Kilit Sözleşmesi (OS Byte-Range File Locking):**
+  - Dosya sistemi tabanlı manuel süre eşikli kilitler (`staleThresholdMs = 4000ms`) yarış koşullarına ve uzun süren süreçlerin kilitlerinin çalınmasına yol açabilir.
+  - Bu nedenle `NonceStore`, kilit koordinasyonunu işletim sistemi çekirdeği tarafından garanti edilen SQLite transaction kilit mekanizmasına (`DatabaseSync` ile `BEGIN EXCLUSIVE` ve `PRAGMA busy_timeout = 0`) devretmiştir.
+  - Windows üzerinde `LockFileEx`, POSIX sistemlerinde fcntl/flock çekirdek düzeyinde dosya kilitlerini kullanır.
+- **Salt Süre Eşiğine Dayanmayan Aktif Kilit Güvencesi:**
+  - Kilit sahibi 4 saniyeden uzun süre işlem yapsa dahi kilidi asla başka bir süreç tarafından "stale" sayılarak silinemez veya çalınamaz.
+  - Kilit serbest kalana kadar diğer yarışan süreçler jitter ve exponential backoff ile `timeoutMs` süresince sıraya girer; kazanan süreç tekildir.
+- **Çökme Güvenliği ve Otomatik Kurtarma (Crash Recovery):**
+  - Bir süreç işlem ortasında beklenmedik şekilde sonlandırılırsa (çökme, `SIGKILL` veya process termination), işletim sistemi çekirdeği açık dosya tanıtıcısını derhal kapatır ve SQLite kilitlerini anında serbest bırakır.
+  - Yetim (orphaned) kilit dosyası riski sıfırlanmıştır; arkadan gelen süreçler kilit dosyasını temizlemeye çalışırken yeni bir sürecin kilidini silme riski taşımadan kilidi güvenle devralır.
+- **Kalıcı Durum ve İki Aşamalı Atomik Rezervasyon:**
+  - Görülmüş nonce'lar (`seen`) ve aktif rezervasyonlar (`reserved`) diske senkronize yazılır. Süreç yeniden başlatılsa bile kullanılmış bir nonce asla yeniden tüketilemez.
+  - **Rezervasyon:** `reserveNonce(nonce, ttl)` çağrısı çekirdek kilidi altında işletilir. Eşzamanlı gelen çoklu süreçlerden/isteklerden yalnızca biri rezervasyonu alır; diğer tüm eşzamanlı süreçler anında `REPLAY_DETECTED` ile fail-closed durur.
+  - **Tüketim veya İptal:** Kriptografik imza veya bağlam kontrolleri başarısız olursa kilit altında rezervasyon serbest bırakılır (`releaseReservation`); kontroller eksiksiz geçerse `markNonceSeen` ile kalıcı olarak harcanır.
 - Süresi dolmuş (`exp`), gelecekte düzenlenmiş (`iat`) veya henüz yürürlüğe girmemiş (`nbf`) token'lar reddedilir.
 
 ### 3.6. mTLS Sertifikası Doğrulama Sınırı

@@ -10,6 +10,9 @@
  */
 
 import * as crypto from 'node:crypto';
+import * as dns from 'node:dns';
+import * as https from 'node:https';
+import * as net from 'node:net';
 import {
   type ITrustedIdentityProvider,
   type TrustedIdentityProviderType,
@@ -95,6 +98,7 @@ export interface OidcIdentityProviderOptions {
   readonly clockSkewSeconds?: number;
   readonly requestTimeoutMs?: number;
   readonly fetchJwksFn?: (uri: string, options?: { signal?: AbortSignal }) => Promise<{ keys: unknown[] }>;
+  readonly dnsLookupFn?: (hostname: string) => Promise<{ address: string; family: number }[]>;
   readonly verifySignatureFn?: (token: string, keyOrJwks?: string) => Promise<boolean> | boolean;
   readonly isOutage?: boolean;
 }
@@ -137,7 +141,7 @@ function isPrivateOrSpecialIp(ip: string): boolean {
 }
 
 /**
- * Validates a JWKS URI to prevent SSRF and unsafe protocols.
+ * Validates a JWKS URI syntactically to prevent SSRF and unsafe protocols.
  */
 export function validateJwksUri(uriString: string): void {
   let parsed: URL;
@@ -187,6 +191,182 @@ export function validateJwksUri(uriString: string): void {
   ) {
     throw new Error(`JWKS URI targets forbidden internal host ('${parsed.hostname}'). Rejected for SSRF defense.`);
   }
+}
+
+/**
+ * Validates hostname DNS resolution to defend against DNS rebinding and internal/private IP routing.
+ */
+export async function validateJwksHostDns(
+  hostname: string,
+  dnsLookupFn?: (hostname: string) => Promise<{ address: string; family: number }[]>
+): Promise<void> {
+  const host = hostname.toLowerCase().replace(/^\[|\]$/g, '');
+  const isLocalhost = host === 'localhost' || host === '127.0.0.1' || host === '::1';
+
+  if (isLocalhost && process.env.NODE_ENV !== 'production') {
+    return;
+  }
+
+  if (net.isIP(host)) {
+    if (host === '169.254.169.254' || host.startsWith('169.254.')) {
+      throw new Error(`JWKS URI targets forbidden cloud metadata IP ('${hostname}'). Rejected for SSRF defense.`);
+    }
+    if (isPrivateOrSpecialIp(host)) {
+      throw new Error(`JWKS URI targets forbidden private/link-local/metadata IP ('${hostname}'). Rejected for SSRF defense.`);
+    }
+    return;
+  }
+
+  let addresses: { address: string; family: number }[];
+  try {
+    if (dnsLookupFn) {
+      addresses = await dnsLookupFn(host);
+    } else {
+      const records = await dns.promises.lookup(host, { all: true });
+      addresses = Array.isArray(records) ? records : [records];
+    }
+  } catch (err: unknown) {
+    throw new Error(
+      `JWKS URI hostname '${hostname}' could not be resolved via DNS (${err instanceof Error ? err.message : String(err)}). Rejected fail-closed for SSRF defense.`
+    );
+  }
+
+  if (!addresses || addresses.length === 0) {
+    throw new Error(
+      `JWKS URI hostname '${hostname}' yielded zero DNS address records. Rejected fail-closed for SSRF defense.`
+    );
+  }
+
+  for (const entry of addresses) {
+    const ip = entry.address;
+    if (ip === '169.254.169.254' || ip.startsWith('169.254.')) {
+      throw new Error(`JWKS URI resolves to forbidden cloud metadata IP '${ip}' for host '${hostname}'. Rejected for SSRF defense.`);
+    }
+    if (isPrivateOrSpecialIp(ip)) {
+      throw new Error(
+        `JWKS URI resolves to forbidden private/link-local/metadata IP '${ip}' for host '${hostname}'. Rejected for SSRF defense.`
+      );
+    }
+  }
+}
+
+/**
+ * Performs secure JWKS fetch over HTTPS with in-flight DNS lookup validation
+ * to eliminate DNS rebinding (TOCTOU) and strictly blocks HTTP redirects.
+ */
+async function fetchSecureJwks(
+  jwksUri: string,
+  timeoutMs: number,
+  dnsLookupFn?: (hostname: string) => Promise<{ address: string; family: number }[]>
+): Promise<{ keys?: unknown[] }> {
+  return new Promise((resolve, reject) => {
+    let parsed: URL;
+    try {
+      parsed = new URL(jwksUri);
+    } catch (e) {
+      return reject(new Error(`Invalid JWKS URL: ${e instanceof Error ? e.message : String(e)}`));
+    }
+
+    if (parsed.protocol !== 'https:') {
+      const isLocalhost = parsed.hostname === 'localhost' || parsed.hostname === '127.0.0.1';
+      if (!isLocalhost || process.env.NODE_ENV === 'production') {
+        return reject(new Error(`JWKS URI must strictly use HTTPS protocol: '${parsed.protocol}'`));
+      }
+    }
+
+    const host = parsed.hostname.toLowerCase().replace(/^\[|\]$/g, '');
+    const isLocalhost = host === 'localhost' || host === '127.0.0.1' || host === '::1';
+
+    const ssrfGuardedLookup = (
+      hostname: string,
+      options: unknown,
+      callback: (err: Error | null, address?: any, family?: number) => void
+    ) => {
+      if (dnsLookupFn) {
+        dnsLookupFn(hostname)
+          .then((records) => {
+            for (const r of records) {
+              const ip = r.address;
+              if (
+                ip === '169.254.169.254' ||
+                ip.startsWith('169.254.') ||
+                (isPrivateOrSpecialIp(ip) && (!isLocalhost || process.env.NODE_ENV === 'production'))
+              ) {
+                return callback(new Error(`In-flight socket connection blocked: '${hostname}' resolved to forbidden IP '${ip}'. Rejected for SSRF defense.`));
+              }
+            }
+            if (records.length > 0) {
+              callback(null, records[0].address, records[0].family);
+            } else {
+              callback(new Error(`DNS resolution for '${hostname}' returned empty records`));
+            }
+          })
+          .catch((err) => callback(err));
+        return;
+      }
+
+      dns.lookup(hostname, options as any, (err, address, family) => {
+        if (err) return callback(err, address, family);
+        const addresses = Array.isArray(address) ? address : [{ address, family }];
+        for (const entry of addresses) {
+          const ip = typeof entry === 'string' ? entry : entry.address;
+          if (
+            ip === '169.254.169.254' ||
+            ip.startsWith('169.254.') ||
+            (isPrivateOrSpecialIp(ip) && (!isLocalhost || process.env.NODE_ENV === 'production'))
+          ) {
+            return callback(new Error(`In-flight socket connection blocked: '${hostname}' resolved to forbidden IP '${ip}'. Rejected for SSRF defense.`));
+          }
+        }
+        callback(null, address, family);
+      });
+    };
+
+    const req = https.request(
+      {
+        protocol: parsed.protocol,
+        hostname: parsed.hostname,
+        port: parsed.port || 443,
+        path: `${parsed.pathname}${parsed.search}`,
+        method: 'GET',
+        headers: { Accept: 'application/json' },
+        lookup: ssrfGuardedLookup,
+        timeout: timeoutMs,
+      },
+      (res) => {
+        if (res.statusCode && res.statusCode >= 300 && res.statusCode < 400) {
+          const loc = res.headers.location;
+          return reject(new Error(`JWKS endpoint attempted redirect to '${loc ?? 'unknown'}'. Automatic redirects are blocked for SSRF defense.`));
+        }
+
+        if (res.statusCode !== 200) {
+          return reject(new Error(`JWKS endpoint returned HTTP ${res.statusCode} ${res.statusMessage ?? ''}`));
+        }
+
+        let body = '';
+        res.setEncoding('utf8');
+        res.on('data', (chunk) => { body += chunk; });
+        res.on('end', () => {
+          try {
+            const data = JSON.parse(body);
+            resolve(data);
+          } catch (e) {
+            reject(new Error(`Failed to parse JWKS JSON response: ${e instanceof Error ? e.message : String(e)}`));
+          }
+        });
+      }
+    );
+
+    req.on('timeout', () => {
+      req.destroy(new Error(`JWKS request timed out after ${timeoutMs}ms`));
+    });
+
+    req.on('error', (err) => {
+      reject(err);
+    });
+
+    req.end();
+  });
 }
 
 /**
@@ -247,6 +427,7 @@ export class OidcIdentityProviderAdapter implements ITrustedIdentityProvider {
   private readonly clockSkewSeconds: number;
   private readonly requestTimeoutMs: number;
   private readonly fetchJwksFn?: (uri: string, options?: { signal?: AbortSignal }) => Promise<{ keys: unknown[] }>;
+  private readonly dnsLookupFn?: (hostname: string) => Promise<{ address: string; family: number }[]>;
   private readonly verifySignatureFn?: (token: string, keyOrJwks?: string) => Promise<boolean> | boolean;
   private isOutage: boolean;
   private readonly revokedIdentities = new Set<string>();
@@ -262,6 +443,7 @@ export class OidcIdentityProviderAdapter implements ITrustedIdentityProvider {
     this.clockSkewSeconds = options.clockSkewSeconds ?? 60;
     this.requestTimeoutMs = options.requestTimeoutMs ?? 5000;
     this.fetchJwksFn = options.fetchJwksFn;
+    this.dnsLookupFn = options.dnsLookupFn;
     this.verifySignatureFn = options.verifySignatureFn;
     this.isOutage = options.isOutage ?? false;
   }
@@ -452,7 +634,7 @@ export class OidcIdentityProviderAdapter implements ITrustedIdentityProvider {
         };
       }
     } else if (this.jwksUri) {
-      // Validate JWKS URI for SSRF protection
+      // Validate JWKS URI for SSRF protection (syntactic check)
       try {
         validateJwksUri(this.jwksUri);
       } catch (err: unknown) {
@@ -465,6 +647,28 @@ export class OidcIdentityProviderAdapter implements ITrustedIdentityProvider {
         };
       }
 
+      // Validate DNS resolution (SSRF protection against private IPs and rebinding)
+      const parsedJwksUrl = new URL(this.jwksUri);
+      const host = parsedJwksUrl.hostname.toLowerCase().replace(/^\[|\]$/g, '');
+      const isLocalhost = host === 'localhost' || host === '127.0.0.1' || host === '::1';
+      const isIpLiteral = net.isIP(host) !== 0;
+
+      if (!isIpLiteral && (!isLocalhost || process.env.NODE_ENV === 'production')) {
+        if (!this.fetchJwksFn || this.dnsLookupFn) {
+          try {
+            await validateJwksHostDns(host, this.dnsLookupFn);
+          } catch (err: unknown) {
+            return {
+              isValid: false,
+              isTrustedHumanAuth: false,
+              status: 'CONFIG_MISSING',
+              code: 'BLOCKED_ON_AUTH_CONTEXT',
+              reason: err instanceof Error ? err.message : String(err),
+            };
+          }
+        }
+      }
+
       let jwksData: { keys?: unknown[] };
       try {
         if (this.fetchJwksFn) {
@@ -472,31 +676,7 @@ export class OidcIdentityProviderAdapter implements ITrustedIdentityProvider {
             signal: AbortSignal.timeout(this.requestTimeoutMs),
           });
         } else {
-          const response = await fetch(this.jwksUri, {
-            signal: AbortSignal.timeout(this.requestTimeoutMs),
-            headers: { Accept: 'application/json' },
-            redirect: 'manual',
-          });
-          if (response.status >= 300 && response.status < 400) {
-            const redirectLoc = response.headers.get('location');
-            return {
-              isValid: false,
-              isTrustedHumanAuth: false,
-              status: 'PROVIDER_OUTAGE',
-              code: 'BLOCKED_ON_AUTH_CONTEXT',
-              reason: `JWKS endpoint attempted redirect to '${redirectLoc ?? 'unknown'}'. Automatic redirects are blocked for SSRF defense.`,
-            };
-          }
-          if (!response.ok) {
-            return {
-              isValid: false,
-              isTrustedHumanAuth: false,
-              status: 'PROVIDER_OUTAGE',
-              code: 'BLOCKED_ON_AUTH_CONTEXT',
-              reason: `JWKS endpoint returned HTTP ${response.status} ${response.statusText}.`,
-            };
-          }
-          jwksData = (await response.json()) as { keys?: unknown[] };
+          jwksData = await fetchSecureJwks(this.jwksUri, this.requestTimeoutMs, this.dnsLookupFn);
         }
       } catch (err: unknown) {
         return {

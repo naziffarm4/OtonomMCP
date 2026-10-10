@@ -39,6 +39,8 @@
 - [x] **WP-8.4: OM-09 İnsan Onayı Sınırı ve OM-10 Karar Düzeltmesi** (Rutin görev kabulü ile insan onayı ayrımı, P18-04 BLOCKED_ON_AUTH_CONTEXT mühürlenmesi, OM-10 geçişinin dürüstçe BLOCKED ilan edilmesi) — `CORRECTED`.
 - [x] **WP-9: Test Tip Borcunun Tamamen Giderilmesi ve P18-04 Kabul Kapısı** (84 test dosyasındaki 835 tip hatasının sıfırlanması, tsconfig.test.json strict: true altında 0 error, P18-04 fail-closed teyidi, OM-10 kapısının BLOCKED olarak mühürlenmesi) — `FIXED`.
 - [x] **WP-10: P18-04 Trusted Identity Context Mimari Sözleşmesi ve Emniyet Kilidi** (ADR-13, ITrustedIdentityProvider, OIDC/mTLS/TestDouble adaptörleri, anti-spoof fail-closed kilidi, 14/14 güvenlik testi, harici bağımlılıkların dürüstçe raporlanması, OM-10'un BLOCKED olarak mühürlü kalması) — `VERIFIED & BLOCKED_ON_EXTERNAL_IDP`.
+- [x] **WP-11: Kalan Scope-Binding ve Çok Süreçli Nonce Atomikliği Açıkları** (directorSessionId/taskId/operation bağlama, child process yarışı, JWKS 3xx ret, 30/30 test) — `VERIFIED & BLOCKED_ON_EXTERNAL_IDP`.
+- [x] **WP-12: Nonce Kilidi Yarış Koşullarının ve JWKS SSRF/Rebinding Sınırının Çözümlenmesi** (SQLite kernel transaction byte-range kilitleri, 4s stale eşiğinin kaldırılması, çökme kurtarma / SIGKILL dayanıklılığı, DNS pre-flight & in-flight TLS socket IP denetimi, 34/34 güvenlik testi) — `VERIFIED & BLOCKED_ON_EXTERNAL_IDP`.
 
 ---
 
@@ -204,6 +206,10 @@
   28. (SEC-14) Ayrı işletim sistemi süreçlerinin (child processes) eşzamanlı nonce yarışında tam 1 kazanan ve N-1 ret -> PASS
   29. (SEC-15) JWKS 3xx yönlendirmeleri (SSRF koruması) ve URL içinde kimlik bilgisi (credentials) -> Fail-closed ret
   30. (SEC-16) Token başlık alg ile JWK alg veya kty çelişkileri -> SIGNATURE_INVALID
+  31. (SEC-17) 4 saniyeden uzun süren kilit sahibinin kilidinin çalınmaması/silinmemesi (OS byte-range SQLite kilidi) -> PASS
+  32. (SEC-18) Kilit sahibinin ani çökmesi (SIGKILL) durumunda çekirdek kilitlerinin anında ve yetim dosya bırakmadan açılması ve kuyruktaki süreçlerin sıralı alımı -> PASS
+  33. (SEC-19) Çok süreçli çocuk süreçlerde (child process) rezervasyon, iptal ve kalıcı tüketim döngüsünde yarış koşulu direnci -> PASS
+  34. (SEC-20) JWKS DNS SSRF ön doğrulaması ve uçuş sırası (in-flight socket lookup) TLS soket IP denetimi (RFC1918, metadata 169.254.169.254 ve çözümlenemeyen hostların fail-closed engellenmesi) -> PASS
 - **Eksik Harici Bağımlılıklar (Canlı IdP):**
   - Kurumsal OIDC sağlayıcısı (Okta, Keycloak, Auth0, Entra ID) client_id, jwks_uri / public key ve donanım anahtarı (WebAuthn/Passkey) fiili ortamda henüz kurulmamıştır.
   - Canlı dış IdP yapılandırması uydurulmamış; canlı IdP testi `NOT RUN` olarak bırakılmıştır.
@@ -215,7 +221,7 @@
 
 ---
 
-## 4. OM-03 / OM-05 / OM-06 / OM-07 / OM-09 Gerçek Kabul Matrisi (WP-7 & WP-8 & WP-10 & WP-11)
+## 4. OM-03 / OM-05 / OM-06 / OM-07 / OM-09 Gerçek Kabul Matrisi (WP-7 & WP-8 & WP-10 & WP-11 & WP-12)
 
 | Aşama Kodu | Gereksinim ve Kabul Kriteri | Test / Kanıt Kaynağı | Test Türü (Gerçek / Mock) | Çalıştırılan Komut | Çıkış Kodu | Sonuç ve Kanıt Dosyası / Commit | Eksik Harici Koşullar | Nihai Karar |
 |:---:|---|---|:---:|---|:---:|---|---|:---:|
@@ -249,16 +255,17 @@
 | **WP-9** | Test Tip Borcunun Giderilmesi ve P18-04 Kabul Kapısı (835 tip hatası -> 0 error, tsconfig.test.json strict: true, P18-04 fail-closed teyidi) | `VERIFIED` | 84 dosyada 835 tip hatası giderildi, 0 error |
 | **WP-10** | P18-04 OIDC İmza Güvenliği, Authoritative Claim Extraction, Kriptografik Scope Binding, Atomik Nonce Replay Gate (24 güvenlik testi) | `VERIFIED & BLOCKED_ON_EXTERNAL_IDP` | 24/24 PASS; canlı IdP bağlanana kadar fail-closed BLOCKED_ON_EXTERNAL_IDP durumu korundu |
 | **WP-11** | Kalan Scope-Binding Açıklarının Kapatılması, Çok Süreçli (Cross-Process) Nonce Atomikliği ve JWKS Ağ Güvenliği Sertleştirmesi (30 güvenlik testi) | `VERIFIED & BLOCKED_ON_EXTERNAL_IDP` | 30/30 PASS; canlı IdP bağlanana kadar fail-closed BLOCKED_ON_EXTERNAL_IDP durumu korundu |
+| **WP-12** | Nonce Kilidi Yarış Koşullarının ve JWKS SSRF/Rebinding Sınırının Çözümlenmesi (SQLite Transaction OS Kilitleri, Çökme Kurtarma, DNS Pre-flight & In-flight TLS Socket Rebinding Savunması, 34 güvenlik testi) | `VERIFIED & BLOCKED_ON_EXTERNAL_IDP` | 34/34 PASS; canlı IdP bağlanana kadar fail-closed BLOCKED_ON_EXTERNAL_IDP durumu korundu |
 
-### 5.2 Test ve Kalite Kapıları Doğrulama Çıktıları (WP-8.5 & WP-9 & WP-10 & WP-11)
+### 5.2 Test ve Kalite Kapıları Doğrulama Çıktıları (WP-8.5 & WP-9 & WP-10 & WP-11 & WP-12)
 
 | Komut | Kapsam | Çıkış Kodu | Hedef | Hata | Başarısızlık | Durum |
-|:---|:---|:---:|:---:|:---:|:---:|:---:|
-| `pnpm lint` | Kod hijyeni ve ESLint kuralları | `0` | Tüm repo | 0 error | 0 | **PASS** (2112 uyarı raporlandı, 0 hata) |
+|:---|:---|:---:|:---|:---:|:---:|:---:|
+| `pnpm lint` | Kod hijyeni ve ESLint kuralları | `0` | Tüm repo | 0 error | 0 | **PASS** (2114 uyarı raporlandı, 0 hata) |
 | `pnpm typecheck` | Kaynak kod (`src/**/*`) strict tip denetimi | `0` | Tüm `src/` | 0 error | 0 | **PASS** (Strict 0 error) |
 | `pnpm build` | Paket derlemesi (`tsc -b`) | `0` | `@aidm/core` | 0 error | 0 | **PASS** (36 subpath d.ts ve js üretildi) |
 | `pnpm typecheck:tests` | Test dosyaları (`tests/**/*`) tip denetimi | `0` | 116 test dosyası | 0 error | 0 | **PASS** (Strict: true altında 0 error) |
-| `pnpm test` | Deterministik çevrimdışı test süiti (30 adet P18-04 güvenlik testi dahil) | `0` | 116 dosya, 295 suite, 3011 test | 0 fail | 0 skipped | **PASS** (3011/3011 PASS, 0 fail) |
+| `pnpm test` | Deterministik çevrimdışı test süiti (34 adet P18-04 güvenlik testi dahil) | `0` | 116 dosya, 295 suite, 3015 test | 0 fail | 0 skipped | **PASS** (3015/3015 PASS, 0 fail) |
 | `pnpm test:live` | Canlı host AGY CLI ve OpenAI HTTPS E2E | `0` | 2 suite, 17 test | 0 fail | 0 skipped | **PASS** (Canlı ortamda 17/17 PASS) |
 | `pnpm test:p18-04-live-idp` | Canlı Harici OIDC IdP Entegrasyon Testi | `NOT RUN` | Canlı Kurumsal IdP | - | - | **NOT RUN** (Harici IdP bağlantısı ve canlı credentials olmadan uydurulamaz) |
 
@@ -268,12 +275,12 @@
 >
 > **Gerekçe ve Engelleyici Bulgular:**
 > 1. **Test Tip Denetimi Borcu (WP-9):** Başarıyla çözümlenmiştir. Test süitindeki 84 dosyada bulunan 835 adet statik tip hatasının tamamı `tsconfig.test.json` (`strict: true`) altında sıfırlanmış; `any` veya `@ts-ignore` gibi bastırma direktifleri kullanılmadan domain sözleşmelerine uygun mock nesneleriyle 0 hataya indirilmiştir. CI kalite kapısında `typecheck:tests` adımı yeşile geçmiştir.
-> 2. **P18-04 Kapsam Bağlama ve Çok Süreçli Nonce Atomikliği (WP-10 & WP-11):** 
+> 2. **P18-04 Kapsam Bağlama ve Çok Süreçli Nonce Atomikliği (WP-10 & WP-11 & WP-12):** 
 >    - `directorSessionId`, `taskId` ve `operation` alanları imzalı token payload'ında ve beklenen bağlamda fail-closed doğrulanır. İstemci `assertion.binding` beyanının imzalı payload yerine geçmesi engellenmiştir.
->    - Süreç içi kilit yanılsaması giderilmiş; `NonceStore` bağımsız örnekler, yeniden başlatmalar ve eşzamanlı işletim sistemi süreçleri (child processes) arasında kalıcı dosya kilidi (`O_CREAT | O_EXCL`) ve disk senkronizasyonu ile atomik hale getirilmiştir.
->    - JWKS ağ katmanında 3xx yönlendirmeleri (`redirect: 'manual'`), gömülü kimlik bilgileri ve ayrılmış IP aralıkları engellenmiş; JWK anahtar türü (`kty`) ile algoritma (`alg`) tam uyumu zorunlu kılınmıştır.
->    - P18-04 test süiti 30 güvenlik testine genişletilmiş ve tamamı PASS vermiştir.
-> 3. **Canlı Dış IdP Eksikliği ve Güvenlik Riski:** Adaptör düzeyindeki tüm bu güvenlik sertleştirmelerine rağmen, gerçek bir kurumsal IdP (Okta, Keycloak vb.) fiilen bağlanmamış ve canlı ortamda doğrulanmamıştır. Mimarinin fail-closed güvenlik ilkesi gereğince sistem `BLOCKED_ON_AUTH_CONTEXT` / `BLOCKED_ON_EXTERNAL_IDP` durumunda tutulmaktadır.
+>    - Süreç içi kilit yanılsaması ve dosya tabanlı 4s stale eşiği yarış koşulları giderilmiş; `NonceStore` SQLite transaction seviyesinde işletim sistemi çekirdeği byte-range kilit mekanizmasına (`BEGIN EXCLUSIVE`) bağlanmıştır. Süreç 4 saniyeden uzun çalışsa bile kilidi çalınamaz; ani çökmede (`SIGKILL`) çekirdek kilitleri anında ve yetim dosya bırakmadan serbest bırakılır.
+>    - JWKS ağ katmanında DNS ön doğrulaması ve uçuş sırası (`ssrfGuardedLookup` socket callback) ile DNS rebinding saldırıları, loopback, link-local, bulut metadata (`169.254.169.254`) ve özel ağ adresleri engellenmiş; HTTP 3xx yönlendirmeleri fail-closed reddedilmiştir.
+>    - P18-04 test süiti 34 güvenlik testine genişletilmiş ve tamamı gerçek çocuk süreçler (child processes) üzerinde PASS vermiştir.
+> 3. **Canlı Dış IdP Eksikliği ve Güvenlik Riski:** Adaptör düzeyindeki tüm bu mimari ve çekirdek seviyesindeki güvenlik sertleştirmelerine rağmen, gerçek bir kurumsal IdP (Okta, Keycloak vb.) fiilen bağlanmamış ve canlı ortamda doğrulanmamıştır. Mimarinin fail-closed güvenlik ilkesi gereğince sistem `BLOCKED_ON_AUTH_CONTEXT` / `BLOCKED_ON_EXTERNAL_IDP` durumunda tutulmaktadır.
 > 4. **OM-10 İle İlişki ve Dondurma Riski:** Dış bağımsız onay mekanizması olmadan sistemin OM-10 ile dondurulması veya genel MCP sözleşmesine bağlanması kabul edilemez bir güvenlik riskidir. Director veya AGY kendi kendine yetki veremez.
 >
 > **Sonuç:** OtonomMCP çekirdeğinde OM-10 uygulamasına (sürümleme, genel sözleşme dondurma, git tag vb.) **BAŞLANMAYACAKTIR**. OM-10 kapısı KESİNLİKLE BLOCKED olarak mühürlü kalacaktır. P18-04 genel kabulü ancak canlı kurumsal IdP entegrasyonu tamamlandığında verilebilir.

@@ -1,17 +1,11 @@
 import * as path from 'node:path';
 import * as fs from 'node:fs';
-import * as crypto from 'node:crypto';
+import { DatabaseSync } from 'node:sqlite';
 import { atomicWriteJson, readJsonFile } from '../storage/atomic-writer.js';
 
 export interface PersistedNonceData {
   seen: string[];
   reserved: Record<string, number>; // nonce -> expiresAt (epoch ms)
-}
-
-interface FileLockMetadata {
-  ownerToken: string;
-  pid: number;
-  acquiredAt: number;
 }
 
 // Process-wide mutex per normalized file path to serialize async operations within the same process
@@ -37,8 +31,15 @@ function withInProcessLock<T>(filePath: string, operation: () => Promise<T>): Pr
 }
 
 /**
- * Cross-process and cross-instance mutual exclusion file lock.
- * Uses atomic O_CREAT | O_EXCL with unique ownership tokens, process liveness checking, and stale recovery.
+ * Cross-process and cross-instance mutual exclusion lock using SQLite exclusive transactions.
+ * Leverages operating system kernel byte-range file locking (LockFileEx / POSIX locks).
+ *
+ * Guarantees:
+ * 1. Safe against long operations: Active locks are NEVER stolen or deleted just because a stale timer elapsed.
+ * 2. Race-condition proof cleanup: When a holding process terminates or crashes, the OS kernel automatically
+ *    and instantly releases the byte-range lock on the file descriptor without leaving stale lock files behind.
+ * 3. Competing processes queue cleanly: No process can accidentally delete another process's newly acquired lock.
+ * 4. Lock integrity: The lock owner holds an active EXCLUSIVE database transaction for the exact duration of operation().
  */
 export async function withCrossProcessNonceLock<T>(
   filePath: string,
@@ -46,85 +47,71 @@ export async function withCrossProcessNonceLock<T>(
   options?: { timeoutMs?: number; staleThresholdMs?: number; pollIntervalMs?: number }
 ): Promise<T> {
   const normalizedPath = path.resolve(filePath);
-  const lockFilePath = `${normalizedPath}.lock`;
-  const timeoutMs = options?.timeoutMs ?? 5000;
-  const staleThresholdMs = options?.staleThresholdMs ?? 4000;
-  const pollIntervalMs = options?.pollIntervalMs ?? 15;
+  const lockDbPath = `${normalizedPath}.lock.sqlite`;
+  const timeoutMs = options?.timeoutMs ?? 10000;
+  const pollIntervalMs = options?.pollIntervalMs ?? 20;
 
   return withInProcessLock(normalizedPath, async () => {
-    await fs.promises.mkdir(path.dirname(lockFilePath), { recursive: true });
-    const ownerToken = crypto.randomUUID();
+    await fs.promises.mkdir(path.dirname(lockDbPath), { recursive: true });
     const startTime = Date.now();
+    let db: DatabaseSync | null = null;
 
     while (true) {
       try {
-        const handle = await fs.promises.open(
-          lockFilePath,
-          fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_RDWR
-        );
-        const metadata: FileLockMetadata = {
-          ownerToken,
-          pid: process.pid,
-          acquiredAt: Date.now(),
-        };
-        try {
-          await handle.writeFile(JSON.stringify(metadata), 'utf8');
-          await handle.sync();
-        } finally {
-          await handle.close().catch(() => {});
-        }
-        break; // Successfully acquired lock
+        db = new DatabaseSync(lockDbPath);
+        db.exec('PRAGMA busy_timeout = 0;');
+        db.exec('CREATE TABLE IF NOT EXISTS _nonce_lock (id INTEGER PRIMARY KEY, pid INTEGER, acquired_at INTEGER);');
+        db.exec('BEGIN EXCLUSIVE;');
+        // Lock acquired exclusively across all processes and threads
+        break;
       } catch (err: unknown) {
-        const code = (err as { code?: string })?.code;
-        if (code !== 'EEXIST') {
-          throw err;
+        if (db) {
+          try {
+            db.close();
+          } catch {
+            // Ignored
+          }
+          db = null;
         }
 
-        // Lock file exists; check for staleness or dead PID
-        try {
-          const raw = await fs.promises.readFile(lockFilePath, 'utf8');
-          const meta = JSON.parse(raw) as FileLockMetadata;
-          const isStale = Date.now() - meta.acquiredAt > staleThresholdMs;
-          let isProcessDead = false;
-          if (meta.pid && meta.pid !== process.pid) {
-            try {
-              process.kill(meta.pid, 0);
-            } catch (e: any) {
-              if (e?.code === 'ESRCH') {
-                isProcessDead = true;
-              }
-            }
-          }
-
-          if (isStale || isProcessDead) {
-            await fs.promises.unlink(lockFilePath).catch(() => {});
-            continue;
-          }
-        } catch {
-          // If file is mid-write or already unlinked, wait and retry
+        const msg = (err as Error)?.message ?? '';
+        const isLocked = msg.includes('locked') || msg.includes('busy');
+        if (!isLocked) {
+          throw err;
         }
 
         if (Date.now() - startTime >= timeoutMs) {
           throw new Error(
-            `Timeout acquiring cross-process lock for ${lockFilePath} after ${timeoutMs}ms`
+            `Timeout acquiring cross-process lock for ${normalizedPath} after ${timeoutMs}ms`
           );
         }
 
-        await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
+        const jitter = Math.floor(Math.random() * 10);
+        await new Promise((resolve) => setTimeout(resolve, pollIntervalMs + jitter));
       }
     }
 
+    let succeeded = false;
     try {
-      return await operation();
+      const result = await operation();
+      succeeded = true;
+      return result;
     } finally {
-      try {
-        const raw = await fs.promises.readFile(lockFilePath, 'utf8');
-        const meta = JSON.parse(raw) as FileLockMetadata;
-        if (meta.ownerToken === ownerToken) {
-          await fs.promises.unlink(lockFilePath).catch(() => {});
+      if (db) {
+        try {
+          if (succeeded) {
+            db.exec('COMMIT;');
+          } else {
+            db.exec('ROLLBACK;');
+          }
+        } catch {
+          // Transaction may have already been closed
         }
-      } catch {
-        // Ignored if already cleaned up
+        try {
+          db.close();
+        } catch {
+          // Ignored
+        }
       }
     }
   });

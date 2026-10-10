@@ -37,6 +37,7 @@ import {
   HistoryManager,
   DurableStateManager,
   NonceStore,
+  withCrossProcessNonceLock,
   OidcIdentityProviderAdapter,
   MtlsIdentityProviderAdapter,
   UnconfiguredIdentityProviderAdapter,
@@ -1924,6 +1925,247 @@ describe('Phase 18 TASK-P18-04 — Trusted Identity Context Architecture & Verif
     assert.equal(res.isValid, false);
     assert.equal(res.status, 'SIGNATURE_INVALID');
     assert.ok(res.reason.includes('contradicts token header algorithm') || res.reason.includes('requires kty'));
+  });
+
+  // SEC-17: Lock held >4s is safely maintained and not stolen or deleted by concurrent process
+  it('SEC-17: Nonce lock held for longer than 4 seconds is not stolen or broken by second process', async () => {
+    const sharedFile = path.join(tempDir, `long-lock-${crypto.randomUUID()}.json`);
+    const nonceStoreUrl = new URL('../dist/authorization/nonce-store.js', import.meta.url).href;
+
+    // Process 1 holds lock for 4500ms
+    const p1Script = `
+      import { withCrossProcessNonceLock } from '${nonceStoreUrl}';
+      const file = process.argv[1];
+      await withCrossProcessNonceLock(file, async () => {
+        process.stdout.write('P1_LOCKED');
+        await new Promise((r) => setTimeout(r, 4500));
+        process.stdout.write(JSON.stringify({ p1End: Date.now() }));
+      }, { timeoutMs: 10000 });
+    `;
+
+    // Process 2 starts later and attempts to acquire lock with 10s timeout
+    const p2Script = `
+      import { withCrossProcessNonceLock } from '${nonceStoreUrl}';
+      const file = process.argv[1];
+      const p2Attempt = Date.now();
+      await withCrossProcessNonceLock(file, async () => {
+        const p2Acquired = Date.now();
+        process.stdout.write(JSON.stringify({ p2Attempt, p2Acquired }));
+      }, { timeoutMs: 10000 });
+    `;
+
+    const p1 = cp.spawn(process.execPath, ['--input-type=module', '-e', p1Script, sharedFile]);
+    let p1Out = '';
+    let p2Out = '';
+
+    await new Promise<void>((resolve, reject) => {
+      p1.stdout.on('data', (d) => {
+        p1Out += d.toString();
+        if (p1Out.includes('P1_LOCKED') && !p1Out.includes('SPAWNED_P2')) {
+          p1Out += 'SPAWNED_P2';
+          setTimeout(() => {
+            const p2 = cp.spawn(process.execPath, ['--input-type=module', '-e', p2Script, sharedFile]);
+            p2.stdout.on('data', (d2) => { p2Out += d2.toString(); });
+            p2.on('close', (code) => {
+              if (code !== 0) reject(new Error(`P2 exited with code ${code}`));
+              else resolve();
+            });
+          }, 500);
+        }
+      });
+      p1.on('error', reject);
+    });
+
+    const p1Data = JSON.parse(p1Out.slice(p1Out.indexOf('{')));
+    const p2Data = JSON.parse(p2Out);
+
+    assert.ok(
+      p2Data.p2Acquired >= p1Data.p1End,
+      `P2 acquired lock (${p2Data.p2Acquired}) before P1 released it (${p1Data.p1End})`
+    );
+  });
+
+  // SEC-18: Abrupt process termination releases lock cleanly and concurrent processes acquire sequentially
+  it('SEC-18: Abrupt process termination releases lock cleanly and concurrent processes acquire sequentially', async () => {
+    const sharedFile = path.join(tempDir, `crash-lock-${crypto.randomUUID()}.json`);
+    const nonceStoreUrl = new URL('../dist/authorization/nonce-store.js', import.meta.url).href;
+
+    // Process A acquires lock and hangs
+    const p1Script = `
+      import { withCrossProcessNonceLock } from '${nonceStoreUrl}';
+      await withCrossProcessNonceLock(process.argv[1], async () => {
+        process.stdout.write('CRASH_LOCK_ACQUIRED');
+        await new Promise((r) => setTimeout(r, 60000));
+      });
+    `;
+
+    const p1 = cp.spawn(process.execPath, ['--input-type=module', '-e', p1Script, sharedFile]);
+    let p1Out = '';
+
+    await new Promise<void>((resolve, reject) => {
+      p1.stdout.on('data', (d) => {
+        p1Out += d.toString();
+        if (p1Out.includes('CRASH_LOCK_ACQUIRED')) {
+          p1.kill('SIGKILL');
+          resolve();
+        }
+      });
+      p1.on('error', reject);
+    });
+
+    // Competing child process worker script
+    const competitorScript = `
+      import { withCrossProcessNonceLock } from '${nonceStoreUrl}';
+      const id = process.argv[2];
+      await withCrossProcessNonceLock(process.argv[1], async () => {
+        const start = Date.now();
+        await new Promise((r) => setTimeout(r, 150));
+        process.stdout.write(JSON.stringify({ id, start, end: Date.now() }));
+      }, { timeoutMs: 10000 });
+    `;
+
+    // Spawn 2 competing processes concurrently to race for the recovered lock
+    const p2Promise = new Promise<{ id: string; start: number; end: number }>((resolve, reject) => {
+      const p2 = cp.spawn(process.execPath, ['--input-type=module', '-e', competitorScript, sharedFile, 'p2']);
+      let out = '';
+      p2.stdout.on('data', (d) => { out += d.toString(); });
+      p2.on('close', (c) => c === 0 ? resolve(JSON.parse(out)) : reject(new Error(`p2 failed ${c}`)));
+    });
+
+    const p3Promise = new Promise<{ id: string; start: number; end: number }>((resolve, reject) => {
+      const p3 = cp.spawn(process.execPath, ['--input-type=module', '-e', competitorScript, sharedFile, 'p3']);
+      let out = '';
+      p3.stdout.on('data', (d) => { out += d.toString(); });
+      p3.on('close', (c) => c === 0 ? resolve(JSON.parse(out)) : reject(new Error(`p3 failed ${c}`)));
+    });
+
+    const [res2, res3] = await Promise.all([p2Promise, p3Promise]);
+
+    const isP2First = res2.end <= res3.start;
+    const isP3First = res3.end <= res2.start;
+    assert.ok(
+      isP2First || isP3First,
+      `Competitors overlapped execution: p2=[${res2.start}, ${res2.end}], p3=[${res3.start}, ${res3.end}]`
+    );
+  });
+
+  // SEC-19: Multi-process race across reservation, release, and permanent consumption
+  it('SEC-19: Multi-process race across reservation, release, and permanent consumption', async () => {
+    const sharedFile = path.join(tempDir, `race-cycle-${crypto.randomUUID()}.json`);
+    const storeA = new NonceStore({ filePath: sharedFile });
+    const storeB = new NonceStore({ filePath: sharedFile });
+    const testNonce = `cycle-nonce-${crypto.randomUUID()}`;
+
+    // Step 1: Store A reserves nonce
+    const resA = await storeA.reserveNonce(testNonce, 15000);
+    assert.equal(resA, true);
+
+    // Step 2: Child process attempts reservation of same nonce -> MUST fail
+    const nonceStoreUrl = new URL('../dist/authorization/nonce-store.js', import.meta.url).href;
+    const childReserve = (nonce: string) => new Promise<boolean>((resolve, reject) => {
+      const p = cp.spawn(process.execPath, ['--input-type=module', '-e', `
+        import { NonceStore } from '${nonceStoreUrl}';
+        const s = new NonceStore({ filePath: process.argv[1] });
+        const res = await s.reserveNonce(process.argv[2], 10000);
+        process.stdout.write(JSON.stringify({ res }));
+      `, sharedFile, nonce]);
+      let out = '';
+      p.stdout.on('data', (d) => { out += d.toString(); });
+      p.on('close', (c) => c === 0 ? resolve(JSON.parse(out).res) : reject(new Error(`reserve child failed ${c}`)));
+    });
+
+    const childRes1 = await childReserve(testNonce);
+    assert.equal(childRes1, false, 'Child process must be rejected while nonce is reserved by A');
+
+    // Step 3: Store A releases reservation
+    await storeA.releaseReservation(testNonce);
+
+    // Step 4: Child process now attempts reservation -> MUST succeed
+    const childRes2 = await childReserve(testNonce);
+    assert.equal(childRes2, true, 'Child process must succeed reserving after release');
+
+    // Step 5: Child process consumes it
+    const childConsume = (nonce: string) => new Promise<boolean>((resolve, reject) => {
+      const p = cp.spawn(process.execPath, ['--input-type=module', '-e', `
+        import { NonceStore } from '${nonceStoreUrl}';
+        const s = new NonceStore({ filePath: process.argv[1] });
+        const res = await s.markNonceSeen(process.argv[2]);
+        process.stdout.write(JSON.stringify({ res }));
+      `, sharedFile, nonce]);
+      let out = '';
+      p.stdout.on('data', (d) => { out += d.toString(); });
+      p.on('close', (c) => c === 0 ? resolve(JSON.parse(out).res) : reject(new Error(`consume child failed ${c}`)));
+    });
+
+    const childConsumeRes = await childConsume(testNonce);
+    assert.equal(childConsumeRes, true, 'Child process must mark nonce seen');
+
+    // Step 6: Any further attempt by store A, store B, or any process MUST fail
+    const replayAttemptA = await storeA.markNonceSeen(testNonce);
+    assert.equal(replayAttemptA, false, 'Store A must detect replay');
+
+    const replayAttemptB = await storeB.reserveNonce(testNonce);
+    assert.equal(replayAttemptB, false, 'Store B reserve must detect replay');
+  });
+
+  // SEC-20: DNS SSRF defense rejects domains resolving to private/metadata IPs or unresolvable hosts
+  it('SEC-20: DNS SSRF defense rejects domains resolving to private/metadata IPs or unresolvable hosts', async () => {
+    const binding: TrustedApprovalBinding = {
+      projectId,
+      packageId: 'pkg-sec-20',
+      revision: 1,
+      contextFingerprint,
+    };
+    const claims: TrustedIdentityClaim = {
+      identityId: 'id-01',
+      issuer: 'https://auth.company.corp',
+      audience: 'aidm-core-platform',
+      subject: 'alice@company.corp',
+      actorRole: 'PRODUCT_OWNER',
+      issuedAt: new Date().toISOString(),
+      expiresAt: new Date(Date.now() + 600000).toISOString(),
+      nonce: `nonce-${crypto.randomUUID()}`,
+      authMethod: 'OIDC',
+    };
+    const token = createSignedJwt(claims, rsaPrivateKeyPem, binding);
+
+    // 20a. Domain resolves to RFC1918 private IP (10.0.0.1)
+    const privateDnsAdapter = new OidcIdentityProviderAdapter({
+      issuer: 'https://auth.company.corp',
+      audience: 'aidm-core-platform',
+      jwksUri: 'https://evil-rebind.attacker.corp/keys',
+      dnsLookupFn: async () => [{ address: '10.0.0.1', family: 4 }],
+    });
+    const resPrivateDns = await privateDnsAdapter.verifyAssertion({ token, binding }, binding);
+    assert.equal(resPrivateDns.isValid, false);
+    assert.equal(resPrivateDns.status, 'CONFIG_MISSING');
+    assert.ok(resPrivateDns.reason.includes('forbidden private/link-local/metadata IP'));
+
+    // 20b. Domain resolves to cloud metadata IP (169.254.169.254)
+    const metadataDnsAdapter = new OidcIdentityProviderAdapter({
+      issuer: 'https://auth.company.corp',
+      audience: 'aidm-core-platform',
+      jwksUri: 'https://evil-metadata.attacker.corp/keys',
+      dnsLookupFn: async () => [{ address: '169.254.169.254', family: 4 }],
+    });
+    const resMetadataDns = await metadataDnsAdapter.verifyAssertion({ token, binding }, binding);
+    assert.equal(resMetadataDns.isValid, false);
+    assert.equal(resMetadataDns.status, 'CONFIG_MISSING');
+    assert.ok(resMetadataDns.reason.includes('forbidden cloud metadata IP'));
+
+    // 20c. Domain fails DNS resolution entirely
+    const unresolvableAdapter = new OidcIdentityProviderAdapter({
+      issuer: 'https://auth.company.corp',
+      audience: 'aidm-core-platform',
+      jwksUri: 'https://non-existent-domain-404.corp/keys',
+      dnsLookupFn: async () => {
+        throw new Error('getaddrinfo ENOTFOUND non-existent-domain-404.corp');
+      },
+    });
+    const resUnresolvable = await unresolvableAdapter.verifyAssertion({ token, binding }, binding);
+    assert.equal(resUnresolvable.isValid, false);
+    assert.equal(resUnresolvable.status, 'CONFIG_MISSING');
+    assert.ok(resUnresolvable.reason.includes('could not be resolved via DNS'));
   });
 });
 
