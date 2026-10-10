@@ -141,6 +141,7 @@ export const FORBIDDEN_IPV6_RANGES: readonly IpCidrRange[] = [
   { prefix: '64:ff9b:1::', length: 48, description: 'Local-Use IPv4/IPv6 translation (RFC 8215)' },
   { prefix: 'fc00::', length: 7, description: 'Unique Local Unicast (ULA, RFC 4193)' },
   { prefix: 'fe80::', length: 10, description: 'Link-Local Unicast (RFC 4291)' },
+  { prefix: 'fec0::', length: 10, description: 'Site-Local Unicast (deprecated, RFC 3879)' },
   { prefix: 'ff00::', length: 8, description: 'Multicast (RFC 4291)' },
 ] as const;
 
@@ -183,20 +184,27 @@ export function isForbiddenIpv4(ipNum: number): boolean {
  * Returns null if invalid.
  */
 export function parseIpv6(ipStr: string): { words: number[]; bigInt: bigint } | null {
+  if (typeof ipStr !== 'string') return null;
   let clean = ipStr.replace(/^\[|\]$/g, '').split('%')[0].toLowerCase().trim();
+  if (clean.length === 0) return null;
+
+  // Reject malformed multiple consecutive colons (e.g. :::, :::: )
+  if (clean.includes(':::')) return null;
+
+  // Single leading or trailing colon is invalid (only :: is valid at ends)
+  if (clean.startsWith(':') && !clean.startsWith('::')) return null;
+  if (clean.endsWith(':') && !clean.endsWith('::')) return null;
+
   const lastColon = clean.lastIndexOf(':');
   if (lastColon !== -1) {
     const after = clean.slice(lastColon + 1);
     if (after.includes('.')) {
-      // Embedded IPv4 dotted quad
-      const parts = after.split('.').map(Number);
-      if (parts.length === 4 && parts.every((p) => !isNaN(p) && p >= 0 && p <= 255)) {
-        const hex1 = ((parts[0] << 8) | parts[1]).toString(16);
-        const hex2 = ((parts[2] << 8) | parts[3]).toString(16);
-        clean = clean.slice(0, lastColon + 1) + hex1 + ':' + hex2;
-      } else {
-        return null;
-      }
+      // Embedded IPv4 dotted quad: strictly parse with ipV4ToNumber
+      const v4Num = ipV4ToNumber(after);
+      if (v4Num === null) return null;
+      const hex1 = ((v4Num >>> 16) & 0xffff).toString(16);
+      const hex2 = (v4Num & 0xffff).toString(16);
+      clean = clean.slice(0, lastColon + 1) + hex1 + ':' + hex2;
     }
   }
 
@@ -205,13 +213,20 @@ export function parseIpv6(ipStr: string): { words: number[]; bigInt: bigint } | 
     const halves = clean.split('::');
     if (halves.length !== 2) return null; // Only one :: allowed
     const [left, right] = halves;
-    const leftWords = left ? left.split(':').filter(Boolean) : [];
-    const rightWords = right ? right.split(':').filter(Boolean) : [];
-    const missing = 8 - (leftWords.length + rightWords.length);
-    if (missing < 0) return null;
-    words = [...leftWords, ...Array(missing).fill('0'), ...rightWords];
+
+    // Check for empty words in left or right
+    const leftParts = left.length > 0 ? left.split(':') : [];
+    const rightParts = right.length > 0 ? right.split(':') : [];
+    if (leftParts.some((p) => p.length === 0) || rightParts.some((p) => p.length === 0)) {
+      return null;
+    }
+
+    const missing = 8 - (leftParts.length + rightParts.length);
+    if (missing < 1) return null; // :: must compress at least 1 word
+    words = [...leftParts, ...Array(missing).fill('0'), ...rightParts];
   } else {
     words = clean.split(':');
+    if (words.some((p) => p.length === 0)) return null;
   }
 
   if (words.length !== 8) return null;
@@ -1240,34 +1255,48 @@ export class OidcIdentityProviderAdapter implements ITrustedIdentityProvider {
     }
 
     if (this.nonceStore) {
-      if (options?.dryRun) {
-        const seen = await this.nonceStore.isNonceSeen(nonce);
-        if (seen) {
-          return {
-            isValid: false,
-            isTrustedHumanAuth: false,
-            status: 'REPLAY_DETECTED',
-            code: 'BLOCKED_ON_AUTH_CONTEXT',
-            reason: `Replay attack detected: Nonce '${nonce}' was previously used. Duplicate token reuse prohibited.`,
-          };
+      try {
+        if (options?.dryRun) {
+          const seen = await this.nonceStore.isNonceSeen(nonce);
+          if (seen) {
+            return {
+              isValid: false,
+              isTrustedHumanAuth: false,
+              status: 'REPLAY_DETECTED',
+              code: 'BLOCKED_ON_AUTH_CONTEXT',
+              reason: `Replay attack detected: Nonce '${nonce}' was previously used. Duplicate token reuse prohibited.`,
+            };
+          }
+        } else {
+          const reserved = await this.nonceStore.reserveNonce(nonce, 60_000);
+          if (!reserved) {
+            return {
+              isValid: false,
+              isTrustedHumanAuth: false,
+              status: 'REPLAY_DETECTED',
+              code: 'BLOCKED_ON_AUTH_CONTEXT',
+              reason: `Replay attack detected: Nonce '${nonce}' was previously used or is currently in flight. Duplicate token reuse prohibited.`,
+            };
+          }
         }
-      } else {
-        const reserved = await this.nonceStore.reserveNonce(nonce, 60_000);
-        if (!reserved) {
-          return {
-            isValid: false,
-            isTrustedHumanAuth: false,
-            status: 'REPLAY_DETECTED',
-            code: 'BLOCKED_ON_AUTH_CONTEXT',
-            reason: `Replay attack detected: Nonce '${nonce}' was previously used or is currently in flight. Duplicate token reuse prohibited.`,
-          };
-        }
+      } catch (err: unknown) {
+        return {
+          isValid: false,
+          isTrustedHumanAuth: false,
+          status: 'UNVERIFIED',
+          code: 'BLOCKED_ON_AUTH_CONTEXT',
+          reason: `Nonce state verification failed: ${err instanceof Error ? err.message : String(err)}. Rejecting fail-closed.`,
+        };
       }
     }
 
     const releaseNonceIfReserved = async () => {
       if (this.nonceStore && !options?.dryRun) {
-        await this.nonceStore.releaseReservation(nonce);
+        try {
+          await this.nonceStore.releaseReservation(nonce);
+        } catch {
+          // Ignore release errors during failure teardown
+        }
       }
     };
 
@@ -1427,7 +1456,18 @@ export class OidcIdentityProviderAdapter implements ITrustedIdentityProvider {
     // Mark nonce permanently seen/consumed now that all checks passed
     if (this.nonceStore && !options?.dryRun) {
       const tokenExpMs = typeof exp === 'number' ? parseJwtDateMs(exp) : undefined;
-      await this.nonceStore.markNonceSeen(nonce, tokenExpMs);
+      try {
+        await this.nonceStore.markNonceSeen(nonce, tokenExpMs);
+      } catch (err: unknown) {
+        await releaseNonceIfReserved();
+        return {
+          isValid: false,
+          isTrustedHumanAuth: false,
+          status: 'UNVERIFIED',
+          code: 'BLOCKED_ON_AUTH_CONTEXT',
+          reason: `Failed to persist nonce consumption: ${err instanceof Error ? err.message : String(err)}. Rejecting fail-closed.`,
+        };
+      }
     }
 
     // 7. Successful External Verification
@@ -1666,14 +1706,24 @@ export class MtlsIdentityProviderAdapter implements ITrustedIdentityProvider {
 
       const nonce = assertion.claims?.nonce;
       if (nonce && this.nonceStore) {
-        const marked = await this.nonceStore.markNonceSeen(nonce);
-        if (!marked) {
+        try {
+          const marked = await this.nonceStore.markNonceSeen(nonce);
+          if (!marked) {
+            return {
+              isValid: false,
+              isTrustedHumanAuth: false,
+              status: 'REPLAY_DETECTED',
+              code: 'BLOCKED_ON_AUTH_CONTEXT',
+              reason: `Replay attack detected: Nonce '${nonce}' was previously used.`,
+            };
+          }
+        } catch (err: unknown) {
           return {
             isValid: false,
             isTrustedHumanAuth: false,
-            status: 'REPLAY_DETECTED',
+            status: 'UNVERIFIED',
             code: 'BLOCKED_ON_AUTH_CONTEXT',
-            reason: `Replay attack detected: Nonce '${nonce}' was previously used.`,
+            reason: `Nonce state verification failed: ${err instanceof Error ? err.message : String(err)}. Rejecting fail-closed.`,
           };
         }
       }
@@ -1795,14 +1845,24 @@ export class TestDoubleIdentityProviderAdapter implements ITrustedIdentityProvid
     }
 
     if (assertion.claims?.nonce && this.nonceStore) {
-      const marked = await this.nonceStore.markNonceSeen(assertion.claims.nonce);
-      if (!marked) {
+      try {
+        const marked = await this.nonceStore.markNonceSeen(assertion.claims.nonce);
+        if (!marked) {
+          return {
+            isValid: false,
+            isTrustedHumanAuth: false,
+            status: 'REPLAY_DETECTED',
+            code: 'BLOCKED_ON_AUTH_CONTEXT',
+            reason: 'Replay detected on test double.',
+          };
+        }
+      } catch (err: unknown) {
         return {
           isValid: false,
           isTrustedHumanAuth: false,
-          status: 'REPLAY_DETECTED',
+          status: 'UNVERIFIED',
           code: 'BLOCKED_ON_AUTH_CONTEXT',
-          reason: 'Replay detected on test double.',
+          reason: `Nonce state verification failed: ${err instanceof Error ? err.message : String(err)}. Rejecting fail-closed.`,
         };
       }
     }

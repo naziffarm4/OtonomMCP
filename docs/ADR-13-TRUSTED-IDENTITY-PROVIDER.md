@@ -135,6 +135,24 @@ Her onay talebi (`TrustedApprovalBinding`), imzalı JWT payload'ı içinde doğr
 - İmza geçersizse veya issuer/audience uyuşmuyorsa: `BLOCKED_ON_AUTH_CONTEXT`.
 - İptal edilmiş kimlik veya bağlam uyuşmazlığı varsa: `BLOCKED_ON_AUTH_CONTEXT`.
 - DNS hatası veya SSRF/Rebinding şüphesi varsa: `BLOCKED_ON_AUTH_CONTEXT`.
+- Nonce durumu bozuk, okunamayan veya şemaya uymayan durumda ise: `BLOCKED_ON_AUTH_CONTEXT`.
+
+### 3.10. Nonce Durumunun Fail-Closed Kurtarılması, Şema Doğrulaması ve Adli Kanıt Koruma (Forensic Evidence Preservation)
+- **Durum Ayrımı ve İlk Oluşturma:**
+  - Nonce dosyasının diskte henüz var olmaması (`ENOENT`) açık ve tekil bir ilk oluşturma (bootstrap) durumu olarak kabul edilir; yalnızca bu durumda boş başlangıç durumu (`{ seen: [], seenUntil: {}, reserved: {} }`) üretilir.
+  - Dosyanın boş olması (0 bayt), kesilmiş JSON içermesi, sözdizimi hatası (JSON parse error), dosya izin/okuma hataları (`EACCES`, `EPERM`) veya geçersiz şema durumlarında sistem asla boş başlangıç durumuna düşmez (no silent fallback).
+  - Şema Doğrulaması: Kök değerin nesne olmaması (literal `null`, sayı, boolean, string) veya `seen` alanının dizi olmaması durumları fail-closed olarak `StorageError` fırlatır. Geriye dönük uyumluluk için eski salt string dizi formatı güvenle korunur.
+- **Fail-Closed Onay ve Replay Engeli:**
+  - Nonce durumu doğrulanamıyorsa, onay ve replay kontrolleri doğrudan fail-closed olarak durur.
+  - `OidcIdentityProviderAdapter`, `MtlsIdentityProviderAdapter` ve `TestDoubleIdentityProviderAdapter` ile `AuthContextValidator` katmanlarında `NonceStore` istisnaları yakalanarak istek `UNVERIFIED` ve `BLOCKED_ON_AUTH_CONTEXT` olarak reddedilir; sırlar ve iç yığın izleri sızdırılmadan istemciye güvenli hata kodu iletilir.
+- **Adli Kanıtın Korunması (No Silent Overwrite):**
+  - Hata durumunda veya dosya bozulduğunda, mevcut bozuk dosya asla sessizce boş durumla veya yeni verilerle ezilmez/silinmez. `atomicWriteJson` çağrısına geçilmediği için disk üzerindeki bozuk durum adli inceleme (forensic audit) amacıyla olduğu gibi korunur.
+- **Süreç Yeniden Başlatma ve Bağımsız Örnek Tutarlılığı:**
+  - Süreç yeniden başlatılsa veya farklı `NonceStore` örnekleri başlatılsa dahi bozuk dosya karşısında her zaman deterministik ve tekdüze biçimde fail-closed ret üretilir.
+  - Eşzamanlı işletim sistemi süreçleri (child processes) bozuk/okunamayan durum karşısında birbirinden farklı veya güvensiz sonuçlara ulaşamaz; tüm süreçler fail-closed durur.
+- **Gelişmiş IPv6 SSRF Sertleştirmesi:**
+  - RFC 3879 Site-Local Unicast aralığı (`fec0::/10`) `FORBIDDEN_IPV6_RANGES` listesine eklenmiştir.
+  - `parseIpv6` ayrıştırıcısı; üç ardışık iki nokta (`:::`), tekil baştaki/sondaki iki nokta (`:1::`, `::1:`), geçersiz hextet karakterleri/uzunlukları ve gömülü IPv4 adreslerindeki geçersiz/sekizlik (octal) gösterimleri (`::ffff:0127.0.0.1`) fail-closed olarak reddedecek şekilde sertleştirilmiştir.
 
 ---
 

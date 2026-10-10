@@ -41,6 +41,8 @@
 - [x] **WP-10: P18-04 Trusted Identity Context Mimari Sözleşmesi ve Emniyet Kilidi** (ADR-13, ITrustedIdentityProvider, OIDC/mTLS/TestDouble adaptörleri, anti-spoof fail-closed kilidi, 14/14 güvenlik testi, harici bağımlılıkların dürüstçe raporlanması, OM-10'un BLOCKED olarak mühürlü kalması) — `VERIFIED & BLOCKED_ON_EXTERNAL_IDP`.
 - [x] **WP-11: Kalan Scope-Binding ve Çok Süreçli Nonce Atomikliği Açıkları** (directorSessionId/taskId/operation bağlama, child process yarışı, JWKS 3xx ret, 30/30 test) — `VERIFIED & BLOCKED_ON_EXTERNAL_IDP`.
 - [x] **WP-12: Nonce Kilidi Yarış Koşullarının ve JWKS SSRF/Rebinding Sınırının Çözümlenmesi** (SQLite kernel transaction byte-range kilitleri, 4s stale eşiğinin kaldırılması, çökme kurtarma / SIGKILL dayanıklılığı, DNS pre-flight & in-flight TLS socket IP denetimi, 34/34 güvenlik testi) — `VERIFIED & BLOCKED_ON_EXTERNAL_IDP`.
+- [x] **WP-13: IPv6 SSRF, In-Flight DNS Rebinding Savunması, In-Process Kilit Kuyruğu Temizliği ve Kalıcı Nonce Replay Saklama Politikası** (41 güvenlik testi) — `VERIFIED & BLOCKED_ON_EXTERNAL_IDP`.
+- [x] **WP-14: Nonce Durumunun Fail-Closed Kurtarılması, Şema Doğrulaması ve Nihai Güvenlik Kapısı** (readStateUnderLock() ENOENT ayrımı, bozuk/kesilmiş/null JSON ret, şema doğrulaması, adli kanıt koruma [no silent overwrite], bağımsız örnek/süreç tutarlılığı, fec0::/10 ve gelişmiş IPv6 SSRF ayrıştırması, 51/51 güvenlik testi) — `VERIFIED & BLOCKED_ON_EXTERNAL_IDP`.
 
 ---
 
@@ -217,6 +219,16 @@
   39. (SEC-25) Uçuş sırası (in-flight) HTTPS 302 yönlendirmelerinin reddi ve bulut metadata adreslerine bağlantı girişimlerinin engellenmesi -> PASS
   40. (SEC-26) In-process mutex kilit kuyruğu bellek temizliği (zero leak, sıralı yürütme, hata izolasyonu ve 60 farklı yol temizlik testi) -> PASS
   41. (SEC-27) Kalıcı zaman tabanlı nonce saklama politikası (2.000 sınırının kaldırılması, 2.050 farklı nonce tüketimi sonrası ilk nonce replay testi ve yeniden başlatma dayanıklılığı) -> PASS
+  42. (SEC-28) Olmayan nonce dosyasının diskte güvenle ilk kez oluşturulması (bootstrap) -> PASS
+  43. (SEC-29) Boş (0-byte), kesilmiş JSON, literal null, boolean/string/number veya eksik seen şemasının StorageError fırlatması ve boş duruma düşmemesi -> PASS
+  44. (SEC-30) Geçersiz JSON parse hatasının replay kontrolünü atlatamaması ve fail-closed durması -> UNVERIFIED / BLOCKED_ON_AUTH_CONTEXT
+  45. (SEC-31) Okuma ve izin hatalarının (EACCES/EPERM) boş duruma dönüşmemesi ve fail-closed durması -> StorageError / BLOCKED_ON_AUTH_CONTEXT
+  46. (SEC-32) Tüketilmiş bir nonce kaydedildikten sonra dosya bozulursa, aynı nonce ile onayın fail-closed reddedilmesi -> UNVERIFIED / BLOCKED_ON_AUTH_CONTEXT
+  47. (SEC-33) Hata sonrasında eski bozuk güvenlik durumunun sessizce üzerine yazılmaması ve adli kanıtın korunması (no silent overwrite) -> PASS
+  48. (SEC-34) Süreç yeniden başlatma ve bağımsız NonceStore örneklerinin bozuk dosya karşısında aynı fail-closed güvenlik sonucunu vermesi -> PASS
+  49. (SEC-35) Eşzamanlı işletim sistemi süreçlerinin (child processes) bozuk/okunamayan durum karşısında tekdüze ve güvenli fail-closed sonuç üretmesi -> PASS
+  50. (SEC-36) 2.050'den fazla nonce sonrasında önceki nonce replay korumasının ve yeniden başlatma tutarlılığının korunması -> PASS
+  51. (SEC-37) Başarılı ve başarısız operasyonlardan sonra in-process mutex kuyruk kayıtlarının doğru temizlenmesi ve sıfır bellek sızıntısı -> PASS
 - **Eksik Harici Bağımlılıklar (Canlı IdP):**
   - Kurumsal OIDC sağlayıcısı (Okta, Keycloak, Auth0, Entra ID) client_id, jwks_uri / public key ve donanım anahtarı (WebAuthn/Passkey) fiili ortamda henüz kurulmamıştır.
   - Canlı dış IdP yapılandırması uydurulmamış; canlı IdP testi `NOT RUN` olarak bırakılmıştır.
@@ -228,7 +240,7 @@
 
 ---
 
-## 4. OM-03 / OM-05 / OM-06 / OM-07 / OM-09 Gerçek Kabul Matrisi (WP-7 & WP-8 & WP-10 & WP-11 & WP-12 & WP-13)
+## 4. OM-03 / OM-05 / OM-06 / OM-07 / OM-09 Gerçek Kabul Matrisi (WP-7 & WP-8 & WP-10 & WP-11 & WP-12 & WP-13 & WP-14)
 
 | Aşama Kodu | Gereksinim ve Kabul Kriteri | Test / Kanıt Kaynağı | Test Türü (Gerçek / Mock) | Çalıştırılan Komut | Çıkış Kodu | Sonuç ve Kanıt Dosyası / Commit | Eksik Harici Koşullar | Nihai Karar |
 |:---:|---|---|:---:|---|:---:|---|---|:---:|
@@ -264,16 +276,17 @@
 | **WP-11** | Kalan Scope-Binding Açıklarının Kapatılması, Çok Süreçli (Cross-Process) Nonce Atomikliği ve JWKS Ağ Güvenliği Sertleştirmesi (30 güvenlik testi) | `VERIFIED & BLOCKED_ON_EXTERNAL_IDP` | 30/30 PASS; canlı IdP bağlanana kadar fail-closed BLOCKED_ON_EXTERNAL_IDP durumu korundu |
 | **WP-12** | Nonce Kilidi Yarış Koşullarının ve JWKS SSRF/Rebinding Sınırının Çözümlenmesi (SQLite Transaction OS Kilitleri, Çökme Kurtarma, DNS Pre-flight & In-flight TLS Socket Rebinding Savunması, 34 güvenlik testi) | `VERIFIED & BLOCKED_ON_EXTERNAL_IDP` | 34/34 PASS; canlı IdP bağlanana kadar fail-closed BLOCKED_ON_EXTERNAL_IDP durumu korundu |
 | **WP-13** | IPv6 SSRF, In-Flight DNS Rebinding Savunması, In-Process Kilit Kuyruğu Temizliği ve Kalıcı Nonce Replay Saklama Politikası (41 güvenlik testi) | `VERIFIED & BLOCKED_ON_EXTERNAL_IDP` | 41/41 PASS; canlı IdP bağlanana kadar fail-closed BLOCKED_ON_EXTERNAL_IDP durumu korundu |
+| **WP-14** | Nonce Durumunun Fail-Closed Kurtarılması, Şema Doğrulaması ve Nihai Güvenlik Kapısı (readStateUnderLock() ENOENT ayrımı, bozuk/kesilmiş/null JSON ret, şema doğrulaması, adli kanıt koruma [no silent overwrite], bağımsız örnek/süreç tutarlılığı, fec0::/10 ve gelişmiş IPv6 SSRF ayrıştırması, 51/51 güvenlik testi) | `VERIFIED & BLOCKED_ON_EXTERNAL_IDP` | 51/51 PASS; canlı IdP bağlanana kadar fail-closed BLOCKED_ON_EXTERNAL_IDP durumu korundu |
 
-### 5.2 Test ve Kalite Kapıları Doğrulama Çıktıları (WP-8.5 & WP-9 & WP-10 & WP-11 & WP-12 & WP-13)
+### 5.2 Test ve Kalite Kapıları Doğrulama Çıktıları (WP-8.5 & WP-9 & WP-10 & WP-11 & WP-12 & WP-13 & WP-14)
 
 | Komut | Kapsam | Çıkış Kodu | Hedef | Hata | Başarısızlık | Durum |
 |:---|:---|:---:|:---|:---:|:---:|:---:|
-| `pnpm lint` | Kod hijyeni ve ESLint kuralları | `0` | Tüm repo | 0 error | 0 | **PASS** (2114 uyarı raporlandı, 0 hata) |
+| `pnpm lint` | Kod hijyeni ve ESLint kuralları | `0` | Tüm repo | 0 error | 0 | **PASS** (2136 uyarı raporlandı, 0 hata) |
 | `pnpm typecheck` | Kaynak kod (`src/**/*`) strict tip denetimi | `0` | Tüm `src/` | 0 error | 0 | **PASS** (Strict 0 error) |
 | `pnpm build` | Paket derlemesi (`tsc -b`) | `0` | `@aidm/core` | 0 error | 0 | **PASS** (36 subpath d.ts ve js üretildi) |
 | `pnpm typecheck:tests` | Test dosyaları (`tests/**/*`) tip denetimi | `0` | 116 test dosyası | 0 error | 0 | **PASS** (Strict: true altında 0 error) |
-| `pnpm test` | Deterministik çevrimdışı test süiti (41 adet P18-04 güvenlik testi dahil) | `0` | 116 dosya, 295 suite, 3022 test | 0 fail | 0 skipped | **PASS** (3022/3022 PASS, 0 fail) |
+| `pnpm test` | Deterministik çevrimdışı test süiti (51 adet P18-04 güvenlik testi dahil) | `0` | 116 dosya, 295 suite, 3032 test | 0 fail | 0 skipped | **PASS** (3032/3032 PASS, 0 fail) |
 | `pnpm test:live` | Canlı host AGY CLI ve OpenAI HTTPS E2E | `0` | 2 suite, 17 test | 0 fail | 0 skipped | **PASS** (Canlı ortamda 17/17 PASS) |
 | `pnpm test:p18-04-live-idp` | Canlı Harici OIDC IdP Entegrasyon Testi | `NOT RUN` | Canlı Kurumsal IdP | - | - | **NOT RUN** (Harici IdP bağlantısı ve canlı credentials olmadan uydurulamaz) |
 

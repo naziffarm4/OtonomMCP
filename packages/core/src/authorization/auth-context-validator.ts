@@ -106,23 +106,33 @@ export class AuthContextValidator {
         authSource: (ctx.authSource as string) ?? 'EXTERNAL_IDP',
       };
 
-      const result: IdentityVerificationResult = await this.identityProvider.verifyAssertion(assertion, {
-        projectId: currentProjectId,
-        packageId: ctx.binding.packageId,
-        revision: ctx.binding.revision,
-        contextFingerprint: ctx.binding.contextFingerprint,
-        directorSessionId: ctx.binding.directorSessionId,
-        taskId: ctx.binding.taskId,
-        operation: ctx.binding.operation,
-      });
+      try {
+        const result: IdentityVerificationResult = await this.identityProvider.verifyAssertion(assertion, {
+          projectId: currentProjectId,
+          packageId: ctx.binding.packageId,
+          revision: ctx.binding.revision,
+          contextFingerprint: ctx.binding.contextFingerprint,
+          directorSessionId: ctx.binding.directorSessionId,
+          taskId: ctx.binding.taskId,
+          operation: ctx.binding.operation,
+        });
 
-      return {
-        isValid: result.isValid,
-        isTrueHumanInteraction: result.isTrustedHumanAuth,
-        reason: result.reason,
-        code: result.code,
-        claims: result.claims,
-      };
+        return {
+          isValid: result.isValid,
+          isTrueHumanInteraction: result.isTrustedHumanAuth,
+          reason: result.reason,
+          code: result.code,
+          claims: result.claims,
+        };
+      } catch (err: unknown) {
+        const errMessage = err instanceof Error ? err.message : String(err);
+        return {
+          isValid: false,
+          isTrueHumanInteraction: false,
+          reason: `External identity verification failed: ${errMessage}`,
+          code: 'BLOCKED_ON_AUTH_CONTEXT',
+        };
+      }
     }
 
     // Branch B: Local Ed25519 payload verification

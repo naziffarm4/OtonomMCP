@@ -45,6 +45,9 @@ import {
   MtlsIdentityProviderAdapter,
   UnconfiguredIdentityProviderAdapter,
   TestDoubleIdentityProviderAdapter,
+  AuthContextValidator,
+  IdentityManager,
+  StorageError,
   fetchSecureJwks,
   isPrivateOrSpecialIp,
   validateJwksHostDns,
@@ -2234,6 +2237,9 @@ describe('Phase 18 TASK-P18-04 — Trusted Identity Context Architecture & Verif
       // IPv4-compatible IPv6 (deprecated)
       '::127.0.0.1',
       '::10.0.0.1',
+      // IPv6 Site-Local Unicast (deprecated RFC 3879)
+      'fec0::1',
+      'fec0::dead:beef',
       // IPv4/IPv6 translation
       '64:ff9b::10.0.0.1',
       '64:ff9b:1::1',
@@ -2243,6 +2249,12 @@ describe('Phase 18 TASK-P18-04 — Trusted Identity Context Architecture & Verif
       '999.999.999.999',
       '0177.0.0.1', // octal bypass attempt
       'invalid:::ipv6',
+      ':::',
+      '2001:::1',
+      '::1:',
+      ':1::',
+      '::ffff:0127.0.0.1', // octal in embedded IPv4
+      '64:ff9b::0127.0.0.1', // octal in NAT64 embedded IPv4
       '',
     ];
 
@@ -2558,6 +2570,430 @@ describe('Phase 18 TASK-P18-04 — Trusted Identity Context Architecture & Verif
 
     const restartIsSeen = await restartedStore.isNonceSeen(firstNonce);
     assert.equal(restartIsSeen, true, 'Restarted store must find first nonce in persistent storage');
+  });
+
+  // ============================================================================
+  // MANDATORY NEGATIVE TESTS FOR FAIL-CLOSED NONCE STORE & REPLAY PROTECTION
+  // ============================================================================
+
+  // 1. Olmayan nonce dosyası güvenli biçimde ilk kez oluşturulabilir
+  it('SEC-28: Non-existent nonce file is safely initialized upon first creation', async () => {
+    const missingFile = path.join(tempDir, `initial-nonce-store-${crypto.randomUUID()}.json`);
+    let fileExistedInitially = true;
+    try {
+      await fs.access(missingFile);
+    } catch (err: any) {
+      if (err.code === 'ENOENT') fileExistedInitially = false;
+    }
+    assert.equal(fileExistedInitially, false, 'Target nonce file must not exist prior to test');
+
+    const store = new NonceStore({ filePath: missingFile });
+    const isSeenBefore = await store.isNonceSeen('initial-test-nonce');
+    assert.equal(isSeenBefore, false, 'Unseen nonce must return false on non-existent store');
+
+    const marked = await store.markNonceSeen('initial-test-nonce');
+    assert.equal(marked, true, 'First nonce must be successfully persisted to fresh file');
+
+    let fileCreated = false;
+    try {
+      await fs.access(missingFile);
+      fileCreated = true;
+    } catch {
+      fileCreated = false;
+    }
+    assert.equal(fileCreated, true, 'Store file must be created on disk after markNonceSeen');
+
+    const rawContent = await fs.readFile(missingFile, 'utf8');
+    const parsed = JSON.parse(rawContent);
+    assert.ok(Array.isArray(parsed.seen), "Created file must have 'seen' array");
+    assert.ok(parsed.seen.includes('initial-test-nonce'), "Created file must contain 'initial-test-nonce'");
+
+    const isSeenAfter = await store.isNonceSeen('initial-test-nonce');
+    assert.equal(isSeenAfter, true, 'Marked nonce must now report seen: true');
+  });
+
+  // 2. Boş veya kesilmiş JSON, boş nonce durumu olarak kabul edilmez
+  it('SEC-29: Empty or truncated JSON is strictly rejected and never treated as empty nonce state', async () => {
+    // 29a: Zero-byte empty file
+    const emptyFile = path.join(tempDir, `empty-nonce-${crypto.randomUUID()}.json`);
+    await fs.writeFile(emptyFile, '', 'utf8');
+    const storeEmpty = new NonceStore({ filePath: emptyFile });
+    await assert.rejects(
+      async () => storeEmpty.isNonceSeen('any-nonce'),
+      (err: any) => err instanceof StorageError,
+      'isNonceSeen on empty file must reject with StorageError'
+    );
+    await assert.rejects(
+      async () => storeEmpty.markNonceSeen('any-nonce'),
+      (err: any) => err instanceof StorageError,
+      'markNonceSeen on empty file must reject with StorageError'
+    );
+
+    // 29b: Truncated JSON
+    const truncFile = path.join(tempDir, `truncated-nonce-${crypto.randomUUID()}.json`);
+    await fs.writeFile(truncFile, '{"seen": ["token-1", "token-2"', 'utf8');
+    const storeTrunc = new NonceStore({ filePath: truncFile });
+    await assert.rejects(
+      async () => storeTrunc.isNonceSeen('token-1'),
+      (err: any) => err instanceof StorageError,
+      'isNonceSeen on truncated JSON must reject with StorageError'
+    );
+    await assert.rejects(
+      async () => storeTrunc.reserveNonce('token-3'),
+      (err: any) => err instanceof StorageError,
+      'reserveNonce on truncated JSON must reject with StorageError'
+    );
+
+    // 29c: File with literal 'null'
+    const nullFile = path.join(tempDir, `null-nonce-${crypto.randomUUID()}.json`);
+    await fs.writeFile(nullFile, 'null', 'utf8');
+    const storeNull = new NonceStore({ filePath: nullFile });
+    await assert.rejects(
+      async () => storeNull.isNonceSeen('token-1'),
+      (err: any) => err instanceof StorageError,
+      'isNonceSeen on literal null file must reject with StorageError'
+    );
+
+    // 29d: File with primitive non-object
+    const primFile = path.join(tempDir, `primitive-nonce-${crypto.randomUUID()}.json`);
+    await fs.writeFile(primFile, '"unexpected-primitive-string"', 'utf8');
+    const storePrim = new NonceStore({ filePath: primFile });
+    await assert.rejects(
+      async () => storePrim.isNonceSeen('token-1'),
+      (err: any) => err instanceof StorageError,
+      'isNonceSeen on primitive file must reject with StorageError'
+    );
+
+    // 29e: File with missing 'seen' array
+    const missingSeenFile = path.join(tempDir, `missing-seen-${crypto.randomUUID()}.json`);
+    await fs.writeFile(missingSeenFile, JSON.stringify({ reserved: {} }), 'utf8');
+    const storeMissingSeen = new NonceStore({ filePath: missingSeenFile });
+    await assert.rejects(
+      async () => storeMissingSeen.isNonceSeen('token-1'),
+      (err: any) => err instanceof StorageError,
+      "isNonceSeen on state missing 'seen' must reject with StorageError"
+    );
+  });
+
+  // 3. Geçersiz JSON parse hatası replay kontrolünü atlatamaz
+  it('SEC-30: Invalid JSON parse error cannot bypass replay control and fails closed during approval', async () => {
+    const corruptFile = path.join(tempDir, `corrupt-replay-${crypto.randomUUID()}.json`);
+    await fs.writeFile(corruptFile, '{"seen": [ CORRUPTED_GARBAGE_PAYLOAD', 'utf8');
+    const corruptStore = new NonceStore({ filePath: corruptFile });
+
+    const binding: TrustedApprovalBinding = {
+      projectId,
+      packageId: 'pkg-sec-30',
+      revision: 1,
+      contextFingerprint,
+    };
+    const claims: TrustedIdentityClaim = {
+      identityId: 'id-sec-30',
+      issuer: 'https://auth.company.corp',
+      audience: 'aidm-core-platform',
+      subject: 'attacker@evil.corp',
+      actorRole: 'PRODUCT_OWNER',
+      issuedAt: new Date().toISOString(),
+      expiresAt: new Date(Date.now() + 600000).toISOString(),
+      nonce: `bypass-nonce-${crypto.randomUUID()}`,
+      authMethod: 'OIDC',
+    };
+    const token = createSignedJwt(claims, rsaPrivateKeyPem, binding);
+
+    const adapter = new OidcIdentityProviderAdapter({
+      issuer: 'https://auth.company.corp',
+      audience: 'aidm-core-platform',
+      publicKeyPem: rsaPublicKeyPem,
+      nonceStore: corruptStore,
+    });
+
+    // Attempt verification with corrupted nonce store
+    const res = await adapter.verifyAssertion({ token, binding }, binding);
+    assert.equal(res.isValid, false, 'Corrupted nonce store MUST NOT permit verification');
+    assert.equal(res.isTrustedHumanAuth, false, 'isTrustedHumanAuth MUST be false on parse error');
+    assert.equal(res.code, 'BLOCKED_ON_AUTH_CONTEXT', 'Error code MUST strictly be BLOCKED_ON_AUTH_CONTEXT');
+    assert.equal(res.status, 'UNVERIFIED');
+    assert.match(res.reason, /Nonce state verification failed/i);
+
+    // Also test through AuthContextValidator
+    const validator = new AuthContextValidator(
+      new IdentityManager({ baseDir: tempDir }),
+      corruptStore,
+      adapter
+    );
+    const valRes = await validator.validate({ token, binding }, projectId);
+    assert.equal(valRes.isValid, false, 'AuthContextValidator MUST fail-closed on corrupt nonce store');
+    assert.equal(valRes.isTrueHumanInteraction, false);
+    assert.equal(valRes.code, 'BLOCKED_ON_AUTH_CONTEXT');
+  });
+
+  // 4. Okuma/izin hataları boş nonce durumuna dönüşmez
+  it('SEC-31: File read and permission errors never collapse into an empty nonce state', async () => {
+    // Pointing filePath to a directory causes EISDIR / EPERM on readFile across OS platforms
+    const dirAsFilePath = path.join(tempDir, `dir-treated-as-nonce-${crypto.randomUUID()}`);
+    await fs.mkdir(dirAsFilePath);
+
+    const store = new NonceStore({ filePath: dirAsFilePath });
+    await assert.rejects(
+      async () => store.isNonceSeen('some-nonce'),
+      (err: any) => err instanceof StorageError,
+      'Directory treated as nonce file must throw StorageError on isNonceSeen'
+    );
+    await assert.rejects(
+      async () => store.markNonceSeen('some-nonce'),
+      (err: any) => err instanceof StorageError,
+      'Directory treated as nonce file must throw StorageError on markNonceSeen'
+    );
+    await assert.rejects(
+      async () => store.reserveNonce('some-nonce'),
+      (err: any) => err instanceof StorageError,
+      'Directory treated as nonce file must throw StorageError on reserveNonce'
+    );
+  });
+
+  // 5. Daha önce tüketilmiş bir nonce kaydedildikten sonra dosya bozulursa aynı nonce ile onay fail-closed reddedilir
+  it('SEC-32: Consumed nonce whose store file is subsequently corrupted rejects replay fail-closed', async () => {
+    const stateFile = path.join(tempDir, `consumed-then-corrupted-${crypto.randomUUID()}.json`);
+    const store = new NonceStore({ filePath: stateFile });
+
+    const consumedNonce = `consumed-nonce-${crypto.randomUUID()}`;
+    const initialMarked = await store.markNonceSeen(consumedNonce);
+    assert.equal(initialMarked, true, 'Initial consumption must succeed');
+    assert.equal(await store.isNonceSeen(consumedNonce), true, 'Nonce must be recorded in state');
+
+    // Corrupt the persistent file
+    await fs.appendFile(stateFile, '\n<<<CORRUPT_BYTES_FOR_REPLAY_TEST>>>', 'utf8');
+
+    // Replay attempt with same consumed nonce via OIDC adapter
+    const binding: TrustedApprovalBinding = {
+      projectId,
+      packageId: 'pkg-sec-32',
+      revision: 1,
+      contextFingerprint,
+    };
+    const claims: TrustedIdentityClaim = {
+      identityId: 'id-sec-32',
+      issuer: 'https://auth.company.corp',
+      audience: 'aidm-core-platform',
+      subject: 'alice@company.corp',
+      actorRole: 'PRODUCT_OWNER',
+      issuedAt: new Date().toISOString(),
+      expiresAt: new Date(Date.now() + 600000).toISOString(),
+      nonce: consumedNonce,
+      authMethod: 'OIDC',
+    };
+    const replayToken = createSignedJwt(claims, rsaPrivateKeyPem, binding);
+
+    const adapter = new OidcIdentityProviderAdapter({
+      issuer: 'https://auth.company.corp',
+      audience: 'aidm-core-platform',
+      publicKeyPem: rsaPublicKeyPem,
+      nonceStore: store,
+    });
+
+    const verifyRes = await adapter.verifyAssertion({ token: replayToken, binding }, binding);
+    assert.equal(verifyRes.isValid, false, 'Replay on corrupted state must be rejected fail-closed');
+    assert.equal(verifyRes.isTrustedHumanAuth, false);
+    assert.equal(verifyRes.code, 'BLOCKED_ON_AUTH_CONTEXT');
+    assert.match(verifyRes.reason, /Nonce state verification failed/i);
+  });
+
+  // 6. Hata sonrasında eski güvenlik durumu sessizce üzerine yazılarak kaybolmaz
+  it('SEC-33: Existing corrupted state and forensic evidence are preserved and not silently overwritten', async () => {
+    const evidenceFile = path.join(tempDir, `forensic-evidence-${crypto.randomUUID()}.json`);
+    const originalForensicContent = '{"seen": ["critical-compromised-nonce-888"], MALFORMED_TRAIL_EVIDENCE';
+    await fs.writeFile(evidenceFile, originalForensicContent, 'utf8');
+
+    const store = new NonceStore({ filePath: evidenceFile });
+
+    await assert.rejects(
+      async () => store.markNonceSeen('new-unrelated-nonce'),
+      (err: any) => err instanceof StorageError
+    );
+    await assert.rejects(
+      async () => store.reserveNonce('new-unrelated-nonce'),
+      (err: any) => err instanceof StorageError
+    );
+    await assert.rejects(
+      async () => store.markNoncesSeenBatch(['b1', 'b2']),
+      (err: any) => err instanceof StorageError
+    );
+
+    // Verify on disk that the content was NOT touched, replaced, or deleted
+    const contentAfterErrors = await fs.readFile(evidenceFile, 'utf8');
+    assert.equal(
+      contentAfterErrors,
+      originalForensicContent,
+      'Corrupted state file must remain byte-for-byte identical; silent overwrite is forbidden'
+    );
+  });
+
+  // 7. Süreç yeniden başlatma ve bağımsız NonceStore örnekleri aynı güvenlik sonucunu verir
+  it('SEC-34: Independent NonceStore instances and process restarts yield identical fail-closed security results', async () => {
+    const corruptFile = path.join(tempDir, `restart-consistency-${crypto.randomUUID()}.json`);
+    await fs.writeFile(corruptFile, '{"seen": ["legit-token"], "broken": true, INVALID}', 'utf8');
+
+    const store1 = new NonceStore({ filePath: corruptFile });
+    const store2 = new NonceStore({ filePath: corruptFile });
+    const store3 = new NonceStore({ filePath: corruptFile });
+
+    // All three instances must reject with StorageError on isNonceSeen
+    await assert.rejects(async () => store1.isNonceSeen('test-nonce'), (err: any) => err instanceof StorageError);
+    await assert.rejects(async () => store2.isNonceSeen('test-nonce'), (err: any) => err instanceof StorageError);
+    await assert.rejects(async () => store3.isNonceSeen('test-nonce'), (err: any) => err instanceof StorageError);
+
+    // All three instances must reject with StorageError on reserveNonce
+    await assert.rejects(async () => store1.reserveNonce('test-nonce'), (err: any) => err instanceof StorageError);
+    await assert.rejects(async () => store2.reserveNonce('test-nonce'), (err: any) => err instanceof StorageError);
+    await assert.rejects(async () => store3.reserveNonce('test-nonce'), (err: any) => err instanceof StorageError);
+
+    // All three instances must reject with StorageError on markNonceSeen
+    await assert.rejects(async () => store1.markNonceSeen('test-nonce'), (err: any) => err instanceof StorageError);
+    await assert.rejects(async () => store2.markNonceSeen('test-nonce'), (err: any) => err instanceof StorageError);
+    await assert.rejects(async () => store3.markNonceSeen('test-nonce'), (err: any) => err instanceof StorageError);
+  });
+
+  // 8. Eşzamanlı süreçler bozuk/okunamayan durum karşısında birbirinden farklı, güvensiz sonuçlara ulaşmaz
+  it('SEC-35: Concurrent processes encountering corrupt state reach uniform fail-closed rejection without unsafe divergence', async () => {
+    const raceCorruptPath = path.join(tempDir, `concurrent-corrupt-${crypto.randomUUID()}.json`);
+    await fs.writeFile(raceCorruptPath, '{"seen": ["valid-nonce"], INVALID_JSON_DATA', 'utf8');
+
+    const instances = Array.from({ length: 5 }, () => new NonceStore({ filePath: raceCorruptPath }));
+    const concurrentOps = [];
+
+    for (let i = 0; i < 25; i++) {
+      const store = instances[i % instances.length];
+      const nonce = `race-nonce-${i}`;
+      if (i % 3 === 0) {
+        concurrentOps.push(store.isNonceSeen(nonce));
+      } else if (i % 3 === 1) {
+        concurrentOps.push(store.reserveNonce(nonce));
+      } else {
+        concurrentOps.push(store.markNonceSeen(nonce));
+      }
+    }
+
+    const settledResults = await Promise.allSettled(concurrentOps);
+    assert.equal(settledResults.length, 25);
+
+    // Every single operation MUST be rejected with StorageError
+    for (const r of settledResults) {
+      assert.equal(r.status, 'rejected', 'Every concurrent operation against corrupt state must reject');
+      assert.ok(
+        (r as PromiseRejectedResult).reason instanceof StorageError,
+        'Rejection reason must be StorageError'
+      );
+    }
+
+    // Inter-process verification: Child processes also fail closed
+    const nonceStoreUrl = new URL('../dist/authorization/nonce-store.js', import.meta.url).href;
+    const childScript = `
+      import { NonceStore } from '${nonceStoreUrl}';
+      try {
+        const store = new NonceStore({ filePath: process.argv[1] });
+        await store.markNonceSeen('child-nonce');
+        process.exit(0); // Unsafe success!
+      } catch (err) {
+        process.exit(42); // Safe fail-closed exit
+      }
+    `;
+
+    const childPromise = new Promise<number>((resolve) => {
+      const child = cp.spawn(process.execPath, ['--input-type=module', '-e', childScript, raceCorruptPath], {
+        cwd: process.cwd(),
+      });
+      child.on('close', (code) => resolve(code ?? -1));
+    });
+
+    const exitCode = await childPromise;
+    assert.equal(exitCode, 42, 'Child process MUST fail-closed with code 42 upon encountering corrupted state');
+  });
+
+  // 9. 2.050'den fazla nonce sonrasında önceki nonce replay kontrolü korunur
+  it('SEC-36: Nonce replay protection retains early nonces (first, 1000th, 2050th) without FIFO eviction', async () => {
+    const customNonceFile = path.join(tempDir, `retention-test-store-${crypto.randomUUID()}.json`);
+    const store = new NonceStore({ filePath: customNonceFile });
+
+    const nonce1 = `test-retention-nonce-1-${crypto.randomUUID()}`;
+    const marked1 = await store.markNonceSeen(nonce1);
+    assert.equal(marked1, true);
+
+    const batch: string[] = [];
+    let nonce1000 = '';
+    let nonce2050 = '';
+    for (let i = 2; i <= 2055; i++) {
+      const n = `test-retention-nonce-${i}-${crypto.randomUUID()}`;
+      if (i === 1000) nonce1000 = n;
+      if (i === 2050) nonce2050 = n;
+      batch.push(n);
+    }
+
+    const batchCount = await store.markNoncesSeenBatch(batch);
+    assert.equal(batchCount, 2054);
+
+    // Verify all key nonces are retained
+    assert.equal(await store.isNonceSeen(nonce1), true, 'Nonce 1 must be retained');
+    assert.equal(await store.isNonceSeen(nonce1000), true, 'Nonce 1000 must be retained');
+    assert.equal(await store.isNonceSeen(nonce2050), true, 'Nonce 2050 must be retained');
+
+    // Attempt replay of all key nonces
+    assert.equal(await store.markNonceSeen(nonce1), false, 'Replay of Nonce 1 must be rejected');
+    assert.equal(await store.markNonceSeen(nonce1000), false, 'Replay of Nonce 1000 must be rejected');
+    assert.equal(await store.markNonceSeen(nonce2050), false, 'Replay of Nonce 2050 must be rejected');
+
+    // Process restart verification
+    const restartedStore = new NonceStore({ filePath: customNonceFile });
+    assert.equal(await restartedStore.markNonceSeen(nonce1), false, 'Restarted store must reject Nonce 1 replay');
+    assert.equal(await restartedStore.markNonceSeen(nonce1000), false, 'Restarted store must reject Nonce 1000 replay');
+    assert.equal(await restartedStore.markNonceSeen(nonce2050), false, 'Restarted store must reject Nonce 2050 replay');
+  });
+
+  // 10. Başarılı ve başarısız operasyonlardan sonra in-process kuyruk kayıtları doğru temizlenir
+  it('SEC-37: In-process queue entries are cleanly deleted after both successful and failed operations', async () => {
+    const fileGood = path.join(tempDir, `queue-good-${crypto.randomUUID()}.json`);
+    const fileCorrupt = path.join(tempDir, `queue-corrupt-${crypto.randomUUID()}.json`);
+    await fs.writeFile(fileCorrupt, '{"broken": [', 'utf8');
+
+    const storeGood = new NonceStore({ filePath: fileGood });
+    const storeCorrupt = new NonceStore({ filePath: fileCorrupt });
+
+    // Mix of operations: some succeed, some reject with StorageError, some reject with custom error
+    const ops = [
+      storeGood.markNonceSeen('nonce-ok-1'),
+      storeCorrupt.markNonceSeen('nonce-fail-1'),
+      storeGood.markNonceSeen('nonce-ok-2'),
+      withInProcessLock(fileGood, async () => {
+        throw new Error('Custom failure in locked operation');
+      }),
+      storeGood.isNonceSeen('nonce-ok-1'),
+      storeCorrupt.isNonceSeen('nonce-fail-1'),
+      storeGood.markNonceSeen('nonce-ok-3'),
+    ];
+
+    const results = await Promise.allSettled(ops);
+    assert.equal(results.length, 7);
+
+    // Verify successful ones succeeded and failed ones rejected
+    assert.equal(results[0].status, 'fulfilled');
+    assert.equal(results[1].status, 'rejected');
+    assert.equal(results[2].status, 'fulfilled');
+    assert.equal(results[3].status, 'rejected');
+    assert.equal(results[4].status, 'fulfilled');
+    assert.equal(results[5].status, 'rejected');
+    assert.equal(results[6].status, 'fulfilled');
+
+    // Both queues must be completely cleared from the Map
+    const normGood = path.resolve(fileGood);
+    const normCorrupt = path.resolve(fileCorrupt);
+
+    assert.equal(inProcessLockQueues.has(normGood), false, 'Queue for fileGood must be deleted');
+    assert.equal(inProcessLockQueues.has(normCorrupt), false, 'Queue for fileCorrupt must be deleted');
+    assert.equal(inProcessLockQueues.size, 0, 'inProcessLockQueues Map must have 0 size');
+
+    // Subsequent operation on the same good file succeeds without deadlock or poisoning
+    const subsequentOk = await storeGood.markNonceSeen('nonce-ok-4');
+    assert.equal(subsequentOk, true, 'Subsequent operation must succeed cleanly');
+    assert.equal(inProcessLockQueues.size, 0, 'Queue must remain clean at 0 size');
   });
 });
 

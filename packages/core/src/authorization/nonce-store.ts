@@ -2,6 +2,7 @@ import * as path from 'node:path';
 import * as fs from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
 import { atomicWriteJson, readJsonFile } from '../storage/atomic-writer.js';
+import { StorageError } from '../errors/storage-error.js';
 
 export interface PersistedNonceData {
   seen: string[];
@@ -154,67 +155,188 @@ export class NonceStore {
    * Reads fresh persistent state under cross-process lock and cleans up expired reservations
    * and seen nonces whose retention period has expired.
    *
-   * Note: Seen nonces are NEVER pruned simply because the list reached an arbitrary count (such as 2,000).
-   * They are strictly retained until their cryptographic validity/retention period has passed.
+   * Differentiates:
+   * 1. Initial creation (ENOENT): returns fresh empty state.
+   * 2. Valid persistent state (object schema or legacy array): parsed & returned.
+   * 3. Corrupt/truncated JSON, I/O errors, permission denied, or invalid schema:
+   *    THROWS StorageError (fail-closed) and refuses to overwrite existing state on disk.
    */
   private async readStateUnderLock(): Promise<PersistedNonceData> {
     const now = Date.now();
+    let raw: unknown;
     try {
-      const raw = await readJsonFile<unknown>(this.filePath);
-      if (Array.isArray(raw)) {
-        // Legacy format compatibility: plain string[] of seen nonces
-        return {
-          seen: raw.filter((s): s is string => typeof s === 'string'),
-          seenUntil: {},
-          reserved: {},
-        };
-      }
-      if (raw && typeof raw === 'object') {
-        const obj = raw as Record<string, unknown>;
-        const rawSeen = Array.isArray(obj.seen)
-          ? obj.seen.filter((s): s is string => typeof s === 'string')
-          : [];
-        const rawSeenUntil =
-          obj.seenUntil && typeof obj.seenUntil === 'object'
-            ? (obj.seenUntil as Record<string, unknown>)
-            : {};
-        const rawReserved =
-          obj.reserved && typeof obj.reserved === 'object'
-            ? (obj.reserved as Record<string, unknown>)
-            : {};
-
-        const reserved: Record<string, number> = {};
-        for (const [k, v] of Object.entries(rawReserved)) {
-          if (typeof v === 'number' && v > now) {
-            reserved[k] = v;
-          }
+      raw = await readJsonFile<unknown>(this.filePath);
+    } catch (err: unknown) {
+      // Differentiates read / I-O / parse errors from non-existent file
+      throw new StorageError(
+        `Failed to read nonce state from '${this.filePath}': ${err instanceof Error ? err.message : String(err)}`,
+        {
+          filePath: this.filePath,
+          operation: 'readStateUnderLock',
+          cause: err,
         }
-
-        // Time-based retention cleanup:
-        // A seen nonce is ONLY pruned if its retention timestamp has expired (until <= now).
-        // It is NEVER pruned simply because the list size exceeded 2,000!
-        // If seenUntil timestamp is absent (legacy entries), retain by default to be fail-closed.
-        const seen: string[] = [];
-        const seenUntil: Record<string, number> = {};
-        for (const nonce of rawSeen) {
-          const until = rawSeenUntil[nonce];
-          if (typeof until === 'number') {
-            if (until > now) {
-              seen.push(nonce);
-              seenUntil[nonce] = until;
-            }
-          } else {
-            // Legacy entry without timestamp - retain safely
-            seen.push(nonce);
-          }
-        }
-
-        return { seen, seenUntil, reserved };
-      }
-    } catch {
-      // File does not exist yet or unreadable
+      );
     }
-    return { seen: [], seenUntil: {}, reserved: {} };
+
+    if (raw === null) {
+      // Check if file actually exists (e.g. content was literal "null")
+      try {
+        await fs.promises.stat(this.filePath);
+        // File exists on disk, but parsed to null -> invalid schema!
+        throw new StorageError(
+          `Nonce store file '${this.filePath}' contains invalid state (parsed null). Refusing to treat as empty state.`,
+          {
+            filePath: this.filePath,
+            operation: 'validateNonceState',
+          }
+        );
+      } catch (statErr: unknown) {
+        if ((statErr as NodeJS.ErrnoException).code === 'ENOENT') {
+          // File does NOT exist yet. Safe initial creation!
+          return { seen: [], seenUntil: {}, reserved: {} };
+        }
+        throw new StorageError(
+          `Failed to verify existence of nonce store file '${this.filePath}': ${(statErr as Error).message}`,
+          {
+            filePath: this.filePath,
+            operation: 'stat',
+            cause: statErr,
+          }
+        );
+      }
+    }
+
+    // Validate schema of raw content
+    if (Array.isArray(raw)) {
+      // Legacy format compatibility: plain string[] of seen nonces
+      if (!raw.every((s): s is string => typeof s === 'string' && s.length > 0)) {
+        throw new StorageError(
+          `Nonce store file '${this.filePath}' contains invalid legacy schema elements. Expected non-empty strings.`,
+          {
+            filePath: this.filePath,
+            operation: 'validateNonceState',
+          }
+        );
+      }
+      return {
+        seen: [...raw],
+        seenUntil: {},
+        reserved: {},
+      };
+    }
+
+    if (typeof raw !== 'object' || raw === null) {
+      throw new StorageError(
+        `Nonce store file '${this.filePath}' has invalid schema. Expected JSON object or string array, got ${typeof raw}.`,
+        {
+          filePath: this.filePath,
+          operation: 'validateNonceState',
+        }
+      );
+    }
+
+    const obj = raw as Record<string, unknown>;
+
+    // 'seen' must be an array of non-empty strings
+    if (!('seen' in obj) || !Array.isArray(obj.seen)) {
+      throw new StorageError(
+        `Nonce store file '${this.filePath}' is missing required 'seen' array property.`,
+        {
+          filePath: this.filePath,
+          operation: 'validateNonceState',
+        }
+      );
+    }
+
+    if (!obj.seen.every((s): s is string => typeof s === 'string' && s.length > 0)) {
+      throw new StorageError(
+        `Nonce store file '${this.filePath}' contains invalid elements in 'seen'. Expected non-empty strings.`,
+        {
+          filePath: this.filePath,
+          operation: 'validateNonceState',
+        }
+      );
+    }
+
+    // Validate 'seenUntil' if present
+    if (obj.seenUntil !== undefined) {
+      if (typeof obj.seenUntil !== 'object' || obj.seenUntil === null || Array.isArray(obj.seenUntil)) {
+        throw new StorageError(
+          `Nonce store file '${this.filePath}' has invalid 'seenUntil' property. Expected object map.`,
+          {
+            filePath: this.filePath,
+            operation: 'validateNonceState',
+          }
+        );
+      }
+      for (const [k, v] of Object.entries(obj.seenUntil as Record<string, unknown>)) {
+        if (typeof v !== 'number' || Number.isNaN(v)) {
+          throw new StorageError(
+            `Nonce store file '${this.filePath}' has invalid timestamp in 'seenUntil' for key '${k}'.`,
+            {
+              filePath: this.filePath,
+              operation: 'validateNonceState',
+            }
+          );
+        }
+      }
+    }
+
+    // Validate 'reserved' if present
+    if (obj.reserved !== undefined) {
+      if (typeof obj.reserved !== 'object' || obj.reserved === null || Array.isArray(obj.reserved)) {
+        throw new StorageError(
+          `Nonce store file '${this.filePath}' has invalid 'reserved' property. Expected object map.`,
+          {
+            filePath: this.filePath,
+            operation: 'validateNonceState',
+          }
+        );
+      }
+      for (const [k, v] of Object.entries(obj.reserved as Record<string, unknown>)) {
+        if (typeof v !== 'number' || Number.isNaN(v)) {
+          throw new StorageError(
+            `Nonce store file '${this.filePath}' has invalid timestamp in 'reserved' for key '${k}'.`,
+            {
+              filePath: this.filePath,
+              operation: 'validateNonceState',
+            }
+          );
+        }
+      }
+    }
+
+    const rawSeen = obj.seen as string[];
+    const rawSeenUntil = (obj.seenUntil ?? {}) as Record<string, number>;
+    const rawReserved = (obj.reserved ?? {}) as Record<string, number>;
+
+    const reserved: Record<string, number> = {};
+    for (const [k, v] of Object.entries(rawReserved)) {
+      if (v > now) {
+        reserved[k] = v;
+      }
+    }
+
+    // Time-based retention cleanup:
+    // A seen nonce is ONLY pruned if its retention timestamp has expired (until <= now).
+    // It is NEVER pruned simply because the list size exceeded 2,000!
+    // If seenUntil timestamp is absent (legacy entries), retain by default to be fail-closed.
+    const seen: string[] = [];
+    const seenUntil: Record<string, number> = {};
+    for (const nonce of rawSeen) {
+      const until = rawSeenUntil[nonce];
+      if (typeof until === 'number') {
+        if (until > now) {
+          seen.push(nonce);
+          seenUntil[nonce] = until;
+        }
+      } else {
+        // Legacy entry without timestamp - retain safely
+        seen.push(nonce);
+      }
+    }
+
+    return { seen, seenUntil, reserved };
   }
 
   /**
