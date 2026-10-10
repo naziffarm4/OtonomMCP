@@ -433,16 +433,29 @@ describe('Phase 29 (P29): Authoritative Director MCP Control Plane Integration',
     validRevision = 1;
 
     // Seed minimal project files with initialized git repo
-    child_process.execSync('git init -b main', { cwd: tempDir, stdio: 'ignore' });
-    child_process.execSync('git config user.name "AIDM P29 Test"', { cwd: tempDir, stdio: 'ignore' });
-    child_process.execSync('git config user.email "aidm-p29@example.com"', { cwd: tempDir, stdio: 'ignore' });
+    const execGit = (cmd: string) => {
+      let lastErr: unknown;
+      for (let attempt = 0; attempt < 5; attempt++) {
+        try {
+          child_process.execSync(cmd, { cwd: tempDir, stdio: 'ignore' });
+          return;
+        } catch (err) {
+          lastErr = err;
+          Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50 * (attempt + 1));
+        }
+      }
+      throw lastErr;
+    };
+    execGit('git init -b main');
+    execGit('git config user.name "AIDM P29 Test"');
+    execGit('git config user.email "aidm-p29@example.com"');
 
     fs.mkdirSync(path.join(tempDir, 'src'), { recursive: true });
     fs.writeFileSync(path.join(tempDir, 'package.json'), JSON.stringify({ name: validProjectId, version: '1.0.0' }), 'utf8');
     fs.writeFileSync(path.join(tempDir, 'src', 'auth.ts'), 'export const auth = "initial";\n', 'utf8');
     fs.writeFileSync(path.join(tempDir, '.gitignore'), '.ai-manager/\n.gemini/\n.agents/\n*.log\n', 'utf8');
-    child_process.execSync('git add .', { cwd: tempDir, stdio: 'ignore' });
-    child_process.execSync('git commit -m "initial commit"', { cwd: tempDir, stdio: 'ignore' });
+    execGit('git add .');
+    execGit('git commit -m "initial commit"');
 
     historyManager = new HistoryManager({ baseDir: tempDir });
     sessionStore = new DirectorSessionStore({ baseDir: tempDir, historyManager });

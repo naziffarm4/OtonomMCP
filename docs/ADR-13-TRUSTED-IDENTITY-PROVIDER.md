@@ -54,11 +54,17 @@ export interface ITrustedIdentityProvider {
 }
 ```
 
-### 3.2. Kriptografik İmza Doğrulama ve Algoritma Kısıtlaması (Signature Enforcement & Allowlist)
+### 3.2. Kriptografik İmza Doğrulama, Algoritma Kısıtlaması ve JWKS Ağ Güvenliği (Signature & Network Hardening)
 - `jwksUri` ya da `publicKeyPem` tanımlı olması tek başına yeterli kabul edilmez.
 - Gerçek kriptografik imza doğrulayıcısı (Node `crypto.verify` veya asenkron JWKS resolver) bulunmuyorsa doğrulama `CONFIG_MISSING` / `BLOCKED_ON_AUTH_CONTEXT` ile reddedilir.
 - Yalnızca asimetrik algoritmalar (`RS256`, `RS384`, `RS512`, `ES256`, `ES384`, `ES512`, `EdDSA`) kabul edilir. `alg: none` ve simetrik `HS256`/`HS384`/`HS512` algoritmaları doğrudan reddedilir (`SIGNATURE_INVALID`).
-- SSRF Koruması: `jwksUri` yalnızca güvenli `https://` protokülünü kabul eder; link-local bulut metadata adresleri (`169.254.169.254`) engellenir.
+- **JWK ve Algoritma Uyumu:** JWK içerisindeki anahtar türü (`kty`) ile algoritma (`alg`) tam uyumlu olmalıdır (`RS*` -> `RSA`, `ES*` -> `EC`, `EdDSA` -> `OKP` veya `EC`). Ayrıca token başlığındaki `alg` ile JWK üzerindeki `alg` uyuşmak zorundadır; uyuşmazlıklar fail-closed reddedilir.
+- **JWKS SSRF ve Ağ Güvenliği:**
+  - `jwksUri` kesinlikle `https://` protokolünü kullanmalıdır; `http://` fail-closed reddedilir.
+  - URL içinde gömülü kullanıcı bilgisi (`username:password@`) bulunması yasaktır.
+  - Standart dışı portlar engellenir (yalnızca 443 veya varsayılan HTTPS portu).
+  - Özel, yerel ve ayrılmış IP aralıklarına erişim engellenir: Loopback (`127.0.0.0/8`, `::1`), RFC1918 özel ağlar (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`), Link-local ve bulut metadata adresleri (`169.254.0.0/16`), Carrier-grade NAT (`100.64.0.0/10`), Multicast ve ayrılmış adresler.
+  - **Yönlendirme (Redirect) Engeli:** HTTP 3xx yönlendirmeleri (`redirect: 'manual'`) takip edilmez; yönlendirme yanıtı dönen sağlayıcılar fail-closed olarak `PROVIDER_OUTAGE` ile reddedilir (SSRF kör noktası önleme).
 
 ### 3.3. Doğrulanmış Payload'dan Yetkili Claim Çıkarımı (Authoritative Claims Extraction)
 - İstemcinin ayrı gönderdiği `assertion.claims` alanı kimlik kanıtı olarak asla kabul edilmez.
@@ -66,20 +72,24 @@ export interface ITrustedIdentityProvider {
 - İstemci beyanı ile imzalı token içeriği uyuşmazsa istek `UNVERIFIED` ile fail-closed reddedilir.
 - `actorRole` yalnızca `PRODUCT_OWNER` veya `USER` olabilir; `DIRECTOR` ve `EXECUTOR` aktörleri onay veremez.
 
-### 3.4. Zorunlu Bağlam Bağlama (Cryptographic Scope Binding)
+### 3.4. Zorunlu ve Fail-Closed Kapsam Bağlama (Cryptographic Scope Binding)
 Her onay talebi (`TrustedApprovalBinding`), imzalı JWT payload'ı içinde doğrulanmalıdır:
 - `projectId`: Onayın ait olduğu kanonik proje kimliği. Başka bir projenin onayıyla işlem yapılamaz.
 - `packageId` ve `revision`: Approval package'ın kesin kimliği ve revizyon numarası.
 - `contextFingerprint`: Onay verildiği andaki Director Context Snapshot mantıksal parmak izi.
-- `directorSessionId` (opsiyonel/gerekli olduğunda): Aktif direktör oturumu.
-- `taskId` / `actionType` / `operation` (korumalı eylemler için): İcrası talep edilen spesifik işlem.
+- `directorSessionId`: Beklenen bağlamda veya token'da tanımlıysa birebir eşleşmelidir; token'da eksikse veya uyuşmuyorsa fail-closed `BINDING_MISMATCH` üretilir.
+- `taskId`: Beklenen bağlamda veya token'da tanımlıysa birebir eşleşmelidir; token'da eksikse veya uyuşmuyorsa fail-closed `BINDING_MISMATCH` üretilir.
+- `operation`: Beklenen bağlamda veya token'da tanımlıysa birebir eşleşmelidir; token'da eksikse veya uyuşmuyorsa fail-closed `BINDING_MISMATCH` üretilir.
+- **İstemci Binding Bağımsızlığı:** İstemcinin gönderdiği `assertion.binding` nesnesi asla imzalı token payload'ının veya beklenen yürütme bağlamının yerine geçemez. İstemci binding'i doğru görünse bile imzalı token payload'ı eksik veya uyuşmazsa talep derhal reddedilir.
 - Beklenen yürütme bağlamıyla tek bir alan dahi uyuşmazsa `BINDING_MISMATCH` ile fail-closed durulur.
 
-### 3.5. Replay (Tekrar Oynatma) ve Yarış Koşullarına Dayanıklı Atomik Nonce Tüketimi
+### 3.5. Replay ve Çok Süreçli Atomik Nonce Tüketimi (Cross-Process Nonce Atomicity)
 - Her onay iddiası zorunlu bir `nonce` (veya `jti`) içermelidir (en az 8 karakter).
-- İki Aşamalı Nonce Rezervasyonu:
-  1. **Ön Kontrol / Rezervasyon:** `reserveNonce(nonce, ttl)` ile eşzamanlı gelen isteklerden yalnızca biri onay sürecine girer; paralel yarışan diğer tüm istekler anında `REPLAY_DETECTED` alır.
-  2. **Doğrulama ve İptal/Onay:** İmza, süre veya bağlam kontrolleri başarısız olursa rezervasyon kaldırılır (`releaseReservation`); kontroller eksiksiz geçerse `markNonceSeen` ile kalıcı olarak işaretlenir.
+- **Süreç İçi ve Çok Süreçli Atomiklik Sınırı:** Süreç içi bellek kilitleri (in-process mutex) birden fazla `NonceStore` örneği, yeniden başlatmalar veya eşzamanlı işletim sistemi süreçleri arasında atomiklik sağlayamaz. Bu nedenle `NonceStore` kalıcı depolamada dosya kilidi (`O_CREAT | O_EXCL` tabanlı `.lock` mekanizması) ile donatılmıştır.
+- **Kalıcı Durum ve Çökme Dayanıklılığı:** Görülmüş nonce'lar (`seen`) ve aktif rezervasyonlar (`reserved`) diske senkronize yazılır. Süreç yeniden başlatılsa bile kullanılmış bir nonce asla yeniden tüketilemez.
+- **İki Aşamalı Atomik Rezervasyon:**
+  1. **Rezervasyon:** `reserveNonce(nonce, ttl)` çağrısı kalıcı kilit altında işletilir. Eşzamanlı gelen çoklu süreçlerden/isteklerden yalnızca biri rezervasyonu alır; diğer tüm eşzamanlı süreçler anında `REPLAY_DETECTED` ile fail-closed durur.
+  2. **Tüketim veya İptal:** Kriptografik imza veya bağlam kontrolleri başarısız olursa kilit altında rezervasyon serbest bırakılır (`releaseReservation`); kontroller eksiksiz geçerse `markNonceSeen` ile kalıcı olarak harcanır.
 - Süresi dolmuş (`exp`), gelecekte düzenlenmiş (`iat`) veya henüz yürürlüğe girmemiş (`nbf`) token'lar reddedilir.
 
 ### 3.6. mTLS Sertifikası Doğrulama Sınırı

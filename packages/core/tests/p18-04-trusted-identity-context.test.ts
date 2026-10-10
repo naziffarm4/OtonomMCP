@@ -25,6 +25,7 @@ import * as crypto from 'node:crypto';
 import * as fs from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import * as cp from 'node:child_process';
 
 import {
   HumanApprovalEngine,
@@ -1517,6 +1518,412 @@ describe('Phase 18 TASK-P18-04 — Trusted Identity Context Architecture & Verif
     assert.equal(res.status, 'VERIFIED');
     assert.equal(res.code, 'VERIFIED_HUMAN');
     assert.equal(res.claims?.subject, 'alice@company.corp');
+  });
+
+  // SEC-11: Scope-Binding fail-closed on missing or mismatched directorSessionId, taskId, and operation
+  it('SEC-11: Missing or mismatched directorSessionId, taskId, or operation in signed token strictly fails closed', async () => {
+    const oidcAdapter = new OidcIdentityProviderAdapter({
+      issuer: 'https://auth.company.corp',
+      audience: 'aidm-core-platform',
+      publicKeyPem: rsaPublicKeyPem,
+      nonceStore,
+    });
+
+    const fullExpectedBinding: TrustedApprovalBinding = {
+      projectId,
+      packageId: 'pkg-sec-11',
+      revision: 1,
+      contextFingerprint,
+      directorSessionId: 'sess-target-11',
+      taskId: 'task-target-11',
+      operation: 'DEPLOY_PROD',
+    };
+
+    const baseClaims: TrustedIdentityClaim = {
+      identityId: 'id-01',
+      issuer: 'https://auth.company.corp',
+      audience: 'aidm-core-platform',
+      subject: 'alice@company.corp',
+      actorRole: 'PRODUCT_OWNER',
+      issuedAt: new Date().toISOString(),
+      expiresAt: new Date(Date.now() + 600000).toISOString(),
+      nonce: `nonce-${crypto.randomUUID()}`,
+      authMethod: 'OIDC',
+    };
+
+    // 11a. Token missing directorSessionId when expectedBinding requires it
+    const tokenNoSession = createSignedJwt(
+      { ...baseClaims, nonce: `nonce-${crypto.randomUUID()}` },
+      rsaPrivateKeyPem,
+      {
+        projectId,
+        packageId: 'pkg-sec-11',
+        revision: 1,
+        contextFingerprint,
+        taskId: 'task-target-11',
+        operation: 'DEPLOY_PROD',
+      }
+    );
+    const resNoSession = await oidcAdapter.verifyAssertion(
+      { token: tokenNoSession, binding: fullExpectedBinding },
+      fullExpectedBinding
+    );
+    assert.equal(resNoSession.isValid, false);
+    assert.equal(resNoSession.status, 'BINDING_MISMATCH');
+    assert.ok(resNoSession.reason.includes('Session binding mismatch'));
+
+    // 11b. Token missing taskId when expectedBinding requires it
+    const tokenNoTask = createSignedJwt(
+      { ...baseClaims, nonce: `nonce-${crypto.randomUUID()}` },
+      rsaPrivateKeyPem,
+      {
+        projectId,
+        packageId: 'pkg-sec-11',
+        revision: 1,
+        contextFingerprint,
+        directorSessionId: 'sess-target-11',
+        operation: 'DEPLOY_PROD',
+      }
+    );
+    const resNoTask = await oidcAdapter.verifyAssertion(
+      { token: tokenNoTask, binding: fullExpectedBinding },
+      fullExpectedBinding
+    );
+    assert.equal(resNoTask.isValid, false);
+    assert.equal(resNoTask.status, 'BINDING_MISMATCH');
+    assert.ok(resNoTask.reason.includes('Task binding mismatch'));
+
+    // 11c. Token missing operation when expectedBinding requires it
+    const tokenNoOp = createSignedJwt(
+      { ...baseClaims, nonce: `nonce-${crypto.randomUUID()}` },
+      rsaPrivateKeyPem,
+      {
+        projectId,
+        packageId: 'pkg-sec-11',
+        revision: 1,
+        contextFingerprint,
+        directorSessionId: 'sess-target-11',
+        taskId: 'task-target-11',
+      }
+    );
+    const resNoOp = await oidcAdapter.verifyAssertion(
+      { token: tokenNoOp, binding: fullExpectedBinding },
+      fullExpectedBinding
+    );
+    assert.equal(resNoOp.isValid, false);
+    assert.equal(resNoOp.status, 'BINDING_MISMATCH');
+    assert.ok(resNoOp.reason.includes('Operation binding mismatch'));
+
+    // 11d. Each field modified individually in token
+    const tokenWrongSession = createSignedJwt(
+      { ...baseClaims, nonce: `nonce-${crypto.randomUUID()}` },
+      rsaPrivateKeyPem,
+      { ...fullExpectedBinding, directorSessionId: 'sess-rogue' }
+    );
+    const resWrongSession = await oidcAdapter.verifyAssertion(
+      { token: tokenWrongSession, binding: fullExpectedBinding },
+      fullExpectedBinding
+    );
+    assert.equal(resWrongSession.isValid, false);
+    assert.equal(resWrongSession.status, 'BINDING_MISMATCH');
+
+    const tokenWrongTask = createSignedJwt(
+      { ...baseClaims, nonce: `nonce-${crypto.randomUUID()}` },
+      rsaPrivateKeyPem,
+      { ...fullExpectedBinding, taskId: 'task-rogue' }
+    );
+    const resWrongTask = await oidcAdapter.verifyAssertion(
+      { token: tokenWrongTask, binding: fullExpectedBinding },
+      fullExpectedBinding
+    );
+    assert.equal(resWrongTask.isValid, false);
+    assert.equal(resWrongTask.status, 'BINDING_MISMATCH');
+
+    const tokenWrongOp = createSignedJwt(
+      { ...baseClaims, nonce: `nonce-${crypto.randomUUID()}` },
+      rsaPrivateKeyPem,
+      { ...fullExpectedBinding, operation: 'DROP_DATABASE' }
+    );
+    const resWrongOp = await oidcAdapter.verifyAssertion(
+      { token: tokenWrongOp, binding: fullExpectedBinding },
+      fullExpectedBinding
+    );
+    assert.equal(resWrongOp.isValid, false);
+    assert.equal(resWrongOp.status, 'BINDING_MISMATCH');
+
+    // 11e. Correct token matching all required fields succeeds
+    const tokenAllMatch = createSignedJwt(
+      { ...baseClaims, nonce: `nonce-${crypto.randomUUID()}` },
+      rsaPrivateKeyPem,
+      fullExpectedBinding
+    );
+    const resAllMatch = await oidcAdapter.verifyAssertion(
+      { token: tokenAllMatch, binding: fullExpectedBinding },
+      fullExpectedBinding
+    );
+    assert.equal(resAllMatch.isValid, true);
+    assert.equal(resAllMatch.status, 'VERIFIED');
+    assert.equal(resAllMatch.code, 'VERIFIED_HUMAN');
+  });
+
+  // SEC-12: assertion.binding client spoofing vs signed token payload mismatch
+  it('SEC-12: Client-provided assertion.binding contradicting signed token payload strictly fails closed', async () => {
+    const oidcAdapter = new OidcIdentityProviderAdapter({
+      issuer: 'https://auth.company.corp',
+      audience: 'aidm-core-platform',
+      publicKeyPem: rsaPublicKeyPem,
+      nonceStore,
+    });
+
+    const expectedBinding: TrustedApprovalBinding = {
+      projectId,
+      packageId: 'pkg-sec-12',
+      revision: 1,
+      contextFingerprint,
+      taskId: 'task-target-12',
+    };
+
+    const baseClaims: TrustedIdentityClaim = {
+      identityId: 'id-01',
+      issuer: 'https://auth.company.corp',
+      audience: 'aidm-core-platform',
+      subject: 'alice@company.corp',
+      actorRole: 'PRODUCT_OWNER',
+      issuedAt: new Date().toISOString(),
+      expiresAt: new Date(Date.now() + 600000).toISOString(),
+      nonce: `nonce-${crypto.randomUUID()}`,
+      authMethod: 'OIDC',
+    };
+
+    // Client passes assertion.binding matching expected execution context,
+    // but the cryptographically signed JWT token was issued for task-evil!
+    const tokenForEvilTask = createSignedJwt(
+      { ...baseClaims, nonce: `nonce-${crypto.randomUUID()}` },
+      rsaPrivateKeyPem,
+      { ...expectedBinding, taskId: 'task-evil' }
+    );
+    const resSpoofedClientBinding = await oidcAdapter.verifyAssertion(
+      {
+        token: tokenForEvilTask,
+        binding: expectedBinding,
+      },
+      expectedBinding
+    );
+    assert.equal(resSpoofedClientBinding.isValid, false);
+    assert.equal(resSpoofedClientBinding.status, 'BINDING_MISMATCH');
+
+    // Vice-versa: signed token matches expected, but client tampers with assertion.binding
+    const tokenValid = createSignedJwt(
+      { ...baseClaims, nonce: `nonce-${crypto.randomUUID()}` },
+      rsaPrivateKeyPem,
+      expectedBinding
+    );
+    const resTamperedBinding = await oidcAdapter.verifyAssertion(
+      {
+        token: tokenValid,
+        binding: { ...expectedBinding, taskId: 'task-rogue' },
+      },
+      expectedBinding
+    );
+    assert.equal(resTamperedBinding.isValid, false);
+    assert.equal(resTamperedBinding.status, 'BINDING_MISMATCH');
+  });
+
+  // SEC-13: Multiple NonceStore instances, reservation lifecycle, and restart replay resistance
+  it('SEC-13: Multiple NonceStore instances on same file enforce cross-instance atomicity and restart replay prevention', async () => {
+    const sharedNonceFile = path.join(tempDir, `shared-nonces-${crypto.randomUUID()}.json`);
+    const storeA = new NonceStore({ filePath: sharedNonceFile });
+    const storeB = new NonceStore({ filePath: sharedNonceFile });
+
+    const testNonce = `nonce-shared-${crypto.randomUUID()}`;
+
+    // 13a. Store A reserves nonce -> succeeds
+    const reservedA = await storeA.reserveNonce(testNonce, 10000);
+    assert.equal(reservedA, true, 'Store A must successfully reserve new nonce');
+
+    // 13b. Store B tries to reserve same nonce while reserved by A -> fails
+    const reservedB = await storeB.reserveNonce(testNonce, 10000);
+    assert.equal(reservedB, false, 'Store B must be rejected while nonce is reserved');
+
+    // 13c. Store B checks isNonceSeen -> returns true (in flight)
+    const seenDuringReservation = await storeB.isNonceSeen(testNonce);
+    assert.equal(seenDuringReservation, true, 'isNonceSeen must report true while nonce is reserved');
+
+    // 13d. Store A releases reservation (e.g. verification failed before commit)
+    await storeA.releaseReservation(testNonce);
+
+    // 13e. Store B can now reserve and permanently mark seen
+    const reservedBAfterRelease = await storeB.reserveNonce(testNonce, 10000);
+    assert.equal(reservedBAfterRelease, true, 'Store B must be able to reserve after release');
+
+    const markedB = await storeB.markNonceSeen(testNonce);
+    assert.equal(markedB, true, 'Store B must successfully mark nonce seen');
+
+    // 13f. Store A attempts duplicate consume -> fails (replay)
+    const markedA = await storeA.markNonceSeen(testNonce);
+    assert.equal(markedA, false, 'Store A must fail on already-seen nonce');
+
+    // 13g. Simulate complete process restart with brand new NonceStore instance C
+    const storeC = new NonceStore({ filePath: sharedNonceFile });
+    const reservedC = await storeC.reserveNonce(testNonce);
+    assert.equal(reservedC, false, 'Store C after restart must strictly reject already-seen nonce');
+    const seenC = await storeC.isNonceSeen(testNonce);
+    assert.equal(seenC, true, 'Store C after restart must confirm nonce is seen');
+  });
+
+  // SEC-14: Cross-process concurrent race condition on NonceStore
+  it('SEC-14: Concurrent inter-process execution enforces single winner on identical nonce', async () => {
+    const sharedFile = path.join(tempDir, `multiprocess-nonces-${crypto.randomUUID()}.json`);
+    const storeMain = new NonceStore({ filePath: sharedFile });
+    const nonceValue = `race-nonce-${crypto.randomUUID()}`;
+
+    // Child process script using compiled NonceStore
+    const nonceStoreUrl = new URL('../dist/authorization/nonce-store.js', import.meta.url).href;
+    const childScript = `
+      import { NonceStore } from '${nonceStoreUrl}';
+      const store = new NonceStore({ filePath: process.argv[1] });
+      const res = await store.reserveNonce(process.argv[2], 30000);
+      let marked = false;
+      if (res) {
+        marked = await store.markNonceSeen(process.argv[2]);
+      }
+      process.stdout.write(JSON.stringify({ reserved: res, marked }));
+    `;
+
+    // Launch child process and concurrent main process call simultaneously
+    const childPromise = new Promise<{ reserved: boolean; marked: boolean }>((resolve, reject) => {
+      const child = cp.spawn(process.execPath, ['--input-type=module', '-e', childScript, sharedFile, nonceValue], {
+        cwd: process.cwd(),
+      });
+      let stdout = '';
+      let stderr = '';
+      child.stdout.on('data', (d) => { stdout += d.toString(); });
+      child.stderr.on('data', (d) => { stderr += d.toString(); });
+      child.on('close', (code) => {
+        if (code !== 0) {
+          reject(new Error(`Child process failed (${code}): ${stderr}`));
+        } else {
+          try {
+            resolve(JSON.parse(stdout));
+          } catch (e) {
+            reject(new Error(`Failed to parse child output: ${stdout}, err: ${e}`));
+          }
+        }
+      });
+    });
+
+    // Run simultaneously in main process
+    const mainReserved = await storeMain.reserveNonce(nonceValue, 30000);
+    let mainMarked = false;
+    if (mainReserved) {
+      mainMarked = await storeMain.markNonceSeen(nonceValue);
+    }
+
+    const childResult = await childPromise;
+
+    const totalReserved = (mainReserved ? 1 : 0) + (childResult.reserved ? 1 : 0);
+    const totalMarked = (mainMarked ? 1 : 0) + (childResult.marked ? 1 : 0);
+
+    assert.equal(totalReserved, 1, 'Exactly one process (main or child) MUST win reservation');
+    assert.equal(totalMarked, 1, 'Exactly one process MUST successfully mark nonce seen');
+  });
+
+  // SEC-15: JWKS Redirect prevention and URL security
+  it('SEC-15: JWKS redirect responses and URL credentials strictly fail closed', async () => {
+    // 15a. HTTP 302 redirect attempted by JWKS endpoint is blocked fail-closed
+    const redirectAdapter = new OidcIdentityProviderAdapter({
+      issuer: 'https://auth.company.corp',
+      audience: 'aidm-core-platform',
+      jwksUri: 'https://auth.company.corp/redirect',
+      fetchJwksFn: async () => {
+        // Simulating redirect rejection from fetch redirect: manual
+        throw new Error('JWKS endpoint attempted redirect to https://evil.corp/keys. Automatic redirects are blocked for SSRF defense.');
+      },
+    });
+
+    const binding: TrustedApprovalBinding = {
+      projectId,
+      packageId: 'pkg-sec-15',
+      revision: 1,
+      contextFingerprint,
+    };
+    const claims: TrustedIdentityClaim = {
+      identityId: 'id-01',
+      issuer: 'https://auth.company.corp',
+      audience: 'aidm-core-platform',
+      subject: 'alice@company.corp',
+      actorRole: 'PRODUCT_OWNER',
+      issuedAt: new Date().toISOString(),
+      expiresAt: new Date(Date.now() + 600000).toISOString(),
+      nonce: `nonce-${crypto.randomUUID()}`,
+      authMethod: 'OIDC',
+    };
+    const token = createSignedJwt(claims, rsaPrivateKeyPem, binding);
+
+    const resRedirect = await redirectAdapter.verifyAssertion({ token, binding }, binding);
+    assert.equal(resRedirect.isValid, false);
+    assert.equal(resRedirect.status, 'PROVIDER_OUTAGE');
+    assert.ok(resRedirect.reason.includes('redirect'));
+
+    // 15b. JWKS URI with embedded credentials fails closed
+    const credsAdapter = new OidcIdentityProviderAdapter({
+      issuer: 'https://auth.company.corp',
+      audience: 'aidm-core-platform',
+      jwksUri: 'https://admin:secret@auth.company.corp/jwks.json',
+    });
+    const resCreds = await credsAdapter.verifyAssertion({ token, binding }, binding);
+    assert.equal(resCreds.isValid, false);
+    assert.equal(resCreds.status, 'CONFIG_MISSING');
+    assert.ok(resCreds.reason.includes('embedded user credentials'));
+  });
+
+  // SEC-16: JWKS Key compatibility and algorithm contradiction defense
+  it('SEC-16: Contradictions between token header alg and JWK alg or kty strictly fail closed', async () => {
+    const keyId = 'key-ec-mismatch';
+
+    // Generate an EC key
+    const ecKeys = crypto.generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
+    const ecJwk = ecKeys.publicKey.export({ format: 'jwk' });
+
+    // Adapter returns an EC JWK, but token claims RS256
+    const mismatchAdapter = new OidcIdentityProviderAdapter({
+      issuer: 'https://auth.company.corp',
+      audience: 'aidm-core-platform',
+      jwksUri: 'https://auth.company.corp/jwks.json',
+      fetchJwksFn: async () => ({
+        keys: [{
+          ...ecJwk,
+          kid: keyId,
+          alg: 'ES256',
+        }],
+      }),
+    });
+
+    const binding: TrustedApprovalBinding = {
+      projectId,
+      packageId: 'pkg-sec-16',
+      revision: 1,
+      contextFingerprint,
+    };
+    const claims: TrustedIdentityClaim = {
+      identityId: 'id-01',
+      issuer: 'https://auth.company.corp',
+      audience: 'aidm-core-platform',
+      subject: 'alice@company.corp',
+      actorRole: 'PRODUCT_OWNER',
+      issuedAt: new Date().toISOString(),
+      expiresAt: new Date(Date.now() + 600000).toISOString(),
+      nonce: `nonce-${crypto.randomUUID()}`,
+      authMethod: 'OIDC',
+    };
+
+    // Token has header alg: RS256, but JWK has alg: ES256 and kty: EC
+    const token = createSignedJwt(claims, rsaPrivateKeyPem, binding, { kid: keyId, alg: 'RS256' });
+    const res = await mismatchAdapter.verifyAssertion({ token, binding }, binding);
+
+    assert.equal(res.isValid, false);
+    assert.equal(res.status, 'SIGNATURE_INVALID');
+    assert.ok(res.reason.includes('contradicts token header algorithm') || res.reason.includes('requires kty'));
   });
 });
 

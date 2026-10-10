@@ -100,23 +100,92 @@ export interface OidcIdentityProviderOptions {
 }
 
 /**
+ * IP and SSRF validation helpers.
+ */
+function isPrivateOrSpecialIp(ip: string): boolean {
+  const cleanIp = ip.startsWith('::ffff:') ? ip.slice(7) : ip;
+
+  const ipv4Parts = cleanIp.split('.').map((p) => Number(p));
+  if (ipv4Parts.length === 4 && ipv4Parts.every((p) => !isNaN(p) && p >= 0 && p <= 255)) {
+    const [b0, b1] = ipv4Parts;
+    if (b0 === 0) return true; // 0.0.0.0/8
+    if (b0 === 10) return true; // 10.0.0.0/8
+    if (b0 === 127) return true; // 127.0.0.0/8
+    if (b0 === 169 && b1 === 254) return true; // 169.254.0.0/16 (link-local, cloud metadata)
+    if (b0 === 172 && b1 >= 16 && b1 <= 31) return true; // 172.16.0.0/12
+    if (b0 === 192 && b1 === 168) return true; // 192.168.0.0/16
+    if (b0 === 100 && b1 >= 64 && b1 <= 127) return true; // 100.64.0.0/10
+    if (b0 === 192 && b1 === 0) return true;
+    if (b0 === 198 && (b1 === 18 || b1 === 19 || b1 === 51)) return true;
+    if (b0 === 203 && b1 === 0) return true;
+    if (b0 >= 224) return true; // Multicast & Reserved
+    return false;
+  }
+
+  const lowerIp = cleanIp.toLowerCase().replace(/^\[|\]$/g, '');
+  if (
+    lowerIp === '::' ||
+    lowerIp === '::1' ||
+    lowerIp.startsWith('fe80:') ||
+    lowerIp.startsWith('fc') ||
+    lowerIp.startsWith('fd')
+  ) {
+    return true;
+  }
+
+  return false;
+}
+
+/**
  * Validates a JWKS URI to prevent SSRF and unsafe protocols.
  */
-function validateJwksUri(uriString: string): void {
+export function validateJwksUri(uriString: string): void {
   let parsed: URL;
   try {
     parsed = new URL(uriString);
   } catch {
     throw new Error(`Invalid JWKS URI format: '${uriString}'`);
   }
+
   if (parsed.protocol !== 'https:') {
     const isLocalhost = parsed.hostname === 'localhost' || parsed.hostname === '127.0.0.1';
     if (!isLocalhost || process.env.NODE_ENV === 'production') {
       throw new Error(`JWKS URI must strictly use HTTPS protocol. Insecure protocol '${parsed.protocol}' rejected for SSRF defense.`);
     }
   }
-  if (parsed.hostname === '169.254.169.254' || parsed.hostname.startsWith('169.254.')) {
+
+  if (parsed.username || parsed.password) {
+    throw new Error('JWKS URI must not contain embedded user credentials. Rejected for SSRF defense.');
+  }
+
+  if (parsed.port && parsed.port !== '443' && parsed.port !== '8443') {
+    const isLocalhost = parsed.hostname === 'localhost' || parsed.hostname === '127.0.0.1';
+    if (!isLocalhost || process.env.NODE_ENV === 'production') {
+      throw new Error(`Non-standard port '${parsed.port}' on JWKS URI is prohibited for SSRF defense.`);
+    }
+  }
+
+  const host = parsed.hostname.toLowerCase().replace(/^\[|\]$/g, '');
+  if (
+    host === '169.254.169.254' ||
+    host.startsWith('169.254.') ||
+    host === 'metadata.google.internal'
+  ) {
     throw new Error(`JWKS URI targets forbidden cloud metadata IP ('${parsed.hostname}'). Rejected for SSRF defense.`);
+  }
+
+  if (isPrivateOrSpecialIp(host)) {
+    const isLocalhost = host === '127.0.0.1' || host === '::1';
+    if (!isLocalhost || process.env.NODE_ENV === 'production') {
+      throw new Error(`JWKS URI targets forbidden private/link-local/metadata IP ('${parsed.hostname}'). Rejected for SSRF defense.`);
+    }
+  }
+
+  if (
+    host.endsWith('.internal') ||
+    host.endsWith('.local')
+  ) {
+    throw new Error(`JWKS URI targets forbidden internal host ('${parsed.hostname}'). Rejected for SSRF defense.`);
   }
 }
 
@@ -406,7 +475,18 @@ export class OidcIdentityProviderAdapter implements ITrustedIdentityProvider {
           const response = await fetch(this.jwksUri, {
             signal: AbortSignal.timeout(this.requestTimeoutMs),
             headers: { Accept: 'application/json' },
+            redirect: 'manual',
           });
+          if (response.status >= 300 && response.status < 400) {
+            const redirectLoc = response.headers.get('location');
+            return {
+              isValid: false,
+              isTrustedHumanAuth: false,
+              status: 'PROVIDER_OUTAGE',
+              code: 'BLOCKED_ON_AUTH_CONTEXT',
+              reason: `JWKS endpoint attempted redirect to '${redirectLoc ?? 'unknown'}'. Automatic redirects are blocked for SSRF defense.`,
+            };
+          }
           if (!response.ok) {
             return {
               isValid: false,
@@ -453,7 +533,7 @@ export class OidcIdentityProviderAdapter implements ITrustedIdentityProvider {
             reason: `Key ID (kid) '${header.kid}' not found in resolved JWKS keys.`,
           };
         }
-      } else if (jwksData.keys.length === 1) {
+      } else if (jwksData.keys.length === 1 && jwksData.keys[0] && typeof jwksData.keys[0] === 'object') {
         matchedJwk = jwksData.keys[0] as Record<string, unknown>;
       } else {
         return {
@@ -472,6 +552,45 @@ export class OidcIdentityProviderAdapter implements ITrustedIdentityProvider {
           status: 'SIGNATURE_INVALID',
           code: 'BLOCKED_ON_AUTH_CONTEXT',
           reason: "JWK key missing required 'kty' parameter.",
+        };
+      }
+
+      // Check algorithm compatibility between JWK and token header
+      if (matchedJwk.alg && typeof matchedJwk.alg === 'string' && matchedJwk.alg !== header.alg) {
+        return {
+          isValid: false,
+          isTrustedHumanAuth: false,
+          status: 'SIGNATURE_INVALID',
+          code: 'BLOCKED_ON_AUTH_CONTEXT',
+          reason: `JWK algorithm '${matchedJwk.alg}' contradicts token header algorithm '${header.alg}'.`,
+        };
+      }
+
+      if (header.alg.startsWith('RS') && matchedJwk.kty !== 'RSA') {
+        return {
+          isValid: false,
+          isTrustedHumanAuth: false,
+          status: 'SIGNATURE_INVALID',
+          code: 'BLOCKED_ON_AUTH_CONTEXT',
+          reason: `Algorithm '${header.alg}' requires kty 'RSA', but JWK has kty '${matchedJwk.kty}'.`,
+        };
+      }
+      if (header.alg.startsWith('ES') && matchedJwk.kty !== 'EC') {
+        return {
+          isValid: false,
+          isTrustedHumanAuth: false,
+          status: 'SIGNATURE_INVALID',
+          code: 'BLOCKED_ON_AUTH_CONTEXT',
+          reason: `Algorithm '${header.alg}' requires kty 'EC', but JWK has kty '${matchedJwk.kty}'.`,
+        };
+      }
+      if (header.alg === 'EdDSA' && matchedJwk.kty !== 'OKP' && matchedJwk.kty !== 'EC') {
+        return {
+          isValid: false,
+          isTrustedHumanAuth: false,
+          status: 'SIGNATURE_INVALID',
+          code: 'BLOCKED_ON_AUTH_CONTEXT',
+          reason: `Algorithm 'EdDSA' requires kty 'OKP' or 'EC', but JWK has kty '${matchedJwk.kty}'.`,
         };
       }
 
@@ -776,18 +895,16 @@ export class OidcIdentityProviderAdapter implements ITrustedIdentityProvider {
     };
 
     // 6. Cryptographic Scope Binding Verification (Payload Bound)
-    const payloadBinding: Partial<TrustedApprovalBinding> =
-      payload.binding && typeof payload.binding === 'object'
-        ? (payload.binding as Record<string, unknown>)
-        : {
-            projectId: typeof payload.projectId === 'string' ? payload.projectId : undefined,
-            packageId: typeof payload.packageId === 'string' ? payload.packageId : undefined,
-            revision: typeof payload.revision === 'number' ? payload.revision : (payload.revision ? Number(payload.revision) : undefined),
-            contextFingerprint: typeof payload.contextFingerprint === 'string' ? payload.contextFingerprint : undefined,
-            directorSessionId: typeof payload.directorSessionId === 'string' ? payload.directorSessionId : undefined,
-            taskId: typeof payload.taskId === 'string' ? payload.taskId : undefined,
-            operation: typeof payload.operation === 'string' ? payload.operation : undefined,
-          };
+    const rawPb = (payload.binding && typeof payload.binding === 'object' ? payload.binding : {}) as Record<string, unknown>;
+    const payloadBinding: Partial<TrustedApprovalBinding> = {
+      projectId: typeof rawPb.projectId === 'string' ? rawPb.projectId : (typeof payload.projectId === 'string' ? payload.projectId : undefined),
+      packageId: typeof rawPb.packageId === 'string' ? rawPb.packageId : (typeof payload.packageId === 'string' ? payload.packageId : undefined),
+      revision: typeof rawPb.revision === 'number' ? rawPb.revision : (typeof payload.revision === 'number' ? payload.revision : (rawPb.revision ? Number(rawPb.revision) : (payload.revision ? Number(payload.revision) : undefined))),
+      contextFingerprint: typeof rawPb.contextFingerprint === 'string' ? rawPb.contextFingerprint : (typeof payload.contextFingerprint === 'string' ? payload.contextFingerprint : undefined),
+      directorSessionId: typeof rawPb.directorSessionId === 'string' ? rawPb.directorSessionId : (typeof payload.directorSessionId === 'string' ? payload.directorSessionId : undefined),
+      taskId: typeof rawPb.taskId === 'string' ? rawPb.taskId : (typeof payload.taskId === 'string' ? payload.taskId : undefined),
+      operation: typeof rawPb.operation === 'string' ? rawPb.operation : (typeof payload.operation === 'string' ? payload.operation : undefined),
+    };
 
     if (!payloadBinding.projectId || payloadBinding.projectId !== expectedBinding.projectId) {
       await releaseNonceIfReserved();
@@ -833,48 +950,92 @@ export class OidcIdentityProviderAdapter implements ITrustedIdentityProvider {
       };
     }
 
-    if (expectedBinding.directorSessionId && payloadBinding.directorSessionId && payloadBinding.directorSessionId !== expectedBinding.directorSessionId) {
+    // Fail-Closed: If expectedBinding specifies directorSessionId, token MUST contain it and match
+    if (expectedBinding.directorSessionId !== undefined && payloadBinding.directorSessionId !== expectedBinding.directorSessionId) {
       await releaseNonceIfReserved();
       return {
         isValid: false,
         isTrustedHumanAuth: false,
         status: 'BINDING_MISMATCH',
         code: 'BLOCKED_ON_AUTH_CONTEXT',
-        reason: `Session binding mismatch: token bound to session '${payloadBinding.directorSessionId}', expected '${expectedBinding.directorSessionId}'.`,
+        reason: `Session binding mismatch: token bound to session '${payloadBinding.directorSessionId ?? '<missing>'}', expected '${expectedBinding.directorSessionId}'.`,
       };
     }
 
-    if (expectedBinding.taskId && payloadBinding.taskId && payloadBinding.taskId !== expectedBinding.taskId) {
+    // Fail-Closed: If token explicitly specifies directorSessionId, it cannot be used where expectedBinding doesn't match
+    if (payloadBinding.directorSessionId !== undefined && payloadBinding.directorSessionId !== expectedBinding.directorSessionId) {
       await releaseNonceIfReserved();
       return {
         isValid: false,
         isTrustedHumanAuth: false,
         status: 'BINDING_MISMATCH',
         code: 'BLOCKED_ON_AUTH_CONTEXT',
-        reason: `Task binding mismatch: token bound to task '${payloadBinding.taskId}', expected '${expectedBinding.taskId}'.`,
+        reason: `Session binding mismatch: token bound to session '${payloadBinding.directorSessionId}', expected '${expectedBinding.directorSessionId ?? '<none>'}'.`,
       };
     }
 
-    if (expectedBinding.operation && payloadBinding.operation && payloadBinding.operation !== expectedBinding.operation) {
+    // Fail-Closed: If expectedBinding specifies taskId, token MUST contain it and match
+    if (expectedBinding.taskId !== undefined && payloadBinding.taskId !== expectedBinding.taskId) {
       await releaseNonceIfReserved();
       return {
         isValid: false,
         isTrustedHumanAuth: false,
         status: 'BINDING_MISMATCH',
         code: 'BLOCKED_ON_AUTH_CONTEXT',
-        reason: `Operation binding mismatch: token bound to operation '${payloadBinding.operation}', expected '${expectedBinding.operation}'.`,
+        reason: `Task binding mismatch: token bound to task '${payloadBinding.taskId ?? '<missing>'}', expected '${expectedBinding.taskId}'.`,
       };
     }
 
-    // Also verify assertion.binding matches expected execution binding
+    // Fail-Closed: If token explicitly specifies taskId, it cannot be used where expectedBinding doesn't match
+    if (payloadBinding.taskId !== undefined && payloadBinding.taskId !== expectedBinding.taskId) {
+      await releaseNonceIfReserved();
+      return {
+        isValid: false,
+        isTrustedHumanAuth: false,
+        status: 'BINDING_MISMATCH',
+        code: 'BLOCKED_ON_AUTH_CONTEXT',
+        reason: `Task binding mismatch: token bound to task '${payloadBinding.taskId}', expected '${expectedBinding.taskId ?? '<none>'}'.`,
+      };
+    }
+
+    // Fail-Closed: If expectedBinding specifies operation, token MUST contain it and match
+    if (expectedBinding.operation !== undefined && payloadBinding.operation !== expectedBinding.operation) {
+      await releaseNonceIfReserved();
+      return {
+        isValid: false,
+        isTrustedHumanAuth: false,
+        status: 'BINDING_MISMATCH',
+        code: 'BLOCKED_ON_AUTH_CONTEXT',
+        reason: `Operation binding mismatch: token bound to operation '${payloadBinding.operation ?? '<missing>'}', expected '${expectedBinding.operation}'.`,
+      };
+    }
+
+    // Fail-Closed: If token explicitly specifies operation, it cannot be used where expectedBinding doesn't match
+    if (payloadBinding.operation !== undefined && payloadBinding.operation !== expectedBinding.operation) {
+      await releaseNonceIfReserved();
+      return {
+        isValid: false,
+        isTrustedHumanAuth: false,
+        status: 'BINDING_MISMATCH',
+        code: 'BLOCKED_ON_AUTH_CONTEXT',
+        reason: `Operation binding mismatch: token bound to operation '${payloadBinding.operation}', expected '${expectedBinding.operation ?? '<none>'}'.`,
+      };
+    }
+
+    // Also verify assertion.binding matches expected execution binding and does not contradict token payload
     const binding = assertion.binding;
     if (
+      !binding ||
       binding.projectId !== expectedBinding.projectId ||
       binding.packageId !== expectedBinding.packageId ||
       binding.revision !== expectedBinding.revision ||
       binding.contextFingerprint !== expectedBinding.contextFingerprint ||
-      (expectedBinding.directorSessionId && binding.directorSessionId && binding.directorSessionId !== expectedBinding.directorSessionId) ||
-      (expectedBinding.taskId && binding.taskId && binding.taskId !== expectedBinding.taskId)
+      (expectedBinding.directorSessionId !== undefined && binding.directorSessionId !== expectedBinding.directorSessionId) ||
+      (expectedBinding.taskId !== undefined && binding.taskId !== expectedBinding.taskId) ||
+      (expectedBinding.operation !== undefined && binding.operation !== expectedBinding.operation) ||
+      (payloadBinding.directorSessionId !== undefined && binding.directorSessionId !== payloadBinding.directorSessionId) ||
+      (payloadBinding.taskId !== undefined && binding.taskId !== payloadBinding.taskId) ||
+      (payloadBinding.operation !== undefined && binding.operation !== payloadBinding.operation)
     ) {
       await releaseNonceIfReserved();
       return {
@@ -882,7 +1043,7 @@ export class OidcIdentityProviderAdapter implements ITrustedIdentityProvider {
         isTrustedHumanAuth: false,
         status: 'BINDING_MISMATCH',
         code: 'BLOCKED_ON_AUTH_CONTEXT',
-        reason: 'Client assertion.binding contradicts expected execution binding boundaries.',
+        reason: 'Client assertion.binding contradicts expected execution binding boundaries or signed token payload.',
       };
     }
 
