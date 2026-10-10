@@ -20,6 +20,7 @@ import {
   HistoryCorruptError,
   StorageError,
 } from '../dist/index.js';
+import type { DurableStateInput } from '../src/storage/durable-state.js';
 
 describe('Storage & Durable State Architecture (TASK-P1-03)', () => {
   let tempDir: string;
@@ -90,7 +91,7 @@ describe('Storage & Durable State Architecture (TASK-P1-03)', () => {
 
       await assert.rejects(
         async () => {
-          await manager.save({} as unknown as { currentLifecycleState: LifecycleState });
+          await manager.save({} as unknown as DurableStateInput);
         },
         (err: unknown) => {
           assert.ok(err instanceof StateValidationError);
@@ -156,6 +157,7 @@ describe('Storage & Durable State Architecture (TASK-P1-03)', () => {
         currentLifecycleState: LifecycleState.BLOCKED_ON_HUMAN,
         activeTaskId: 'TASK-AUTH-002',
         completedTaskIds: [],
+        blockedState: null,
         blocked_state: snakeInput,
       });
 
@@ -264,8 +266,8 @@ describe('Storage & Durable State Architecture (TASK-P1-03)', () => {
       assert.ok(runtimeData);
       assert.equal(durableData.currentLifecycleState, LifecycleState.TASK_LOOP);
       assert.equal(runtimeData.processId, 9876);
-      assert.equal((durableData as Record<string, unknown>).processId, undefined);
-      assert.equal((runtimeData as Record<string, unknown>).currentLifecycleState, undefined);
+      assert.equal((durableData as unknown as Record<string, unknown>).processId, undefined);
+      assert.equal((runtimeData as unknown as Record<string, unknown>).currentLifecycleState, undefined);
 
       // Clearing runtime does not affect durable
       await runtimeManager.clear();

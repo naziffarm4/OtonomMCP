@@ -1,3 +1,5 @@
+import { InitialProjectUnderstandingBuilder } from '../dist/approval/index.js';
+import { createValidDiscoveryReport } from './helpers/test-discovery-factory.ts';
 /**
  * P12-04 — Static Plan Decomposition Verification / End-to-End Acceptance Test Suite
  *
@@ -136,48 +138,40 @@ describe('P12-04: Static Plan Decomposition Verification / End-to-End Acceptance
       understandingRevision: 1,
     });
 
-    const understanding: InitialProjectUnderstanding = {
-      projectId: session.projectId,
-      projectName: 'P1204VerificationProject',
-      apparentPurpose: {
-        summary: 'P12-04 E2E Acceptance Project',
-        classification: 'APPLICATION',
-        evidence: [],
-      },
-      targetUsers: ['QA Engineers', 'Product Owners'],
-      technologyStack: { primaryLanguages: ['TypeScript'] },
-      architectureSummary: { pattern: 'Modular Clean Architecture' },
-      existingCapabilities: [],
-      confirmedRequirements: [
-        {
-          id: 'REQ-001',
-          type: 'CONFIRMED_FACT',
-          origin: 'EXISTING_REQUIREMENT',
-          statement: 'Deterministic plan decomposition to SpecStore tasks',
+    const understanding: InitialProjectUnderstanding = new InitialProjectUnderstandingBuilder().build(
+      createValidDiscoveryReport({
+        projectIdentity: {
+          name: 'P1204VerificationProject',
+          workspaceRoot: session.projectRoot,
+          ecosystem: 'Node.js',
           evidence: [],
-          sourceReferenceId: 'REQ-001',
         },
-        {
-          id: 'REQ-002',
-          type: 'CONFIRMED_FACT',
-          origin: 'EXISTING_REQUIREMENT',
-          statement: 'Full DAG integrity and Director context synchronization',
+        requirementsSummary: {
+          totalRequirements: 2,
+          lockedCount: 2,
+          source: 'AIDM_SPEC_STORE',
+          requirements: [
+            {
+              id: 'REQ-001',
+              title: 'Requirement 1',
+              status: 'APPROVED',
+              authority: 'PRODUCT_OWNER',
+              acceptanceCriteriaCount: 1,
+            },
+            {
+              id: 'REQ-002',
+              title: 'Requirement 2',
+              status: 'APPROVED',
+              authority: 'PRODUCT_OWNER',
+              acceptanceCriteriaCount: 1,
+            },
+          ],
           evidence: [],
-          sourceReferenceId: 'REQ-002',
         },
-      ],
-      clarifiedRequirements: [],
-      unresolvedUnknowns: [],
-      unresolvedContradictions: [],
-      currentImplementationState: { state: 'Verified' },
-      constraints: ['POSIX relative paths only', 'No autonomous execution'],
-      assumptions: [],
-      nonGoals: ['Runtime task execution', 'Continuation triggering'],
-      proposedDevelopmentScope: ['Decomposition', 'SpecStore Persistence'],
-      evidenceReferences: [],
-      sourceDiscoveryReference: 'discovery-p1204',
-      generatedAt: '2026-09-27T00:00:00.000Z',
-    };
+      }),
+      undefined,
+      { projectId: session.projectId }
+    );
 
     const proposedPlan: ProposedDevelopmentPlan = {
       objectives: ['Decompose approved plan', 'Persist static DAG', 'Sync Director context'],
@@ -383,7 +377,6 @@ describe('P12-04: Static Plan Decomposition Verification / End-to-End Acceptance
     await sessionEngine.closeSession({
       directorSessionId: activeSessionId,
       reason: 'Testing closed session enforcement',
-      closedBy: Actor.DIRECTOR,
     });
 
     await assert.rejects(

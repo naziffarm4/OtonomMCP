@@ -268,8 +268,21 @@ describe('A3: Director Action Protocol & Authorization Policy Integration', () =
       providerId: 'mock:a3-provider',
       providerName: 'mock-llm',
       defaultModel: 'director-reasoning-v1',
-      async generate(request: LlmRequest): Promise<LlmResponse> {
+      supportedModels: ['director-reasoning-v1'],
+      supportedCapabilities: [],
+      async checkAvailability() {
+        return { available: true };
+      },
+      async generate<TStructured = unknown>(request: LlmRequest): Promise<LlmResponse<TStructured>> {
         return {
+          correlation: request.correlation ?? {
+            correlation_id: 'corr-mock',
+            project_id: 'proj-mock',
+            attempt: 1,
+            created_at: new Date().toISOString(),
+          },
+          provider: 'mock:a3-provider',
+          model: 'director-reasoning-v1',
           content: JSON.stringify({
             decisionType: 'IMPLEMENT_TASK',
             rationale: 'Task task-02-auth is ready and its dependencies are satisfied. Proposing implementation.',
@@ -277,12 +290,21 @@ describe('A3: Director Action Protocol & Authorization Policy Integration', () =
             selectedTaskId: 'task-02-auth',
             suggestedNextAction: 'Execute task-02-auth under project mandate.',
           }),
-          format: 'json',
-          inputTokens: 300,
-          outputTokens: 150,
-          totalTokens: 450,
-          cachedTokens: 50,
-          reasoningTokens: 20,
+          structured_output: null,
+          finish_reason: 'STOP' as const,
+          usage: {
+            reported_input_tokens: 300,
+            reported_output_tokens: 150,
+            reported_cached_tokens: 50,
+            reported_reasoning_tokens: 20,
+            estimated_tokens: 450,
+            estimated_cost_usd: null,
+            provider_name: 'mock-llm',
+            model: 'director-reasoning-v1',
+            is_exact_provider_metric: true,
+          },
+          raw_metadata: null,
+          error: null,
         };
       },
     };

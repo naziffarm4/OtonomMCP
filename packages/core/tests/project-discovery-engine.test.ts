@@ -424,7 +424,7 @@ describe('Phase 8 Existing Project Discovery Engine (TASK-P8-03)', () => {
     await durableManager.save({
       currentLifecycleState: LifecycleState.PROJECT_COMPLETE,
       activeTaskId: 'TASK-PENDING',
-      completedTaskIds: [],
+      completedTaskIds: [], blockedState: null,
     });
 
     const engine = new ProjectDiscoveryEngine({
@@ -591,7 +591,7 @@ describe('Phase 8 Existing Project Discovery Engine (TASK-P8-03)', () => {
     await durableManager.save({
       currentLifecycleState: LifecycleState.ARCHITECTURE_SPEC,
       activeTaskId: 'TASK-SPEC',
-      completedTaskIds: ['TASK-INIT'],
+      completedTaskIds: ['TASK-INIT'], blockedState: null,
     });
 
     const engine = new ProjectDiscoveryEngine({

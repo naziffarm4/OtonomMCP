@@ -377,7 +377,8 @@ describe('Phase 14 TASK-P14-01: Real Antigravity Executor Boundary', () => {
       const compat = await checker.checkCompatibility({
         executablePath: 'agy',
         found: true,
-        resolvedVia: 'CONFIGURED',
+        searchSource: 'explicit',
+        reason: null,
       });
 
       assert.strictEqual(compat.compatible, true);
@@ -409,7 +410,8 @@ describe('Phase 14 TASK-P14-01: Real Antigravity Executor Boundary', () => {
       const compat = await checker.checkCompatibility({
         executablePath: 'legacy-agy',
         found: true,
-        resolvedVia: 'CONFIGURED',
+        searchSource: 'explicit',
+        reason: null,
       });
 
       assert.strictEqual(compat.compatible, false);

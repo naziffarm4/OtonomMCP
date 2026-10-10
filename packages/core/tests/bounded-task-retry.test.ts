@@ -1,3 +1,4 @@
+import { createValidDiscoveryReport } from './helpers/test-discovery-factory.ts';
 /**
  * Bounded Task Retry Authorization & State Transition Test Suite (Phase 13 TASK-P13-02)
  *
@@ -174,50 +175,7 @@ describe('P13-02: Bounded Task Retry Authorization & State Transition', () => {
     overrides: Partial<ProjectApprovalPackage> = {}
   ): ProjectApprovalPackage => {
     const builder = new InitialProjectUnderstandingBuilder();
-    const understanding = builder.build(
-      {
-        projectIdentity: {
-          name: projectId,
-          version: '1.0.0',
-          workspaceRoot: tempDir,
-          ecosystem: 'Node.js',
-          evidence: [],
-        },
-        purpose: {
-          classification: 'UNDERSTOOD',
-          summary: 'Test project',
-          domainKeywords: ['test'],
-          evidence: [],
-        },
-        technologyStack: {
-          primaryLanguages: ['TypeScript'],
-          frameworks: [],
-          buildTools: ['tsc'],
-          packageManagers: ['npm'],
-          runtimes: ['node'],
-          containerization: [],
-          ciCd: [],
-          workspaceType: 'standalone',
-        },
-        architecture: {
-          summary: 'Modular',
-          architecturalPattern: 'Modular',
-          identifiedAreas: [],
-          evidence: [],
-        },
-        currentImplementationState: {
-          lifecycleState: 'TASK_LOOP',
-          hasActiveTask: false,
-          isBlocked: false,
-          totalTasksInDag: 1,
-          completedTasksCount: 0,
-          evidence: [],
-        },
-        unknowns: [],
-        contradictions: [],
-        evidenceInventory: [],
-        generatedAt: new Date().toISOString(),
-      },
+    const understanding = builder.build(createValidDiscoveryReport({ projectIdentity: { name: projectId, version: "1.0.0", workspaceRoot: tempDir, ecosystem: "Node.js", evidence: [] } }),
       undefined,
       { projectId }
     );
@@ -904,9 +862,9 @@ describe('P13-02: Bounded Task Retry Authorization & State Transition', () => {
       },
       {
         correlation: {
-          requestId: 'req_mcp_1',
-          sessionId: 'sess_1',
-          timestamp: new Date().toISOString(),
+          correlationId: 'corr-mcp-1',
+          mcpRequestId: 'req_mcp_1',
+          receivedAt: new Date().toISOString(),
         },
       }
     );
@@ -930,9 +888,9 @@ describe('P13-02: Bounded Task Retry Authorization & State Transition', () => {
       },
       {
         correlation: {
-          requestId: 'req_mcp_2',
-          sessionId: 'sess_2',
-          timestamp: new Date().toISOString(),
+          correlationId: 'corr-mcp-2',
+          mcpRequestId: 'req_mcp_2',
+          receivedAt: new Date().toISOString(),
         },
       }
     );

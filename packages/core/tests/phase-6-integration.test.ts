@@ -335,7 +335,6 @@ describe('Phase 6 Integration & Hardening (TASK-P6-06)', () => {
       task_id: 'task-p6-06-g',
       purpose: 'POST_FLIGHT',
       phase: 'PHASE_6',
-      branch: 'main',
       working_directory: PROJECT_ROOT,
     });
 
@@ -428,7 +427,10 @@ describe('Phase 6 Integration & Hardening (TASK-P6-06)', () => {
       decision: RecoveryDecision.RESTART,
       reason: 'Syntax error detected in working tree; restarting from last known good checkpoint',
       targetCheckpoint: knownGoodCp.checkpoint_id,
-      requiresHuman: false,
+      taskId: 'TASK-1',
+      iteration: 1,
+      contextReference: null,
+      resumePoint: null,
     };
 
     const integrationResult = await recoveryIntegrator.processRecoveryDecision(recoveryDecision, {
@@ -455,7 +457,10 @@ describe('Phase 6 Integration & Hardening (TASK-P6-06)', () => {
       decision: RecoveryDecision.RESTART,
       reason: 'Restart requested without target checkpoint',
       targetCheckpoint: undefined,
-      requiresHuman: false,
+      taskId: 'TASK-1',
+      iteration: 1,
+      contextReference: null,
+      resumePoint: null,
     };
 
     const result = await recoveryIntegrator.processRecoveryDecision(recoveryDecision, {
@@ -480,7 +485,10 @@ describe('Phase 6 Integration & Hardening (TASK-P6-06)', () => {
       decision: RecoveryDecision.RESUME,
       reason: 'State is consistent; resuming in-flight task',
       targetCheckpoint: knownGoodCp.checkpoint_id,
-      requiresHuman: false,
+      taskId: 'TASK-1',
+      iteration: 1,
+      contextReference: null,
+      resumePoint: null,
     };
 
     const result = await recoveryIntegrator.processRecoveryDecision(recoveryDecision);
@@ -501,7 +509,10 @@ describe('Phase 6 Integration & Hardening (TASK-P6-06)', () => {
       decision: RecoveryDecision.RETRY,
       reason: 'Transient failure; retrying task step',
       targetCheckpoint: knownGoodCp.checkpoint_id,
-      requiresHuman: false,
+      taskId: 'TASK-1',
+      iteration: 1,
+      contextReference: null,
+      resumePoint: null,
     };
 
     // Default without allowRetryRollback: true
@@ -668,7 +679,7 @@ describe('Phase 6 Integration & Hardening (TASK-P6-06)', () => {
     assert.ok(qa);
 
     // Durable state manager
-    const durableState = new DurableStateManager(path.join(PROJECT_ROOT, '.ai-manager/state/durable-state.json'));
+    const durableState = new DurableStateManager({ baseDir: PROJECT_ROOT });
     assert.ok(durableState);
   });
 
@@ -852,7 +863,10 @@ describe('Phase 6 Integration & Hardening (TASK-P6-06)', () => {
         decision: RecoveryDecision.RESTART,
         reason: 'Restart with arbitrary checkpoint ID',
         targetCheckpoint: arbitraryId,
-        requiresHuman: false,
+        taskId: 'TASK-1',
+        iteration: 1,
+        contextReference: null,
+        resumePoint: null,
       }, {
         human_approval_token: VALID_HUMAN_TOKEN,
       });

@@ -86,6 +86,7 @@ import {
   type BusinessRule,
   type McpRequestEnvelope,
   type McpSuccessResponseEnvelope,
+  type McpToolResult,
 } from '../dist/index.js';
 
 describe('Phase 15 Business Rules Definition (TASK-P15-05)', { concurrency: 1 }, () => {
@@ -213,6 +214,7 @@ describe('Phase 15 Business Rules Definition (TASK-P15-05)', { concurrency: 1 },
         technology: {
           requiredTechnologies: ['TypeScript', 'Node.js', 'PostgreSQL'],
           preferredTechnologies: ['Fastify'],
+          prohibitedTechnologies: [],
           platformConstraints: ['Linux server', 'Web browsers'],
         },
         ...explicitOverrides?.sections,
@@ -505,6 +507,8 @@ describe('Phase 15 Business Rules Definition (TASK-P15-05)', { concurrency: 1 },
       affectedArchitectureAreas: [],
       dependencies: [],
       validationCalculationDetails: {
+        fields: ['items.price', 'tax'],
+        constraints: [],
         formula: 'total = sum(items.price) + tax',
       },
       metadata: {},
@@ -540,6 +544,8 @@ describe('Phase 15 Business Rules Definition (TASK-P15-05)', { concurrency: 1 },
       affectedArchitectureAreas: [],
       dependencies: [],
       validationCalculationDetails: {
+        fields: ['appointments'],
+        constraints: ['max 3'],
         maximum: 3,
       },
       metadata: {},
@@ -1209,7 +1215,7 @@ describe('Phase 15 Business Rules Definition (TASK-P15-05)', { concurrency: 1 },
       },
     };
 
-    const defineRes = (await server.handleMessage(defineReq)) as McpSuccessResponseEnvelope;
+    const defineRes = (await server.handleMessage(defineReq)) as McpSuccessResponseEnvelope<McpToolResult>;
     assert.strictEqual(defineRes.id, 1);
     assert.ok(defineRes.result);
     const defineData = JSON.parse((defineRes.result.content[0] as any).text);
@@ -1227,7 +1233,7 @@ describe('Phase 15 Business Rules Definition (TASK-P15-05)', { concurrency: 1 },
       },
     };
 
-    const getRes = (await server.handleMessage(getReq)) as McpSuccessResponseEnvelope;
+    const getRes = (await server.handleMessage(getReq)) as McpSuccessResponseEnvelope<McpToolResult>;
     assert.strictEqual(getRes.id, 2);
     assert.ok(getRes.result);
     const getData = JSON.parse((getRes.result.content[0] as any).text);
@@ -1242,7 +1248,7 @@ describe('Phase 15 Business Rules Definition (TASK-P15-05)', { concurrency: 1 },
     await createArchitectureRevision('proj-clinic');
     await businessRulesEngine.derive({ projectId: 'proj-clinic' });
 
-    const packages = await approvalStore.listPackages('proj-clinic');
+    const packages = await approvalStore.listPackages();
     assert.strictEqual(packages.length, 0);
   });
 

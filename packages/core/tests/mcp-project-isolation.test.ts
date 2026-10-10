@@ -102,7 +102,6 @@ describe('OM-09C-FIX: MCP Project Isolation & Security Audit', () => {
           projectRoot: boundRoot,
           directorSessionId: 'sess-001',
           projectId: 'project-alpha',
-          status: 'ACTIVE',
         });
         return { content: [{ type: 'text', text: JSON.stringify({ boundRoot }) }] };
       }
@@ -120,7 +119,6 @@ describe('OM-09C-FIX: MCP Project Isolation & Security Audit', () => {
       projectRoot: targetDirA,
       directorSessionId: 'sess-001',
       projectId: 'project-alpha',
-      status: 'ACTIVE',
     });
 
     const server = new McpServer({
@@ -163,7 +161,6 @@ describe('OM-09C-FIX: MCP Project Isolation & Security Audit', () => {
       projectRoot: targetDirA,
       directorSessionId: 'sess-001',
       projectId: 'project-alpha',
-      status: 'ACTIVE',
     });
 
     const server = new McpServer({
@@ -273,7 +270,6 @@ describe('OM-09C-FIX: MCP Project Isolation & Security Audit', () => {
           projectRoot: root,
           directorSessionId: `sess-${canonical.projectId}`,
           projectId: canonical.projectId,
-          status: 'ACTIVE',
         });
         return { content: [{ type: 'text', text: 'BOUND' }] };
       }
@@ -325,7 +321,6 @@ describe('OM-09C-FIX: MCP Project Isolation & Security Audit', () => {
       projectRoot: targetDirA,
       directorSessionId: 'sess-001',
       projectId: 'project-alpha',
-      status: 'ACTIVE',
     });
 
     const server = new McpServer({

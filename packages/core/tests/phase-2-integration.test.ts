@@ -41,6 +41,7 @@ import {
   LifecycleState,
   TaskLoopState,
 } from '../dist/index.js';
+import type { L2Context } from '../src/context-engine/context-types.js';
 
 describe('Phase 2 Subsystem Comprehensive Integration Test Suite (TASK-P2-05)', () => {
   let tempWorkspace: string;
@@ -114,7 +115,7 @@ describe('Phase 2 Subsystem Comprehensive Integration Test Suite (TASK-P2-05)', 
         description: 'User login and session validation',
         status: TaskStatus.IN_PROGRESS,
         priority: TaskPriority.CRITICAL,
-        riskLevel: RiskLevel.MEDIUM,
+        riskLevel: RiskLevel.CAUTION,
         hierarchyLevel: TaskHierarchyLevel.FEATURE,
         parentFeatureId: 'EPIC-CORE',
         dependencies: [],
@@ -126,9 +127,9 @@ describe('Phase 2 Subsystem Comprehensive Integration Test Suite (TASK-P2-05)', 
         taskId: 'TASK-USER-MODEL',
         title: 'Define User Model',
         description: 'Define User model and serialization',
-        status: TaskStatus.COMPLETED,
+        status: TaskStatus.ACCEPTED,
         priority: TaskPriority.HIGH,
-        riskLevel: RiskLevel.LOW,
+        riskLevel: RiskLevel.SAFE,
         hierarchyLevel: TaskHierarchyLevel.TASK,
         parentFeatureId: 'FEAT-AUTH',
         dependencies: [],
@@ -143,7 +144,7 @@ describe('Phase 2 Subsystem Comprehensive Integration Test Suite (TASK-P2-05)', 
         description: 'Implement AuthService with login and session verification',
         status: TaskStatus.READY,
         priority: TaskPriority.CRITICAL,
-        riskLevel: RiskLevel.MEDIUM,
+        riskLevel: RiskLevel.CAUTION,
         hierarchyLevel: TaskHierarchyLevel.TASK,
         parentFeatureId: 'FEAT-AUTH',
         dependencies: ['TASK-USER-MODEL'],
@@ -275,7 +276,7 @@ describe('Phase 2 Subsystem Comprehensive Integration Test Suite (TASK-P2-05)', 
       // 7. Verify refreshed context contains new hash and content
       const refreshedItem = refreshResult.refreshedContext.items[0];
       assert.equal(refreshedItem.fileHash, staleValidation.affectedFiles[0].currentHash);
-      assert.equal(refreshedItem.content, updatedContent);
+      assert.equal((refreshedItem as L2Context).content, updatedContent);
 
       // 8. Refreshed context is now valid for writes
       await invalidator.assertValidForWrite(refreshResult.refreshedContext, relPath);
@@ -304,7 +305,7 @@ describe('Phase 2 Subsystem Comprehensive Integration Test Suite (TASK-P2-05)', 
 
       // 1. Local deterministic estimation
       const estimatedTelemetry = createEstimatedTelemetry({
-        text: contextItem.content,
+        text: (contextItem as L2Context).content,
         estimatedTokens: contextItem.tokenInfo.estimated_tokens,
       });
 
@@ -465,7 +466,7 @@ describe('Phase 2 Subsystem Comprehensive Integration Test Suite (TASK-P2-05)', 
         description: 'Increase timeout from 5000ms to 10000ms',
         status: TaskStatus.IN_PROGRESS,
         priority: TaskPriority.HIGH,
-        riskLevel: RiskLevel.LOW,
+        riskLevel: RiskLevel.SAFE,
         hierarchyLevel: TaskHierarchyLevel.TASK,
         parentFeatureId: 'EPIC-CORE',
         dependencies: [],
@@ -503,7 +504,7 @@ describe('Phase 2 Subsystem Comprehensive Integration Test Suite (TASK-P2-05)', 
       assert.equal(initialBudgetResult.status, BudgetSelectionStatus.WITHIN_BUDGET);
       assert.equal(initialBudgetResult.selectedItems.length, 2);
       const initialConfigItem = initialBudgetResult.selectedItems.find((i) => i.id === configPath)!;
-      assert.ok(initialConfigItem.data?.content.includes('version: 1'));
+      assert.ok((initialConfigItem.data as L2Context).content.includes('version: 1'));
 
       // 5. Change config file on disk (concurrent modification)
       const updatedConfigContent = 'export const CONFIG = { timeoutMs: 10000, version: 2, retries: 3 };';
@@ -543,8 +544,8 @@ describe('Phase 2 Subsystem Comprehensive Integration Test Suite (TASK-P2-05)', 
       // 10. Invariant Check: Selected context in final budget is guaranteed to be CURRENT
       const finalConfigItem = refreshedBudgetResult.selectedItems.find((i) => i.id === configPath)!;
       assert.equal(finalConfigItem.data?.fileHash, refreshedConfigHash);
-      assert.ok(finalConfigItem.data?.content.includes('version: 2'));
-      assert.ok(!finalConfigItem.data?.content.includes('version: 1'), 'Stale version: 1 must not survive into final budget');
+      assert.ok((finalConfigItem.data as L2Context).content.includes('version: 2'));
+      assert.ok(!(finalConfigItem.data as L2Context).content.includes('version: 1'), 'Stale version: 1 must not survive into final budget');
 
       contextEngine.close();
     });
@@ -562,7 +563,7 @@ describe('Phase 2 Subsystem Comprehensive Integration Test Suite (TASK-P2-05)', 
         description: 'Deploy service to production',
         status: TaskStatus.READY,
         priority: TaskPriority.HIGH,
-        riskLevel: RiskLevel.HIGH,
+        riskLevel: RiskLevel.DANGEROUS,
         hierarchyLevel: TaskHierarchyLevel.TASK,
         parentFeatureId: 'FEAT-DEPLOY',
         dependencies: ['TASK-NON-EXISTENT'], // Missing dependency
@@ -668,9 +669,9 @@ describe('Phase 2 Subsystem Comprehensive Integration Test Suite (TASK-P2-05)', 
           taskId: 'TASK-MATH',
           title: 'Math Module',
           description: 'Basic math routines',
-          status: TaskStatus.COMPLETED,
+          status: TaskStatus.ACCEPTED,
           priority: TaskPriority.HIGH,
-          riskLevel: RiskLevel.LOW,
+          riskLevel: RiskLevel.SAFE,
           hierarchyLevel: TaskHierarchyLevel.TASK,
           parentFeatureId: 'EPIC-MATH',
           dependencies: [],
@@ -684,7 +685,7 @@ describe('Phase 2 Subsystem Comprehensive Integration Test Suite (TASK-P2-05)', 
           description: 'Statistical routines',
           status: TaskStatus.READY,
           priority: TaskPriority.HIGH,
-          riskLevel: RiskLevel.LOW,
+          riskLevel: RiskLevel.SAFE,
           hierarchyLevel: TaskHierarchyLevel.TASK,
           parentFeatureId: 'EPIC-MATH',
           dependencies: ['TASK-MATH'],

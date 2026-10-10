@@ -757,14 +757,14 @@ describe('Phase 10 TASK-P10-05: Verified Execution State Integration', () => {
     for (const input of forbiddenClaims) {
       const response = await handler(input, {} as any);
       assert.equal(response.isError, true);
-      const parsed = JSON.parse(response.content[0].text);
+      const parsed = JSON.parse(response.content[0].text!);
       assert.equal(parsed.code, 'ERR_EXECUTION_INTEGRATION_SECURITY_VIOLATION');
     }
 
     // 2. Legitimate evidence without fake flags succeeds via MCP tool
     const validResponse = await handler({ evidence: validEvidence }, {} as any);
     assert.equal(validResponse.isError, false);
-    const parsedValid = JSON.parse(validResponse.content[0].text);
+    const parsedValid = JSON.parse(validResponse.content[0].text!);
     assert.equal(parsedValid.success, true);
     assert.equal(parsedValid.taskId, 'TASK-026');
   });

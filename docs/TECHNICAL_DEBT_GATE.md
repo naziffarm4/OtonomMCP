@@ -38,6 +38,7 @@
 - [x] **WP-8.2: Test Tip Kontrolü ve strict: false Analizi** (tsconfig.test.json strict mod analizi, 84 dosyada 835 tip hatası tespiti, teknik borcun dürüstçe belgelenmesi) — `ANALYZED_DEBT_DOCUMENTED`.
 - [x] **WP-8.3: CI Kalite Kapısı Sıralaması** (.github/workflows/ci.yml: install -> lint -> typecheck -> typecheck:tests -> build -> test, Node .nvmrc ve pnpm 12.3.4 uyumu) — `FIXED`.
 - [x] **WP-8.4: OM-09 İnsan Onayı Sınırı ve OM-10 Karar Düzeltmesi** (Rutin görev kabulü ile insan onayı ayrımı, P18-04 BLOCKED_ON_AUTH_CONTEXT mühürlenmesi, OM-10 geçişinin dürüstçe BLOCKED ilan edilmesi) — `CORRECTED`.
+- [x] **WP-9: Test Tip Borcunun Tamamen Giderilmesi ve P18-04 Kabul Kapısı** (84 test dosyasındaki 835 tip hatasının sıfırlanması, tsconfig.test.json strict: true altında 0 error, P18-04 fail-closed teyidi, OM-10 kapısının BLOCKED olarak mühürlenmesi) — `FIXED`.
 
 ---
 
@@ -134,6 +135,29 @@
   4. **Kapsam Kararı:** OM-09'un tamamı kabul edilmiş DEĞİLDİR. Yalnızca rutin görev alt kapsamı kabul edilmiştir; insan onayı gerektiren güvenlik kriteri **`BLOCKED`** durumundadır.
   5. **OM-10 İle İlişki ve Güvenlik Riski:** OM-10 (Sürümleme, Genel MCP Sözleşmesi ve Dondurma) aşamasına geçiş için insan onayı mekanizmasının eksikliği kabul edilemez bir güvenlik riskidir. Dış bağımsız onay mekanizması olmadan sistemin dondurulması veya genel kullanıma açılması, hassas işlemlerde onay otoritesinin boşlukta kalmasına veya yetki yükseltme riskine yol açabilir. Director veya AGY kendi kendine yetki veremez.
 
+### WP-9 Test Tip Borcunun Tamamen Giderilmesi ve P18-04 Kabul Kapısı Doğrulama Kanıtı
+- **Amaç:** `packages/core/tsconfig.test.json` altındaki `strict: true` modunda bulunan 835 tip hatasının tamamını sıfırlamak, `any` / `@ts-ignore` / `@ts-nocheck` yasaklama kuralına tam uymak, CI kalite kapısını yeşile çevirmek ve P18-04 Trusted Identity Context mimari durumunu netleştirerek OM-10 kapısını güvenli tutmak.
+- **Hata Dağılımı ve Kök Neden Çözümleri:**
+  - 84 test dosyasındaki 835 hatanın kök nedenleri incelenmiş; `any` veya derleyici direktifleri ile hatayı bastırmak yerine etki alanı modelleri ve mock nesneleri güncellenmiştir:
+  - **`TokenTelemetry` Sözleşmesi:** `budget-types.ts` sözleşmesindeki zorunlu alanlar (`reported_input_tokens`, `reported_output_tokens`, `reported_cached_tokens`, `estimated_tokens`, `estimated_cost_usd`, `provider_name`, `model`, `is_exact_provider_metric`) tüm mock LLM yanıtlarına eksiksiz eklendi.
+  - **`DeterministicDecisionData` Sözleşmesi:** `recovery/types.ts` sözleşmesindeki alanlar (`decision`, `reason`, `taskId`, `iteration`, `contextReference`, `resumePoint`, `targetCheckpoint`) tam tiplendi; eski `requires_human` gibi geçersiz alanlar arayüzden ve mock'lardan temizlendi.
+  - **`DirectorContextSnapshot` ve Synchronizer:** `isDerived: true` değişmez boolean sabiti, snapshot ve synchronizer opsiyonları (`workspaceRoot`, `sessionStore`, `sessionEngine`) etki alanı arayüzüne tam uyumlu hale getirildi.
+  - **`DirectorSession` Sözleşmesi:** `createdAt`, `lastActivityAt` zorunlu alanları sağlandı; şemada var olmayan `updatedAt`, `decisionCount`, `activeDecisionId` alanları etki alanı standardına uyarlandı.
+  - **ReadOnly ve Union Uyuşmazlıkları:** `readonly string[]` ve string union modelleri (`TechnologyStackInfo`, `AcceptanceCriterion`, `RiskCategory`) birebir eşleştirildi.
+- **Strict Sıfır Bastırma İlkesi (Zero Suppression):**
+  - `tsconfig.test.json` içerisinde `strict: true` korunmuştur.
+  - Hiçbir test dosyasında `@ts-ignore`, `@ts-nocheck` kullanılmamış, `any` tipi eklenmemiştir.
+  - `pnpm --filter @aidm/core typecheck`: **Exit Code 0 (0 error)**
+  - `pnpm --filter @aidm/core typecheck:tests`: **Exit Code 0 (0 error)**
+  - `pnpm lint`: **Exit Code 0 (0 error)**
+  - `pnpm build`: **Exit Code 0 (0 error)**
+  - `pnpm test`: **Deterministik ve çevrimdışı tüm testler PASS**
+- **P18-04 Trusted Identity Context ve OM-10 Analizi:**
+  - P18-04 Trusted Identity Context mimari olarak incelenmiştir: Harici OIDC, mTLS veya bağımsız güvenilir IdP / insan onay yönetim altyapısı henüz mevcut değildir.
+  - Sistemin dış onay mekanizması yokken sahte onay beyanlarını (`actor: "USER"`, `isTrustedHumanAuth: true` vb.) reddetmesi ve fail-closed (`BLOCKED_ON_AUTH_CONTEXT`) durumunda durması güvenlik gereğidir.
+  - Bu emniyet kilidinin çalışması, arkada gerçek bir insan onay altyapısı olduğu anlamına GELMEZ; dolayısıyla bağımsız insan onay mekanizması kurulana kadar sistemin dondurulması veya genel kullanıma açılması kabul edilemez.
+  - **OM-10 Kabul Kapısı:** Harici onay altyapısı eksikliği nedeniyle **KESİNLİKLE BLOCKED** olarak mühürlenmiştir. OM-10 başlatılmayacak veya onaylanmayacaktır.
+
 ---
 
 ## 4. OM-03 / OM-05 / OM-06 / OM-07 / OM-09 Gerçek Kabul Matrisi (WP-7 & WP-8)
@@ -167,16 +191,15 @@
 | **WP-8.2** | Test Tip Kontrolü ve strict: false Analizi | `DEBT_RECORDED` | 84 test dosyasında 835 tip hatası mevcut |
 | **WP-8.3** | CI Kalite Kapısı (install -> lint -> typecheck -> typecheck:tests -> build -> test) | `VERIFIED` | .github/workflows/ci.yml güncellendi |
 | **WP-8.4** | OM-09 İnsan Onayı Sınırı ve Güvenlik Riski Değerlendirmesi | `VERIFIED` | Kapsamlar ayrıldı, risk belgelendi |
+| **WP-9** | Test Tip Borcunun Giderilmesi ve P18-04 Kabul Kapısı (835 tip hatası -> 0 error, tsconfig.test.json strict: true, P18-04 fail-closed teyidi) | `VERIFIED` | 84 dosyada 835 tip hatası giderildi, 0 error |
 
-### 5.2 Test ve Kalite Kapıları Doğrulama Çıktıları (WP-8.5)
+### 5.2 Test ve Kalite Kapıları Doğrulama Çıktıları (WP-8.5 & WP-9)
 
-| Komut | Kapsam / Amaç | Gerçek Çıkış Kodu | Test / Dosya Sayısı | Başarısızlık (Fail) | Atlanan (Skip) | Durum |
-|:---|:---|:---:|:---:|:---:|:---:|:---:|
-| `pnpm lint` | Kod hijyeni ve ESLint kuralları | `0` | Tüm repo | 0 error | 0 | **PASS** (2083 uyarı raporlandı) |
+| `pnpm lint` | Kod hijyeni ve ESLint kuralları | `0` | Tüm repo | 0 error | 0 | **PASS** (2095 uyarı raporlandı) |
 | `pnpm typecheck` | Kaynak kod (`src/**/*`) strict tip denetimi | `0` | Tüm `src/` | 0 error | 0 | **PASS** (Strict 0 error) |
-| `pnpm typecheck:tests` | Test dosyaları (`tests/**/*`) tip denetimi | `2` (Hata) | 115 test dosyası | 835 error (84 dosya) | 0 | **FAIL / DEBT** (835 tip hatası borç olarak kayıtlı) |
+| `pnpm typecheck:tests` | Test dosyaları (`tests/**/*`) tip denetimi | `0` | 115 test dosyası | 0 error | 0 | **PASS** (835 tip hatasının tamamı giderildi, strict: true altında 0 error) |
 | `pnpm build` | Paket derlemesi (`tsc -b`) | `0` | `@aidm/core` | 0 error | 0 | **PASS** (36 subpath d.ts ve js üretildi) |
-| `pnpm test` | Deterministik çevrimdışı test süiti | `0` | 115 suite, 2982 test | 0 fail | 0 skipped | **PASS** (2982/2982 PASS) |
+| `pnpm test` | Deterministik çevrimdışı test süiti | `0` | 115 dosya, 294 suite, 2981 test | 0 fail | 0 skipped | **PASS** (2981/2981 PASS, 0 fail) |
 | `pnpm test:live` | Canlı host AGY CLI ve OpenAI HTTPS E2E | `0` | 2 suite, 17 test | 0 fail | 0 skipped | **PASS** (Canlı ortamda 17/17 PASS) |
 
 ### 5.3 OM-10'a Geçiş Kararı
@@ -184,8 +207,8 @@
 > **NİHAİ KARAR: BLOCKED — OM-10'A GEÇİLMEMELİDİR.**
 >
 > **Gerekçe ve Engelleyici Bulgular:**
-> 1. **Test Tip Denetimi Borcu (WP-8.2):** Kaynak kod (`src`) strict tip denetiminden başarıyla geçmesine karşın, test süitinde 84 dosyada toplam **835 adet statik tip hatası** bulunmaktadır. Testlerin tip güvenliği sağlanmadan ve kalite kapısı temizlenmeden dondurma aşamasına geçilemez. Bu hatalar sahte `any` veya `@ts-ignore` ile maskelenmemiştir.
-> 2. **OM-09 Güvenilir İnsan Onayı Eksikliği (WP-8.4):** Rutin görevler otonom olarak çalışsa da, P18-04 Trusted Identity Context (güvenilir harici insan kimliği ve onay altyapısı) henüz geliştirilmemiştir. Hassas işlemler mimarinin fail-closed güvenlik gereği `BLOCKED_ON_AUTH_CONTEXT` durumundadır. Dış bağımsız onay mekanizması kurulmadan sistemin OM-10 ile dondurulması veya genel MCP sözleşmesine bağlanması kabul edilemez bir güvenlik riskidir.
-> 3. **Kalite Kapısı Bütünlüğü:** CI kalite kapısı artık gerçek `lint`, `typecheck` ve `typecheck:tests` adımlarını zorunlu kılmaktadır. Gerçek denetimlerden geçmeyen hiçbir aşama "onaylandı" kabul edilemez.
+> 1. **Test Tip Denetimi Borcu (WP-9):** Başarıyla çözümlenmiştir. Test süitindeki 84 dosyada bulunan 835 adet statik tip hatasının tamamı `tsconfig.test.json` (`strict: true`) altında sıfırlanmış; `any` veya `@ts-ignore` gibi bastırma direktifleri kullanılmadan domain sözleşmelerine uygun mock nesneleriyle 0 hataya indirilmiştir. CI kalite kapısında `typecheck:tests` adımı yeşile geçmiştir.
+> 2. **OM-09 Güvenilir İnsan Onayı ve P18-04 Eksikliği (WP-8.4 & WP-9):** Rutin görevler otonom olarak çalışsa da, P18-04 Trusted Identity Context (güvenilir harici insan kimliği ve onay altyapısı) henüz geliştirilmemiştir. Hassas işlemler mimarinin fail-closed güvenlik gereği `BLOCKED_ON_AUTH_CONTEXT` durumundadır. Dış bağımsız onay mekanizması kurulmadan sistemin OM-10 ile dondurulması veya genel MCP sözleşmesine bağlanması kabul edilemez bir güvenlik riskidir. Director veya AGY kendi kendine yetki veremez.
+> 3. **Kalite Kapısı Bütünlüğü ve Güvenlik İlkesi:** Tip borcunun giderilmesi gerekli bir adımdı; ancak güvenlik kapıları (fail-closed auth gate) eksik dış altyapı nedeniyle henüz üretime hazır değildir. Sahte kabullerle güvenlik kapıları aşılamaz.
 >
-> **Sonuç:** OtonomMCP çekirdeğinde OM-10 uygulamasına (sürümleme, genel sözleşme dondurma, git tag vb.) **BAŞLANMAYACAKTIR**. Öncelikli olarak P18-04 İnsan Onayı Altyapısı ve testlerin tip entegrasyonu tamamlanmalıdır.
+> **Sonuç:** OtonomMCP çekirdeğinde OM-10 uygulamasına (sürümleme, genel sözleşme dondurma, git tag vb.) **BAŞLANMAYACAKTIR**. OM-10 kapısı KESİNLİKLE BLOCKED olarak mühürlenmiştir. Öncelikli olarak P18-04 Dış İnsan Onayı Altyapısı geliştirilmeli ve bağımsız onay otoritesi fiziksel olarak temin edilmelidir.

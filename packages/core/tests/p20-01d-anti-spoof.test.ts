@@ -59,6 +59,59 @@ import { createApprovalPackageApproveTool } from '../dist/mcp/tools/approval-too
 describe('Phase 20 TASK-P20-01D — Auth Context Anti-Spoof Verification & Roadmap Consistency', { concurrency: 1 }, () => {
   let tempDir: string;
   let canonicalProjectId: string;
+  const mockUnderstanding = {
+    projectId: 'test-project',
+    projectName: 'test-project',
+    apparentPurpose: { classification: 'UNDERSTOOD' as const, summary: 'Test', domainKeywords: [], evidence: [] },
+    targetUsers: [],
+    technologyStack: {
+      primaryLanguages: ['TypeScript'],
+      frameworks: [],
+      buildTools: [],
+      packageManagers: [],
+      runtimes: [],
+      containerization: [],
+      ciCd: [],
+      workspaceType: 'standalone' as const,
+      dependencies: [],
+      devDependencies: [],
+      evidence: [],
+    },
+    architectureSummary: { summary: 'Modular', architecturalPattern: 'Modular', identifiedAreas: [], evidence: [] },
+    existingCapabilities: [],
+    confirmedRequirements: [],
+    clarifiedRequirements: [],
+    unresolvedUnknowns: [],
+    unresolvedContradictions: [],
+    currentImplementationState: {
+      lifecycleState: 'TASK_LOOP' as const,
+      hasActiveTask: false,
+      isBlocked: false,
+      totalTasksInDag: 0,
+      completedTasksCount: 0,
+      evidence: [],
+    },
+    constraints: [],
+    assumptions: [],
+    nonGoals: [],
+    proposedDevelopmentScope: [],
+    evidenceReferences: [],
+    sourceDiscoveryReference: 'disc-ref',
+    generatedAt: new Date().toISOString(),
+  };
+
+  const mockDevelopmentPlan = {
+    objectives: [],
+    proposedScope: [],
+    proposedFeatureGroups: [],
+    dependencies: [],
+    constraints: [],
+    knownRisks: [],
+    unresolvedIssues: [],
+    excludedScope: [],
+    suggestedImplementationOrder: [],
+  };
+
   let historyManager: HistoryManager;
   let sessionStore: DirectorSessionStore;
   let sessionEngine: DirectorSessionEngine;
@@ -98,15 +151,12 @@ describe('Phase 20 TASK-P20-01D — Auth Context Anti-Spoof Verification & Roadm
         requestId: request.requestId,
         requestBinding: {
           requestId: request.requestId,
-          directorSessionId: request.directorSessionId,
-          directorDecisionId: request.directorDecisionId,
           projectId: request.projectId,
           taskId: request.taskId,
           taskRevision: request.taskRevision,
           contextFingerprint: request.contextFingerprint,
           understandingRevision: request.understandingRevision,
           approvalPackageRevision: request.approvalPackageRevision,
-          operationType: request.operationType,
         },
         status: 'SUCCESS',
         exitCode: 0,
@@ -118,6 +168,8 @@ describe('Phase 20 TASK-P20-01D — Auth Context Anti-Spoof Verification & Roadm
         unverifiedModifiedFiles: ['src/spoof-check.ts'],
         startedAt: new Date().toISOString(),
         completedAt: new Date().toISOString(),
+        timedOut: false,
+        cancelled: false,
       };
     }
   }
@@ -146,9 +198,7 @@ describe('Phase 20 TASK-P20-01D — Auth Context Anti-Spoof Verification & Roadm
     decisionStore = new DirectorDecisionStore({ sessionStore, historyManager });
     sessionEngine = new DirectorSessionEngine({
       workspaceRoot: tempDir,
-      sessionStore,
-      decisionStore,
-      historyManager,
+      store: sessionStore,
     });
     approvalStore = new ApprovalStore({ baseDir: tempDir, historyManager });
     approvalPackageEngine = new ApprovalPackageEngine({
@@ -235,44 +285,55 @@ describe('Phase 20 TASK-P20-01D — Auth Context Anti-Spoof Verification & Roadm
     activeSession = await sessionEngine.createSession({
       workspaceRoot: tempDir,
       projectId: canonicalProjectId,
-      understandingRevision: 1,
     });
 
     activeSnapshot = {
-      snapshotId: `snap-${Date.now()}`,
       directorSessionId: activeSession.directorSessionId,
       projectId: canonicalProjectId,
-      createdAt: new Date().toISOString(),
-      understandingRevision: 1,
       logicalFingerprint: 'ctx-fingerprint-p20-01d',
-      syncStatus: 'SYNCHRONIZED',
+      syncStatus: 'CHANGED',
+      protocolVersion: 'P9-02',
+      schemaVersion: 1,
+      isDerived: true,
+      projectRoot: tempDir,
+      synchronizedAt: new Date().toISOString(),
+      sectionMetadata: {} as any,
       isComplete: true,
       staleSections: [],
       unavailableSections: [],
       sections: {
-        understanding: {
-          projectId: canonicalProjectId,
+        discovery: {
+          isDiscovered: true,
           projectName: canonicalProjectId,
-          summary: 'Verified P20-01D Baseline',
-          technologyStack: ['TypeScript', 'Node.js'],
-          architectureSummary: 'Modular Core Architecture',
-          constraints: [],
-          nonGoals: [],
+          apparentPurposeClassification: 'application',
+          technologyStack: [{ name: 'TypeScript' }],
+          entryPointsCount: 0,
+          unknownsCount: 0,
+          contradictionsCount: 0,
         },
-        decisions: [],
-        tasks: {
-          tasks: [],
-          activeTaskCount: 1,
-          completedTaskCount: 0,
-          pendingTaskCount: 1,
+        decisions: { total: 0, items: [] } as any,
+        taskList: { total: 0, topologicalOrder: [], tasks: [] },
+        currentTask: { hasActiveTask: false, task: null },
+        approval: {
+          hasApprovalPackage: true,
+          packageId: 'pkg-init',
+          revision: 1,
+          status: 'APPROVED',
+          isReadyForApproval: true,
+          isExplicitlyApproved: true,
         },
-        risks: { activeRisks: [], unresolvedDecisionPoints: [] },
         authorization: {
           isDevelopmentAuthorized: true,
-          status: 'APPROVED',
-          packageId: 'pkg-init',
-          packageRevision: 1,
+          authoritySource: 'PRODUCT_OWNER',
+          requiresHumanApproval: true,
         },
+        projectStatus: { initialized: true, lifecycleState: 'DEVELOPMENT', isCompleted: false, isBlocked: false },
+        requirements: { total: 0, items: [] },
+        contextEngine: { isAvailable: true, hasL0Cache: false, inspectedPaths: [] },
+        evidence: { totalAvailable: 0, items: [] },
+        history: { totalEvents: 0, recentEvents: [] },
+        git: { isGitRepository: true, head: null, branch: 'main', workingTreeClean: true, totalAcceptedCheckpoints: 0 },
+        clarification: { hasActiveSession: false, totalCount: 0, resolvedCount: 0, blockingOpenCount: 0, hasUnresolvedBlocking: false },
       },
     };
     await sessionStore.saveSnapshot(activeSnapshot);
@@ -406,7 +467,7 @@ describe('Phase 20 TASK-P20-01D — Auth Context Anti-Spoof Verification & Roadm
   });
 
   function createValidIntent(overrides: Partial<BridgeExecutionIntent> = {}): BridgeExecutionIntent {
-    return {
+    return createFrozenBridgeExecutionIntent({
       executionIntentId: `intent-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
       actionId: `action-${Date.now()}`,
       idempotencyKey: `idem-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
@@ -426,7 +487,7 @@ describe('Phase 20 TASK-P20-01D — Auth Context Anti-Spoof Verification & Roadm
       createdAt: new Date().toISOString(),
       executionPlan: 'Execute anti-spoof verification',
       ...overrides,
-    };
+    });
   }
 
   function getBridge(requireTrustedAuthContext = false): ExecutionBridge {
@@ -523,7 +584,7 @@ describe('Phase 20 TASK-P20-01D — Auth Context Anti-Spoof Verification & Roadm
         intent: 'EXPLICIT_APPROVAL',
         comment: 'Attempting to self-assert VERIFIED_HUMAN',
       },
-      { correlation: { correlationId: 'spoof-req-02' } }
+      { correlation: { correlationId: 'spoof-req-02', receivedAt: new Date().toISOString() } }
     );
 
     const storedPkg = await approvalStore.loadPackage(unapprovedPkg.packageId, 1, canonicalProjectId);
@@ -827,7 +888,7 @@ describe('Phase 20 TASK-P20-01D — Auth Context Anti-Spoof Verification & Roadm
         actorRole: 'USER',
         intent: 'EXPLICIT_APPROVAL',
       },
-      { correlation: { correlationId: 'spoof-test-09' } }
+      { correlation: { correlationId: 'spoof-test-09', receivedAt: new Date().toISOString() } }
     );
 
     const loaded = await approvalStore.loadPackage(pkgForMcp.packageId, 1, canonicalProjectId);

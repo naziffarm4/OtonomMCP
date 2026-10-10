@@ -131,30 +131,21 @@ function createMockReport(overrides?: Partial<ProjectDiscoveryReport>): ProjectD
     unknowns: [
       {
         id: 'UNK-001',
-        topic: 'Preferred Application Interface',
+        item: 'Preferred Application Interface',
         description: 'Target platform and interface type has not been selected yet.',
-        category: 'ARCHITECTURE',
         impact: 'HIGH',
-        source: 'README.md',
-        evidence: [],
       },
       {
         id: 'UNK-002',
-        topic: 'Expense storage method without an external database',
+        item: 'Expense storage method without an external database',
         description: 'Persistence mechanism for expense data is unspecified.',
-        category: 'DATA_PERSISTENCE',
         impact: 'HIGH',
-        source: 'README.md',
-        evidence: [],
       },
       {
         id: 'UNK-003',
-        topic: 'Expense category management',
+        item: 'Expense category management',
         description: 'Category hierarchy and customization model.',
-        category: 'REQUIREMENTS',
         impact: 'MEDIUM',
-        source: 'README.md',
-        evidence: [],
       },
     ],
     contradictions: [],
@@ -419,7 +410,7 @@ describe('AIDM Remediation: Preserve Undecided Customer Decisions', { concurrenc
     });
 
     assert.equal(pkg.status, 'BLOCKED_ON_HUMAN', 'Approval package must be BLOCKED_ON_HUMAN');
-    assert.ok(pkg.unresolvedHumanDecisionPoints.length > 0, 'Approval package must record unresolved HDPs');
+    assert.ok((pkg.unresolvedHumanDecisionPoints?.length ?? 0) > 0, 'Approval package must record unresolved HDPs');
 
     // Real MCP execution test
     const mcpProjectDir = path.join(tmpDir, 'mcp-real-test-project');
@@ -464,7 +455,9 @@ describe('AIDM Remediation: Preserve Undecided Customer Decisions', { concurrenc
         arguments: {},
       });
       assert.equal(decisionsRes.error, undefined);
-      const decisionsOutput = JSON.parse(decisionsRes.result.content[0].text);
+      const decisionsText = decisionsRes.result?.content?.[0]?.text;
+      assert.ok(decisionsText);
+      const decisionsOutput = JSON.parse(decisionsText);
       const decisionsList = decisionsOutput.humanDecisions ?? decisionsOutput.decisions ?? [];
       for (const d of decisionsList) {
         assert.notEqual(d.status, 'CONFIRMED', 'Human decisions must not be CONFIRMED when undecided');

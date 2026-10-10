@@ -62,6 +62,85 @@ import { McpPolicyBlockedError } from '../dist/mcp/mcp-errors.js';
 describe('Phase 20 TASK-P20-01B — Execution Bridge Final Consistency & Crash-Safety Hardening', { concurrency: 1 }, () => {
   let tempDir: string;
   let canonicalProjectId: string;
+  function createTestApprovedPackage(projectId: string, revision = 1): ApprovalPackage {
+    const now = new Date().toISOString();
+    return {
+      packageId: `pkg-${projectId}-01`,
+      revision,
+      approvalPackageRevision: revision,
+      projectId,
+      projectUnderstanding: { ...mockUnderstanding, projectId },
+      proposedDevelopmentPlan: mockDevelopmentPlan,
+      status: 'APPROVED',
+      isStale: false,
+      createdAt: now,
+      updatedAt: now,
+      approvalRecord: {
+        packageId: `pkg-${projectId}-01`,
+        revision,
+        actor: 'human-product-owner',
+        actorRole: 'PRODUCT_OWNER',
+        intent: 'EXPLICIT_APPROVAL',
+        approvedAt: now,
+        packageHash: 'sha256-approved-package-hash',
+        comment: 'Formal development approval granted by human Product Owner',
+      },
+    };
+  }
+
+  const mockUnderstanding = {
+    projectId: 'test-project',
+    projectName: 'test-project',
+    apparentPurpose: { classification: 'UNDERSTOOD' as const, summary: 'Test', domainKeywords: [], evidence: [] },
+    targetUsers: [],
+    technologyStack: {
+      primaryLanguages: ['TypeScript'],
+      frameworks: [],
+      buildTools: [],
+      packageManagers: [],
+      runtimes: [],
+      containerization: [],
+      ciCd: [],
+      workspaceType: 'standalone' as const,
+      dependencies: [],
+      devDependencies: [],
+      evidence: [],
+    },
+    architectureSummary: { summary: 'Modular', architecturalPattern: 'Modular', identifiedAreas: [], evidence: [] },
+    existingCapabilities: [],
+    confirmedRequirements: [],
+    clarifiedRequirements: [],
+    unresolvedUnknowns: [],
+    unresolvedContradictions: [],
+    currentImplementationState: {
+      lifecycleState: 'TASK_LOOP' as const,
+      hasActiveTask: false,
+      isBlocked: false,
+      totalTasksInDag: 0,
+      completedTasksCount: 0,
+      evidence: [],
+    },
+    constraints: [],
+    assumptions: [],
+    nonGoals: [],
+    proposedDevelopmentScope: [],
+    evidenceReferences: [],
+    sourceDiscoveryReference: 'disc-ref',
+    generatedAt: new Date().toISOString(),
+  };
+
+  const mockDevelopmentPlan = {
+    objectives: [],
+    proposedScope: [],
+    proposedFeatureGroups: [],
+    dependencies: [],
+    constraints: [],
+    knownRisks: [],
+    unresolvedIssues: [],
+    excludedScope: [],
+    suggestedImplementationOrder: [],
+  };
+
   let historyManager: HistoryManager;
   let sessionStore: DirectorSessionStore;
   let sessionEngine: DirectorSessionEngine;
@@ -98,7 +177,8 @@ describe('Phase 20 TASK-P20-01B — Execution Bridge Final Consistency & Crash-S
       this.executionCallCount++;
 
       // Mutate filesystem so independent EvidenceCollector verifies changes
-      const files = request.targetFiles && request.targetFiles.length > 0 ? request.targetFiles : ['src/hardening.ts'];
+      const targetFiles = request.instruction?.targetFiles;
+      const files = targetFiles && targetFiles.length > 0 ? targetFiles : ['src/hardening.ts'];
       for (const f of files) {
         const full = path.join(tempDir, f);
         fs.mkdirSync(path.dirname(full), { recursive: true });
@@ -110,15 +190,12 @@ describe('Phase 20 TASK-P20-01B — Execution Bridge Final Consistency & Crash-S
         requestId: request.requestId,
         requestBinding: {
           requestId: request.requestId,
-          directorSessionId: request.directorSessionId,
-          directorDecisionId: request.directorDecisionId,
           projectId: request.projectId,
           taskId: request.taskId,
           taskRevision: request.taskRevision,
           contextFingerprint: request.contextFingerprint,
           understandingRevision: request.understandingRevision,
           approvalPackageRevision: request.approvalPackageRevision,
-          operationType: request.operationType,
         },
         status: 'SUCCESS',
         exitCode: 0,
@@ -130,6 +207,8 @@ describe('Phase 20 TASK-P20-01B — Execution Bridge Final Consistency & Crash-S
         unverifiedModifiedFiles: files,
         startedAt: new Date().toISOString(),
         completedAt: new Date().toISOString(),
+        timedOut: false,
+        cancelled: false,
       };
     }
   }
@@ -163,7 +242,7 @@ describe('Phase 20 TASK-P20-01B — Execution Bridge Final Consistency & Crash-S
     approvalStore = new ApprovalStore({ baseDir: tempDir });
     approvalPackageEngine = new ApprovalPackageEngine({ workspaceRoot: tempDir });
     specStore = new SpecStore({ baseDir: tempDir });
-    dagEngine = new TaskDagEngine({ specStore });
+    dagEngine = new TaskDagEngine();
     durableManager = new DurableStateManager({ baseDir: tempDir });
     evidenceStore = new SystemExecutionEvidenceStore({ baseDir: tempDir });
     runtimeStateManager = new LocalRuntimeStateManager({ baseDir: tempDir });
@@ -192,9 +271,7 @@ describe('Phase 20 TASK-P20-01B — Execution Bridge Final Consistency & Crash-S
 
     sessionEngine = new DirectorSessionEngine({
       workspaceRoot: tempDir,
-      sessionStore,
-      decisionStore,
-      historyManager,
+      store: sessionStore,
     });
 
     mockExecutor = new MockHardeningExecutor();
@@ -278,46 +355,8 @@ describe('Phase 20 TASK-P20-01B — Execution Bridge Final Consistency & Crash-S
 
     // 2. Create and Approve ApprovalPackage (revision 1)
     const rawPkg: ApprovalPackage = {
+      ...createTestApprovedPackage(canonicalProjectId, 1),
       packageId: `pkg-${Date.now()}`,
-      projectId: canonicalProjectId,
-      revision: 1,
-      status: 'APPROVED',
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-      isStale: false,
-      understanding: {
-        projectName: 'Hardening Project',
-        summary: 'P20-01B hardening tests',
-        techStack: ['typescript'],
-        architecturePatterns: ['hexagonal'],
-        conventions: ['strict-clean'],
-      },
-      specifications: {
-        requirements: ['req-01'],
-        architectureDecisions: ['dec-01'],
-        businessRules: ['rule-01'],
-        acceptanceCriteria: ['acc-01'],
-      },
-      plannedTasks: [
-        {
-          task_id: 'TASK-HARDEN-01',
-          title: 'Hardening Task 1',
-          description: 'Harden execution bridge against crashes',
-          status: 'PENDING',
-          dependencies: [],
-          metadata: { revision: 1 },
-        },
-      ],
-      approvalRecord: {
-        packageId: `pkg-${canonicalProjectId}-01`,
-        revision: 1,
-        actor: 'HUMAN_PRODUCT_OWNER',
-        actorRole: 'PRODUCT_OWNER',
-        intent: 'EXPLICIT_APPROVAL',
-        approvedAt: new Date().toISOString(),
-        packageHash: 'sha256-approved-package-hash-hardening',
-        comment: 'Hardening approval granted',
-      },
     };
     await approvalStore.savePackage(rawPkg);
     approvedPackage = rawPkg;
@@ -609,9 +648,6 @@ describe('Phase 20 TASK-P20-01B — Execution Bridge Final Consistency & Crash-S
       () => {
         budgetManager.claimReservationForDispatch({
           reservationId: res.reservationId,
-          modelId: 'default',
-          providerId: 'antigravity',
-          idempotencyKey: 're-claim-attempt',
         });
       },
       (err: any) => {
@@ -658,7 +694,7 @@ describe('Phase 20 TASK-P20-01B — Execution Bridge Final Consistency & Crash-S
             actorRole: 'PRODUCT_OWNER',
             intent: 'EXPLICIT_APPROVAL',
           },
-          { requestId: 'req-01' }
+          { correlation: { correlationId: 'corr-01', mcpRequestId: 'req-01', receivedAt: new Date().toISOString() } }
         );
       },
       (err: any) => {
@@ -681,7 +717,7 @@ describe('Phase 20 TASK-P20-01B — Execution Bridge Final Consistency & Crash-S
             actorRole: 'LLM_ASSISTANT',
             intent: 'EXPLICIT_APPROVAL',
           },
-          { requestId: 'req-02' }
+          { correlation: { correlationId: 'corr-02', mcpRequestId: 'req-02', receivedAt: new Date().toISOString() } }
         );
       },
       (err: any) => {

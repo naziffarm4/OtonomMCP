@@ -54,7 +54,12 @@
  * 37. Lifecycle: Driver controls do not bypass Director or authorization
  */
 
-import { describe, it, before, beforeEach, afterEach } from 'node:test';
+import {
+  describe,
+  it,
+  before,
+  beforeEach,
+  afterEach } from 'node:test';
 import * as assert from 'node:assert/strict';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
@@ -124,16 +129,18 @@ import {
   type McpSuccessResponseEnvelope,
   type McpErrorResponseEnvelope,
   type McpToolResult,
-} from '../dist/index.js';
+  } from '../dist/index.js';
 
 import {
   DirectorRuntime,
   DirectorPromptBuilder,
   type DirectorAction,
+} from '../dist/director/index.js';
+import {
   type LLMProvider,
   type LlmRequest,
   type LlmResponse,
-} from '../dist/director/index.js';
+} from '../dist/llm-bridge/index.js';;
 
 import { LlmFinishReason } from '../dist/llm-bridge/llm-types.js';
 
@@ -187,7 +194,18 @@ class DeterministicLlmProvider implements LLMProvider {
       content: JSON.stringify(payload),
       structured_output: payload as TStructured,
       finish_reason: LlmFinishReason.STOP,
-      usage: { prompt_tokens: 100, completion_tokens: 50, total_tokens: 150 },
+      raw_metadata: {},
+      error: null,
+      usage: {
+        reported_input_tokens: 100,
+        reported_output_tokens: 50,
+        reported_cached_tokens: 0,
+        estimated_tokens: 150,
+        estimated_cost_usd: 0.001,
+        provider_name: this.providerId,
+        model: this.defaultModel,
+        is_exact_provider_metric: true,
+      },
     };
   }
 }
@@ -219,15 +237,12 @@ class TestExecutor implements ExecutorPort, ExecutionRequestExecutorPort {
         requestId: request.requestId,
         requestBinding: {
           requestId: request.requestId,
-          directorSessionId: request.directorSessionId,
-          directorDecisionId: request.directorDecisionId,
           projectId: request.projectId,
           taskId: request.taskId,
           taskRevision: request.taskRevision,
           contextFingerprint: request.contextFingerprint,
           understandingRevision: request.understandingRevision,
           approvalPackageRevision: request.approvalPackageRevision,
-          operationType: request.operationType,
         },
         status: 'FAILURE',
         exitCode: 1,
@@ -239,11 +254,14 @@ class TestExecutor implements ExecutorPort, ExecutionRequestExecutorPort {
         unverifiedModifiedFiles: [],
         startedAt: new Date().toISOString(),
         completedAt: new Date().toISOString(),
+        timedOut: false,
+        cancelled: false,
       };
     }
 
-    const files = request.targetFiles && request.targetFiles.length > 0
-      ? request.targetFiles
+    const targetFiles = request.instruction?.targetFiles;
+    const files = targetFiles && targetFiles.length > 0
+      ? targetFiles
       : ['src/auth.ts'];
 
     if (!this.simulateVerbalSuccessOnly) {
@@ -259,15 +277,12 @@ class TestExecutor implements ExecutorPort, ExecutionRequestExecutorPort {
       requestId: request.requestId,
       requestBinding: {
         requestId: request.requestId,
-        directorSessionId: request.directorSessionId,
-        directorDecisionId: request.directorDecisionId,
         projectId: request.projectId,
         taskId: request.taskId,
         taskRevision: request.taskRevision,
         contextFingerprint: request.contextFingerprint,
         understandingRevision: request.understandingRevision,
         approvalPackageRevision: request.approvalPackageRevision,
-        operationType: request.operationType,
       },
       status: 'SUCCESS',
       exitCode: 0,
@@ -279,6 +294,8 @@ class TestExecutor implements ExecutorPort, ExecutionRequestExecutorPort {
       unverifiedModifiedFiles: this.simulateVerbalSuccessOnly ? [] : (files as string[]),
       startedAt: new Date().toISOString(),
       completedAt: new Date().toISOString(),
+      timedOut: false,
+      cancelled: false,
     };
   }
 }
@@ -357,10 +374,7 @@ describe('Phase 29 (P29): Authoritative Director MCP Control Plane Integration',
       unavailableSections: [],
       staleSections: [],
       logicalFingerprint: validFingerprint,
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-      sequenceNumber: 1,
-      warnings: [],
+      isDerived: true,
       sectionMetadata: {
         requirements: { revision: validRevision },
         projectStatus: { revision: 1 },
@@ -437,15 +451,15 @@ describe('Phase 29 (P29): Authoritative Director MCP Control Plane Integration',
     approvalStore = new ApprovalStore({ baseDir: tempDir, historyManager });
     approvalPackageEngine = new ApprovalPackageEngine({ baseDir: tempDir });
     specStore = new SpecStore({ baseDir: tempDir });
-    dagEngine = new TaskDagEngine({ baseDir: tempDir });
+    dagEngine = new TaskDagEngine();
     durableManager = new DurableStateManager({ baseDir: tempDir });
     evidenceStore = new SystemExecutionEvidenceStore({ baseDir: tempDir });
-    evidenceCollector = new SystemEvidenceCollector({ workspaceRoot: tempDir, evidenceStore });
+    evidenceCollector = new SystemEvidenceCollector({ evidenceStore });
     mandateStore = new ProjectMandateStore({ baseDir: tempDir });
     identityManager = new IdentityManager({ baseDir: tempDir });
     policyEngine = new AuthorizationPolicyEngine({ mandateStore, historyManager });
     recoveryPolicyEngine = new RecoveryPolicyEngine();
-    correctiveTaskService = new CorrectiveTaskService({ baseDir: tempDir });
+    correctiveTaskService = new CorrectiveTaskService({ workspaceRoot: tempDir, specStore, dagEngine, historyManager, approvalStore, approvalPackageEngine, directorSessionStore: sessionStore, recoveryPolicyEngine });
 
     mockLlmProvider = new DeterministicLlmProvider();
     mockLlmProvider.projectId = validProjectId;
@@ -474,14 +488,11 @@ describe('Phase 29 (P29): Authoritative Director MCP Control Plane Integration',
       durableStateManager: durableManager,
       historyManager,
       evidenceStore,
-      evidenceCollector,
-      mandateStore,
-      identityManager,
-      authorizationPolicyEngine: policyEngine,
       recoveryPolicyEngine,
       correctiveTaskService,
       executorPort: mockExecutor,
       directorRuntime,
+      authorizationPolicyEngine: policyEngine,
     });
 
     // Create active session
@@ -492,14 +503,12 @@ describe('Phase 29 (P29): Authoritative Director MCP Control Plane Integration',
       status: 'ACTIVE',
       createdAt: new Date().toISOString(),
       lastActivityAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
       understandingRevision: validRevision,
       protocolVersion: 'P9-01',
       schemaVersion: 1,
       actor: 'DIRECTOR',
       actorRole: 'DIRECTOR',
       hasImplementationAuthority: false,
-      decisionCount: 0,
       metadata: {},
     };
     await sessionStore.saveSession(activeSession);
@@ -549,16 +558,21 @@ describe('Phase 29 (P29): Authoritative Director MCP Control Plane Integration',
     // Setup initial task in SpecStore
     const featCore: TaskDefinition = {
       task_id: 'FEAT-CORE',
-      parent_feature_id: null,
+      parent_feature_id: 'ROOT',
       title: 'Core Engine Feature',
       description: 'Core engine setup',
       traceability_sources: ['REQ-01'],
       acceptance_criteria: ['AC-01'],
       hierarchy_level: 'FEATURE',
+      priority: 'MEDIUM',
       status: 'ACCEPTED',
-      risk_level: 'LOW',
+      risk_level: 'SAFE',
       dependencies: [],
       created_at: new Date().toISOString(),
+      started_at: null,
+      completed_at: null,
+    attempt: 1,
+    max_attempts: 3,
     };
     const t1: TaskDefinition = {
       task_id: 'task-01-core',
@@ -568,12 +582,15 @@ describe('Phase 29 (P29): Authoritative Director MCP Control Plane Integration',
       traceability_sources: ['REQ-01'],
       acceptance_criteria: ['AC-01'],
       hierarchy_level: 'TASK',
+      priority: 'MEDIUM',
       attempt: 1,
       max_attempts: 2,
       status: 'ACCEPTED',
-      risk_level: 'LOW',
+      risk_level: 'SAFE',
       dependencies: [],
       created_at: new Date().toISOString(),
+      started_at: null,
+      completed_at: null,
     };
     const t2: TaskDefinition = {
       task_id: 'task-02-auth',
@@ -583,12 +600,15 @@ describe('Phase 29 (P29): Authoritative Director MCP Control Plane Integration',
       traceability_sources: ['REQ-01'],
       acceptance_criteria: ['AC-AUTH-01'],
       hierarchy_level: 'TASK',
+      priority: 'MEDIUM',
       attempt: 1,
       max_attempts: 2,
       status: 'READY',
-      risk_level: 'LOW',
+      risk_level: 'SAFE',
       dependencies: ['task-01-core'],
       created_at: new Date().toISOString(),
+      started_at: null,
+      completed_at: null,
       metadata: { targetFiles: ['src/auth.ts'], revision: 1, taskClass: 'IMPLEMENTATION' },
     };
     await specStore.saveTasks([featCore, t1, t2]);
@@ -601,7 +621,6 @@ describe('Phase 29 (P29): Authoritative Director MCP Control Plane Integration',
       blockedState: null,
       continuationState: 'NONE',
       continuationPolicy: 'AUTONOMOUS',
-      updatedAt: new Date().toISOString(),
     });
 
     activeSnapshot = createAuthoritativeSnapshot();
@@ -618,13 +637,9 @@ describe('Phase 29 (P29): Authoritative Director MCP Control Plane Integration',
       dagEngine,
       durableStateManager: durableManager,
       historyManager,
-      systemExecutionEvidenceStore: evidenceStore,
-      evidenceCollector,
-      projectMandateStore: mandateStore,
-      authorizationPolicyEngine: policyEngine,
       directorRuntime,
       closedLoopCoordinator: coordinator,
-      getClosedLoopCoordinator: (_root: string) => coordinator,
+      executorPort: mockExecutor,
     });
 
     // Setup MCP server with all relevant tools enabled
@@ -760,7 +775,7 @@ describe('Phase 29 (P29): Authoritative Director MCP Control Plane Integration',
   it('T07_routing_director_runtime_production_path: runtime fail-closed when provider unconfigured', async () => {
     // Replace runtime with unconfigured provider runtime
     const unconfiguredRuntime = new DirectorRuntime({
-      provider: undefined,
+      llmProvider: null,
       isProduction: true,
     });
 
@@ -772,12 +787,10 @@ describe('Phase 29 (P29): Authoritative Director MCP Control Plane Integration',
       approvalPackageEngine,
       specStore,
       dagEngine,
-      durableManager,
+      durableStateManager: durableManager,
       historyManager,
       evidenceStore,
       evidenceCollector,
-      mandateStore,
-      identityManager,
       authorizationPolicyEngine: policyEngine,
       recoveryPolicyEngine,
       correctiveTaskService,
@@ -789,22 +802,27 @@ describe('Phase 29 (P29): Authoritative Director MCP Control Plane Integration',
     (delegate as any).closedLoopCoordinator = coordinatorWithoutProvider;
     (delegate as any).getClosedLoopCoordinator = () => coordinatorWithoutProvider;
 
-    const { parsed, isError } = await callMcpTool(DIRECTOR_EXECUTE_CYCLE_TOOL_NAME, {
-      workspaceRoot: tempDir,
-      projectId: validProjectId,
-      directorSessionId: validSessionId,
-    });
+    try {
+      const { parsed, isError } = await callMcpTool(DIRECTOR_EXECUTE_CYCLE_TOOL_NAME, {
+        workspaceRoot: tempDir,
+        projectId: validProjectId,
+        directorSessionId: validSessionId,
+      });
 
-    assert.equal(isError, true, 'Must fail-closed without configured LLM provider in production');
-    assert.ok(
-      parsed.summary?.includes('provider') ||
-      parsed.summary?.includes('reasoning') ||
-      parsed.summary?.includes('failed') ||
-      parsed.error?.message?.includes('provider') ||
-      parsed.error?.code?.includes('FAIL') ||
-      parsed.error?.code?.includes('RUNTIME'),
-      'Error message must indicate missing/unconfigured reasoning provider'
-    );
+      assert.equal(isError, true, 'Must fail-closed without configured LLM provider in production');
+      assert.ok(
+        parsed.summary?.includes('provider') ||
+        parsed.summary?.includes('reasoning') ||
+        parsed.summary?.includes('failed') ||
+        parsed.error?.message?.includes('provider') ||
+        parsed.error?.code?.includes('FAIL') ||
+        parsed.error?.code?.includes('RUNTIME'),
+        'Error message must indicate missing/unconfigured reasoning provider'
+      );
+    } finally {
+      (delegate as any).closedLoopCoordinator = coordinator;
+      (delegate as any).getClosedLoopCoordinator = () => coordinator;
+    }
   });
 
   it('T08_routing_legacy_reasoning_prevention: legacy reasoning engine cannot bypass authoritative pipeline', async () => {
@@ -1037,7 +1055,6 @@ describe('Phase 29 (P29): Authoritative Director MCP Control Plane Integration',
     await sessionStore.saveSession({
       ...activeSession,
       status: 'CLOSED',
-      closedAt: new Date().toISOString(),
     });
 
     const { isError, parsed } = await callMcpTool(DIRECTOR_EXECUTE_CYCLE_TOOL_NAME, {
@@ -1058,7 +1075,6 @@ describe('Phase 29 (P29): Authoritative Director MCP Control Plane Integration',
     await sessionStore.saveSession({
       ...activeSession,
       status: 'SUSPENDED',
-      suspendedAt: new Date().toISOString(),
     });
 
     const { isError, parsed } = await callMcpTool(DIRECTOR_EXECUTE_CYCLE_TOOL_NAME, {

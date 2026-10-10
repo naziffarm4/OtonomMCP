@@ -353,6 +353,9 @@ describe('Phase 8 Director Read-Only MCP Tools (TASK-P8-02)', () => {
         max_attempts: 3,
         priority: 'HIGH',
         risk_level: RiskLevel.CAUTION,
+        created_at: new Date().toISOString(),
+        started_at: null,
+        completed_at: null,
       },
       {
         task_id: 'TASK-001',
@@ -368,6 +371,9 @@ describe('Phase 8 Director Read-Only MCP Tools (TASK-P8-02)', () => {
         max_attempts: 3,
         priority: 'HIGH',
         risk_level: RiskLevel.CAUTION,
+        created_at: new Date().toISOString(),
+        started_at: null,
+        completed_at: null,
       },
       {
         task_id: 'TASK-002',
@@ -383,6 +389,9 @@ describe('Phase 8 Director Read-Only MCP Tools (TASK-P8-02)', () => {
         max_attempts: 3,
         priority: 'HIGH',
         risk_level: RiskLevel.CAUTION,
+        created_at: new Date().toISOString(),
+        started_at: null,
+        completed_at: null,
       },
     ];
     await specStore.saveTasks(tasks);
@@ -417,6 +426,9 @@ describe('Phase 8 Director Read-Only MCP Tools (TASK-P8-02)', () => {
         max_attempts: 3,
         priority: 'HIGH',
         risk_level: RiskLevel.CAUTION,
+        created_at: new Date().toISOString(),
+        started_at: null,
+        completed_at: null,
       },
     ]);
 
@@ -425,6 +437,7 @@ describe('Phase 8 Director Read-Only MCP Tools (TASK-P8-02)', () => {
       currentLifecycleState: LifecycleState.TASK_LOOP,
       activeTaskId: 'TASK-ACTIVE',
       completedTaskIds: [],
+      blockedState: null,
     });
 
     const res = (await callTool(AIDM_TASKS_CURRENT_TOOL_NAME)) as any;
@@ -689,7 +702,7 @@ describe('Phase 8 Director Read-Only MCP Tools (TASK-P8-02)', () => {
       file_hashes_after: null,
       evidence_type: EvidenceType.COMMAND,
       executor_identity: null,
-      capturedAt: new Date().toISOString(),
+      captured_at: new Date().toISOString(),
       metadata: null,
       source: EvidenceSource.SYSTEM_VERIFIED_EVIDENCE,
     };
@@ -746,6 +759,7 @@ describe('Phase 8 Director Read-Only MCP Tools (TASK-P8-02)', () => {
       currentLifecycleState: LifecycleState.REQUIREMENTS_INGESTION,
       activeTaskId: null,
       completedTaskIds: [],
+      blockedState: null,
     });
 
     const specStore = new SpecStore({ baseDir: tempDir });
@@ -759,6 +773,7 @@ describe('Phase 8 Director Read-Only MCP Tools (TASK-P8-02)', () => {
       {
         task_id: 'TASK-1',
         title: 'T1',
+        description: 'T1 description',
         hierarchy_level: 'TASK',
         parent_feature_id: 'FEAT-1',
         dependencies: [],
@@ -769,6 +784,9 @@ describe('Phase 8 Director Read-Only MCP Tools (TASK-P8-02)', () => {
         max_attempts: 3,
         priority: 'HIGH',
         risk_level: RiskLevel.CAUTION,
+        created_at: new Date().toISOString(),
+        started_at: null,
+        completed_at: null,
       },
     ]);
 
@@ -835,6 +853,7 @@ describe('Phase 8 Director Read-Only MCP Tools (TASK-P8-02)', () => {
       currentLifecycleState: LifecycleState.ARCHITECTURE_SPEC,
       activeTaskId: null,
       completedTaskIds: [],
+      blockedState: null,
     });
 
     const status = (await callTool(AIDM_PROJECT_STATUS_TOOL_NAME)) as any;
@@ -862,6 +881,9 @@ describe('Phase 8 Director Read-Only MCP Tools (TASK-P8-02)', () => {
         max_attempts: 3,
         priority: 'HIGH',
         risk_level: RiskLevel.CAUTION,
+        created_at: new Date().toISOString(),
+        started_at: null,
+        completed_at: null,
       },
       {
         task_id: 'TASK-CYC-1',
@@ -877,6 +899,9 @@ describe('Phase 8 Director Read-Only MCP Tools (TASK-P8-02)', () => {
         max_attempts: 3,
         priority: 'HIGH',
         risk_level: RiskLevel.CAUTION,
+        created_at: new Date().toISOString(),
+        started_at: null,
+        completed_at: null,
       },
       {
         task_id: 'TASK-CYC-2',
@@ -892,6 +917,9 @@ describe('Phase 8 Director Read-Only MCP Tools (TASK-P8-02)', () => {
         max_attempts: 3,
         priority: 'HIGH',
         risk_level: RiskLevel.CAUTION,
+        created_at: new Date().toISOString(),
+        started_at: null,
+        completed_at: null,
       },
     ]);
 

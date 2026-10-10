@@ -25,7 +25,13 @@
  * 7. Security: Zero secret leakage in logs, payloads, or subprocess environments.
  */
 
-import { describe, it, before, after, beforeEach, afterEach } from 'node:test';
+import {
+  describe,
+  it,
+  before,
+  after,
+  beforeEach,
+  afterEach } from 'node:test';
 import * as assert from 'node:assert/strict';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
@@ -79,18 +85,21 @@ import {
   computeDeterministicActionId,
   DIRECTOR_ACTION_PROTOCOL_VERSION,
   DIRECTOR_ACTION_SCHEMA_VERSION,
-} from '../dist/index.js';
+  } from '../dist/index.js';
+import { createValidDiscoveryReport } from './helpers/test-discovery-factory.ts';
 
 import {
   DirectorRuntime,
-  type LLMProvider,
-  type LlmRequest,
-  type LlmResponse,
   DirectorLlmProviderUnavailableError,
   DirectorLlmRequestFailedError,
   DirectorActionValidationFailedError,
   DirectorActionContextMismatchError,
 } from '../dist/director/index.js';
+import {
+  type LLMProvider,
+  type LlmRequest,
+  type LlmResponse,
+} from '../dist/llm-bridge/index.js';;
 
 import {
   ReferenceLlmAdapter,
@@ -115,7 +124,7 @@ import { LlmFinishReason } from '../dist/llm-bridge/llm-types.js';
 // ============================================================================
 
 function createMockReport(workspaceRoot: string, projectId: string): ProjectDiscoveryReport {
-  return {
+  return createValidDiscoveryReport({
     projectIdentity: {
       name: projectId,
       version: '1.0.0',
@@ -123,41 +132,7 @@ function createMockReport(workspaceRoot: string, projectId: string): ProjectDisc
       ecosystem: 'Node.js',
       evidence: [{ sourceType: 'PACKAGE_MANIFEST', sourceIdentifier: 'package.json' }],
     },
-    purpose: {
-      classification: 'UNDERSTOOD',
-      summary: 'OM-09 Live E2E Verification Fixture',
-      domainKeywords: ['e2e', 'live-execution', 'governance'],
-      evidence: [{ sourceType: 'FILE', sourceIdentifier: 'README.md' }],
-    },
-    technologyStack: {
-      primaryLanguages: ['TypeScript'],
-      frameworks: [],
-      buildTools: ['tsc'],
-      packageManagers: ['pnpm'],
-      runtimes: ['node'],
-      containerization: [],
-      ciCd: [],
-      workspaceType: 'standalone',
-    },
-    architecture: {
-      summary: 'Autonomous Multi-Agent Governance Architecture',
-      architecturalPattern: 'Modular',
-      identifiedAreas: [],
-      evidence: [{ sourceType: 'FILE', sourceIdentifier: 'package.json' }],
-    },
-    currentImplementationState: {
-      lifecycleState: 'TASK_LOOP',
-      hasActiveTask: false,
-      isBlocked: false,
-      totalTasksInDag: 1,
-      completedTasksCount: 0,
-      evidence: [{ sourceType: 'STATE_MANAGER', sourceIdentifier: 'durable-state.json' }],
-    },
-    unknowns: [],
-    contradictions: [],
-    evidenceInventory: [],
-    generatedAt: new Date().toISOString(),
-  };
+  });
 }
 
 function saveMandateDirectly(workspaceDir: string, mandate: ProjectMandate): void {
@@ -282,7 +257,6 @@ describe('OM-09: Live E2E Execution Gate (Real Host & Tooling)', () => {
       sessionStore,
       sessionEngine,
       decisionStore,
-      durableStateManager,
       historyManager,
     });
     delegate = new DefaultMcpOrchestratorDelegate();
@@ -290,12 +264,9 @@ describe('OM-09: Live E2E Execution Gate (Real Host & Tooling)', () => {
 
     synchronizer = new DirectorContextSynchronizer({
       workspaceRoot: tempDir,
-      specStore,
-      durableStateManager,
+      delegate,
       sessionStore,
       sessionEngine,
-      decisionStore,
-      historyManager,
     });
 
     authorizer = new ExecutionAuthorizer({
@@ -370,7 +341,7 @@ describe('OM-09: Live E2E Execution Gate (Real Host & Tooling)', () => {
       workspaceRoot: tempDir,
     });
     assert.ok(snapshot.logicalFingerprint);
-    assert.ok(snapshot.syncStatus === 'INITIAL' || snapshot.syncStatus === 'IN_SYNC');
+    assert.ok(snapshot.syncStatus === 'UNCHANGED' || snapshot.syncStatus === 'CHANGED');
 
     // 3. Project Mandate Setup
     const mandate: ProjectMandate = {
@@ -415,7 +386,7 @@ describe('OM-09: Live E2E Execution Gate (Real Host & Tooling)', () => {
     await specStore.saveTasks([
       {
         task_id: 'FEAT-OM09-ROOT',
-        parent_feature_id: null,
+        parent_feature_id: 'ROOT',
         title: 'OM-09 Feature Root',
         description: 'Root container for OM-09 tasks',
         traceability_sources: ['REQ-OM09'],
@@ -425,9 +396,11 @@ describe('OM-09: Live E2E Execution Gate (Real Host & Tooling)', () => {
         attempt: 0,
         max_attempts: 1,
         priority: TaskPriority.HIGH,
-        risk_level: RiskLevel.LOW,
+        risk_level: RiskLevel.SAFE,
         created_at: new Date().toISOString(),
         hierarchy_level: 'FEATURE',
+        started_at: null,
+        completed_at: null,
         metadata: { revision: 1 },
       },
       {
@@ -439,14 +412,13 @@ describe('OM-09: Live E2E Execution Gate (Real Host & Tooling)', () => {
         priority: TaskPriority.HIGH,
         dependencies: [],
         acceptance_criteria: [`File ${targetFilename} must exist with content "${expectedContent}"`],
-        tags: ['om09', 'live-e2e'],
         traceability_sources: ['REQ-OM09'],
-        assigned_to: 'antigravity',
-        estimated_complexity: 'LOW',
-        risk_level: RiskLevel.LOW,
+        risk_level: RiskLevel.SAFE,
         attempt: 0,
         max_attempts: 1,
         created_at: new Date().toISOString(),
+        started_at: null,
+        completed_at: null,
         hierarchy_level: 'TASK',
         metadata: {
           taskClass: 'IMPLEMENTATION',
@@ -540,7 +512,7 @@ describe('OM-09: Live E2E Execution Gate (Real Host & Tooling)', () => {
       directorSessionId: session.directorSessionId,
       taskId,
       objective: `Create file ${targetFilename} with content ${expectedContent}`,
-      trigger: 'MANUAL',
+      trigger: 'PERIODIC_REVIEW',
       snapshot,
     });
 
@@ -567,27 +539,17 @@ describe('OM-09: Live E2E Execution Gate (Real Host & Tooling)', () => {
       actionType: 'IMPLEMENT_TASK',
       actor: 'DIRECTOR',
       actorRole: 'DIRECTOR',
-      correlationId: `corr-live-${Date.now()}`,
       payload: {
         taskId,
         targetFiles: [targetFilename],
         implementationScope: [targetFilename],
       },
-      actionPayload: {
-        taskId,
-        targetFiles: [targetFilename],
-        implementationScope: [targetFilename],
-      },
       basedOnContextFingerprint: snapshot.logicalFingerprint,
-      issuedAt: new Date().toISOString(),
-      expiresAt: new Date(Date.now() + 60000).toISOString(),
+      timestamp: new Date().toISOString(),
+      understandingRevision: 1,
     };
 
-    const policyAuth = await policyEngine.evaluateAction(actionEnvelope, {
-      workspaceRoot: tempDir,
-      directorSessionId: session.directorSessionId,
-      expectedMandateRevision: 1,
-    });
+    const policyAuth = await policyEngine.evaluateAction(actionEnvelope);
 
     assert.strictEqual(policyAuth.decisionResult, AuthorizationDecisionResult.ALLOW, `Expected ALLOW, got: ${policyAuth.reason}`);
 
@@ -599,7 +561,7 @@ describe('OM-09: Live E2E Execution Gate (Real Host & Tooling)', () => {
       protocolVersion: 'P9-03',
       schemaVersion: 1,
       actor: 'DIRECTOR' as const,
-      decisionType: 'IMPLEMENT_TASK',
+      decisionType: 'IMPLEMENT_TASK' as const,
       rationale: reasoningResult.action.rationale,
       basedOnContextFingerprint: snapshot.logicalFingerprint,
       basedOnApprovalRevision: pkg.revision,
@@ -844,7 +806,7 @@ describe('OM-09: Live E2E Execution Gate (Real Host & Tooling)', () => {
           directorSessionId: session.directorSessionId,
           taskId,
           objective: 'Test failure',
-          trigger: 'MANUAL',
+          trigger: 'PERIODIC_REVIEW',
           snapshot,
         });
       },
@@ -917,7 +879,7 @@ describe('OM-09: Live E2E Execution Gate (Real Host & Tooling)', () => {
           directorSessionId: session.directorSessionId,
           taskId,
           objective: 'Test malformed output',
-          trigger: 'MANUAL',
+          trigger: 'PERIODIC_REVIEW',
           snapshot,
         });
       },
@@ -1004,7 +966,7 @@ describe('OM-09: Live E2E Execution Gate (Real Host & Tooling)', () => {
           directorSessionId: session.directorSessionId,
           taskId,
           objective: 'Test stale fingerprint',
-          trigger: 'MANUAL',
+          trigger: 'PERIODIC_REVIEW',
           snapshot,
         });
       },
@@ -1056,27 +1018,17 @@ describe('OM-09: Live E2E Execution Gate (Real Host & Tooling)', () => {
       actionType: 'IMPLEMENT_TASK',
       actor: 'DIRECTOR',
       actorRole: 'DIRECTOR',
-      correlationId: 'corr-unauthorized-001',
       payload: {
         taskId: 'TASK-FORBIDDEN',
         targetFiles: ['../forbidden/secret.key'],
         implementationScope: ['../forbidden/'],
       },
-      actionPayload: {
-        taskId: 'TASK-FORBIDDEN',
-        targetFiles: ['../forbidden/secret.key'],
-        implementationScope: ['../forbidden/'],
-      },
       basedOnContextFingerprint: 'ctx-fp',
-      issuedAt: new Date().toISOString(),
-      expiresAt: new Date(Date.now() + 60000).toISOString(),
+      timestamp: new Date().toISOString(),
+      understandingRevision: 1,
     };
 
-    const policyAuth = await policyEngine.evaluateAction(unauthorizedAction, {
-      workspaceRoot: tempDir,
-      directorSessionId: 'sess-auth-deny',
-      expectedMandateRevision: 1,
-    });
+    const policyAuth = await policyEngine.evaluateAction(unauthorizedAction);
 
     assert.strictEqual(policyAuth.decisionResult, AuthorizationDecisionResult.DENY);
     assert.strictEqual(agyInvoked, false, 'AGY must not be invoked on authorization DENY');
@@ -1119,23 +1071,15 @@ describe('OM-09: Live E2E Execution Gate (Real Host & Tooling)', () => {
       actionType: 'REPLAN',
       actor: 'DIRECTOR',
       actorRole: 'DIRECTOR',
-      correlationId: 'corr-human-gate-001',
       payload: {
         taskId: 'TASK-REPLAN',
       },
-      actionPayload: {
-        taskId: 'TASK-REPLAN',
-      },
       basedOnContextFingerprint: 'ctx-fp',
-      issuedAt: new Date().toISOString(),
-      expiresAt: new Date(Date.now() + 60000).toISOString(),
+      timestamp: new Date().toISOString(),
+      understandingRevision: 1,
     };
 
-    const authResult = await policyEngine.evaluateAction(replanAction, {
-      workspaceRoot: tempDir,
-      directorSessionId: 'sess-human-gate',
-      expectedMandateRevision: 1,
-    });
+    const authResult = await policyEngine.evaluateAction(replanAction);
 
     assert.strictEqual(authResult.decisionResult, AuthorizationDecisionResult.REQUIRE_HUMAN_APPROVAL);
     assert.strictEqual(agyInvoked, false, 'AGY must not be invoked on REQUIRE_HUMAN_APPROVAL');
@@ -1237,8 +1181,9 @@ describe('OM-09: Live E2E Execution Gate (Real Host & Tooling)', () => {
     const unbudgetedRequest: LlmRequest = {
       correlation: { correlation_id: 'corr-nobudget-1', project_id: projectId },
       messages: [{ role: 'user', content: 'hello' }],
+      director_context: { project_id: projectId },
       model: 'om09-live-model-v1',
-      response_format: 'text' as any,
+      response_format: 'TEXT',
     };
 
     // Direct call without budget reservation header must fail closed
@@ -1374,7 +1319,7 @@ describe('OM-09: Live E2E Execution Gate (Real Host & Tooling)', () => {
     await specStore.saveTasks([
       {
         task_id: 'FEAT-OM09B-ROOT',
-        parent_feature_id: null,
+        parent_feature_id: 'ROOT',
         title: 'OM-09B Feature Root',
         description: 'Root container for OM-09B tasks',
         traceability_sources: ['REQ-OM09B'],
@@ -1384,8 +1329,10 @@ describe('OM-09: Live E2E Execution Gate (Real Host & Tooling)', () => {
         attempt: 0,
         max_attempts: 1,
         priority: TaskPriority.HIGH,
-        risk_level: RiskLevel.LOW,
+        risk_level: RiskLevel.SAFE,
         created_at: new Date().toISOString(),
+        started_at: null,
+        completed_at: null,
         hierarchy_level: 'FEATURE',
         metadata: { revision: 1 },
       },
@@ -1398,14 +1345,13 @@ describe('OM-09: Live E2E Execution Gate (Real Host & Tooling)', () => {
         priority: TaskPriority.HIGH,
         dependencies: [],
         acceptance_criteria: [`File ${cloudTargetFilename} must exist with exact content "${cloudExpectedContent}"`],
-        tags: ['om09b', 'cloud-llm'],
         traceability_sources: ['REQ-OM09B'],
-        assigned_to: 'antigravity',
-        estimated_complexity: 'LOW',
-        risk_level: RiskLevel.LOW,
+        risk_level: RiskLevel.SAFE,
         attempt: 0,
         max_attempts: 1,
         created_at: new Date().toISOString(),
+        started_at: null,
+        completed_at: null,
         hierarchy_level: 'TASK',
         metadata: {
           taskClass: 'IMPLEMENTATION',
@@ -1471,8 +1417,8 @@ describe('OM-09: Live E2E Execution Gate (Real Host & Tooling)', () => {
     assert.strictEqual(reasoningResult.action.basedOnContextFingerprint, snapshot.logicalFingerprint);
     assert.strictEqual(reasoningResult.finishReason, 'STOP');
     assert.ok(reasoningResult.usage, 'Usage telemetry must be captured');
-    assert.ok(reasoningResult.usage.reported_input_tokens > 0);
-    assert.ok(reasoningResult.usage.reported_output_tokens > 0);
+    assert.ok(Number(reasoningResult.usage.reported_input_tokens) > 0);
+    assert.ok(Number(reasoningResult.usage.reported_output_tokens) > 0);
 
     // Verify Budget HOLD -> SETTLE
     const accountAfter = budgetManager.getGlobalAccount()!;
@@ -1495,27 +1441,17 @@ describe('OM-09: Live E2E Execution Gate (Real Host & Tooling)', () => {
       actionType: 'IMPLEMENT_TASK',
       actor: 'DIRECTOR',
       actorRole: 'DIRECTOR',
-      correlationId: `corr-cloud-${Date.now()}`,
       payload: {
         taskId: cloudTaskId,
         targetFiles: [cloudTargetFilename],
         implementationScope: [cloudTargetFilename],
       },
-      actionPayload: {
-        taskId: cloudTaskId,
-        targetFiles: [cloudTargetFilename],
-        implementationScope: [cloudTargetFilename],
-      },
       basedOnContextFingerprint: snapshot.logicalFingerprint,
-      issuedAt: new Date().toISOString(),
-      expiresAt: new Date(Date.now() + 60000).toISOString(),
+      timestamp: new Date().toISOString(),
+      understandingRevision: 1,
     };
 
-    const policyAuth = await policyEngine.evaluateAction(actionEnvelope, {
-      workspaceRoot: tempDir,
-      directorSessionId: session.directorSessionId,
-      expectedMandateRevision: 1,
-    });
+    const policyAuth = await policyEngine.evaluateAction(actionEnvelope);
     assert.strictEqual(policyAuth.decisionResult, AuthorizationDecisionResult.ALLOW);
 
     // 10. Register Decision
@@ -1526,7 +1462,7 @@ describe('OM-09: Live E2E Execution Gate (Real Host & Tooling)', () => {
       protocolVersion: 'P9-03',
       schemaVersion: 1,
       actor: 'DIRECTOR' as const,
-      decisionType: 'IMPLEMENT_TASK',
+      decisionType: 'IMPLEMENT_TASK' as const,
       rationale: reasoningResult.action.rationale,
       basedOnContextFingerprint: snapshot.logicalFingerprint,
       basedOnApprovalRevision: pkg.revision,
@@ -1650,6 +1586,8 @@ describe('OM-09: Live E2E Execution Gate (Real Host & Tooling)', () => {
         await invalidAdapter.generate({
           correlation: { correlation_id: 'corr-f08', project_id: projectId },
           messages: [{ role: 'user', content: 'test invalid key' }],
+          director_context: { project_id: projectId },
+          response_format: 'TEXT',
         });
         agyInvoked = true;
       },
@@ -1685,7 +1623,9 @@ describe('OM-09: Live E2E Execution Gate (Real Host & Tooling)', () => {
         await invalidModelAdapter.generate({
           correlation: { correlation_id: 'corr-f09', project_id: projectId },
           messages: [{ role: 'user', content: 'test invalid model' }],
+          director_context: { project_id: projectId },
           model: 'nonexistent-model-xyz-999',
+          response_format: 'TEXT',
         });
         agyInvoked = true;
       },
@@ -1728,7 +1668,9 @@ describe('OM-09: Live E2E Execution Gate (Real Host & Tooling)', () => {
         await budgetAwareAdapter.generate({
           correlation: { correlation_id: 'corr-f10', project_id: projectId },
           messages: [{ role: 'user', content: 'test budget failure' }],
+          director_context: { project_id: projectId },
           max_tokens: 1000,
+          response_format: 'TEXT',
         });
         networkDispatched = true;
         agyInvoked = true;

@@ -692,7 +692,7 @@ describe('Phase 15 Specification Completeness Gate (TASK-P15-02)', { concurrency
     });
 
     const state = await durableManager.load();
-    assert.equal(state?.developmentAuthorized, undefined);
+    assert.strictEqual(state, null);
   });
 
   // ==========================================================================
@@ -706,7 +706,7 @@ describe('Phase 15 Specification Completeness Gate (TASK-P15-02)', { concurrency
     });
 
     const state = await durableManager.load();
-    assert.equal(state?.activeIntent, undefined);
+    assert.strictEqual(state, null);
   });
 
   // ==========================================================================
@@ -809,6 +809,9 @@ describe('Phase 15 Specification Completeness Gate (TASK-P15-02)', { concurrency
       explicitSections: {
         architecture: {
           deploymentModel: 'Local / Self-Hosted Docker Container',
+          architecturalConstraints: [],
+          integrationRequirements: [],
+          dataStorageExpectations: [],
         },
         acceptance: {
           measurableCriteria: ['100% test pass rate and under 50ms latency'],

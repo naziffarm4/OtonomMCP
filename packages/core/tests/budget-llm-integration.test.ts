@@ -350,6 +350,10 @@ describe('P18-03 Real Provider Integration, Outbox & Financial Concurrency', () 
           project_id: 'proj_e2e',
           attempt: 1,
         },
+        director_context: {
+          project_id: 'proj_e2e',
+        },
+        response_format: 'TEXT' as const,
       });
     });
 
@@ -612,7 +616,7 @@ describe('P18-03 Real Provider Integration, Outbox & Financial Concurrency', () 
   // --- 5. Production Budget Enforcement & Negative Bypass Tests ---
 
   it('5.1 Negatif 1: Production ortamında budgetManager olmadan engine oluşturma engellenmelidir', () => {
-    const liveTransport = new HttpLlmTransport({
+    const liveTransport = new HttpLlmTransport<ReferenceWireRequest, ReferenceWireResponse>({
       endpoint: 'https://api.openai.com/v1/chat/completions',
       apiKey: 'test-key',
     });
@@ -635,7 +639,7 @@ describe('P18-03 Real Provider Integration, Outbox & Financial Concurrency', () 
   });
 
   it('5.2 Negatif 2: Production modunda budgetManager olmadan reason() çağrısı engellenmelidir', async () => {
-    const liveTransport = new HttpLlmTransport({
+    const liveTransport = new HttpLlmTransport<ReferenceWireRequest, ReferenceWireResponse>({
       endpoint: 'https://api.openai.com/v1/chat/completions',
       apiKey: 'test-key',
     });
@@ -688,6 +692,10 @@ describe('P18-03 Real Provider Integration, Outbox & Financial Concurrency', () 
             project_id: 'proj_e2e',
             attempt: 1,
           },
+        director_context: {
+          project_id: 'proj_e2e',
+        },
+        response_format: 'TEXT' as const,
         });
       },
       (err: any) => err instanceof BudgetError && err.code === 'ERR_BUDGET_REQUIRED'
@@ -1020,8 +1028,9 @@ describe('P18-03 Real Provider Integration, Outbox & Financial Concurrency', () 
         await adapter.generate({
           messages: [{ role: 'user', content: 'spoof attempt' }],
           correlation: { correlation_id: 'corr_spoof_01', project_id: 'proj_e2e', attempt: 1 },
-          metadata: {
-            __aidm_budget_authorized: true, // Sahte yetkilendirme bayrağı
+          director_context: { project_id: 'proj_e2e' },
+        response_format: 'TEXT' as const,
+        metadata: { __aidm_budget_authorized: true, // Sahte yetkilendirme bayrağı
           },
         });
       },
@@ -1048,8 +1057,9 @@ describe('P18-03 Real Provider Integration, Outbox & Financial Concurrency', () 
         await adapter.generate({
           messages: [{ role: 'user', content: 'random res id attempt' }],
           correlation: { correlation_id: 'corr_random_res_01', project_id: 'proj_e2e', attempt: 1 },
-          metadata: {
-            __aidm_budget_authorized: true,
+          director_context: { project_id: 'proj_e2e' },
+        response_format: 'TEXT' as const,
+        metadata: { __aidm_budget_authorized: true,
             __aidm_reservation_id: 'res_fake_random_99999999',
           },
         });
@@ -1097,8 +1107,11 @@ describe('P18-03 Real Provider Integration, Outbox & Financial Concurrency', () 
             project_id: 'proj_attacker',
             attempt: 1,
           },
-          metadata: {
-            __aidm_budget_authorized: true,
+        director_context: {
+          project_id: 'proj_e2e',
+        },
+        response_format: 'TEXT' as const,
+        metadata: { __aidm_budget_authorized: true,
             __aidm_reservation_id: victimRes.reservationId,
           },
         });
@@ -1138,8 +1151,9 @@ describe('P18-03 Real Provider Integration, Outbox & Financial Concurrency', () 
           model: 'unauthorized-model-attempt',
           messages: [{ role: 'user', content: 'model mismatch attempt' }],
           correlation: { correlation_id: 'corr_model_spoof', project_id: 'proj_e2e', attempt: 1 },
-          metadata: {
-            __aidm_budget_authorized: true,
+          director_context: { project_id: 'proj_e2e' },
+        response_format: 'TEXT' as const,
+        metadata: { __aidm_budget_authorized: true,
             __aidm_reservation_id: validRes.reservationId,
           },
         });
@@ -1182,8 +1196,9 @@ describe('P18-03 Real Provider Integration, Outbox & Financial Concurrency', () 
         await adapter.generate({
           messages: [{ role: 'user', content: 'using released reservation' }],
           correlation: { correlation_id: 'corr_released_attack', project_id: 'proj_e2e', attempt: 1 },
-          metadata: {
-            __aidm_budget_authorized: true,
+          director_context: { project_id: 'proj_e2e' },
+        response_format: 'TEXT' as const,
+        metadata: { __aidm_budget_authorized: true,
             __aidm_reservation_id: res.reservationId,
           },
         });
@@ -1227,8 +1242,9 @@ describe('P18-03 Real Provider Integration, Outbox & Financial Concurrency', () 
         await adapter.generate({
           messages: [{ role: 'user', content: 'replay with settled reservation' }],
           correlation: { correlation_id: 'corr_settled_attack', project_id: 'proj_e2e', attempt: 1 },
-          metadata: {
-            __aidm_budget_authorized: true,
+          director_context: { project_id: 'proj_e2e' },
+        response_format: 'TEXT' as const,
+        metadata: { __aidm_budget_authorized: true,
             __aidm_reservation_id: res.reservationId,
           },
         });
@@ -1271,8 +1287,9 @@ describe('P18-03 Real Provider Integration, Outbox & Financial Concurrency', () 
         await adapter.generate({
           messages: [{ role: 'user', content: 'using unknown reservation' }],
           correlation: { correlation_id: 'corr_unknown_attack', project_id: 'proj_e2e', attempt: 1 },
-          metadata: {
-            __aidm_budget_authorized: true,
+          director_context: { project_id: 'proj_e2e' },
+        response_format: 'TEXT' as const,
+        metadata: { __aidm_budget_authorized: true,
             __aidm_reservation_id: res.reservationId,
           },
         });

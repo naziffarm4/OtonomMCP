@@ -1,3 +1,4 @@
+import { createValidDiscoveryReport } from './helpers/test-discovery-factory.ts';
 /**
  * Corrective Task Lineage & Governed DAG Augmentation Test Suite (Phase 13 TASK-P13-03)
  *
@@ -187,7 +188,7 @@ describe('P13-03: Corrective Task Lineage & Governed DAG Augmentation', () => {
   ): ProjectApprovalPackage => {
     const builder = new InitialProjectUnderstandingBuilder();
     const understanding = builder.build(
-      {
+      createValidDiscoveryReport({
         projectIdentity: {
           name: projectId,
           version: '1.0.0',
@@ -195,41 +196,7 @@ describe('P13-03: Corrective Task Lineage & Governed DAG Augmentation', () => {
           ecosystem: 'Node.js',
           evidence: [],
         },
-        purpose: {
-          classification: 'UNDERSTOOD',
-          summary: 'Test project',
-          domainKeywords: ['test'],
-          evidence: [],
-        },
-        technologyStack: {
-          primaryLanguages: ['TypeScript'],
-          frameworks: [],
-          buildTools: ['tsc'],
-          packageManagers: ['npm'],
-          runtimes: ['node'],
-          containerization: [],
-          ciCd: [],
-          workspaceType: 'standalone',
-        },
-        architecture: {
-          summary: 'Modular',
-          architecturalPattern: 'Modular',
-          identifiedAreas: [],
-          evidence: [],
-        },
-        currentImplementationState: {
-          lifecycleState: 'TASK_LOOP',
-          hasActiveTask: false,
-          isBlocked: false,
-          totalTasksInDag: 1,
-          completedTasksCount: 0,
-          evidence: [],
-        },
-        unknowns: [],
-        contradictions: [],
-        evidenceInventory: [],
-        generatedAt: new Date().toISOString(),
-      },
+      }),
       undefined,
       { projectId }
     );
@@ -262,7 +229,7 @@ describe('P13-03: Corrective Task Lineage & Governed DAG Augmentation', () => {
     );
     historyManager = new HistoryManager({ baseDir: tempDir });
     specStore = new SpecStore({ baseDir: tempDir });
-    durableManager = new DurableStateManager({ baseDir: tempDir, projectId });
+    durableManager = new DurableStateManager({ baseDir: tempDir });
     approvalStore = new ApprovalStore({ baseDir: tempDir, historyManager });
     sessionStore = new DirectorSessionStore({ baseDir: tempDir, historyManager });
     dagEngine = new TaskDagEngine();
@@ -1100,6 +1067,7 @@ describe('P13-03: Corrective Task Lineage & Governed DAG Augmentation', () => {
       projectRoot: tempDir,
       protocolVersion: 'P9-01',
       actor: 'DIRECTOR',
+      actorRole: 'DIRECTOR',
       status: 'ACTIVE',
       createdAt: new Date().toISOString(),
       lastActivityAt: new Date().toISOString(),
@@ -1109,11 +1077,11 @@ describe('P13-03: Corrective Task Lineage & Governed DAG Augmentation', () => {
       metadata: {},
     });
 
-    await sessionStore.saveSnapshot({
+    await sessionStore.saveSnapshot(({
       directorSessionId: sessionId,
-      projectId,
+      projectId: projectId,
       projectRoot: tempDir,
-      syncStatus: 'SUCCESS',
+      syncStatus: 'CHANGED',
       logicalFingerprint: 'fp_ctx_100',
       priorFingerprint: null,
       isComplete: true,
@@ -1122,16 +1090,38 @@ describe('P13-03: Corrective Task Lineage & Governed DAG Augmentation', () => {
       synchronizedAt: new Date().toISOString(),
       schemaVersion: 1,
       protocolVersion: 'P9-02',
-      sections: {
-        projectIdentity: { isAvailable: true, isStale: false, content: {} },
-        purpose: { isAvailable: true, isStale: false, content: {} },
-        technologyStack: { isAvailable: true, isStale: false, content: {} },
-        architecture: { isAvailable: true, isStale: false, content: {} },
-        taskGraph: { isAvailable: true, isStale: false, content: {} },
-        approvalState: { isAvailable: true, isStale: false, content: {} },
-        implementationState: { isAvailable: true, isStale: false, content: {} },
+      isDerived: true,
+      sectionMetadata: {
+        projectStatus: { synchronized: true, available: true, isStale: false, fingerprint: 'fp-meta' },
+        requirements: { synchronized: true, available: true, isStale: false, fingerprint: 'fp-meta' },
+        decisions: { synchronized: true, available: true, isStale: false, fingerprint: 'fp-meta' },
+        currentTask: { synchronized: true, available: true, isStale: false, fingerprint: 'fp-meta' },
+        taskList: { synchronized: true, available: true, isStale: false, fingerprint: 'fp-meta' },
+        contextEngine: { synchronized: true, available: true, isStale: false, fingerprint: 'fp-meta' },
+        evidence: { synchronized: true, available: true, isStale: false, fingerprint: 'fp-meta' },
+        history: { synchronized: true, available: true, isStale: false, fingerprint: 'fp-meta' },
+        git: { synchronized: true, available: true, isStale: false, fingerprint: 'fp-meta' },
+        discovery: { synchronized: true, available: true, isStale: false, fingerprint: 'fp-meta' },
+        clarification: { synchronized: true, available: true, isStale: false, fingerprint: 'fp-meta' },
+        approval: { synchronized: true, available: true, isStale: false, fingerprint: 'fp-meta' },
+        authorization: { synchronized: true, available: true, isStale: false, fingerprint: 'fp-meta' },
       },
-    });
+      sections: {
+        projectStatus: { initialized: true, lifecycleState: 'DEVELOPMENT', isCompleted: false, isBlocked: false },
+        authorization: { isDevelopmentAuthorized: true, authoritySource: 'PRODUCT_OWNER', requiresHumanApproval: true },
+        approval: { hasApprovalPackage: true, packageId: 'pkg-valid', isReadyForApproval: true, isExplicitlyApproved: true },
+        clarification: { hasActiveSession: false, totalCount: 0, resolvedCount: 0, blockingOpenCount: 0, hasUnresolvedBlocking: false },
+        discovery: { isDiscovered: true, projectName: 'test', apparentPurposeClassification: 'application', technologyStack: [{ name: 'TypeScript' }], entryPointsCount: 0, unknownsCount: 0, contradictionsCount: 0 },
+        requirements: { total: 0, items: [] },
+        decisions: { total: 0, items: [] },
+        taskList: { total: 0, topologicalOrder: [], tasks: [] },
+        currentTask: { hasActiveTask: false, task: null },
+        contextEngine: { isAvailable: true, hasL0Cache: false, inspectedPaths: [] },
+        evidence: { totalAvailable: 0, items: [] },
+        history: { totalEvents: 0, recentEvents: [] },
+        git: { isGitRepository: true, head: null, branch: 'main', workingTreeClean: true, totalAcceptedCheckpoints: 0 },
+      },
+    }));
 
     const activePkg = await approvalStore.getActivePackage();
     assert.ok(activePkg);
@@ -1247,6 +1237,7 @@ describe('P13-03: Corrective Task Lineage & Governed DAG Augmentation', () => {
       projectRoot: tempDir,
       protocolVersion: 'P9-01',
       actor: 'DIRECTOR',
+      actorRole: 'DIRECTOR',
       status: 'ACTIVE',
       createdAt: new Date().toISOString(),
       lastActivityAt: new Date().toISOString(),
@@ -1256,11 +1247,11 @@ describe('P13-03: Corrective Task Lineage & Governed DAG Augmentation', () => {
       metadata: {},
     });
 
-    await sessionStore.saveSnapshot({
+    await sessionStore.saveSnapshot(({
       directorSessionId: sessionId,
-      projectId,
+      projectId: projectId,
       projectRoot: tempDir,
-      syncStatus: 'SUCCESS',
+      syncStatus: 'CHANGED',
       logicalFingerprint: 'fp_ctx_100',
       priorFingerprint: null,
       isComplete: true,
@@ -1269,16 +1260,38 @@ describe('P13-03: Corrective Task Lineage & Governed DAG Augmentation', () => {
       synchronizedAt: new Date().toISOString(),
       schemaVersion: 1,
       protocolVersion: 'P9-02',
-      sections: {
-        projectIdentity: { isAvailable: true, isStale: false, content: {} },
-        purpose: { isAvailable: true, isStale: false, content: {} },
-        technologyStack: { isAvailable: true, isStale: false, content: {} },
-        architecture: { isAvailable: true, isStale: false, content: {} },
-        taskGraph: { isAvailable: true, isStale: false, content: {} },
-        approvalState: { isAvailable: true, isStale: false, content: {} },
-        implementationState: { isAvailable: true, isStale: false, content: {} },
+      isDerived: true,
+      sectionMetadata: {
+        projectStatus: { synchronized: true, available: true, isStale: false, fingerprint: 'fp-meta' },
+        requirements: { synchronized: true, available: true, isStale: false, fingerprint: 'fp-meta' },
+        decisions: { synchronized: true, available: true, isStale: false, fingerprint: 'fp-meta' },
+        currentTask: { synchronized: true, available: true, isStale: false, fingerprint: 'fp-meta' },
+        taskList: { synchronized: true, available: true, isStale: false, fingerprint: 'fp-meta' },
+        contextEngine: { synchronized: true, available: true, isStale: false, fingerprint: 'fp-meta' },
+        evidence: { synchronized: true, available: true, isStale: false, fingerprint: 'fp-meta' },
+        history: { synchronized: true, available: true, isStale: false, fingerprint: 'fp-meta' },
+        git: { synchronized: true, available: true, isStale: false, fingerprint: 'fp-meta' },
+        discovery: { synchronized: true, available: true, isStale: false, fingerprint: 'fp-meta' },
+        clarification: { synchronized: true, available: true, isStale: false, fingerprint: 'fp-meta' },
+        approval: { synchronized: true, available: true, isStale: false, fingerprint: 'fp-meta' },
+        authorization: { synchronized: true, available: true, isStale: false, fingerprint: 'fp-meta' },
       },
-    });
+      sections: {
+        projectStatus: { initialized: true, lifecycleState: 'DEVELOPMENT', isCompleted: false, isBlocked: false },
+        authorization: { isDevelopmentAuthorized: true, authoritySource: 'PRODUCT_OWNER', requiresHumanApproval: true },
+        approval: { hasApprovalPackage: true, packageId: 'pkg-valid', isReadyForApproval: true, isExplicitlyApproved: true },
+        clarification: { hasActiveSession: false, totalCount: 0, resolvedCount: 0, blockingOpenCount: 0, hasUnresolvedBlocking: false },
+        discovery: { isDiscovered: true, projectName: 'test', apparentPurposeClassification: 'application', technologyStack: [{ name: 'TypeScript' }], entryPointsCount: 0, unknownsCount: 0, contradictionsCount: 0 },
+        requirements: { total: 0, items: [] },
+        decisions: { total: 0, items: [] },
+        taskList: { total: 0, topologicalOrder: [], tasks: [] },
+        currentTask: { hasActiveTask: false, task: null },
+        contextEngine: { isAvailable: true, hasL0Cache: false, inspectedPaths: [] },
+        evidence: { totalAvailable: 0, items: [] },
+        history: { totalEvents: 0, recentEvents: [] },
+        git: { isGitRepository: true, head: null, branch: 'main', workingTreeClean: true, totalAcceptedCheckpoints: 0 },
+      },
+    }));
 
     const activePkg = await approvalStore.getActivePackage();
     assert.ok(activePkg);
@@ -1429,7 +1442,7 @@ describe('P13-03: Corrective Task Lineage & Governed DAG Augmentation', () => {
         evidence,
         expectedProjectId: projectId,
       },
-      { correlation: { correlationId: 'corr_test_1' } }
+      { correlation: { correlationId: 'corr_test_1', receivedAt: new Date().toISOString() } }
     );
 
     assert.equal(result.isError, false);
@@ -1448,7 +1461,7 @@ describe('P13-03: Corrective Task Lineage & Governed DAG Augmentation', () => {
         evidence,
         replanApproved: true, // Forbidden claim
       },
-      { correlation: { correlationId: 'corr_test_2' } }
+      { correlation: { correlationId: 'corr_test_2', receivedAt: new Date().toISOString() } }
     );
 
     assert.equal(result.isError, true);

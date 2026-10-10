@@ -789,7 +789,7 @@ describe('Phase 9 — Typed Director Decision Protocol (TASK-P9-03)', () => {
       unknowns: [],
       contradictions: [],
       clarificationCandidates: [],
-      recommendedNextAction: 'PROCEED_TO_PLANNING',
+      recommendedNextAction: 'PROCEED_TO_CLARIFICATION',
       timestamp: new Date().toISOString(),
     };
 

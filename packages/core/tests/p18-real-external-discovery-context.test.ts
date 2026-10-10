@@ -654,7 +654,7 @@ describe('P18 Real External Project: Discovery Persistence, Context Propagation 
     assert.equal(delegate.activeContext?.projectRoot, canonicalAppDir);
 
     // Verify NO dependency on Director session
-    assert.equal(delegate.activeDirectorSession, undefined);
+    assert.equal('activeDirectorSession' in delegate, false);
 
     // 2. Downstream aidm.requirements.scope.define with ONLY workspaceRoot (no projectId)
     const reqScopeReq: McpRequestEnvelope = {

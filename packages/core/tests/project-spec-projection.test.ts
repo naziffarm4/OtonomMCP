@@ -90,6 +90,7 @@ import {
   type ProjectSpecProjection,
   type McpRequestEnvelope,
   type McpSuccessResponseEnvelope,
+  type McpToolResult,
 } from '../dist/index.js';
 
 describe('PROJECT_SPEC Projection', { concurrency: 1 }, () => {
@@ -652,6 +653,7 @@ describe('PROJECT_SPEC Projection', { concurrency: 1 }, () => {
           statement: 'Auth tokens could leak into unencrypted logs',
           consequences: ['Account compromise'],
           mitigation: 'Implement strict log redaction filter',
+          contingency: 'Implement fallback log redaction filter',
           owner: 'PRODUCT_OWNER',
           sourceRequirements: [],
           sourceBusinessRules: [],
@@ -959,7 +961,7 @@ describe('PROJECT_SPEC Projection', { concurrency: 1 }, () => {
       },
     };
 
-    const response = (await server.handleMessage(request)) as McpSuccessResponseEnvelope;
+    const response = (await server.handleMessage(request)) as McpSuccessResponseEnvelope<McpToolResult>;
 
     assert.strictEqual(response.id, 'req-gen-1');
     assert.ok(response.result?.content?.[0]?.text);
@@ -1009,10 +1011,10 @@ describe('PROJECT_SPEC Projection', { concurrency: 1 }, () => {
       },
     };
 
-    const response = (await server.handleMessage(request)) as McpSuccessResponseEnvelope;
+    const response = (await server.handleMessage(request)) as McpSuccessResponseEnvelope<McpToolResult>;
 
     assert.strictEqual(response.id, 'req-get-1');
-    const parsed = JSON.parse(response.result.content[0].text);
+    const parsed = JSON.parse(response.result.content[0].text!);
     assert.strictEqual(parsed.projectId, projectId);
     assert.ok(parsed.markdownContent);
     assert.strictEqual(parsed.isStale, false);
@@ -1067,9 +1069,9 @@ describe('PROJECT_SPEC Projection', { concurrency: 1 }, () => {
       },
     };
 
-    const response = (await server.handleMessage(request)) as McpSuccessResponseEnvelope;
+    const response = (await server.handleMessage(request)) as McpSuccessResponseEnvelope<McpToolResult>;
 
-    const parsed = JSON.parse(response.result.content[0].text);
+    const parsed = JSON.parse(response.result.content[0].text!);
     assert.strictEqual(parsed.isStale, true);
     assert.strictEqual(parsed.details.requirementsStale, true);
     await server.stop();

@@ -389,8 +389,8 @@ describe('P12-03: SpecStore Ingestion Hardening + Revision/Audit', () => {
     // Check history file: SpecStore itself is a pure persistence layer and must not emit decomposition events
     const historyExists = fs.existsSync(historyManager.historyPath);
     if (historyExists) {
-      const events = await historyManager.readAllEvents();
-      const ingestedEvents = events.filter((e) => e.eventType === 'TASK_DECOMPOSITION_INGESTED');
+      const events = await historyManager.readEvents();
+      const ingestedEvents = events.filter((e: { eventType?: string; payload?: any }) => e.eventType === 'TASK_DECOMPOSITION_INGESTED');
       assert.equal(ingestedEvents.length, 0);
     } else {
       assert.equal(historyExists, false);

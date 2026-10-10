@@ -1071,6 +1071,7 @@ describe('OM-09C: LLM Budget Pricing Accuracy & Hardening', () => {
         messages: [{ role: 'user', content: 'test prompt' }],
         correlation: { correlation_id: 'corr_test_norm', project_id: 'proj_norm' },
         director_context: { project_id: 'proj_norm' },
+        response_format: 'TEXT',
       };
 
       // Missing prompt_tokens
@@ -1078,6 +1079,9 @@ describe('OM-09C: LLM Budget Pricing Accuracy & Hardening', () => {
         provider: 'openai',
         model: 'gpt-6-luna',
         content: 'answer',
+        correlation: { correlation_id: 'corr_resMissingInput', project_id: 'proj_norm' },
+        structured_output: null,
+        error: null,
         finish_reason: LlmFinishReason.STOP,
         usage: { completion_tokens: 50, total_tokens: 50 } as any,
         raw_metadata: null,
@@ -1099,6 +1103,9 @@ describe('OM-09C: LLM Budget Pricing Accuracy & Hardening', () => {
         provider: 'openai',
         model: 'gpt-6-luna',
         content: 'answer',
+        correlation: { correlation_id: 'corr_resMissingOutput', project_id: 'proj_norm' },
+        structured_output: null,
+        error: null,
         finish_reason: LlmFinishReason.STOP,
         usage: { prompt_tokens: 100, total_tokens: 100 } as any,
         raw_metadata: null,
@@ -1120,6 +1127,9 @@ describe('OM-09C: LLM Budget Pricing Accuracy & Hardening', () => {
         provider: 'openai',
         model: 'gpt-6-luna',
         content: 'answer',
+        correlation: { correlation_id: 'corr_resMissingUsage', project_id: 'proj_norm' },
+        structured_output: null,
+        error: null,
         finish_reason: LlmFinishReason.STOP,
         usage: null as any,
         raw_metadata: null,
@@ -1142,6 +1152,7 @@ describe('OM-09C: LLM Budget Pricing Accuracy & Hardening', () => {
         messages: [{ role: 'user', content: 'test prompt' }],
         correlation: { correlation_id: 'corr_test_cw', project_id: 'proj_cw' },
         director_context: { project_id: 'proj_cw' },
+        response_format: 'TEXT',
       };
 
       // On gpt-6-luna: cache writes are billed at 1.25x. Missing cache_write_tokens CANNOT be assumed 0!
@@ -1149,6 +1160,9 @@ describe('OM-09C: LLM Budget Pricing Accuracy & Hardening', () => {
         provider: 'openai',
         model: 'gpt-6-luna',
         content: 'response',
+        correlation: { correlation_id: 'corr_resLunaMissingCw', project_id: 'proj_norm' },
+        structured_output: null,
+        error: null,
         finish_reason: LlmFinishReason.STOP,
         usage: {
           prompt_tokens: 1000,
@@ -1175,6 +1189,9 @@ describe('OM-09C: LLM Budget Pricing Accuracy & Hardening', () => {
         provider: 'openai',
         model: 'gpt-6-luna',
         content: 'response',
+        correlation: { correlation_id: 'corr_resLunaExplicitZeroCw', project_id: 'proj_norm' },
+        structured_output: null,
+        error: null,
         finish_reason: LlmFinishReason.STOP,
         usage: {
           prompt_tokens: 1000,
@@ -1201,6 +1218,9 @@ describe('OM-09C: LLM Budget Pricing Accuracy & Hardening', () => {
         provider: 'openai',
         model: 'gpt-4o',
         content: 'response',
+        correlation: { correlation_id: 'corr_resGpt4oMissingCw', project_id: 'proj_norm' },
+        structured_output: null,
+        error: null,
         finish_reason: LlmFinishReason.STOP,
         usage: {
           prompt_tokens: 1000,
@@ -1229,12 +1249,16 @@ describe('OM-09C: LLM Budget Pricing Accuracy & Hardening', () => {
         metadata: { service_tier: 'flex' },
         correlation: { correlation_id: 'corr_tier_1', project_id: 'proj_tier' },
         director_context: { project_id: 'proj_tier' },
+        response_format: 'TEXT',
       };
 
       const resProviderStandard: LlmResponse<unknown> = {
         provider: 'openai',
         model: 'gpt-6-luna',
         content: 'res',
+        correlation: { correlation_id: 'corr_resProviderStandard', project_id: 'proj_norm' },
+        structured_output: null,
+        error: null,
         finish_reason: LlmFinishReason.STOP,
         usage: { prompt_tokens: 1000, completion_tokens: 500, service_tier: 'default', prompt_tokens_details: { cache_write_tokens: 0 } } as any,
         raw_metadata: { service_tier: 'default' },
@@ -1257,6 +1281,9 @@ describe('OM-09C: LLM Budget Pricing Accuracy & Hardening', () => {
         provider: 'openai',
         model: 'gpt-6-luna',
         content: 'res',
+        correlation: { correlation_id: 'corr_resProviderFlex', project_id: 'proj_norm' },
+        structured_output: null,
+        error: null,
         finish_reason: LlmFinishReason.STOP,
         usage: { prompt_tokens: 1000, completion_tokens: 500, service_tier: 'flex', prompt_tokens_details: { cache_write_tokens: 0 } } as any,
         raw_metadata: { service_tier: 'flex' },
@@ -1278,6 +1305,9 @@ describe('OM-09C: LLM Budget Pricing Accuracy & Hardening', () => {
         provider: 'openai',
         model: 'gpt-6-luna',
         content: 'res',
+        correlation: { correlation_id: 'corr_resProviderOmitted', project_id: 'proj_norm' },
+        structured_output: null,
+        error: null,
         finish_reason: LlmFinishReason.STOP,
         usage: { prompt_tokens: 1000, completion_tokens: 500, prompt_tokens_details: { cache_write_tokens: 0 } } as any,
         raw_metadata: null,
@@ -1301,6 +1331,7 @@ describe('OM-09C: LLM Budget Pricing Accuracy & Hardening', () => {
         metadata: { service_tier: 'fast' },
         correlation: { correlation_id: 'corr_tier_2', project_id: 'proj_tier' },
         director_context: { project_id: 'proj_tier' },
+        response_format: 'TEXT',
       };
 
       const norm4 = UsageNormalizer.normalizeAndReconcile({
@@ -1320,6 +1351,9 @@ describe('OM-09C: LLM Budget Pricing Accuracy & Hardening', () => {
         provider: 'openai',
         model: 'gpt-6-luna',
         content: 'test',
+        correlation: { correlation_id: 'corr_dummyRes', project_id: 'proj_norm' },
+        structured_output: null,
+        error: null,
         finish_reason: LlmFinishReason.STOP,
         usage: { prompt_tokens: 100, completion_tokens: 50, prompt_tokens_details: { cache_write_tokens: 0 } } as any,
         raw_metadata: null,
@@ -1333,7 +1367,8 @@ describe('OM-09C: LLM Budget Pricing Accuracy & Hardening', () => {
           metadata: { regional: true },
           correlation: { correlation_id: 'c1', project_id: 'p1' },
           director_context: { project_id: 'p1' },
-        },
+            response_format: 'TEXT',
+          },
         modelId: 'gpt-6-luna',
         rate: lunaRate,
         pricingEngine,
@@ -1350,7 +1385,8 @@ describe('OM-09C: LLM Budget Pricing Accuracy & Hardening', () => {
           metadata: { data_residency: 'eu' },
           correlation: { correlation_id: 'c2', project_id: 'p2' },
           director_context: { project_id: 'p2' },
-        },
+            response_format: 'TEXT',
+          },
         modelId: 'gpt-6-luna',
         rate: lunaRate,
         pricingEngine,
@@ -1370,7 +1406,8 @@ describe('OM-09C: LLM Budget Pricing Accuracy & Hardening', () => {
         supportedModels: ['gpt-4o'],
         supportedCapabilities: [],
         checkAvailability: async () => ({ available: true, model: 'gpt-4o', reason: null }),
-        generate: async (req: LlmRequest) => ({
+        generate: async <TStructured = unknown>(req: LlmRequest): Promise<LlmResponse<TStructured>> => ({
+
           correlation: req.correlation,
           provider: 'openai',
           model: 'gpt-4o',
@@ -1381,6 +1418,8 @@ describe('OM-09C: LLM Budget Pricing Accuracy & Hardening', () => {
             // completion_tokens missing!
           } as any,
           raw_metadata: null,
+        structured_output: null as unknown as TStructured,
+          error: null,
         }),
       };
 
@@ -1391,6 +1430,7 @@ describe('OM-09C: LLM Budget Pricing Accuracy & Hardening', () => {
         model: 'gpt-4o',
         correlation: { correlation_id: 'corr_incomplete_1', project_id: 'proj_inc' },
         director_context: { project_id: 'proj_inc' },
+        response_format: 'TEXT',
       });
       assert.strictEqual(res.content, 'Hello');
 
@@ -1414,7 +1454,8 @@ describe('OM-09C: LLM Budget Pricing Accuracy & Hardening', () => {
         supportedModels: ['gpt-6-luna'],
         supportedCapabilities: [],
         checkAvailability: async () => ({ available: true, model: 'gpt-6-luna', reason: null }),
-        generate: async (req: LlmRequest) => ({
+        generate: async <TStructured = unknown>(req: LlmRequest): Promise<LlmResponse<TStructured>> => ({
+
           correlation: req.correlation,
           provider: 'openai',
           model: 'gpt-6-luna',
@@ -1426,6 +1467,8 @@ describe('OM-09C: LLM Budget Pricing Accuracy & Hardening', () => {
             prompt_tokens_details: { cached_tokens: 200 }, // missing cache_write_tokens on a cache-write model
           } as any,
           raw_metadata: null,
+        structured_output: null as unknown as TStructured,
+          error: null,
         }),
       };
 
@@ -1436,6 +1479,7 @@ describe('OM-09C: LLM Budget Pricing Accuracy & Hardening', () => {
         model: 'gpt-6-luna',
         correlation: { correlation_id: 'corr_luna_missing_cw', project_id: 'proj_luna' },
         director_context: { project_id: 'proj_luna' },
+        response_format: 'TEXT',
       });
       assert.strictEqual(res.content, 'Hello from luna');
 
@@ -1458,7 +1502,8 @@ describe('OM-09C: LLM Budget Pricing Accuracy & Hardening', () => {
         supportedModels: ['gpt-6-luna'],
         supportedCapabilities: [],
         checkAvailability: async () => ({ available: true, model: 'gpt-6-luna', reason: null }),
-        generate: async (req: LlmRequest) => ({
+        generate: async <TStructured = unknown>(req: LlmRequest): Promise<LlmResponse<TStructured>> => ({
+
           correlation: req.correlation,
           provider: 'openai',
           model: 'gpt-6-luna',
@@ -1476,6 +1521,8 @@ describe('OM-09C: LLM Budget Pricing Accuracy & Hardening', () => {
             },
           } as any,
           raw_metadata: null,
+        structured_output: null as unknown as TStructured,
+          error: null,
         }),
       };
 
@@ -1486,6 +1533,7 @@ describe('OM-09C: LLM Budget Pricing Accuracy & Hardening', () => {
         model: 'gpt-6-luna',
         correlation: { correlation_id: 'corr_complete_luna_1', attempt: 1, project_id: 'proj_comp' },
         director_context: { project_id: 'proj_comp' },
+        response_format: 'TEXT',
       };
 
       const res = await adapter.generate(req);
@@ -1533,6 +1581,7 @@ describe('OM-09C: LLM Budget Pricing Accuracy & Hardening', () => {
           metadata: { regional: true },
           correlation: { correlation_id: 'corr_reg_fail', project_id: 'proj_reg' },
           director_context: { project_id: 'proj_reg' },
+        response_format: 'TEXT',
         }),
         (err: any) => err instanceof BudgetError && err.code === 'ERR_UNSUPPORTED_BILLING_MODE'
       );
@@ -2180,7 +2229,8 @@ describe('OM-09C: LLM Budget Pricing Accuracy & Hardening', () => {
           supportedModels: ['gpt-6-luna'],
           supportedCapabilities: [],
           checkAvailability: async () => ({ available: true, model: 'gpt-6-luna', reason: null }),
-          generate: async (req: LlmRequest) => ({
+          generate: async <TStructured = unknown>(req: LlmRequest): Promise<LlmResponse<TStructured>> => ({
+
             correlation: req.correlation,
             provider: 'openai',
             model: 'gpt-6-luna',
@@ -2192,7 +2242,9 @@ describe('OM-09C: LLM Budget Pricing Accuracy & Hardening', () => {
               // Omitted cache_write_tokens on gpt-6-luna without disabling caching
             } as any,
             raw_metadata: null,
-          }),
+          structured_output: null as unknown as TStructured,
+          error: null,
+        }),
         };
 
         const adapter = new BudgetAwareLlmAdapter(unpriceableProvider, budgetManager);
@@ -2202,7 +2254,8 @@ describe('OM-09C: LLM Budget Pricing Accuracy & Hardening', () => {
           model: 'gpt-6-luna',
           correlation: { correlation_id: 'corr_unk_hold_1', attempt: 1, project_id: 'proj_unk' },
           director_context: { project_id: 'proj_unk' },
-        };
+        response_format: 'TEXT',
+      };
 
         const res = await adapter.generate(req);
         assert.strictEqual(res.content, 'Unpriceable corrupted metrics');
@@ -2230,7 +2283,8 @@ describe('OM-09C: LLM Budget Pricing Accuracy & Hardening', () => {
           supportedModels: ['gpt-4o'],
           supportedCapabilities: [],
           checkAvailability: async () => ({ available: true, model: 'gpt-4o', reason: null }),
-          generate: async (req: LlmRequest) => ({
+          generate: async <TStructured = unknown>(req: LlmRequest): Promise<LlmResponse<TStructured>> => ({
+
             correlation: req.correlation,
             provider: 'openai',
             model: 'gpt-4o',
@@ -2244,7 +2298,9 @@ describe('OM-09C: LLM Budget Pricing Accuracy & Hardening', () => {
               output_tokens_details: { reasoning_tokens: 50 },
             } as any,
             raw_metadata: null,
-          }),
+          structured_output: null as unknown as TStructured,
+          error: null,
+        }),
         };
 
         const adapter = new BudgetAwareLlmAdapter(responsesProvider, budgetManager);
@@ -2255,7 +2311,8 @@ describe('OM-09C: LLM Budget Pricing Accuracy & Hardening', () => {
           metadata: { endpoint: 'https://api.openai.com/v1/responses' },
           correlation: { correlation_id: 'corr_responses_settle_1', attempt: 1, project_id: 'proj_resp' },
           director_context: { project_id: 'proj_resp' },
-        };
+        response_format: 'TEXT',
+      };
 
         const res = await adapter.generate(req);
         assert.strictEqual(res.content, 'Responses API response');
@@ -2338,6 +2395,7 @@ describe('OM-09C: LLM Budget Pricing Accuracy & Hardening', () => {
               metadata: { endpoint: 'https://unknown-proxy.corp.internal/v1/chat/completions' },
               correlation: { correlation_id: 'c_unk_1', project_id: 'p_unk' },
               director_context: { project_id: 'p_unk' },
+        response_format: 'TEXT',
             });
           },
           (err: any) => {
@@ -2380,6 +2438,7 @@ describe('OM-09C: LLM Budget Pricing Accuracy & Hardening', () => {
               metadata: { endpoint: 'https://ai-gateway.mycorp.net/v1/chat/completions' },
               correlation: { correlation_id: 'c_gate_1', project_id: 'p_gate' },
               director_context: { project_id: 'p_gate' },
+        response_format: 'TEXT',
             });
           },
           (err: any) => {
@@ -2692,6 +2751,7 @@ describe('OM-09C: LLM Budget Pricing Accuracy & Hardening', () => {
           request: {
             messages: [{ role: 'user', content: 'test' }],
             model: 'gpt-4o',
+            response_format: 'TEXT',
             correlation: { correlation_id: 'c_reas_1', project_id: 'p_reas' },
             director_context: { project_id: 'p_reas' },
           },
@@ -2739,6 +2799,7 @@ describe('OM-09C: LLM Budget Pricing Accuracy & Hardening', () => {
             model: 'gpt-4o',
             correlation: { correlation_id: 'c_reas_2', project_id: 'p_reas' },
             director_context: { project_id: 'p_reas' },
+            response_format: 'TEXT',
           },
           modelId: 'gpt-4o',
           rate,
@@ -2775,6 +2836,7 @@ describe('OM-09C: LLM Budget Pricing Accuracy & Hardening', () => {
             model: 'gpt-4o',
             correlation: { correlation_id: 'c_reas_3', project_id: 'p_reas' },
             director_context: { project_id: 'p_reas' },
+            response_format: 'TEXT',
           },
           modelId: 'gpt-4o',
           rate,
@@ -2814,6 +2876,7 @@ describe('OM-09C: LLM Budget Pricing Accuracy & Hardening', () => {
             model: 'gpt-4o',
             correlation: { correlation_id: 'c_reas_4', project_id: 'p_reas' },
             director_context: { project_id: 'p_reas' },
+            response_format: 'TEXT',
           },
           modelId: 'gpt-4o',
           rate,
@@ -2854,6 +2917,7 @@ describe('OM-09C: LLM Budget Pricing Accuracy & Hardening', () => {
             model: 'gpt-4o',
             correlation: { correlation_id: 'c_reas_5', project_id: 'p_reas' },
             director_context: { project_id: 'p_reas' },
+            response_format: 'TEXT',
           },
           modelId: 'gpt-4o',
           rate,
@@ -2879,19 +2943,30 @@ describe('OM-09C: LLM Budget Pricing Accuracy & Hardening', () => {
           supportedModels: ['gpt-4o'],
           supportedCapabilities: [],
           checkAvailability: async () => ({ available: true, model: 'gpt-4o', reason: null }),
-          generate: async (req: LlmRequest) => ({
+          generate: async <TStructured = unknown>(req: LlmRequest): Promise<LlmResponse<TStructured>> => ({
             correlation: req.correlation,
             provider: 'openai',
             model: 'gpt-4o',
             content: 'conflicting reasoning',
+            structured_output: null as unknown as TStructured,
             finish_reason: LlmFinishReason.STOP,
             usage: {
+              reported_input_tokens: 500,
+              reported_output_tokens: 200,
+              reported_cached_tokens: null,
+              reported_reasoning_tokens: 50,
+              estimated_tokens: 700,
+              estimated_cost_usd: null,
+              provider_name: 'openai',
+              model: 'gpt-4o',
+              is_exact_provider_metric: true,
               prompt_tokens: 500,
               completion_tokens: 200,
               reasoning_tokens: 50,
               completion_tokens_details: { reasoning_tokens: 75 },
             } as any,
             raw_metadata: null,
+            error: null,
           }),
         };
 
@@ -2902,7 +2977,8 @@ describe('OM-09C: LLM Budget Pricing Accuracy & Hardening', () => {
           model: 'gpt-4o',
           correlation: { correlation_id: 'c_hold_conflict_1', attempt: 1, project_id: 'p_hold' },
           director_context: { project_id: 'p_hold' },
-        };
+        response_format: 'TEXT',
+      };
 
         await adapter.generate(req);
 
@@ -2940,6 +3016,7 @@ describe('OM-09C: LLM Budget Pricing Accuracy & Hardening', () => {
             model: 'gpt-4o',
             correlation: { correlation_id: 'c_mismatch_1', project_id: 'p_mis' },
             director_context: { project_id: 'p_mis' },
+            response_format: 'TEXT',
           },
           modelId: 'gpt-4o',
           rate,
@@ -2963,13 +3040,32 @@ describe('OM-09C: LLM Budget Pricing Accuracy & Hardening', () => {
         let providerCalled = false;
         const mockProvider: LLMProvider = {
           providerId: 'openai-compatible',
+          providerName: 'openai-compatible',
+          defaultModel: 'custom-model',
+          supportedModels: ['custom-model'],
+          supportedCapabilities: [],
+          checkAvailability: async () => ({ available: true, model: 'custom-model', reason: null }),
           async generate<T>(): Promise<LlmResponse<T>> {
             providerCalled = true;
             return {
+              correlation: { correlation_id: 'c_host_price_1', project_id: 'p_host' },
+              provider: 'openai-compatible',
+              model: 'custom-model',
               content: 'test',
+              structured_output: null as unknown as T,
               finish_reason: LlmFinishReason.STOP,
-              usage: { prompt_tokens: 100, completion_tokens: 50 },
+              usage: {
+                reported_input_tokens: 100,
+                reported_output_tokens: 50,
+                reported_cached_tokens: null,
+                estimated_tokens: 150,
+                estimated_cost_usd: null,
+                provider_name: 'openai-compatible',
+                model: 'custom-model',
+                is_exact_provider_metric: true,
+              },
               raw_metadata: null,
+              error: null,
             };
           },
         };
@@ -2997,6 +3093,7 @@ describe('OM-09C: LLM Budget Pricing Accuracy & Hardening', () => {
               metadata: { endpoint: 'https://proxy-one.corp.net/v1/chat/completions' },
               correlation: { correlation_id: 'c_host_price_1', project_id: 'p_host' },
               director_context: { project_id: 'p_host' },
+        response_format: 'TEXT',
             });
           },
           (err: any) => {
@@ -3014,13 +3111,32 @@ describe('OM-09C: LLM Budget Pricing Accuracy & Hardening', () => {
         let providerCalled = false;
         const mockProvider: LLMProvider = {
           providerId: 'openai-compatible',
+          providerName: 'openai-compatible',
+          defaultModel: 'custom-model',
+          supportedModels: ['custom-model'],
+          supportedCapabilities: [],
+          checkAvailability: async () => ({ available: true, model: 'custom-model', reason: null }),
           async generate<T>(): Promise<LlmResponse<T>> {
             providerCalled = true;
             return {
+              correlation: { correlation_id: 'c_host_price_1', project_id: 'p_host' },
+              provider: 'openai-compatible',
+              model: 'custom-model',
               content: 'test',
+              structured_output: null as unknown as T,
               finish_reason: LlmFinishReason.STOP,
-              usage: { prompt_tokens: 100, completion_tokens: 50 },
+              usage: {
+                reported_input_tokens: 100,
+                reported_output_tokens: 50,
+                reported_cached_tokens: null,
+                estimated_tokens: 150,
+                estimated_cost_usd: null,
+                provider_name: 'openai-compatible',
+                model: 'custom-model',
+                is_exact_provider_metric: true,
+              },
               raw_metadata: null,
+              error: null,
             };
           },
         };
@@ -3048,6 +3164,7 @@ describe('OM-09C: LLM Budget Pricing Accuracy & Hardening', () => {
               metadata: { endpoint: 'https://proxy-two.corp.net/v1/chat/completions' },
               correlation: { correlation_id: 'c_host_contract_1', project_id: 'p_host' },
               director_context: { project_id: 'p_host' },
+        response_format: 'TEXT',
             });
           },
           (err: any) => {
@@ -3065,13 +3182,32 @@ describe('OM-09C: LLM Budget Pricing Accuracy & Hardening', () => {
         let providerCalled = false;
         const mockProvider: LLMProvider = {
           providerId: 'openai-compatible',
+          providerName: 'openai-compatible',
+          defaultModel: 'custom-model',
+          supportedModels: ['custom-model'],
+          supportedCapabilities: [],
+          checkAvailability: async () => ({ available: true, model: 'custom-model', reason: null }),
           async generate<T>(): Promise<LlmResponse<T>> {
             providerCalled = true;
             return {
+              correlation: { correlation_id: 'c_host_price_1', project_id: 'p_host' },
+              provider: 'openai-compatible',
+              model: 'custom-model',
               content: 'test',
+              structured_output: null as unknown as T,
               finish_reason: LlmFinishReason.STOP,
-              usage: { prompt_tokens: 100, completion_tokens: 50 },
+              usage: {
+                reported_input_tokens: 100,
+                reported_output_tokens: 50,
+                reported_cached_tokens: null,
+                estimated_tokens: 150,
+                estimated_cost_usd: null,
+                provider_name: 'openai-compatible',
+                model: 'custom-model',
+                is_exact_provider_metric: true,
+              },
               raw_metadata: null,
+              error: null,
             };
           },
         };
@@ -3100,6 +3236,7 @@ describe('OM-09C: LLM Budget Pricing Accuracy & Hardening', () => {
               },
               correlation: { correlation_id: 'c_meta_contract_1', project_id: 'p_host' },
               director_context: { project_id: 'p_host' },
+        response_format: 'TEXT',
             });
           },
           (err: any) => {
@@ -3126,10 +3263,24 @@ describe('OM-09C: LLM Budget Pricing Accuracy & Hardening', () => {
           async generate<T>(): Promise<LlmResponse<T>> {
             providerCalled = true;
             return {
+              correlation: { correlation_id: 'c_auth_custom_1', project_id: 'p_host' },
+              provider: 'authorized-gateway.corp.net',
+              model: 'custom-model',
               content: 'authorized custom response',
+              structured_output: null as unknown as T,
               finish_reason: LlmFinishReason.STOP,
-              usage: { prompt_tokens: 100, completion_tokens: 50 },
+              usage: {
+                reported_input_tokens: 100,
+                reported_output_tokens: 50,
+                reported_cached_tokens: null,
+                estimated_tokens: 150,
+                estimated_cost_usd: null,
+                provider_name: 'authorized-gateway.corp.net',
+                model: 'custom-model',
+                is_exact_provider_metric: true,
+              },
               raw_metadata: null,
+              error: null,
             };
           },
         };
@@ -3154,6 +3305,7 @@ describe('OM-09C: LLM Budget Pricing Accuracy & Hardening', () => {
           },
           correlation: { correlation_id: 'c_auth_custom_1', project_id: 'p_host' },
           director_context: { project_id: 'p_host' },
+        response_format: 'TEXT',
         });
 
         assert.strictEqual(providerCalled, true, 'Provider must be called when host-specific price and contract are consistent');
@@ -3164,13 +3316,32 @@ describe('OM-09C: LLM Budget Pricing Accuracy & Hardening', () => {
         let providerCalled = false;
         const mockProvider: LLMProvider = {
           providerId: 'strict-gateway.corp.net',
+          providerName: 'strict-gateway.corp.net',
+          defaultModel: 'custom-model',
+          supportedModels: ['custom-model'],
+          supportedCapabilities: [],
+          checkAvailability: async () => ({ available: true, model: 'custom-model', reason: null }),
           async generate<T>(): Promise<LlmResponse<T>> {
             providerCalled = true;
             return {
+              correlation: { correlation_id: 'c_conflict_1', project_id: 'p_host' },
+              provider: 'strict-gateway.corp.net',
+              model: 'custom-model',
               content: 'test',
+              structured_output: null as unknown as T,
               finish_reason: LlmFinishReason.STOP,
-              usage: { prompt_tokens: 100, completion_tokens: 50 },
+              usage: {
+                reported_input_tokens: 100,
+                reported_output_tokens: 50,
+                reported_cached_tokens: null,
+                estimated_tokens: 150,
+                estimated_cost_usd: null,
+                provider_name: 'strict-gateway.corp.net',
+                model: 'custom-model',
+                is_exact_provider_metric: true,
+              },
               raw_metadata: null,
+              error: null,
             };
           },
         };
@@ -3200,6 +3371,7 @@ describe('OM-09C: LLM Budget Pricing Accuracy & Hardening', () => {
               },
               correlation: { correlation_id: 'c_conflict_1', project_id: 'p_host' },
               director_context: { project_id: 'p_host' },
+        response_format: 'TEXT',
             });
           },
           (err: any) => {
@@ -3223,6 +3395,7 @@ describe('OM-09C: LLM Budget Pricing Accuracy & Hardening', () => {
               },
               correlation: { correlation_id: 'c_conflict_2', project_id: 'p_host' },
               director_context: { project_id: 'p_host' },
+        response_format: 'TEXT',
             });
           },
           (err: any) => {
@@ -3290,12 +3463,16 @@ describe('OM-09C: LLM Budget Pricing Accuracy & Hardening', () => {
     // ==========================================================================
     describe('17. Contract-Authoritative Reasoning Token Accounting (OM-09C-FIX-7)', () => {
       const gpt4oRate: PricingRate = {
+        rateId: 'rate_gpt4o',
         providerId: 'openai',
         modelId: 'gpt-4o',
         inputRateNum: 2_500_000_000n, // $2.50 / M = 2,500 nUSD per token
         inputRateDen: 1_000_000n,
         outputRateNum: 10_000_000_000n, // $10.00 / M = 10,000 nUSD per token
         outputRateDen: 1_000_000n,
+        cachedInputRateNum: 1_250_000_000n,
+        cachedInputRateDen: 1_000_000n,
+        validFrom: '2026-01-01T00:00:00.000Z',
       };
 
       it('caller metadata separate_reasoning_tokens: true cannot cause double counting under contract where output tokens include reasoning tokens', () => {
@@ -3322,6 +3499,7 @@ describe('OM-09C: LLM Budget Pricing Accuracy & Hardening', () => {
             },
             correlation: { correlation_id: 'corr-reason-1', project_id: 'p-reason' },
             director_context: { project_id: 'p-reason' },
+            response_format: 'TEXT',
           },
           modelId: 'gpt-4o',
           rate: gpt4oRate,
@@ -3360,6 +3538,7 @@ describe('OM-09C: LLM Budget Pricing Accuracy & Hardening', () => {
             },
             correlation: { correlation_id: 'corr-reason-2', project_id: 'p-reason' },
             director_context: { project_id: 'p-reason' },
+            response_format: 'TEXT',
           },
           modelId: 'gpt-4o',
           rate: gpt4oRate,
@@ -3395,6 +3574,7 @@ describe('OM-09C: LLM Budget Pricing Accuracy & Hardening', () => {
             model: 'gpt-4o',
             correlation: { correlation_id: 'corr-reason-3', project_id: 'p-reason' },
             director_context: { project_id: 'p-reason' },
+            response_format: 'TEXT',
           },
           modelId: 'gpt-4o',
           rate: gpt4oRate,
@@ -3459,6 +3639,7 @@ describe('OM-09C: LLM Budget Pricing Accuracy & Hardening', () => {
             },
             correlation: { correlation_id: 'corr-reason-4', project_id: 'p-reason' },
             director_context: { project_id: 'p-reason' },
+            response_format: 'TEXT',
           },
           modelId: 'deep-thinker-v1',
           rate: customRate,
@@ -3493,6 +3674,7 @@ describe('OM-09C: LLM Budget Pricing Accuracy & Hardening', () => {
             model: 'gpt-4o',
             correlation: { correlation_id: 'c-neg', project_id: 'p-reason' },
             director_context: { project_id: 'p-reason' },
+            response_format: 'TEXT',
           },
           modelId: 'gpt-4o',
           rate: gpt4oRate,
@@ -3518,6 +3700,7 @@ describe('OM-09C: LLM Budget Pricing Accuracy & Hardening', () => {
             model: 'gpt-4o',
             correlation: { correlation_id: 'c-frac', project_id: 'p-reason' },
             director_context: { project_id: 'p-reason' },
+            response_format: 'TEXT',
           },
           modelId: 'gpt-4o',
           rate: gpt4oRate,
@@ -3544,6 +3727,7 @@ describe('OM-09C: LLM Budget Pricing Accuracy & Hardening', () => {
             model: 'gpt-4o',
             correlation: { correlation_id: 'c-conflict', project_id: 'p-reason' },
             director_context: { project_id: 'p-reason' },
+            response_format: 'TEXT',
           },
           modelId: 'gpt-4o',
           rate: gpt4oRate,
@@ -3569,6 +3753,7 @@ describe('OM-09C: LLM Budget Pricing Accuracy & Hardening', () => {
             model: 'gpt-4o',
             correlation: { correlation_id: 'c-exceed', project_id: 'p-reason' },
             director_context: { project_id: 'p-reason' },
+            response_format: 'TEXT',
           },
           modelId: 'gpt-4o',
           rate: gpt4oRate,
@@ -3591,20 +3776,26 @@ describe('OM-09C: LLM Budget Pricing Accuracy & Hardening', () => {
           supportedModels: ['gpt-4o'],
           supportedCapabilities: [],
           checkAvailability: async () => ({ available: true, model: 'gpt-4o', reason: null }),
-          generate: async (req: LlmRequest) => ({
+          generate: async <TStructured = unknown>(req: LlmRequest): Promise<LlmResponse<TStructured>> => ({
             correlation: req.correlation,
             provider: 'openai',
             model: 'gpt-4o',
             content: 'Reasoning result',
+            structured_output: null as unknown as TStructured,
             finish_reason: LlmFinishReason.STOP,
             usage: {
-              prompt_tokens: 1000,
-              completion_tokens: 300,
-              completion_tokens_details: {
-                reasoning_tokens: 100,
-              },
-            } as any,
+              reported_input_tokens: 1000,
+              reported_output_tokens: 300,
+              reported_cached_tokens: null,
+              reported_reasoning_tokens: 100,
+              estimated_tokens: 1300,
+              estimated_cost_usd: null,
+              provider_name: 'openai',
+              model: 'gpt-4o',
+              is_exact_provider_metric: true,
+            },
             raw_metadata: null,
+            error: null,
           }),
         };
 
@@ -3620,6 +3811,7 @@ describe('OM-09C: LLM Budget Pricing Accuracy & Hardening', () => {
           },
           correlation: { correlation_id: 'c-live-reason-1', project_id: 'p-live' },
           director_context: { project_id: 'p-live' },
+        response_format: 'TEXT',
         });
 
         assert.strictEqual(res.content, 'Reasoning result');

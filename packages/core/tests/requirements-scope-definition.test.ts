@@ -693,7 +693,7 @@ describe('Phase 15 Requirements & Scope Definition (TASK-P15-03)', { concurrency
     const defineResponse = (await server.handleMessage(defineRequest)) as McpSuccessResponseEnvelope<{
       content: Array<{ type: string; text: string }>;
     }>;
-    assert.ok(!defineResponse.error);
+    assert.ok(!('error' in defineResponse));
     assert.ok(defineResponse.result);
     const content = defineResponse.result.content[0].text;
     const parsedDefine = JSON.parse(content);
@@ -716,7 +716,7 @@ describe('Phase 15 Requirements & Scope Definition (TASK-P15-03)', { concurrency
     const getResponse = (await server.handleMessage(getRequest)) as McpSuccessResponseEnvelope<{
       content: Array<{ type: string; text: string }>;
     }>;
-    assert.ok(!getResponse.error);
+    assert.ok(!('error' in getResponse));
     const parsedGet = JSON.parse(getResponse.result.content[0].text);
     assert.strictEqual(parsedGet.projectId, 'proj-chess');
     assert.strictEqual(parsedGet.fingerprint, parsedDefine.fingerprint);
@@ -726,7 +726,7 @@ describe('Phase 15 Requirements & Scope Definition (TASK-P15-03)', { concurrency
 
   // T26 no approval creation
   it('T26_no_approval_creation: does not create or mutate approval packages', async () => {
-    const initialPackages = await approvalStore.listPackages('proj-chess');
+    const initialPackages = await approvalStore.listPackages();
     assert.strictEqual(initialPackages.length, 0);
 
     const discovery = await createDiscoveryRevision('proj-chess');
@@ -734,7 +734,7 @@ describe('Phase 15 Requirements & Scope Definition (TASK-P15-03)', { concurrency
       projectId: 'proj-chess',
     });
 
-    const finalPackages = await approvalStore.listPackages('proj-chess');
+    const finalPackages = await approvalStore.listPackages();
     assert.strictEqual(finalPackages.length, 0);
   });
 

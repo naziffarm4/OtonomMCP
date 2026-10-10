@@ -22,7 +22,8 @@ import { fileURLToPath } from 'node:url';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-
+import type { DurableStateInput } from '../src/storage/durable-state.js';
+import type { DirectorContextSnapshot } from '../src/director/director-context-types.js';
 import {
   DurableStateManager,
   CURRENT_DURABLE_STATE_SCHEMA_VERSION,
@@ -77,7 +78,7 @@ describe('Phase 11 TASK-P11-02: Controlled Continuation Boundary', () => {
     sessionStore = new DirectorSessionStore({ baseDir: tmpDir, historyManager });
     sessionEngine = new DirectorSessionEngine({ store: sessionStore, workspaceRoot: tmpDir });
     approvalStore = new ApprovalStore({ baseDir: tmpDir, historyManager });
-    specStore = new SpecStore({ baseDir: tmpDir, historyManager });
+    specStore = new SpecStore({ baseDir: tmpDir });
     dagEngine = new TaskDagEngine();
   });
 
@@ -85,25 +86,69 @@ describe('Phase 11 TASK-P11-02: Controlled Continuation Boundary', () => {
     await fs.promises.rm(tmpDir, { recursive: true, force: true });
   });
 
-  async function seedActiveSession(snapshotOverrides?: Partial<any>): Promise<void> {
+  
+  function makeState(input: Partial<DurableStateInput> & { currentLifecycleState: LifecycleState }): DurableStateInput {
+    return {
+      activeTaskId: null,
+      completedTaskIds: [],
+      blockedState: null,
+      ...input,
+    };
+  }
+
+  async function seedActiveSession(snapshotOverrides?: Partial<DirectorContextSnapshot>): Promise<void> {
     await sessionEngine.createSession({
       directorSessionId: SESSION_ID,
       projectId: PROJECT_ID,
       understandingRevision: 1,
     });
 
-    await sessionStore.saveSnapshot({
+    const baseSnapshot: DirectorContextSnapshot = ({
       directorSessionId: SESSION_ID,
-      snapshotId: 'snap-1',
+      projectId: PROJECT_ID,
+      projectRoot: tmpDir,
+      syncStatus: 'CHANGED',
       logicalFingerprint: FINGERPRINT,
-      understandingRevision: 1,
-      syncStatus: 'SYNCED',
+      priorFingerprint: null,
       isComplete: true,
-      staleSections: [],
       unavailableSections: [],
-      timestamp: new Date().toISOString(),
-      ...snapshotOverrides,
+      staleSections: [],
+      synchronizedAt: new Date().toISOString(),
+      schemaVersion: 1,
+      protocolVersion: 'P9-02',
+      isDerived: true,
+      sectionMetadata: {
+        projectStatus: { synchronized: true, available: true, isStale: false, fingerprint: 'fp-meta' },
+        requirements: { synchronized: true, available: true, isStale: false, fingerprint: 'fp-meta' },
+        decisions: { synchronized: true, available: true, isStale: false, fingerprint: 'fp-meta' },
+        currentTask: { synchronized: true, available: true, isStale: false, fingerprint: 'fp-meta' },
+        taskList: { synchronized: true, available: true, isStale: false, fingerprint: 'fp-meta' },
+        contextEngine: { synchronized: true, available: true, isStale: false, fingerprint: 'fp-meta' },
+        evidence: { synchronized: true, available: true, isStale: false, fingerprint: 'fp-meta' },
+        history: { synchronized: true, available: true, isStale: false, fingerprint: 'fp-meta' },
+        git: { synchronized: true, available: true, isStale: false, fingerprint: 'fp-meta' },
+        discovery: { synchronized: true, available: true, isStale: false, fingerprint: 'fp-meta' },
+        clarification: { synchronized: true, available: true, isStale: false, fingerprint: 'fp-meta' },
+        approval: { synchronized: true, available: true, isStale: false, fingerprint: 'fp-meta' },
+        authorization: { synchronized: true, available: true, isStale: false, fingerprint: 'fp-meta' },
+      },
+      sections: {
+        projectStatus: { initialized: true, lifecycleState: 'DEVELOPMENT', isCompleted: false, isBlocked: false },
+        authorization: { isDevelopmentAuthorized: true, authoritySource: 'PRODUCT_OWNER', requiresHumanApproval: true },
+        approval: { hasApprovalPackage: true, packageId: 'pkg-valid', isReadyForApproval: true, isExplicitlyApproved: true },
+        clarification: { hasActiveSession: false, totalCount: 0, resolvedCount: 0, blockingOpenCount: 0, hasUnresolvedBlocking: false },
+        discovery: { isDiscovered: true, projectName: 'test', apparentPurposeClassification: 'application', technologyStack: [{ name: 'TypeScript' }], entryPointsCount: 0, unknownsCount: 0, contradictionsCount: 0 },
+        requirements: { total: 0, items: [] },
+        decisions: { total: 0, items: [] },
+        taskList: { total: 0, topologicalOrder: [], tasks: [] },
+        currentTask: { hasActiveTask: false, task: null },
+        contextEngine: { isAvailable: true, hasL0Cache: false, inspectedPaths: [] },
+        evidence: { totalAvailable: 0, items: [] },
+        history: { totalEvents: 0, recentEvents: [] },
+        git: { isGitRepository: true, head: null, branch: 'main', workingTreeClean: true, totalAcceptedCheckpoints: 0 },
+      },
     });
+    await sessionStore.saveSnapshot({ ...baseSnapshot, ...snapshotOverrides });
   }
 
   function createValidEvidence(taskId: string, decision: 'ACCEPT' | 'REJECT' | 'BLOCK' = 'ACCEPT'): SystemExecutionEvidence {
@@ -118,9 +163,6 @@ describe('Phase 11 TASK-P11-02: Controlled Continuation Boundary', () => {
       approvalPackageRevision: 1,
       verificationDecision: decision,
       verifiedAt: new Date().toISOString(),
-      verifierIdentity: 'SYSTEM_EVIDENCE_VERIFIER',
-      deterministicChecksum: 'sha256-checksum',
-      findingsSummary: `Evidence verified with decision ${decision}`,
       repositoryState: {
         baseCommit: 'a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2',
         headCommit: 'b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3',
@@ -156,10 +198,10 @@ describe('Phase 11 TASK-P11-02: Controlled Continuation Boundary', () => {
   // ==========================================================================
 
   it('T01: default DurableState has continuationState=NONE and continuationPolicy=AUTONOMOUS', async () => {
-    const saved = await durableManager.save({
+    const saved = await durableManager.save(makeState({
       currentLifecycleState: LifecycleState.TASK_LOOP,
       completedTaskIds: [],
-    });
+    }));
 
     assert.equal(saved.continuationState, 'NONE');
     assert.equal(saved.continuationPolicy, 'AUTONOMOUS');
@@ -171,12 +213,12 @@ describe('Phase 11 TASK-P11-02: Controlled Continuation Boundary', () => {
   });
 
   it('T02: DurableState persists continuationState=WAITING and continuationPolicy=MANUAL', async () => {
-    const saved = await durableManager.save({
+    const saved = await durableManager.save(makeState({
       currentLifecycleState: LifecycleState.TASK_LOOP,
       completedTaskIds: [],
       continuationState: 'WAITING',
       continuationPolicy: 'MANUAL',
-    });
+    }));
 
     assert.equal(saved.continuationState, 'WAITING');
     assert.equal(saved.continuationPolicy, 'MANUAL');
@@ -188,12 +230,12 @@ describe('Phase 11 TASK-P11-02: Controlled Continuation Boundary', () => {
   });
 
   it('T03: DurableState serializes both camelCase and snake_case representations', async () => {
-    await durableManager.save({
+    await durableManager.save(makeState({
       currentLifecycleState: LifecycleState.TASK_LOOP,
       completedTaskIds: [],
       continuationState: 'WAITING',
       continuationPolicy: 'MANUAL',
-    });
+    }));
 
     const raw = JSON.parse(await fs.promises.readFile(durableManager.filePath, 'utf8'));
     assert.equal(raw.continuationState, 'WAITING');
@@ -219,21 +261,21 @@ describe('Phase 11 TASK-P11-02: Controlled Continuation Boundary', () => {
 
   it('T05: DurableState rejects invalid continuationState value', async () => {
     await assert.rejects(async () => {
-      await durableManager.save({
+      await durableManager.save(makeState({
         currentLifecycleState: LifecycleState.TASK_LOOP,
         completedTaskIds: [],
         continuationState: 'INVALID_STATE' as any,
-      });
+      }));
     });
   });
 
   it('T06: DurableState rejects invalid continuationPolicy value', async () => {
     await assert.rejects(async () => {
-      await durableManager.save({
+      await durableManager.save(makeState({
         currentLifecycleState: LifecycleState.TASK_LOOP,
         completedTaskIds: [],
         continuationPolicy: 'INVALID_POLICY' as any,
-      });
+      }));
     });
   });
 
@@ -242,12 +284,12 @@ describe('Phase 11 TASK-P11-02: Controlled Continuation Boundary', () => {
   // ==========================================================================
 
   it('T07: AUTONOMOUS policy does not set WAITING on verified ACCEPT', async () => {
-    await durableManager.save({
+    await durableManager.save(makeState({
       currentLifecycleState: LifecycleState.TASK_LOOP,
       completedTaskIds: [],
       continuationPolicy: 'AUTONOMOUS',
       continuationState: 'NONE',
-    });
+    }));
 
     const integrator = new ExecutionStateIntegrator({
       baseDir: tmpDir,
@@ -266,12 +308,12 @@ describe('Phase 11 TASK-P11-02: Controlled Continuation Boundary', () => {
   });
 
   it('T08: MANUAL policy sets continuationState=WAITING on verified ACCEPT', async () => {
-    await durableManager.save({
+    await durableManager.save(makeState({
       currentLifecycleState: LifecycleState.TASK_LOOP,
       completedTaskIds: [],
       continuationPolicy: 'MANUAL',
       continuationState: 'NONE',
-    });
+    }));
 
     const integrator = new ExecutionStateIntegrator({
       baseDir: tmpDir,
@@ -290,12 +332,12 @@ describe('Phase 11 TASK-P11-02: Controlled Continuation Boundary', () => {
   });
 
   it('T09: verified REJECT does not create WAITING checkpoint even under MANUAL policy', async () => {
-    await durableManager.save({
+    await durableManager.save(makeState({
       currentLifecycleState: LifecycleState.TASK_LOOP,
       completedTaskIds: [],
       continuationPolicy: 'MANUAL',
       continuationState: 'NONE',
-    });
+    }));
 
     const integrator = new ExecutionStateIntegrator({
       baseDir: tmpDir,
@@ -312,12 +354,12 @@ describe('Phase 11 TASK-P11-02: Controlled Continuation Boundary', () => {
   });
 
   it('T10: verified BLOCK does not create WAITING checkpoint even under MANUAL policy', async () => {
-    await durableManager.save({
+    await durableManager.save(makeState({
       currentLifecycleState: LifecycleState.TASK_LOOP,
       completedTaskIds: [],
       continuationPolicy: 'MANUAL',
       continuationState: 'NONE',
-    });
+    }));
 
     const integrator = new ExecutionStateIntegrator({
       baseDir: tmpDir,
@@ -334,12 +376,12 @@ describe('Phase 11 TASK-P11-02: Controlled Continuation Boundary', () => {
   });
 
   it('T11: unverified raw executor outcome does not create WAITING checkpoint', async () => {
-    await durableManager.save({
+    await durableManager.save(makeState({
       currentLifecycleState: LifecycleState.TASK_LOOP,
       completedTaskIds: [],
       continuationPolicy: 'MANUAL',
       continuationState: 'NONE',
-    });
+    }));
 
     const integrator = new ExecutionStateIntegrator({
       baseDir: tmpDir,
@@ -361,12 +403,12 @@ describe('Phase 11 TASK-P11-02: Controlled Continuation Boundary', () => {
   });
 
   it('T12: checkpoint is NOT created merely because human approval package is approved', async () => {
-    await durableManager.save({
+    await durableManager.save(makeState({
       currentLifecycleState: LifecycleState.TASK_LOOP,
       completedTaskIds: [],
       continuationPolicy: 'MANUAL',
       continuationState: 'NONE',
-    });
+    }));
 
     await seedActiveSession();
 
@@ -484,12 +526,12 @@ describe('Phase 11 TASK-P11-02: Controlled Continuation Boundary', () => {
   });
 
   it('T13: WAITING checkpoint emits PHASE11_CONTINUATION_WAITING history event', async () => {
-    await durableManager.save({
+    await durableManager.save(makeState({
       currentLifecycleState: LifecycleState.TASK_LOOP,
       completedTaskIds: [],
       continuationPolicy: 'MANUAL',
       continuationState: 'NONE',
-    });
+    }));
 
     const integrator = new ExecutionStateIntegrator({
       baseDir: tmpDir,
@@ -508,12 +550,12 @@ describe('Phase 11 TASK-P11-02: Controlled Continuation Boundary', () => {
   });
 
   it('T14: idempotent duplicate integration does not re-create or mutate WAITING checkpoint', async () => {
-    await durableManager.save({
+    await durableManager.save(makeState({
       currentLifecycleState: LifecycleState.TASK_LOOP,
       completedTaskIds: [],
       continuationPolicy: 'MANUAL',
       continuationState: 'NONE',
-    });
+    }));
 
     const integrator = new ExecutionStateIntegrator({
       baseDir: tmpDir,
@@ -526,10 +568,10 @@ describe('Phase 11 TASK-P11-02: Controlled Continuation Boundary', () => {
 
     // Now clear checkpoint to NONE while preserving integrated records in metadata
     const midState = (await durableManager.load())!;
-    await durableManager.save({
+    await durableManager.save(makeState({
       ...midState,
       continuationState: 'NONE',
-    });
+    }));
 
     // Replay same evidence
     const replayOutcome = await integrator.integrate(evidence);
@@ -545,12 +587,12 @@ describe('Phase 11 TASK-P11-02: Controlled Continuation Boundary', () => {
 
   it('T15: validateContinuationRequest accepts valid human PRODUCT_OWNER actor', async () => {
     await seedActiveSession();
-    await durableManager.save({
+    await durableManager.save(makeState({
       currentLifecycleState: LifecycleState.TASK_LOOP,
       completedTaskIds: ['task-1'],
       continuationState: 'WAITING',
       continuationPolicy: 'MANUAL',
-    });
+    }));
 
     const humanEngine = new HumanApprovalEngine({
       workspaceRoot: tmpDir,
@@ -572,12 +614,12 @@ describe('Phase 11 TASK-P11-02: Controlled Continuation Boundary', () => {
 
   it('T16: validateContinuationRequest accepts valid human USER actor', async () => {
     await seedActiveSession();
-    await durableManager.save({
+    await durableManager.save(makeState({
       currentLifecycleState: LifecycleState.TASK_LOOP,
       completedTaskIds: ['task-1'],
       continuationState: 'WAITING',
       continuationPolicy: 'MANUAL',
-    });
+    }));
 
     const humanEngine = new HumanApprovalEngine({
       workspaceRoot: tmpDir,
@@ -599,12 +641,12 @@ describe('Phase 11 TASK-P11-02: Controlled Continuation Boundary', () => {
 
   it('T17: validateContinuationRequest rejects DIRECTOR actor', async () => {
     await seedActiveSession();
-    await durableManager.save({
+    await durableManager.save(makeState({
       currentLifecycleState: LifecycleState.TASK_LOOP,
       completedTaskIds: ['task-1'],
       continuationState: 'WAITING',
       continuationPolicy: 'MANUAL',
-    });
+    }));
 
     const humanEngine = new HumanApprovalEngine({
       workspaceRoot: tmpDir,
@@ -626,12 +668,12 @@ describe('Phase 11 TASK-P11-02: Controlled Continuation Boundary', () => {
 
   it('T18: validateContinuationRequest rejects EXECUTOR / ANTIGRAVITY actor', async () => {
     await seedActiveSession();
-    await durableManager.save({
+    await durableManager.save(makeState({
       currentLifecycleState: LifecycleState.TASK_LOOP,
       completedTaskIds: ['task-1'],
       continuationState: 'WAITING',
       continuationPolicy: 'MANUAL',
-    });
+    }));
 
     const humanEngine = new HumanApprovalEngine({
       workspaceRoot: tmpDir,
@@ -653,12 +695,12 @@ describe('Phase 11 TASK-P11-02: Controlled Continuation Boundary', () => {
 
   it('T19: validateContinuationRequest rejects forbidden actors (SYSTEM, ORCHESTRATOR)', async () => {
     await seedActiveSession();
-    await durableManager.save({
+    await durableManager.save(makeState({
       currentLifecycleState: LifecycleState.TASK_LOOP,
       completedTaskIds: ['task-1'],
       continuationState: 'WAITING',
       continuationPolicy: 'MANUAL',
-    });
+    }));
 
     const humanEngine = new HumanApprovalEngine({
       workspaceRoot: tmpDir,
@@ -689,12 +731,12 @@ describe('Phase 11 TASK-P11-02: Controlled Continuation Boundary', () => {
       reason: 'Testing inactive session',
     });
 
-    await durableManager.save({
+    await durableManager.save(makeState({
       currentLifecycleState: LifecycleState.TASK_LOOP,
       completedTaskIds: ['task-1'],
       continuationState: 'WAITING',
       continuationPolicy: 'MANUAL',
-    });
+    }));
 
     const humanEngine = new HumanApprovalEngine({
       workspaceRoot: tmpDir,
@@ -716,12 +758,12 @@ describe('Phase 11 TASK-P11-02: Controlled Continuation Boundary', () => {
 
   it('T21: validateContinuationRequest rejects context fingerprint mismatch', async () => {
     await seedActiveSession();
-    await durableManager.save({
+    await durableManager.save(makeState({
       currentLifecycleState: LifecycleState.TASK_LOOP,
       completedTaskIds: ['task-1'],
       continuationState: 'WAITING',
       continuationPolicy: 'MANUAL',
-    });
+    }));
 
     const humanEngine = new HumanApprovalEngine({
       workspaceRoot: tmpDir,
@@ -743,12 +785,12 @@ describe('Phase 11 TASK-P11-02: Controlled Continuation Boundary', () => {
 
   it('T22: validateContinuationRequest returns CONTINUATION_NOT_NEEDED when continuationState is already NONE', async () => {
     await seedActiveSession();
-    await durableManager.save({
+    await durableManager.save(makeState({
       currentLifecycleState: LifecycleState.TASK_LOOP,
       completedTaskIds: ['task-1'],
       continuationState: 'NONE',
       continuationPolicy: 'MANUAL',
-    });
+    }));
 
     const humanEngine = new HumanApprovalEngine({
       workspaceRoot: tmpDir,
@@ -785,12 +827,12 @@ describe('Phase 11 TASK-P11-02: Controlled Continuation Boundary', () => {
 
   it('T24: MCP tool transitions WAITING to NONE on valid request', async () => {
     await seedActiveSession();
-    await durableManager.save({
+    await durableManager.save(makeState({
       currentLifecycleState: LifecycleState.TASK_LOOP,
       completedTaskIds: ['task-1'],
       continuationState: 'WAITING',
       continuationPolicy: 'MANUAL',
-    });
+    }));
 
     const handler = createPhase11ContinuationToolHandler(tmpDir);
     const result = await handler(
@@ -815,12 +857,12 @@ describe('Phase 11 TASK-P11-02: Controlled Continuation Boundary', () => {
 
   it('T25: MCP tool returns idempotent no-op when continuationState is already NONE', async () => {
     await seedActiveSession();
-    await durableManager.save({
+    await durableManager.save(makeState({
       currentLifecycleState: LifecycleState.TASK_LOOP,
       completedTaskIds: ['task-1'],
       continuationState: 'NONE',
       continuationPolicy: 'MANUAL',
-    });
+    }));
 
     const handler = createPhase11ContinuationToolHandler(tmpDir);
     const result = await handler(
@@ -842,12 +884,12 @@ describe('Phase 11 TASK-P11-02: Controlled Continuation Boundary', () => {
 
   it('T26: MCP tool rejects unauthorized actor', async () => {
     await seedActiveSession();
-    await durableManager.save({
+    await durableManager.save(makeState({
       currentLifecycleState: LifecycleState.TASK_LOOP,
       completedTaskIds: ['task-1'],
       continuationState: 'WAITING',
       continuationPolicy: 'MANUAL',
-    });
+    }));
 
     const handler = createPhase11ContinuationToolHandler(tmpDir);
     const result = await handler(
@@ -871,12 +913,12 @@ describe('Phase 11 TASK-P11-02: Controlled Continuation Boundary', () => {
 
   it('T27: MCP tool rejects cross-project mismatch', async () => {
     await seedActiveSession();
-    await durableManager.save({
+    await durableManager.save(makeState({
       currentLifecycleState: LifecycleState.TASK_LOOP,
       completedTaskIds: ['task-1'],
       continuationState: 'WAITING',
       continuationPolicy: 'MANUAL',
-    });
+    }));
 
     const handler = createPhase11ContinuationToolHandler(tmpDir);
     const result = await handler(
@@ -898,12 +940,12 @@ describe('Phase 11 TASK-P11-02: Controlled Continuation Boundary', () => {
 
   it('T28: MCP tool rejects stale context fingerprint', async () => {
     await seedActiveSession({ syncStatus: 'STALE', staleSections: ['tasks'] });
-    await durableManager.save({
+    await durableManager.save(makeState({
       currentLifecycleState: LifecycleState.TASK_LOOP,
       completedTaskIds: ['task-1'],
       continuationState: 'WAITING',
       continuationPolicy: 'MANUAL',
-    });
+    }));
 
     const handler = createPhase11ContinuationToolHandler(tmpDir);
     const result = await handler(
@@ -924,12 +966,12 @@ describe('Phase 11 TASK-P11-02: Controlled Continuation Boundary', () => {
 
   it('T29: MCP tool does not mutate DAG or invoke execution', async () => {
     await seedActiveSession();
-    await durableManager.save({
+    await durableManager.save(makeState({
       currentLifecycleState: LifecycleState.TASK_LOOP,
       completedTaskIds: ['task-1'],
       continuationState: 'WAITING',
       continuationPolicy: 'MANUAL',
-    });
+    }));
 
     const handler = createPhase11ContinuationToolHandler(tmpDir);
     const result = await handler(
@@ -952,12 +994,12 @@ describe('Phase 11 TASK-P11-02: Controlled Continuation Boundary', () => {
 
   it('T30: MCP tool records PHASE11_CONTINUATION_REQUESTED and PHASE11_CONTINUATION_ACCEPTED events', async () => {
     await seedActiveSession();
-    await durableManager.save({
+    await durableManager.save(makeState({
       currentLifecycleState: LifecycleState.TASK_LOOP,
       completedTaskIds: ['task-1'],
       continuationState: 'WAITING',
       continuationPolicy: 'MANUAL',
-    });
+    }));
 
     const handler = createPhase11ContinuationToolHandler(tmpDir);
     await handler(
@@ -982,12 +1024,12 @@ describe('Phase 11 TASK-P11-02: Controlled Continuation Boundary', () => {
 
   it('T31: DirectorDecisionEngine validateDecision blocks decision when continuationState is WAITING', async () => {
     await seedActiveSession();
-    await durableManager.save({
+    await durableManager.save(makeState({
       currentLifecycleState: LifecycleState.TASK_LOOP,
       completedTaskIds: ['task-1'],
       continuationState: 'WAITING',
       continuationPolicy: 'MANUAL',
-    });
+    }));
 
     const decisionEngine = new DirectorDecisionEngine({
       workspaceRoot: tmpDir,
@@ -1011,12 +1053,12 @@ describe('Phase 11 TASK-P11-02: Controlled Continuation Boundary', () => {
 
   it('T32: DirectorDecisionEngine createDecision throws when continuationState is WAITING', async () => {
     await seedActiveSession();
-    await durableManager.save({
+    await durableManager.save(makeState({
       currentLifecycleState: LifecycleState.TASK_LOOP,
       completedTaskIds: ['task-1'],
       continuationState: 'WAITING',
       continuationPolicy: 'MANUAL',
-    });
+    }));
 
     const decisionEngine = new DirectorDecisionEngine({
       workspaceRoot: tmpDir,
@@ -1038,12 +1080,12 @@ describe('Phase 11 TASK-P11-02: Controlled Continuation Boundary', () => {
 
   it('T33: DirectorDecisionEngine permits decision when continuationState is NONE', async () => {
     await seedActiveSession();
-    await durableManager.save({
+    await durableManager.save(makeState({
       currentLifecycleState: LifecycleState.TASK_LOOP,
       completedTaskIds: ['task-1'],
       continuationState: 'NONE',
       continuationPolicy: 'MANUAL',
-    });
+    }));
 
     const decisionEngine = new DirectorDecisionEngine({
       workspaceRoot: tmpDir,
@@ -1066,12 +1108,12 @@ describe('Phase 11 TASK-P11-02: Controlled Continuation Boundary', () => {
 
   it('T34: Director continuation proceeds after requestContinue transitions WAITING to NONE', async () => {
     await seedActiveSession();
-    await durableManager.save({
+    await durableManager.save(makeState({
       currentLifecycleState: LifecycleState.TASK_LOOP,
       completedTaskIds: ['task-1'],
       continuationState: 'WAITING',
       continuationPolicy: 'MANUAL',
-    });
+    }));
 
     const decisionEngine = new DirectorDecisionEngine({
       workspaceRoot: tmpDir,
@@ -1130,12 +1172,12 @@ describe('Phase 11 TASK-P11-02: Controlled Continuation Boundary', () => {
   it('T36: phase11.requestContinue does NOT invoke DirectorDecisionEngine directly', async () => {
     // The MCP tool only mutates DurableState (WAITING -> NONE) and appends history event
     await seedActiveSession();
-    await durableManager.save({
+    await durableManager.save(makeState({
       currentLifecycleState: LifecycleState.TASK_LOOP,
       completedTaskIds: ['task-1'],
       continuationState: 'WAITING',
       continuationPolicy: 'MANUAL',
-    });
+    }));
 
     const handler = createPhase11ContinuationToolHandler(tmpDir);
     const result = await handler(
@@ -1160,12 +1202,12 @@ describe('Phase 11 TASK-P11-02: Controlled Continuation Boundary', () => {
   // ==========================================================================
 
   it('T37: HistoryManager records PHASE11_CONTINUATION_WAITING on checkpoint creation', async () => {
-    await durableManager.save({
+    await durableManager.save(makeState({
       currentLifecycleState: LifecycleState.TASK_LOOP,
       completedTaskIds: [],
       continuationPolicy: 'MANUAL',
       continuationState: 'NONE',
-    });
+    }));
 
     const integrator = new ExecutionStateIntegrator({
       baseDir: tmpDir,
@@ -1185,12 +1227,12 @@ describe('Phase 11 TASK-P11-02: Controlled Continuation Boundary', () => {
 
   it('T38: HistoryManager records PHASE11_CONTINUATION_REQUESTED on continue call', async () => {
     await seedActiveSession();
-    await durableManager.save({
+    await durableManager.save(makeState({
       currentLifecycleState: LifecycleState.TASK_LOOP,
       completedTaskIds: ['task-1'],
       continuationState: 'WAITING',
       continuationPolicy: 'MANUAL',
-    });
+    }));
 
     const handler = createPhase11ContinuationToolHandler(tmpDir);
     await handler(
@@ -1212,12 +1254,12 @@ describe('Phase 11 TASK-P11-02: Controlled Continuation Boundary', () => {
 
   it('T39: HistoryManager records PHASE11_CONTINUATION_ACCEPTED on successful continuation', async () => {
     await seedActiveSession();
-    await durableManager.save({
+    await durableManager.save(makeState({
       currentLifecycleState: LifecycleState.TASK_LOOP,
       completedTaskIds: ['task-1'],
       continuationState: 'WAITING',
       continuationPolicy: 'MANUAL',
-    });
+    }));
 
     const handler = createPhase11ContinuationToolHandler(tmpDir);
     await handler(
@@ -1240,12 +1282,12 @@ describe('Phase 11 TASK-P11-02: Controlled Continuation Boundary', () => {
 
   it('T40: HistoryManager records PHASE11_CONTINUATION_REJECTED on invalid request', async () => {
     await seedActiveSession();
-    await durableManager.save({
+    await durableManager.save(makeState({
       currentLifecycleState: LifecycleState.TASK_LOOP,
       completedTaskIds: ['task-1'],
       continuationState: 'WAITING',
       continuationPolicy: 'MANUAL',
-    });
+    }));
 
     const handler = createPhase11ContinuationToolHandler(tmpDir);
     await handler(
@@ -1270,12 +1312,12 @@ describe('Phase 11 TASK-P11-02: Controlled Continuation Boundary', () => {
   // ==========================================================================
 
   it('T41: WAITING checkpoint survives service restart and is correctly restored from disk', async () => {
-    await durableManager.save({
+    await durableManager.save(makeState({
       currentLifecycleState: LifecycleState.TASK_LOOP,
       completedTaskIds: ['task-1'],
       continuationState: 'WAITING',
       continuationPolicy: 'MANUAL',
-    });
+    }));
 
     // New DurableStateManager instance simulating restart
     const restartedManager = new DurableStateManager({ baseDir: tmpDir });
@@ -1286,12 +1328,12 @@ describe('Phase 11 TASK-P11-02: Controlled Continuation Boundary', () => {
   });
 
   it('T42: state interruption during continuation preserves atomic durability without corruption', async () => {
-    await durableManager.save({
+    await durableManager.save(makeState({
       currentLifecycleState: LifecycleState.TASK_LOOP,
       completedTaskIds: ['task-1'],
       continuationState: 'WAITING',
       continuationPolicy: 'MANUAL',
-    });
+    }));
 
     // Verify atomic file write leaves no tmp artifacts and valid JSON
     const content = await fs.promises.readFile(durableManager.filePath, 'utf8');
@@ -1300,12 +1342,12 @@ describe('Phase 11 TASK-P11-02: Controlled Continuation Boundary', () => {
 
   it('T43: concurrent continuation calls resolve safely with exactly one acceptance and one no-op', async () => {
     await seedActiveSession();
-    await durableManager.save({
+    await durableManager.save(makeState({
       currentLifecycleState: LifecycleState.TASK_LOOP,
       completedTaskIds: ['task-1'],
       continuationState: 'WAITING',
       continuationPolicy: 'MANUAL',
-    });
+    }));
 
     const handler1 = createPhase11ContinuationToolHandler(tmpDir);
     const handler2 = createPhase11ContinuationToolHandler(tmpDir);
@@ -1344,12 +1386,12 @@ describe('Phase 11 TASK-P11-02: Controlled Continuation Boundary', () => {
   });
 
   it('T44: terminal PROJECT_COMPLETE clears continuation checkpoint to NONE', async () => {
-    await durableManager.save({
+    await durableManager.save(makeState({
       currentLifecycleState: LifecycleState.PROJECT_COMPLETE,
       completedTaskIds: ['task-1', 'task-2'],
       continuationState: 'NONE',
       continuationPolicy: 'MANUAL',
-    });
+    }));
 
     const state = await durableManager.load();
     assert.equal(state?.continuationState, 'NONE');

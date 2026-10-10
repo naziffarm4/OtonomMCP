@@ -76,6 +76,7 @@ import {
   RESUME_PROTOCOL_VERSION,
   RESUME_SCHEMA_VERSION,
 } from '../dist/index.js';
+import { createValidDiscoveryReport } from './helpers/test-discovery-factory.ts';
 
 describe('Phase 9 — Human Approval & Resume Protocol (TASK-P9-04)', () => {
   let tempDir: string;
@@ -98,7 +99,7 @@ describe('Phase 9 — Human Approval & Resume Protocol (TASK-P9-04)', () => {
   let testPackage: ProjectApprovalPackage;
 
   function createMockReport(workspaceRoot: string): ProjectDiscoveryReport {
-    return {
+    return createValidDiscoveryReport({
       projectIdentity: {
         name: 'test-approval-project',
         version: '1.0.0',
@@ -106,41 +107,7 @@ describe('Phase 9 — Human Approval & Resume Protocol (TASK-P9-04)', () => {
         ecosystem: 'Node.js',
         evidence: [{ sourceType: 'PACKAGE_MANIFEST', sourceIdentifier: 'package.json' }],
       },
-      purpose: {
-        classification: 'UNDERSTOOD',
-        summary: 'A deterministic agent orchestration platform',
-        domainKeywords: ['orchestration', 'agent'],
-        evidence: [{ sourceType: 'FILE', sourceIdentifier: 'README.md' }],
-      },
-      technologyStack: {
-        primaryLanguages: ['TypeScript'],
-        frameworks: [],
-        buildTools: ['tsc'],
-        packageManagers: ['npm'],
-        runtimes: ['node'],
-        containerization: [],
-        ciCd: [],
-        workspaceType: 'standalone',
-      },
-      architecture: {
-        summary: 'Standard modular TypeScript architecture',
-        architecturalPattern: 'Modular',
-        identifiedAreas: [],
-        evidence: [{ sourceType: 'FILE', sourceIdentifier: 'src/index.ts' }],
-      },
-      currentImplementationState: {
-        lifecycleState: 'REQUIREMENTS_INGESTION',
-        hasActiveTask: false,
-        isBlocked: false,
-        totalTasksInDag: 0,
-        completedTasksCount: 0,
-        evidence: [{ sourceType: 'STATE_MANAGER', sourceIdentifier: 'durable-state.json' }],
-      },
-      unknowns: [],
-      contradictions: [],
-      evidenceInventory: [],
-      generatedAt: new Date().toISOString(),
-    };
+    });
   }
 
   beforeEach(async () => {
@@ -991,7 +958,6 @@ describe('Phase 9 — Human Approval & Resume Protocol (TASK-P9-04)', () => {
       ...activeSnapshot,
       snapshotId: 'snap-updated-002',
       logicalFingerprint: 'updated-fingerprint-different-from-approved',
-      generatedAt: new Date().toISOString(),
     };
     await sessionStore.saveSnapshot(newSnapshot);
 

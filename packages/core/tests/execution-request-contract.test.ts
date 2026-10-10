@@ -124,6 +124,7 @@ import {
   type ProjectDiscoveryReport,
   AntigravityAdapter,
 } from '../dist/index.js';
+import { createValidDiscoveryReport } from './helpers/test-discovery-factory.ts';
 
 describe('Deterministic Execution Request Contract (Phase 10 TASK-P10-02)', () => {
   let tempDir: string;
@@ -153,7 +154,7 @@ describe('Deterministic Execution Request Contract (Phase 10 TASK-P10-02)', () =
   const alternativeCommit = 'f6e5d4c3b2a1f6e5d4c3b2a1f6e5d4c3b2a1f6e5';
 
   function createMockReport(workspaceRoot: string): ProjectDiscoveryReport {
-    return {
+    return createValidDiscoveryReport({
       projectIdentity: {
         name: 'test-exec-project',
         version: '1.0.0',
@@ -161,41 +162,7 @@ describe('Deterministic Execution Request Contract (Phase 10 TASK-P10-02)', () =
         ecosystem: 'Node.js',
         evidence: [{ sourceType: 'PACKAGE_MANIFEST', sourceIdentifier: 'package.json' }],
       },
-      purpose: {
-        classification: 'UNDERSTOOD',
-        summary: 'A deterministic agent orchestration platform',
-        domainKeywords: ['orchestration', 'agent'],
-        evidence: [{ sourceType: 'FILE', sourceIdentifier: 'README.md' }],
-      },
-      technologyStack: {
-        primaryLanguages: ['TypeScript'],
-        frameworks: [],
-        buildTools: ['tsc'],
-        packageManagers: ['npm'],
-        runtimes: ['node'],
-        containerization: [],
-        ciCd: [],
-        workspaceType: 'standalone',
-      },
-      architecture: {
-        summary: 'Standard modular TypeScript architecture',
-        architecturalPattern: 'Modular',
-        identifiedAreas: [],
-        evidence: [{ sourceType: 'FILE', sourceIdentifier: 'src/index.ts' }],
-      },
-      currentImplementationState: {
-        lifecycleState: 'REQUIREMENTS_INGESTION',
-        hasActiveTask: false,
-        isBlocked: false,
-        totalTasksInDag: 0,
-        completedTasksCount: 0,
-        evidence: [{ sourceType: 'STATE_MANAGER', sourceIdentifier: 'durable-state.json' }],
-      },
-      unknowns: [],
-      contradictions: [],
-      evidenceInventory: [],
-      generatedAt: new Date().toISOString(),
-    };
+    });
   }
 
   async function createReadyTasks() {
@@ -1245,7 +1212,7 @@ describe('Deterministic Execution Request Contract (Phase 10 TASK-P10-02)', () =
         },
       },
       {
-        correlation: { correlationId: 'corr-001', requestId: 'req-mcp-01', receivedAt: new Date().toISOString() },
+        correlation: { correlationId: 'corr-001', mcpRequestId: 'req-mcp-01', receivedAt: new Date().toISOString() },
         delegate: server.delegate,
       }
     );
@@ -1283,7 +1250,7 @@ describe('Deterministic Execution Request Contract (Phase 10 TASK-P10-02)', () =
         },
       },
       {
-        correlation: { correlationId: 'corr-002', requestId: 'req-mcp-02', receivedAt: new Date().toISOString() },
+        correlation: { correlationId: 'corr-002', mcpRequestId: 'req-mcp-02', receivedAt: new Date().toISOString() },
         delegate: server.delegate,
       }
     );
@@ -1319,7 +1286,7 @@ describe('Deterministic Execution Request Contract (Phase 10 TASK-P10-02)', () =
         },
       },
       {
-        correlation: { correlationId: 'corr-003', requestId: 'req-mcp-03', receivedAt: new Date().toISOString() },
+        correlation: { correlationId: 'corr-003', mcpRequestId: 'req-mcp-03', receivedAt: new Date().toISOString() },
         delegate: server.delegate,
       }
     );
@@ -1342,7 +1309,7 @@ describe('Deterministic Execution Request Contract (Phase 10 TASK-P10-02)', () =
         },
       },
       {
-        correlation: { correlationId: 'corr-004', requestId: 'req-mcp-04', receivedAt: new Date().toISOString() },
+        correlation: { correlationId: 'corr-004', mcpRequestId: 'req-mcp-04', receivedAt: new Date().toISOString() },
         delegate: server.delegate,
       }
     );
@@ -1364,7 +1331,7 @@ describe('Deterministic Execution Request Contract (Phase 10 TASK-P10-02)', () =
         },
       },
       {
-        correlation: { correlationId: 'corr-005', requestId: 'req-mcp-05', receivedAt: new Date().toISOString() },
+        correlation: { correlationId: 'corr-005', mcpRequestId: 'req-mcp-05', receivedAt: new Date().toISOString() },
         delegate: server.delegate,
       }
     );
@@ -1464,7 +1431,7 @@ describe('Deterministic Execution Request Contract (Phase 10 TASK-P10-02)', () =
         instruction: { objective: 'Test', acceptanceCriteria: ['AC-1'] },
       },
       {
-        correlation: { correlationId: 'corr-fake', requestId: 'req-fake', receivedAt: new Date().toISOString() },
+        correlation: { correlationId: 'corr-fake', mcpRequestId: 'req-fake', receivedAt: new Date().toISOString() },
         delegate: server.delegate,
       }
     );

@@ -79,7 +79,7 @@ function execCommand(cmd: string, cwd: string): Promise<{ stdout: string; stderr
       resolve({
         stdout: String(stdout ?? ''),
         stderr: String(stderr ?? ''),
-        code: error?.code ?? 0,
+        code: typeof error?.code === 'number' ? error.code : (error ? 1 : 0),
       });
     });
   });

@@ -12,6 +12,7 @@ import {
   AuthorizationDecisionResult,
   type ProjectMandate,
   type DirectorActionEnvelope,
+  type DirectorActionType,
   type BridgeExecutionIntent,
   type SystemExecutionEvidence,
   IdentityManager,
@@ -45,7 +46,7 @@ describe('P34 — Authorization Fail-Closed Gap Closure', () => {
   };
 
   const createMockEnvelope = (
-    actionType: any,
+    actionType: DirectorActionType,
     payloadOverrides: Record<string, unknown> = {},
     projectId = validProjectId,
     directorSessionId = 'session-p34',
@@ -62,6 +63,7 @@ describe('P34 — Authorization Fail-Closed Gap Closure', () => {
     actorRole: 'DIRECTOR',
     timestamp: new Date().toISOString(),
     basedOnContextFingerprint: fingerprint,
+    understandingRevision: 1,
     payload: {
       taskId: 'task-with-class',
       ...payloadOverrides,
@@ -76,7 +78,6 @@ describe('P34 — Authorization Fail-Closed Gap Closure', () => {
       taskRevision: 1,
       projectId: validProjectId,
       verificationDecision: 'ACCEPT',
-      verificationReason: 'All tests passed with zero errors',
       verifiedAt: new Date().toISOString(),
       contextFingerprint: 'ctx-p34-fp',
       understandingRevision: 1,
@@ -244,7 +245,6 @@ describe('P34 — Authorization Fail-Closed Gap Closure', () => {
       evidenceId: 'evi-valid-p34-03',
       taskId: 'task-with-class',
       verificationDecision: 'ACCEPT',
-      isSystemVerified: true,
     });
     await evidenceStore.saveEvidence(validEvidence);
 

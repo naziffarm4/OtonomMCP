@@ -1,3 +1,4 @@
+import { createValidApprovalPackage } from './helpers/test-discovery-factory.ts';
 /**
  * @file p31-director-authority-hardening.test.ts
  * @description Comprehensive Test Suite for Phase 31 (P31):
@@ -12,7 +13,11 @@
  * 6. MCP & Controlled Execution: Single cycle execution only; zero hidden autonomous loops.
  */
 
-import { describe, it, beforeEach, afterEach } from 'node:test';
+import {
+  describe,
+  it,
+  beforeEach,
+  afterEach } from 'node:test';
 import * as assert from 'node:assert/strict';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
@@ -33,6 +38,7 @@ import {
   HistoryManager,
   DurableStateManager,
   TaskDagEngine,
+  TaskPriority,
   SystemExecutionEvidenceStore,
   SystemEvidenceCollector,
   DirectorActionDispatcher,
@@ -54,22 +60,25 @@ import {
   type DirectorContextSnapshot,
   type ApprovalPackage,
   type ExecutorPort,
+  type DirectorExecutionCycleResult,
   LifecycleState,
   RecoveryEngine,
   ExecutionLifecycleState,
   RecoveryDecision,
   resolveCanonicalProjectIdentity,
-} from '../dist/index.js';
+  } from '../dist/index.js';
 
 import {
   DirectorRuntime,
   DirectorPromptBuilder,
   type DirectorAction,
+  DirectorRuntimeUnavailableError,
+} from '../dist/director/index.js';
+import {
   type LLMProvider,
   type LlmRequest,
   type LlmResponse,
-  DirectorRuntimeUnavailableError,
-} from '../dist/director/index.js';
+} from '../dist/llm-bridge/index.js';;
 
 import { LlmFinishReason } from '../dist/llm-bridge/llm-types.js';
 import { ActionDispatchStatus } from '../dist/director-action/director-action-types.js';
@@ -145,7 +154,18 @@ class MockDirectorLlmProvider implements LLMProvider {
       content: JSON.stringify(payload),
       structured_output: payload as TStructured,
       finish_reason: LlmFinishReason.STOP,
-      usage: { prompt_tokens: 100, completion_tokens: 50, total_tokens: 150 },
+      usage: {
+        reported_input_tokens: 100,
+        reported_output_tokens: 50,
+        reported_cached_tokens: null,
+        estimated_tokens: 150,
+        estimated_cost_usd: null,
+        provider_name: 'deterministic-mock-p31',
+        model: this.defaultModel,
+        is_exact_provider_metric: true,
+      },
+      raw_metadata: null,
+      error: null,
     };
   }
 }
@@ -156,12 +176,16 @@ class MockDirectorLlmProvider implements LLMProvider {
 
 class MockExecutor implements ExecutorPort {
   readonly executorId = 'mock-executor-p31';
+  readonly provider = 'antigravity';
   calls: any[] = [];
   tempDir = '';
 
   async execute(request: any): Promise<any> {
     this.calls.push(request);
-    const files = request.targetFiles && request.targetFiles.length > 0 ? request.targetFiles : ['src/auth.ts'];
+    const files =
+      request.instruction?.targetFiles && request.instruction?.targetFiles.length > 0
+        ? request.instruction?.targetFiles
+        : (request.targetFiles && request.targetFiles.length > 0 ? request.targetFiles : ['src/auth.ts']);
     for (const f of files) {
       if (this.tempDir) {
         const full = path.join(this.tempDir, f);
@@ -269,10 +293,7 @@ describe('Phase 31 (P31): Director Authority Hardening & Real Lifecycle Boundary
       unavailableSections: [],
       staleSections: [],
       logicalFingerprint: validFingerprint,
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-      sequenceNumber: 1,
-      warnings: [],
+      isDerived: true,
       sectionMetadata: {
         requirements: { revision: validRevision },
         projectStatus: { revision: 1 },
@@ -354,7 +375,7 @@ describe('Phase 31 (P31): Director Authority Hardening & Real Lifecycle Boundary
     durableManager = new DurableStateManager({ baseDir: tempDir });
     evidenceStore = new SystemExecutionEvidenceStore({ baseDir: tempDir });
     evidenceCollector = new SystemEvidenceCollector({ evidenceStore });
-    mandateStore = new ProjectMandateStore({ baseDir: tempDir, historyManager });
+    mandateStore = new ProjectMandateStore({ baseDir: tempDir });
     identityManager = new IdentityManager({ baseDir: tempDir });
     recoveryPolicyEngine = new RecoveryPolicyEngine({ historyManager });
     correctiveTaskService = new CorrectiveTaskService({
@@ -370,19 +391,17 @@ describe('Phase 31 (P31): Director Authority Hardening & Real Lifecycle Boundary
     });
     recoveryEngine = new RecoveryEngine({
       durableStateManager: durableManager,
-      evidenceStore,
-      specStore,
-      dagEngine,
       historyManager,
       workspaceRoot: tempDir,
+      evidenceStore,
     });
 
     policyEngine = new AuthorizationPolicyEngine({
-      mandateStore,
-      approvalStore,
-      identityManager,
-      baseDir: tempDir,
       historyManager,
+      mandateStore,
+      specStore,
+      evidenceStore,
+      identityManager,
     });
 
     mockExecutor = new MockExecutor();
@@ -416,54 +435,41 @@ describe('Phase 31 (P31): Director Authority Hardening & Real Lifecycle Boundary
       status: 'ACTIVE',
       createdAt: nowIso,
       lastActivityAt: nowIso,
-      updatedAt: nowIso,
       understandingRevision: validRevision,
       protocolVersion: 'P9-01',
       schemaVersion: 1,
       actor: 'DIRECTOR',
       actorRole: 'DIRECTOR',
       hasImplementationAuthority: false,
-      decisionCount: 0,
       metadata: {},
     };
     await sessionStore.saveSession(activeSession);
 
     // Approval package
     const pkgId = `pkg-${validProjectId}`;
-    approvedPackage = {
+    approvedPackage = createValidApprovalPackage({
       packageId: pkgId,
       projectId: validProjectId,
       revision: validRevision,
-      approvalPackageRevision: validRevision,
-      status: 'APPROVED',
-      isStale: false,
-      createdAt: nowIso,
-      updatedAt: nowIso,
-      isDevelopmentAuthorized: true,
-      approvalRecord: {
-        packageId: pkgId,
-        revision: validRevision,
-        actor: 'PRODUCT_OWNER',
-        actorRole: 'PRODUCT_OWNER',
-        intent: 'EXPLICIT_APPROVAL',
-        approvedAt: nowIso,
-        packageHash: 'sha256-approved-package-hash',
-        comment: 'Human Product Owner authorizes task development',
-      },
-    } as any;
+    });
     await approvalStore.savePackage(approvedPackage);
 
     // Tasks
     const featCore: TaskDefinition = {
       task_id: 'FEAT-CORE',
-      parent_feature_id: null,
+      parent_feature_id: 'ROOT',
       title: 'Core Engine Feature',
       description: 'Core engine setup',
       traceability_sources: ['REQ-01'],
       acceptance_criteria: ['Repo exists'],
       hierarchy_level: 'FEATURE',
-      status: 'ACCEPTED',
-      risk_level: 'LOW',
+      attempt: 0,
+      max_attempts: 1,
+      status: 'ACCEPTED' as any,
+      priority: TaskPriority.MEDIUM,
+      risk_level: 'SAFE',
+      started_at: null,
+      completed_at: null,
       dependencies: [],
       created_at: new Date().toISOString(),
     };
@@ -477,8 +483,11 @@ describe('Phase 31 (P31): Director Authority Hardening & Real Lifecycle Boundary
       hierarchy_level: 'TASK',
       attempt: 1,
       max_attempts: 2,
-      status: 'ACCEPTED',
-      risk_level: 'LOW',
+      status: 'ACCEPTED' as any,
+      priority: TaskPriority.MEDIUM,
+      risk_level: 'SAFE',
+      started_at: null,
+      completed_at: null,
       dependencies: [],
       created_at: new Date().toISOString(),
     };
@@ -492,8 +501,11 @@ describe('Phase 31 (P31): Director Authority Hardening & Real Lifecycle Boundary
       hierarchy_level: 'TASK',
       attempt: 1,
       max_attempts: 2,
-      status: 'READY',
-      risk_level: 'LOW',
+      status: 'READY' as any,
+      priority: TaskPriority.MEDIUM,
+      risk_level: 'SAFE',
+      started_at: null,
+      completed_at: null,
       dependencies: ['task-01-core'],
       created_at: new Date().toISOString(),
       metadata: { targetFiles: ['src/auth.ts'], revision: 1, taskClass: 'IMPLEMENTATION' },
@@ -508,7 +520,6 @@ describe('Phase 31 (P31): Director Authority Hardening & Real Lifecycle Boundary
       blockedState: null,
       continuationState: 'NONE',
       continuationPolicy: 'AUTONOMOUS',
-      updatedAt: new Date().toISOString(),
     });
 
     activeSnapshot = createAuthoritativeSnapshot();
@@ -521,7 +532,6 @@ describe('Phase 31 (P31): Director Authority Hardening & Real Lifecycle Boundary
       sessionStore,
       promptBuilder: new DirectorPromptBuilder(),
       llmProvider: mockLlmProvider,
-      strictProductionSafety: false,
     });
 
     coordinator = new ClosedLoopCoordinator({
@@ -538,7 +548,7 @@ describe('Phase 31 (P31): Director Authority Hardening & Real Lifecycle Boundary
       evidenceStore,
       evidenceCollector,
       directorRuntime,
-      executorPort: mockExecutor,
+      executorPort: mockExecutor as any,
       authorizationPolicyEngine: policyEngine,
       recoveryPolicyEngine,
       correctiveTaskService,
@@ -656,14 +666,12 @@ describe('Phase 31 (P31): Director Authority Hardening & Real Lifecycle Boundary
         status: 'ACTIVE',
         createdAt: new Date().toISOString(),
         lastActivityAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
         understandingRevision: 1,
         protocolVersion: 'P9-01',
         schemaVersion: 1,
         actor: 'DIRECTOR',
         actorRole: 'DIRECTOR',
         hasImplementationAuthority: false,
-        decisionCount: 0,
         metadata: {},
       });
 
@@ -1104,7 +1112,6 @@ describe('Phase 31 (P31): Director Authority Hardening & Real Lifecycle Boundary
       const unapprovedPkg: ApprovalPackage = {
         ...approvedPackage,
         status: 'PENDING',
-        isDevelopmentAuthorized: false,
       };
       await approvalStore.savePackage(unapprovedPkg);
 
@@ -1380,8 +1387,9 @@ describe('Phase 31 (P31): Director Authority Hardening & Real Lifecycle Boundary
         lifecycleState: 'RUNNING' as any,
         continuationState: 'CONTINUING',
         continuationPolicy: 'GOVERNED_AUTONOMOUS',
-        startedAt: new Date().toISOString(),
+        lastTerminalStatus: null,
         updatedAt: new Date().toISOString(),
+        startedAt: new Date().toISOString(),
       });
 
       const driverRuntime = new DriverRuntime({
@@ -1478,7 +1486,7 @@ describe('Phase 31 (P31): Director Authority Hardening & Real Lifecycle Boundary
       );
 
       assert.ok(!res.isError);
-      const data = JSON.parse(res.content[0].text);
+      const data = JSON.parse(res.content[0].text!);
       assert.strictEqual(data.success, true);
       assert.strictEqual(data.directorSessionId, validSessionId, 'Must reuse existing active session');
     });
@@ -1491,7 +1499,7 @@ describe('Phase 31 (P31): Director Authority Hardening & Real Lifecycle Boundary
       );
 
       assert.ok(!res.isError);
-      const data = JSON.parse(res.content[0].text);
+      const data = JSON.parse(res.content[0].text!);
       assert.strictEqual(data.success, true);
       assert.strictEqual(data.contextFingerprint, validFingerprint);
     });
@@ -1512,7 +1520,7 @@ describe('Phase 31 (P31): Director Authority Hardening & Real Lifecycle Boundary
       );
 
       assert.strictEqual(res.isError, true);
-      const data = JSON.parse(res.content[0].text);
+      const data = JSON.parse(res.content[0].text!);
       assert.match(data.error.message, /Anti-spoofing violation/i);
     });
 
@@ -1527,7 +1535,7 @@ describe('Phase 31 (P31): Director Authority Hardening & Real Lifecycle Boundary
       );
 
       assert.ok(!res.isError);
-      const data = JSON.parse(res.content[0].text);
+      const data = JSON.parse(res.content[0].text!);
       assert.strictEqual(data.success, true);
     });
 
@@ -1573,14 +1581,21 @@ describe('Phase 31 (P31): Director Authority Hardening & Real Lifecycle Boundary
 
     it('T42_driver_evaluate_next_action_evaluates_only: evaluateNextAction evaluates boundary without creating technical decisions', async () => {
       const directorLoopEngine = coordinator.directorLoopEngine;
-      const cycleResult = {
+      const cycleResult: DirectorExecutionCycleResult = {
         cycleId: 'cycle-p31-eval',
         instructionId: 'inst-p31-eval',
         projectId: validProjectId,
         directorSessionId: validSessionId,
+        directorDecisionId: 'dec-p31-eval',
+        executionIntent: { intentId: 'intent-1' } as any,
+        executionRequest: { requestId: 'req-1' } as any,
+        rawExecutorOutcome: { outcomeId: 'out-1' } as any,
         taskId: 'task-02-auth',
         taskRevision: 1,
-        terminalStatus: 'ACCEPTED' as const,
+        verificationDecision: 'ACCEPT',
+        integrationOutcome: { status: 'ACCEPTED' } as any,
+        isAuthoritativeProof: { executorOutcomeIsProof: false, systemEvidenceIsProof: true },
+        terminalStatus: 'ACCEPTED',
         completedAt: new Date().toISOString(),
         systemEvidence: {
           evidenceId: 'evi-p31-eval',
@@ -1615,14 +1630,12 @@ describe('Phase 31 (P31): Director Authority Hardening & Real Lifecycle Boundary
         status: 'ACTIVE',
         createdAt: new Date().toISOString(),
         lastActivityAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
         understandingRevision: 1,
         protocolVersion: 'P9-01',
         schemaVersion: 1,
         actor: 'DIRECTOR',
         actorRole: 'DIRECTOR',
         hasImplementationAuthority: false,
-        decisionCount: 0,
         metadata: {},
       });
 
@@ -1641,7 +1654,7 @@ describe('Phase 31 (P31): Director Authority Hardening & Real Lifecycle Boundary
       );
 
       assert.strictEqual(res.isError, true);
-      const data = JSON.parse(res.content[0].text);
+      const data = JSON.parse(res.content[0].text!);
       assert.strictEqual(data.error.code, 'CONTEXT_UNAVAILABLE');
     });
 
@@ -1654,14 +1667,12 @@ describe('Phase 31 (P31): Director Authority Hardening & Real Lifecycle Boundary
         status: 'ACTIVE',
         createdAt: new Date().toISOString(),
         lastActivityAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
         understandingRevision: 1,
         protocolVersion: 'P9-01',
         schemaVersion: 1,
         actor: 'DIRECTOR',
         actorRole: 'DIRECTOR',
         hasImplementationAuthority: false,
-        decisionCount: 0,
         metadata: {},
       });
 
@@ -1681,7 +1692,7 @@ describe('Phase 31 (P31): Director Authority Hardening & Real Lifecycle Boundary
       );
 
       assert.strictEqual(res.isError, true);
-      const data = JSON.parse(res.content[0].text);
+      const data = JSON.parse(res.content[0].text!);
       assert.strictEqual(data.error.code, 'CONTEXT_UNAVAILABLE');
     });
 
@@ -1703,7 +1714,7 @@ describe('Phase 31 (P31): Director Authority Hardening & Real Lifecycle Boundary
       );
 
       assert.strictEqual(res.isError, true);
-      const data = JSON.parse(res.content[0].text);
+      const data = JSON.parse(res.content[0].text!);
       assert.match(data.error.message, /fingerprint mismatch|stale/i);
     });
 
@@ -1724,7 +1735,7 @@ describe('Phase 31 (P31): Director Authority Hardening & Real Lifecycle Boundary
       );
 
       assert.strictEqual(res.isError, true);
-      const data = JSON.parse(res.content[0].text);
+      const data = JSON.parse(res.content[0].text!);
       assert.match(data.error.message, /Understanding revision mismatch/i);
     });
 
@@ -1737,14 +1748,12 @@ describe('Phase 31 (P31): Director Authority Hardening & Real Lifecycle Boundary
         status: 'ACTIVE',
         createdAt: new Date().toISOString(),
         lastActivityAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
         understandingRevision: 1,
         protocolVersion: 'P9-01',
         schemaVersion: 1,
         actor: 'DIRECTOR',
         actorRole: 'DIRECTOR',
         hasImplementationAuthority: false,
-        decisionCount: 0,
         metadata: {},
       });
 
@@ -1771,7 +1780,7 @@ describe('Phase 31 (P31): Director Authority Hardening & Real Lifecycle Boundary
       );
 
       assert.strictEqual(res.isError, true);
-      const data = JSON.parse(res.content[0].text);
+      const data = JSON.parse(res.content[0].text!);
       assert.strictEqual(data.error.code, 'CONTEXT_UNAVAILABLE');
     });
 
@@ -1784,14 +1793,12 @@ describe('Phase 31 (P31): Director Authority Hardening & Real Lifecycle Boundary
         status: 'ACTIVE',
         createdAt: new Date().toISOString(),
         lastActivityAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
         understandingRevision: 1,
         protocolVersion: 'P9-01',
         schemaVersion: 1,
         actor: 'DIRECTOR',
         actorRole: 'DIRECTOR',
         hasImplementationAuthority: false,
-        decisionCount: 0,
         metadata: {},
       });
 
@@ -1817,7 +1824,7 @@ describe('Phase 31 (P31): Director Authority Hardening & Real Lifecycle Boundary
       );
 
       assert.strictEqual(res.isError, true);
-      const data = JSON.parse(res.content[0].text);
+      const data = JSON.parse(res.content[0].text!);
       assert.strictEqual(data.error.code, 'CONTEXT_UNAVAILABLE');
     });
 
@@ -1830,14 +1837,12 @@ describe('Phase 31 (P31): Director Authority Hardening & Real Lifecycle Boundary
         status: 'ACTIVE',
         createdAt: new Date().toISOString(),
         lastActivityAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
         understandingRevision: 1,
         protocolVersion: 'P9-01',
         schemaVersion: 1,
         actor: 'DIRECTOR',
         actorRole: 'DIRECTOR',
         hasImplementationAuthority: false,
-        decisionCount: 0,
         metadata: {},
       });
 
@@ -1857,7 +1862,7 @@ describe('Phase 31 (P31): Director Authority Hardening & Real Lifecycle Boundary
       );
 
       assert.strictEqual(res.isError, true);
-      const data = JSON.parse(res.content[0].text);
+      const data = JSON.parse(res.content[0].text!);
       assert.strictEqual(data.error.code, 'CONTEXT_UNAVAILABLE');
     });
 
@@ -1870,14 +1875,12 @@ describe('Phase 31 (P31): Director Authority Hardening & Real Lifecycle Boundary
         status: 'ACTIVE',
         createdAt: new Date().toISOString(),
         lastActivityAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
         understandingRevision: 1,
         protocolVersion: 'P9-01',
         schemaVersion: 1,
         actor: 'DIRECTOR',
         actorRole: 'DIRECTOR',
         hasImplementationAuthority: false,
-        decisionCount: 0,
         metadata: {},
       });
 
@@ -1897,7 +1900,7 @@ describe('Phase 31 (P31): Director Authority Hardening & Real Lifecycle Boundary
       );
 
       assert.strictEqual(res.isError, true);
-      const data = JSON.parse(res.content[0].text);
+      const data = JSON.parse(res.content[0].text!);
       assert.strictEqual(data.error.code, 'CONTEXT_UNAVAILABLE');
     });
 
@@ -1926,7 +1929,7 @@ describe('Phase 31 (P31): Director Authority Hardening & Real Lifecycle Boundary
       );
 
       assert.strictEqual(res.isError, true);
-      const data = JSON.parse(res.content[0].text);
+      const data = JSON.parse(res.content[0].text!);
       assert.match(data.error.message, /fingerprint mismatch|stale/i);
     });
 
@@ -1951,7 +1954,7 @@ describe('Phase 31 (P31): Director Authority Hardening & Real Lifecycle Boundary
       );
 
       assert.strictEqual(res.isError, false);
-      const data = JSON.parse(res.content[0].text);
+      const data = JSON.parse(res.content[0].text!);
       assert.strictEqual(data.success, true);
       assert.strictEqual(data.actionType, 'SELECT_TASK');
       assert.strictEqual(data.directorSessionId, validSessionId);

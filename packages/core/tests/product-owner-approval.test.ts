@@ -64,6 +64,7 @@ import {
   type ApprovalPackage,
   type McpRequestEnvelope,
   type McpSuccessResponseEnvelope,
+  type McpToolResult,
 } from '../dist/index.js';
 
 describe('Product Owner Approval Capability (TASK-P15-08)', { concurrency: 1 }, () => {
@@ -1126,7 +1127,7 @@ describe('Product Owner Approval Capability (TASK-P15-08)', { concurrency: 1 }, 
     });
 
     const durableState = await durableManager.load();
-    assert.ok(!durableState || durableState.currentLifecycleState !== 'IN_PROGRESS');
+    assert.ok(!durableState || (durableState.currentLifecycleState as string) !== "IN_PROGRESS");
   });
 
   // ==========================================================================
@@ -1173,14 +1174,13 @@ describe('Product Owner Approval Capability (TASK-P15-08)', { concurrency: 1 }, 
       projectRoot: tempDir,
       specStore,
       historyManager,
-      discoveryStore,
-      requirementsStore,
-      architectureStore,
+      requirementsScopeStore: requirementsStore,
+      architectureTechnologyStore: architectureStore,
       businessRulesStore,
       acceptanceCriteriaStore,
-      riskStore,
-      specProjectionStore,
-      completenessStore,
+      riskHumanDecisionStore: riskStore,
+      projectSpecStore: specProjectionStore,
+      completenessGateStore: completenessStore,
       approvalStore,
       approvalPackageEngine: approvalEngine,
     });
@@ -1202,10 +1202,10 @@ describe('Product Owner Approval Capability (TASK-P15-08)', { concurrency: 1 }, 
         name: AIDM_APPROVAL_PACKAGE_CREATE_TOOL_NAME,
         arguments: { projectId },
       },
-    } as McpRequestEnvelope)) as McpSuccessResponseEnvelope;
+    } as McpRequestEnvelope)) as McpSuccessResponseEnvelope<McpToolResult>;
 
     assert.ok(createRes.result);
-    const createdPayload = JSON.parse(createRes.result.content[0].text);
+    const createdPayload = JSON.parse(createRes.result.content[0].text!);
     assert.equal(createdPayload.projectId, projectId);
     assert.equal(createdPayload.status, 'READY_FOR_APPROVAL');
 
@@ -1218,9 +1218,9 @@ describe('Product Owner Approval Capability (TASK-P15-08)', { concurrency: 1 }, 
         name: AIDM_APPROVAL_PACKAGE_READINESS_TOOL_NAME,
         arguments: { packageId: createdPayload.packageId, projectId },
       },
-    } as McpRequestEnvelope)) as McpSuccessResponseEnvelope;
+    } as McpRequestEnvelope)) as McpSuccessResponseEnvelope<McpToolResult>;
 
-    const readinessPayload = JSON.parse(readinessRes.result.content[0].text);
+    const readinessPayload = JSON.parse(readinessRes.result.content[0].text!);
     const isReady = readinessPayload.readiness?.isReady ?? readinessPayload.isReady;
     const status = readinessPayload.readiness?.status ?? readinessPayload.currentStatus;
     assert.equal(isReady, true);
@@ -1264,9 +1264,9 @@ describe('Product Owner Approval Capability (TASK-P15-08)', { concurrency: 1 }, 
           comment: 'Approved via MCP boundary',
         },
       },
-    } as McpRequestEnvelope)) as McpSuccessResponseEnvelope;
+    } as McpRequestEnvelope)) as McpSuccessResponseEnvelope<McpToolResult>;
 
-    const approvedPayload = JSON.parse(poApproveRes.result.content[0].text);
+    const approvedPayload = JSON.parse(poApproveRes.result.content[0].text!);
     assert.equal(approvedPayload.status, 'APPROVED');
     assert.equal(approvedPayload.approvalRecord.actor, 'alice-po');
 
@@ -1279,9 +1279,9 @@ describe('Product Owner Approval Capability (TASK-P15-08)', { concurrency: 1 }, 
         name: AIDM_APPROVAL_PACKAGE_GET_TOOL_NAME,
         arguments: { packageId: createdPayload.packageId, projectId },
       },
-    } as McpRequestEnvelope)) as McpSuccessResponseEnvelope;
+    } as McpRequestEnvelope)) as McpSuccessResponseEnvelope<McpToolResult>;
 
-    const getPayload = JSON.parse(getRes.result.content[0].text);
+    const getPayload = JSON.parse(getRes.result.content[0].text!);
     assert.equal(getPayload.status, 'APPROVED');
   });
 

@@ -859,8 +859,8 @@ describe('P18-04: Completeness Gate & Product Owner Approval Boundary via Real M
 
     // Authoritative check BEFORE calling any readiness tool (Test G):
     // The approval package becomes unauthorized immediately because upstream revision changed.
-    const targetApprovalStore = new ApprovalStore(targetADir);
-    const targetEngine = new ApprovalPackageEngine(targetApprovalStore, targetADir);
+    const targetApprovalStore = new ApprovalStore({ baseDir: targetADir });
+    const targetEngine = new ApprovalPackageEngine();
 
     const directAuthStatus = await targetEngine.isDevelopmentAuthorizedAsync(approvalPackage);
     assert.equal(
@@ -870,8 +870,8 @@ describe('P18-04: Completeness Gate & Product Owner Approval Boundary via Real M
     );
 
     // Test H: Approved package remains unauthorized after process restart when upstream revision is stale
-    const freshApprovalStore = new ApprovalStore(targetADir);
-    const freshEngine = new ApprovalPackageEngine(freshApprovalStore, targetADir);
+    const freshApprovalStore = new ApprovalStore({ baseDir: targetADir });
+    const freshEngine = new ApprovalPackageEngine();
     const restartedAuthStatus = await freshEngine.isDevelopmentAuthorizedAsync(approvalPackage);
     assert.equal(
       restartedAuthStatus,

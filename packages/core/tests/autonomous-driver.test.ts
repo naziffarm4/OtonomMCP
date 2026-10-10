@@ -89,6 +89,7 @@ import {
   executeDriver,
   CliOutputWriter,
 } from '../dist/index.js';
+import { createValidApprovalPackage } from './helpers/test-discovery-factory.ts';
 
 describe('Phase 17 — Autonomous Driver', { concurrency: 1 }, () => {
   let tempDir: string;
@@ -118,6 +119,7 @@ describe('Phase 17 — Autonomous Driver', { concurrency: 1 }, () => {
   // Mock executor port
   class MockExecutor implements ExecutorPort, ExecutionRequestExecutorPort {
     readonly executorId = 'mock-driver-executor';
+    readonly provider = 'antigravity';
     readonly supportedOperations = ['IMPLEMENT_TASK'];
     outcomeToReturn: Partial<RawExecutorOutcome> = {
       status: 'SUCCESS',
@@ -131,7 +133,7 @@ describe('Phase 17 — Autonomous Driver', { concurrency: 1 }, () => {
     failWithVerification = false;
 
     async execute(request: ExecutionRequest): Promise<RawExecutorOutcome> {
-      const files = request.targetFiles && request.targetFiles.length > 0 ? request.targetFiles : ['src/task1.ts'];
+      const files = request.instruction?.targetFiles && request.instruction.targetFiles.length > 0 ? request.instruction.targetFiles : ['src/task1.ts'];
       for (const f of files) {
         try {
           const full = path.join(tempDir, f);
@@ -148,18 +150,17 @@ describe('Phase 17 — Autonomous Driver', { concurrency: 1 }, () => {
           requestId: request.requestId,
           requestBinding: {
             requestId: request.requestId,
-            directorSessionId: request.directorSessionId,
-            directorDecisionId: request.directorDecisionId,
             projectId: request.projectId,
             taskId: request.taskId,
             taskRevision: request.taskRevision,
             contextFingerprint: request.contextFingerprint,
             understandingRevision: request.understandingRevision,
             approvalPackageRevision: request.approvalPackageRevision,
-            operationType: request.operationType,
           },
           status: 'FAILURE',
           exitCode: 1,
+          timedOut: false,
+          cancelled: false,
           signal: null,
           stdout: '',
           stderr: 'Simulated executor error',
@@ -176,18 +177,17 @@ describe('Phase 17 — Autonomous Driver', { concurrency: 1 }, () => {
         requestId: request.requestId,
         requestBinding: {
           requestId: request.requestId,
-          directorSessionId: request.directorSessionId,
-          directorDecisionId: request.directorDecisionId,
           projectId: request.projectId,
           taskId: request.taskId,
           taskRevision: request.taskRevision,
           contextFingerprint: request.contextFingerprint,
           understandingRevision: request.understandingRevision,
           approvalPackageRevision: request.approvalPackageRevision,
-          operationType: request.operationType,
         },
         status: this.outcomeToReturn.status ?? 'SUCCESS',
         exitCode: this.outcomeToReturn.exitCode ?? 0,
+        timedOut: false,
+        cancelled: false,
         signal: null,
         stdout: this.outcomeToReturn.stdout ?? '',
         stderr: this.outcomeToReturn.stderr ?? '',
@@ -203,27 +203,12 @@ describe('Phase 17 — Autonomous Driver', { concurrency: 1 }, () => {
   let mockExecutor: MockExecutor;
 
   function createTestApprovedPackage(projectId: string, revision = 1): ApprovalPackage {
-    const now = new Date().toISOString();
-    return {
+    return createValidApprovalPackage({
       packageId: `pkg-${projectId}-01`,
+      projectId,
       revision,
       approvalPackageRevision: revision,
-      projectId,
-      status: 'APPROVED',
-      isStale: false,
-      createdAt: now,
-      updatedAt: now,
-      approvalRecord: {
-        packageId: `pkg-${projectId}-01`,
-        revision,
-        actor: 'human-product-owner',
-        actorRole: 'PRODUCT_OWNER',
-        intent: 'EXPLICIT_APPROVAL',
-        approvedAt: now,
-        packageHash: 'sha256-approved-package-hash',
-        comment: 'Formal approval granted by human Product Owner',
-      },
-    };
+    });
   }
 
   beforeEach(async () => {

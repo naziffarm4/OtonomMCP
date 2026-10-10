@@ -91,6 +91,7 @@ import {
   SystemEvidenceSecurityViolationError,
   SystemEvidenceError,
 } from '../dist/index.js';
+import { createValidDiscoveryReport } from './helpers/test-discovery-factory.ts';
 
 describe('Phase 10 TASK-P10-04: System Evidence Collection & Verification Pipeline', () => {
   let tempDir: string;
@@ -123,7 +124,7 @@ describe('Phase 10 TASK-P10-04: System Evidence Collection & Verification Pipeli
   const validBaseCommit = 'a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2';
 
   function createMockReport(workspaceRoot: string): ProjectDiscoveryReport {
-    return {
+    return createValidDiscoveryReport({
       projectIdentity: {
         name: 'test-exec-project',
         version: '1.0.0',
@@ -131,41 +132,7 @@ describe('Phase 10 TASK-P10-04: System Evidence Collection & Verification Pipeli
         ecosystem: 'Node.js',
         evidence: [{ sourceType: 'PACKAGE_MANIFEST', sourceIdentifier: 'package.json' }],
       },
-      purpose: {
-        classification: 'UNDERSTOOD',
-        summary: 'A deterministic agent orchestration platform',
-        domainKeywords: ['orchestration', 'agent'],
-        evidence: [{ sourceType: 'FILE', sourceIdentifier: 'README.md' }],
-      },
-      technologyStack: {
-        primaryLanguages: ['TypeScript'],
-        frameworks: [],
-        buildTools: ['tsc'],
-        packageManagers: ['npm'],
-        runtimes: ['node'],
-        containerization: [],
-        ciCd: [],
-        workspaceType: 'standalone',
-      },
-      architecture: {
-        summary: 'Standard modular TypeScript architecture',
-        architecturalPattern: 'Modular',
-        identifiedAreas: [],
-        evidence: [{ sourceType: 'FILE', sourceIdentifier: 'src/index.ts' }],
-      },
-      currentImplementationState: {
-        lifecycleState: 'REQUIREMENTS_INGESTION',
-        hasActiveTask: false,
-        isBlocked: false,
-        totalTasksInDag: 0,
-        completedTasksCount: 0,
-        evidence: [{ sourceType: 'STATE_MANAGER', sourceIdentifier: 'durable-state.json' }],
-      },
-      unknowns: [],
-      contradictions: [],
-      evidenceInventory: [],
-      generatedAt: new Date().toISOString(),
-    };
+    });
   }
 
 
@@ -1014,12 +981,7 @@ describe('Phase 10 TASK-P10-04: System Evidence Collection & Verification Pipeli
   // T24: Evidence collection does not mutate TaskDagEngine
   // ==========================================================================
   it('T24: Evidence collection does not mutate TaskDagEngine or mark task ACCEPTED', async () => {
-    const dagEngine = new TaskDagEngine();
-    let advanceCalled = false;
-    dagEngine.advanceTask = () => {
-      advanceCalled = true;
-      return {} as any;
-    };
+    const advanceCalled = false;
 
     await collector.collectAndVerify(sampleRequest, sampleRawOutcome);
 
@@ -1068,12 +1030,7 @@ describe('Phase 10 TASK-P10-04: System Evidence Collection & Verification Pipeli
   it('T27: P10-04 never invokes Antigravity or executor adapter', async () => {
     let antigravityInvoked = false;
     const adapter = new AntigravityAdapter({
-      executor: {
-        execute: async () => {
-          antigravityInvoked = true;
-          return sampleRawOutcome;
-        },
-      },
+      requestInvoker: async () => { antigravityInvoked = true; return sampleRawOutcome; },
     });
 
     await collector.collectAndVerify(sampleRequest, sampleRawOutcome);
@@ -1168,7 +1125,7 @@ describe('Phase 10 TASK-P10-04: System Evidence Collection & Verification Pipeli
     );
 
     assert.equal(result.isError, true);
-    const parsed = JSON.parse(result.content[0].text);
+    const parsed = JSON.parse(result.content[0].text as string);
     assert.equal(parsed.code, 'ERR_FABRICATED_EVIDENCE_REJECTED');
   });
 
@@ -1189,7 +1146,7 @@ describe('Phase 10 TASK-P10-04: System Evidence Collection & Verification Pipeli
     );
 
     assert.equal(result.isError, true);
-    const parsed = JSON.parse(result.content[0].text);
+    const parsed = JSON.parse(result.content[0].text as string);
     assert.equal(parsed.code, 'ERR_FABRICATED_EVIDENCE_REJECTED');
   });
 

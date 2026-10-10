@@ -1,3 +1,4 @@
+import { createValidApprovalPackage } from './helpers/test-discovery-factory.ts';
 /**
  * @file p19-03-hardening.test.ts
  * @description Hardening verification tests for P19-03:
@@ -107,24 +108,26 @@ describe('P19-03-HARDENING: Dispatcher Concurrency & Authorization Provenance', 
     await specStore.saveTasks([
       {
         task_id: 'task-01-core',
-        parent_feature_id: null,
+        parent_feature_id: 'ROOT',
         title: 'Core',
         description: 'Core task',
         traceability_sources: ['REQ-01'],
         dependencies: [],
         acceptance_criteria: ['Done'],
-        status: TaskStatus.COMPLETED,
+        status: TaskStatus.ACCEPTED,
         hierarchy_level: 'TASK',
         attempt: 1,
         max_attempts: 3,
-        priority: TaskPriority.P0,
-        risk_level: RiskLevel.LOW,
+        priority: TaskPriority.CRITICAL,
+        risk_level: RiskLevel.SAFE,
         created_at: new Date().toISOString(),
+        started_at: null,
+        completed_at: null,
         metadata: { taskClass: 'IMPLEMENTATION', revision: 1 },
       },
       {
         task_id: 'task-02-auth',
-        parent_feature_id: null,
+        parent_feature_id: 'ROOT',
         title: 'Auth',
         description: 'Auth task',
         traceability_sources: ['REQ-01'],
@@ -134,9 +137,11 @@ describe('P19-03-HARDENING: Dispatcher Concurrency & Authorization Provenance', 
         hierarchy_level: 'TASK',
         attempt: 0,
         max_attempts: 3,
-        priority: TaskPriority.P0,
-        risk_level: RiskLevel.LOW,
+        priority: TaskPriority.CRITICAL,
+        risk_level: RiskLevel.SAFE,
         created_at: new Date().toISOString(),
+        started_at: null,
+        completed_at: null,
         metadata: { taskClass: 'IMPLEMENTATION', revision: 1 },
       },
     ]);
@@ -148,7 +153,6 @@ describe('P19-03-HARDENING: Dispatcher Concurrency & Authorization Provenance', 
       taskRevision: 1,
       projectId: validProjectId,
       verificationDecision: 'ACCEPT',
-      verificationReason: 'All tests passed',
       verifiedAt: new Date().toISOString(),
       contextFingerprint: validFingerprint,
       understandingRevision: 1,
@@ -224,7 +228,7 @@ describe('P19-03-HARDENING: Dispatcher Concurrency & Authorization Provenance', 
       },
       sections: {
         projectStatus: { initialized: true, lifecycleState: 'DEVELOPMENT', isCompleted: false, isBlocked: false },
-        requirements: { total: 0, confirmedCount: 0, pendingCount: 0, rejectedCount: 0, items: [] },
+        requirements: { total: 0, items: [] },
         decisions: { total: 0, items: [] },
         currentTask: { hasActiveTask: false, task: null },
         taskList: {
@@ -273,6 +277,9 @@ describe('P19-03-HARDENING: Dispatcher Concurrency & Authorization Provenance', 
         basedOnContextFingerprint: validFingerprint,
         basedOnUnderstandingRevision: validRevision,
         selectedTaskId: (payload.taskId ?? payload.targetTaskId) as string,
+        metadata: {},
+        actor: 'DIRECTOR',
+        hasImplementationAuthority: false,
       },
       snapshot,
       idempotencyKey: opts?.customIdempotencyKey,
@@ -466,25 +473,11 @@ describe('P19-03-HARDENING: Dispatcher Concurrency & Authorization Provenance', 
       executionPlan: 'Cross-process dispatch plan',
     };
 
-    const approvedPkg: ApprovalPackage = {
+    const approvedPkg: ApprovalPackage = createValidApprovalPackage({
       packageId: `pkg-${validProjectId}-01`,
-      revision: 1,
       projectId: validProjectId,
-      status: 'APPROVED',
-      isStale: false,
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-      approvalRecord: {
-        packageId: `pkg-${validProjectId}-01`,
-        revision: 1,
-        actor: 'human-product-owner',
-        actorRole: 'PRODUCT_OWNER',
-        intent: 'EXPLICIT_APPROVAL',
-        approvedAt: new Date().toISOString(),
-        packageHash: 'sha256-approved-package-hash',
-        comment: 'Formal approval granted by human Product Owner',
-      },
-    };
+      revision: 1,
+    });
     await approvalStore.savePackage(approvedPkg);
 
     const validatedResultA = await createValidatedResult('IMPLEMENT_TASK', payload, {
@@ -561,7 +554,7 @@ describe('P19-03-HARDENING: Dispatcher Concurrency & Authorization Provenance', 
       success: true as const,
       reasoningResult: {} as any,
       envelope: conflictingEnvelope,
-      validationResult: { isValid: true, actionId: conflictingEnvelope.actionId, isDuplicate: false, checks: [] },
+      validationResult: { isValid: true, isDuplicate: false, envelope: conflictingEnvelope, typedPayload: {}, validatedAt: new Date().toISOString() },
       isDuplicate: false,
     };
 
@@ -607,6 +600,9 @@ describe('P19-03-HARDENING: Dispatcher Concurrency & Authorization Provenance', 
             basedOnContextFingerprint: validFingerprint,
             basedOnUnderstandingRevision: validRevision,
             selectedTaskId: 'task-02-auth',
+            actor: 'DIRECTOR',
+            hasImplementationAuthority: false,
+            metadata: {},
           },
           snapshot: unauthorizedSnapshot,
           explicitActionType: 'IMPLEMENT_TASK',
@@ -675,14 +671,13 @@ describe('P19-03-HARDENING: Dispatcher Concurrency & Authorization Provenance', 
 
   it('HARDENING 7: IMPLEMENT_TASK is authorized only when disk ApprovalPackage is genuinely APPROVED and valid', async () => {
     // Create and approve a genuine ApprovalPackage on disk
-    const genuinePkg: ApprovalPackage = {
+    const genuinePkg = createValidApprovalPackage({
       packageId: `pkg-${validProjectId}-01`,
       revision: validRevision,
+      approvalPackageRevision: validRevision,
       projectId: validProjectId,
       status: 'APPROVED',
       isStale: false,
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
       approvalRecord: {
         packageId: `pkg-${validProjectId}-01`,
         revision: validRevision,
@@ -693,7 +688,7 @@ describe('P19-03-HARDENING: Dispatcher Concurrency & Authorization Provenance', 
         packageHash: 'sha256-approved-package-hash',
         comment: 'Formal approval granted by human Product Owner',
       },
-    };
+    });
     await approvalStore.savePackage(genuinePkg);
 
     const validatedResult = await createValidatedResult('IMPLEMENT_TASK', {

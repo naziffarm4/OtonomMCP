@@ -4,7 +4,6 @@ import {
   // Executor Bridge Types & Contracts
   type ExecutorInstruction,
   type ExecutorInstructionInput,
-  type RawExecutorOutcome,
   type NormalizedExecutorResult,
   type ExecutorPort,
   ExecutorOperationType,
@@ -28,6 +27,7 @@ import {
   ExecutorExecutionError,
   AdapterTranslationError,
 } from '../dist/index.js';
+import type { RawExecutorOutcome } from '../src/executor-bridge/instruction-types.js';
 
 describe('Antigravity Executor Bridge Contract & Adapter Boundary (TASK-P3-01)', () => {
   const baseValidInstructionInput: ExecutorInstructionInput = {
@@ -114,7 +114,7 @@ describe('Antigravity Executor Bridge Contract & Adapter Boundary (TASK-P3-01)',
         traceabilitySources: ['REQ:REQ-001'],
         policyDecision: {
           state: PolicyAuthorizationState.AUTHORIZED,
-          decidedBy: 'POLICY_ENGINE',
+          decided_by: 'POLICY_ENGINE',
         },
       };
 
@@ -633,7 +633,7 @@ describe('Antigravity Executor Bridge Contract & Adapter Boundary (TASK-P3-01)',
       assert.equal(customPort.executorId, 'executor:custom-llm');
       assert.equal(customPort.provider, 'custom-llm');
 
-      const availability = await customPort.checkAvailability();
+      const availability = await customPort.checkAvailability!();
       assert.equal(availability.available, true);
       assert.equal(availability.version, '2.0.0');
 

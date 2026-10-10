@@ -383,9 +383,9 @@ describe('Phase 10 P10-06 Integration & Hardening Suite', () => {
   // 26. MCP boundary does not expose aidm.execution.integrate tool in baseline
   it('26. MCP boundary does not expose aidm.execution.integrate tool in baseline', async () => {
     // Start an MCP server without registering the integrate tool.
-    const { McpServer } = await import('../dist/index.js');
+    const { McpServer, InMemoryMcpTransport } = await import('../dist/index.js');
     const server = new McpServer({
-      transport: { start: async () => {}, send: async () => {}, onMessage: (cb) => {}, onError: (cb) => {}, onClose: (cb) => {}, isConnected: true, close: async () => {} } as any,
+      transport: new InMemoryMcpTransport(),
     });
     await server.start();
     const tools = server.getRegisteredTools();

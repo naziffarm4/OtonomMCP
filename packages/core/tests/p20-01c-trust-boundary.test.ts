@@ -62,6 +62,59 @@ import { createApprovalPackageApproveTool } from '../dist/mcp/tools/approval-too
 describe('Phase 20 TASK-P20-01C — Product Owner Trust Boundary & AI Cost Scope Verification', { concurrency: 1 }, () => {
   let tempDir: string;
   let canonicalProjectId: string;
+  const mockUnderstanding = {
+    projectId: 'test-project',
+    projectName: 'test-project',
+    apparentPurpose: { classification: 'UNDERSTOOD' as const, summary: 'Test', domainKeywords: [], evidence: [] },
+    targetUsers: [],
+    technologyStack: {
+      primaryLanguages: ['TypeScript'],
+      frameworks: [],
+      buildTools: [],
+      packageManagers: [],
+      runtimes: [],
+      containerization: [],
+      ciCd: [],
+      workspaceType: 'standalone' as const,
+      dependencies: [],
+      devDependencies: [],
+      evidence: [],
+    },
+    architectureSummary: { summary: 'Modular', architecturalPattern: 'Modular', identifiedAreas: [], evidence: [] },
+    existingCapabilities: [],
+    confirmedRequirements: [],
+    clarifiedRequirements: [],
+    unresolvedUnknowns: [],
+    unresolvedContradictions: [],
+    currentImplementationState: {
+      lifecycleState: 'TASK_LOOP' as const,
+      hasActiveTask: false,
+      isBlocked: false,
+      totalTasksInDag: 0,
+      completedTasksCount: 0,
+      evidence: [],
+    },
+    constraints: [],
+    assumptions: [],
+    nonGoals: [],
+    proposedDevelopmentScope: [],
+    evidenceReferences: [],
+    sourceDiscoveryReference: 'disc-ref',
+    generatedAt: new Date().toISOString(),
+  };
+
+  const mockDevelopmentPlan = {
+    objectives: [],
+    proposedScope: [],
+    proposedFeatureGroups: [],
+    dependencies: [],
+    constraints: [],
+    knownRisks: [],
+    unresolvedIssues: [],
+    excludedScope: [],
+    suggestedImplementationOrder: [],
+  };
+
   let historyManager: HistoryManager;
   let sessionStore: DirectorSessionStore;
   let sessionEngine: DirectorSessionEngine;
@@ -97,7 +150,8 @@ describe('Phase 20 TASK-P20-01C — Product Owner Trust Boundary & AI Cost Scope
     async execute(request: ExecutionRequest): Promise<RawExecutorOutcome> {
       this.executionCallCount++;
 
-      const files = request.targetFiles && request.targetFiles.length > 0 ? request.targetFiles : ['src/verified.ts'];
+      const targetFiles = request.instruction?.targetFiles;
+      const files = targetFiles && targetFiles.length > 0 ? targetFiles : ['src/verified.ts'];
       for (const f of files) {
         const full = path.join(tempDir, f);
         fs.mkdirSync(path.dirname(full), { recursive: true });
@@ -109,15 +163,12 @@ describe('Phase 20 TASK-P20-01C — Product Owner Trust Boundary & AI Cost Scope
         requestId: request.requestId,
         requestBinding: {
           requestId: request.requestId,
-          directorSessionId: request.directorSessionId,
-          directorDecisionId: request.directorDecisionId,
           projectId: request.projectId,
           taskId: request.taskId,
           taskRevision: request.taskRevision,
           contextFingerprint: request.contextFingerprint,
           understandingRevision: request.understandingRevision,
           approvalPackageRevision: request.approvalPackageRevision,
-          operationType: request.operationType,
         },
         status: 'SUCCESS',
         exitCode: 0,
@@ -129,6 +180,8 @@ describe('Phase 20 TASK-P20-01C — Product Owner Trust Boundary & AI Cost Scope
         unverifiedModifiedFiles: files,
         startedAt: new Date().toISOString(),
         completedAt: new Date().toISOString(),
+        timedOut: false,
+        cancelled: false,
       };
     }
   }
@@ -158,9 +211,7 @@ describe('Phase 20 TASK-P20-01C — Product Owner Trust Boundary & AI Cost Scope
     decisionStore = new DirectorDecisionStore({ sessionStore, historyManager });
     sessionEngine = new DirectorSessionEngine({
       workspaceRoot: tempDir,
-      sessionStore,
-      decisionStore,
-      historyManager,
+      store: sessionStore,
     });
     approvalStore = new ApprovalStore({ baseDir: tempDir, historyManager });
     approvalPackageEngine = new ApprovalPackageEngine({
@@ -261,43 +312,52 @@ describe('Phase 20 TASK-P20-01C — Product Owner Trust Boundary & AI Cost Scope
 
     // 2. Persist Snapshot
     activeSnapshot = {
-      snapshotId: `snap-${Date.now()}`,
       directorSessionId: activeSession.directorSessionId,
       projectId: canonicalProjectId,
-      createdAt: new Date().toISOString(),
-      understandingRevision: 1,
       logicalFingerprint: 'ctx-fingerprint-p20-01c-canonical',
-      syncStatus: 'SYNCHRONIZED',
+      syncStatus: 'CHANGED',
+      protocolVersion: 'P9-02',
+      schemaVersion: 1,
+      isDerived: true,
+      projectRoot: tempDir,
+      synchronizedAt: new Date().toISOString(),
+      sectionMetadata: {} as any,
       isComplete: true,
       staleSections: [],
       unavailableSections: [],
       sections: {
-        understanding: {
-          projectId: canonicalProjectId,
+        discovery: {
+          isDiscovered: true,
           projectName: canonicalProjectId,
-          summary: 'Verified P20-01C Baseline',
-          technologyStack: ['TypeScript', 'Node.js'],
-          architectureSummary: 'Modular Core Architecture',
-          constraints: [],
-          nonGoals: [],
+          apparentPurposeClassification: 'application',
+          technologyStack: [{ name: 'TypeScript' }],
+          entryPointsCount: 0,
+          unknownsCount: 0,
+          contradictionsCount: 0,
         },
-        decisions: [],
-        tasks: {
-          tasks: [],
-          activeTaskCount: 1,
-          completedTaskCount: 0,
-          pendingTaskCount: 1,
-        },
-        risks: {
-          activeRisks: [],
-          unresolvedDecisionPoints: [],
+        decisions: { total: 0, items: [] } as any,
+        taskList: { total: 0, topologicalOrder: [], tasks: [] },
+        currentTask: { hasActiveTask: false, task: null },
+        approval: {
+          hasApprovalPackage: true,
+          packageId: 'pkg-init',
+          revision: 1,
+          status: 'APPROVED',
+          isReadyForApproval: true,
+          isExplicitlyApproved: true,
         },
         authorization: {
           isDevelopmentAuthorized: true,
-          status: 'APPROVED',
-          packageId: 'pkg-init',
-          packageRevision: 1,
+          authoritySource: 'PRODUCT_OWNER',
+          requiresHumanApproval: true,
         },
+        projectStatus: { initialized: true, lifecycleState: 'DEVELOPMENT', isCompleted: false, isBlocked: false },
+        requirements: { total: 0, items: [] },
+        contextEngine: { isAvailable: true, hasL0Cache: false, inspectedPaths: [] },
+        evidence: { totalAvailable: 0, items: [] },
+        history: { totalEvents: 0, recentEvents: [] },
+        git: { isGitRepository: true, head: null, branch: 'main', workingTreeClean: true, totalAcceptedCheckpoints: 0 },
+        clarification: { hasActiveSession: false, totalCount: 0, resolvedCount: 0, blockingOpenCount: 0, hasUnresolvedBlocking: false },
       },
     };
     await sessionStore.saveSnapshot(activeSnapshot);
@@ -434,7 +494,7 @@ describe('Phase 20 TASK-P20-01C — Product Owner Trust Boundary & AI Cost Scope
   });
 
   function createValidIntent(overrides: Partial<BridgeExecutionIntent> = {}): BridgeExecutionIntent {
-    return {
+    return createFrozenBridgeExecutionIntent({
       executionIntentId: `intent-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
       actionId: `action-${Date.now()}`,
       idempotencyKey: `idem-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
@@ -454,7 +514,7 @@ describe('Phase 20 TASK-P20-01C — Product Owner Trust Boundary & AI Cost Scope
       createdAt: new Date().toISOString(),
       executionPlan: 'Execute trust boundary verification under fail-closed invariants',
       ...overrides,
-    };
+    });
   }
 
   // ==========================================================================
@@ -484,7 +544,7 @@ describe('Phase 20 TASK-P20-01C — Product Owner Trust Boundary & AI Cost Scope
         intent: 'EXPLICIT_APPROVAL',
         comment: 'Approval submitted via MCP tool call',
       },
-      { correlation: { correlationId: 'mcp-po-req-01' } }
+      { correlation: { correlationId: 'mcp-po-req-01', receivedAt: new Date().toISOString() } }
     );
 
     assert.ok(toolResult.content[0]);
@@ -561,7 +621,7 @@ describe('Phase 20 TASK-P20-01C — Product Owner Trust Boundary & AI Cost Scope
         intent: 'EXPLICIT_APPROVAL',
         comment: 'User approval via MCP',
       },
-      { correlation: { correlationId: 'mcp-user-req-02' } }
+      { correlation: { correlationId: 'mcp-user-req-02', receivedAt: new Date().toISOString() } }
     );
 
     // 2. Verify ApprovalStore: marked UNVERIFIED_CLIENT_INPUT

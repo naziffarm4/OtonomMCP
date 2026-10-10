@@ -13,7 +13,9 @@
  * - Production safety & fail-closed behavior
  */
 
-import { describe, it } from 'node:test';
+import {
+  describe,
+  it } from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
@@ -39,11 +41,13 @@ import {
   type DirectorContextSnapshot,
   type DirectorSession,
   type DirectorSessionStore,
+} from '../dist/director/index.js';
+import type { LlmProviderAvailability } from '../dist/llm-bridge/llm-provider.js';
+import {
   type LLMProvider,
   type LlmRequest,
   type LlmResponse,
-  type LlmProviderAvailability,
-} from '../dist/director/index.js';
+} from '../dist/llm-bridge/index.js';;
 import { LlmRole, LlmFinishReason, generateDeterministicLlmCorrelationId } from '../dist/llm-bridge/llm-types.js';
 
 // ============================================================================
@@ -262,11 +266,11 @@ function createMockSession(overrides?: Partial<DirectorSession>): DirectorSessio
     protocolVersion: 'P9-01',
     schemaVersion: 1,
     status: 'ACTIVE',
+    actor: 'DIRECTOR',
+    actorRole: 'DIRECTOR',
     createdAt: '2026-10-06T00:00:00Z',
     lastActivityAt: '2026-10-06T00:00:00Z',
-    totalDecisions: 0,
-    activeTasks: [],
-    completedTasks: [],
+    hasImplementationAuthority: false,
     metadata: {},
     ...overrides,
   };

@@ -108,12 +108,10 @@ describe('Phase 15 Architecture & Technology Definition (TASK-P15-04)', { concur
       baseDir: tempDir,
       historyManager,
       specStore,
-      discoveryStore,
-    });
+          });
 
     completenessEngine = new CompletenessGateEngine({
       baseDir: tempDir,
-      discoveryStore,
       completenessStore,
       historyManager,
       specStore,
@@ -658,6 +656,9 @@ describe('Phase 15 Architecture & Technology Definition (TASK-P15-04)', { concur
       explicitSections: {
         productScope: {
           inScope: ['Tournament mode', 'Advanced Analytics'],
+          outOfScope: [],
+          targetUsers: [],
+          primaryWorkflows: [],
         },
       },
       workspaceRoot: tempDir,
@@ -844,12 +845,16 @@ describe('Phase 15 Architecture & Technology Definition (TASK-P15-04)', { concur
 
     const delegate = new DefaultMcpOrchestratorDelegate({
       projectRoot: tempDir,
-      discoveryStore,
-      completenessStore,
-      requirementsStore,
-      architectureStore,
       historyManager,
       specStore,
+      adaptiveDiscoveryStore: discoveryStore,
+      completenessGateStore: completenessStore,
+      requirementsScopeStore: requirementsStore,
+      architectureTechnologyStore: architectureStore,
+      adaptiveDiscoveryEngine: discoveryEngine,
+      completenessGateEngine: completenessEngine,
+      requirementsScopeEngine: requirementsEngine,
+      architectureTechnologyEngine: architectureEngine,
     });
 
     const transport = new InMemoryMcpTransport();
@@ -909,7 +914,7 @@ describe('Phase 15 Architecture & Technology Definition (TASK-P15-04)', { concur
     const requirements = await createRequirementsRevision('proj-no-approval');
     await architectureEngine.derive({ projectId: 'proj-no-approval' });
 
-    const packages = await approvalStore.listPackages('proj-no-approval');
+    const packages = await approvalStore.listPackages();
     assert.strictEqual(packages.length, 0);
   });
 

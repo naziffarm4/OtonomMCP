@@ -1296,7 +1296,6 @@ describe('Recovery & Reconciliation Foundation (TASK-P1-05)', () => {
         timestamp: new Date().toISOString(),
         actor: Actor.ORCHESTRATOR,
         eventType: 'TASK_IMPLEMENTED',
-        lifecycleState: LifecycleState.TASK_LOOP,
         taskId: 'TASK-OLD-UNRELATED',
         payload: {
           files: ['src/prev.ts'],
@@ -1361,7 +1360,6 @@ describe('Recovery & Reconciliation Foundation (TASK-P1-05)', () => {
         timestamp: new Date().toISOString(),
         actor: Actor.EXECUTOR,
         eventType: 'FILES_MODIFIED',
-        lifecycleState: LifecycleState.TASK_LOOP,
         taskId: 'TASK-N12',
         payload: {
           files: ['src/task12.ts'],
@@ -1372,7 +1370,6 @@ describe('Recovery & Reconciliation Foundation (TASK-P1-05)', () => {
         timestamp: new Date().toISOString(),
         actor: Actor.ORCHESTRATOR,
         eventType: 'BUILD_VERIFIED',
-        lifecycleState: LifecycleState.TASK_LOOP,
         taskId: 'TASK-N12',
         payload: {
           compilable: true,

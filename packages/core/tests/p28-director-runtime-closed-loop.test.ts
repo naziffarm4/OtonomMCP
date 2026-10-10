@@ -1,3 +1,4 @@
+import { createValidApprovalPackage } from './helpers/test-discovery-factory.ts';
 /**
  * @file p28-director-runtime-closed-loop.test.ts
  * @description Comprehensive Test Suite for Phase 28 (P28):
@@ -14,7 +15,11 @@
  * 8. End-to-end closed loop execution (Scenarios 26-30)
  */
 
-import { describe, it, beforeEach, afterEach } from 'node:test';
+import {
+  describe,
+  it,
+  beforeEach,
+  afterEach } from 'node:test';
 import * as assert from 'node:assert/strict';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
@@ -57,16 +62,18 @@ import {
   type ExecutionRequest,
   type RawExecutorOutcome,
   LifecycleState,
-} from '../dist/index.js';
+  } from '../dist/index.js';
 
 import {
   DirectorRuntime,
   DirectorPromptBuilder,
   type DirectorAction,
+} from '../dist/director/index.js';
+import {
   type LLMProvider,
   type LlmRequest,
   type LlmResponse,
-} from '../dist/director/index.js';
+} from '../dist/llm-bridge/index.js';;
 
 import { LlmFinishReason } from '../dist/llm-bridge/llm-types.js';
 
@@ -144,10 +151,17 @@ class DeterministicDirectorLlmProvider implements LLMProvider {
       content: JSON.stringify(payload),
       structured_output: payload as TStructured,
       finish_reason: LlmFinishReason.STOP,
+      raw_metadata: null,
+      error: null,
       usage: {
-        prompt_tokens: 100,
-        completion_tokens: 50,
-        total_tokens: 150,
+        reported_input_tokens: 100,
+        reported_output_tokens: 50,
+        reported_cached_tokens: null,
+        estimated_tokens: 150,
+        estimated_cost_usd: null,
+        provider_name: 'deterministic-mock',
+        model: this.defaultModel,
+        is_exact_provider_metric: true,
       },
     };
   }
@@ -190,18 +204,17 @@ class MockExecutor implements ExecutorPort, ExecutionRequestExecutorPort {
         requestId: request.requestId,
         requestBinding: {
           requestId: request.requestId,
-          directorSessionId: request.directorSessionId,
-          directorDecisionId: request.directorDecisionId,
           projectId: request.projectId,
           taskId: request.taskId,
           taskRevision: request.taskRevision,
           contextFingerprint: request.contextFingerprint,
           understandingRevision: request.understandingRevision,
           approvalPackageRevision: request.approvalPackageRevision,
-          operationType: request.operationType,
         },
         status: 'FAILURE',
         exitCode: 1,
+        timedOut: false,
+        cancelled: false,
         signal: null,
         stdout: '',
         stderr: 'Syntax error in file',
@@ -214,8 +227,8 @@ class MockExecutor implements ExecutorPort, ExecutionRequestExecutorPort {
     }
 
     const files =
-      request.targetFiles && request.targetFiles.length > 0
-        ? request.targetFiles
+      request.instruction?.targetFiles && request.instruction?.targetFiles.length > 0
+        ? request.instruction?.targetFiles
         : ['src/auth.ts'];
 
     if (!this.simulateSelfClaimOnly) {
@@ -231,18 +244,17 @@ class MockExecutor implements ExecutorPort, ExecutionRequestExecutorPort {
       requestId: request.requestId,
       requestBinding: {
         requestId: request.requestId,
-        directorSessionId: request.directorSessionId,
-        directorDecisionId: request.directorDecisionId,
         projectId: request.projectId,
         taskId: request.taskId,
         taskRevision: request.taskRevision,
         contextFingerprint: request.contextFingerprint,
         understandingRevision: request.understandingRevision,
         approvalPackageRevision: request.approvalPackageRevision,
-        operationType: request.operationType,
-      },
-      status: 'SUCCESS',
-      exitCode: 0,
+        },
+        status: 'SUCCESS',
+        exitCode: 0,
+        timedOut: false,
+        cancelled: false,
       signal: null,
       stdout: `Antigravity executed task ${request.taskId} successfully`,
       stderr: '',
@@ -341,10 +353,6 @@ describe('Phase 28 (P28): DirectorRuntime Closed-Loop Integration', { concurrenc
       unavailableSections: [],
       staleSections: [],
       logicalFingerprint: validFingerprint,
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-      sequenceNumber: 1,
-      warnings: [],
       sectionMetadata: {
         requirements: { revision: validRevision },
         projectStatus: { revision: 1 },
@@ -365,7 +373,8 @@ describe('Phase 28 (P28): DirectorRuntime Closed-Loop Integration', { concurrenc
         approval: { hasApprovalPackage: true, packageId: approvedPackage?.packageId ?? 'pkg-test', isReadyForApproval: true, isExplicitlyApproved: true },
         clarification: { hasActiveSession: false, totalCount: 0, resolvedCount: 0, blockingOpenCount: 0, hasUnresolvedBlocking: false },
         discovery: { isDiscovered: true, projectName: 'p28-service', apparentPurposeClassification: 'application', technologyStack: [{ name: 'TypeScript' }], unknownsCount: 0, contradictionsCount: 0 },
-        requirements: { total: 1, items: [{ id: 'REQ-01', title: 'Auth API', status: 'ACTIVE', authority: 'PO' }] },
+        requirements: { total: 1, items: [{ id: 'REQ-01', title: 'Auth API', status: 'ACTIVE',
+      authority: 'PO' }] },
         decisions: { total: 1, items: [{ id: 'DEC-01', title: 'Node 22 Runtime', status: 'ACCEPTED' }] },
         taskList: {
           total: 2,
@@ -392,6 +401,7 @@ describe('Phase 28 (P28): DirectorRuntime Closed-Loop Integration', { concurrenc
         contextEngine: { isAvailable: true, hasL0Cache: true, inspectedPaths: [] },
       } as any,
       ...overrides,
+      isDerived: true,
     };
   }
 
@@ -452,44 +462,25 @@ describe('Phase 28 (P28): DirectorRuntime Closed-Loop Integration', { concurrenc
       projectId: validProjectId,
       projectRoot: tempDir,
       status: 'ACTIVE',
-      createdAt: new Date().toISOString(),
       lastActivityAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
       understandingRevision: validRevision,
       protocolVersion: 'P9-01',
       schemaVersion: 1,
+      createdAt: new Date().toISOString(),
       actor: 'DIRECTOR',
       actorRole: 'DIRECTOR',
       hasImplementationAuthority: false,
-      decisionCount: 0,
       metadata: {},
     };
     await sessionStore.saveSession(activeSession);
 
     // Approved package
     const pkgId = `pkg-p28-${Date.now()}`;
-    const nowIso = new Date().toISOString();
-    approvedPackage = {
+    approvedPackage = createValidApprovalPackage({
       packageId: pkgId,
       projectId: validProjectId,
       revision: validRevision,
-      approvalPackageRevision: validRevision,
-      status: 'APPROVED',
-      isStale: false,
-      createdAt: nowIso,
-      updatedAt: nowIso,
-      isDevelopmentAuthorized: true,
-      approvalRecord: {
-        packageId: pkgId,
-        revision: validRevision,
-        actor: 'PRODUCT_OWNER',
-        actorRole: 'PRODUCT_OWNER',
-        intent: 'EXPLICIT_APPROVAL',
-        approvedAt: nowIso,
-        packageHash: 'sha256-approved-package-hash',
-        comment: 'Human Product Owner authorizes task development',
-      },
-    };
+    });
     await approvalStore.savePackage(approvedPackage);
 
     await saveSignedMandate({
@@ -505,12 +496,15 @@ describe('Phase 28 (P28): DirectorRuntime Closed-Loop Integration', { concurrenc
       traceability_sources: ['REQ-01'],
       acceptance_criteria: ['AC-01'],
       hierarchy_level: 'FEATURE',
+      priority: 'MEDIUM',
       attempt: 1,
       max_attempts: 2,
       status: 'IN_PROGRESS',
-      risk_level: 'LOW',
+      risk_level: 'SAFE',
       dependencies: [],
       created_at: new Date().toISOString(),
+      started_at: null,
+      completed_at: null,
     };
     const t1: TaskDefinition = {
       task_id: 'task-01-core',
@@ -520,12 +514,15 @@ describe('Phase 28 (P28): DirectorRuntime Closed-Loop Integration', { concurrenc
       traceability_sources: ['REQ-01'],
       acceptance_criteria: ['Repo exists'],
       hierarchy_level: 'TASK',
+      priority: 'MEDIUM',
       attempt: 1,
       max_attempts: 2,
       status: 'ACCEPTED',
-      risk_level: 'LOW',
+      risk_level: 'SAFE',
       dependencies: [],
       created_at: new Date().toISOString(),
+      started_at: null,
+      completed_at: null,
     };
     const t2: TaskDefinition = {
       task_id: 'task-02-auth',
@@ -535,12 +532,15 @@ describe('Phase 28 (P28): DirectorRuntime Closed-Loop Integration', { concurrenc
       traceability_sources: ['REQ-01'],
       acceptance_criteria: ['AC-02'],
       hierarchy_level: 'TASK',
+      priority: 'MEDIUM',
       attempt: 1,
       max_attempts: 2,
       status: 'READY',
-      risk_level: 'LOW',
+      risk_level: 'SAFE',
       dependencies: ['task-01-core'],
       created_at: new Date().toISOString(),
+      started_at: null,
+      completed_at: null,
       metadata: { targetFiles: ['src/auth.ts'], revision: 1, taskClass: 'IMPLEMENTATION' },
     };
     await specStore.saveTasks([featCore, t1, t2]);
@@ -553,7 +553,6 @@ describe('Phase 28 (P28): DirectorRuntime Closed-Loop Integration', { concurrenc
       blockedState: null,
       continuationState: 'NONE',
       continuationPolicy: 'AUTONOMOUS',
-      updatedAt: new Date().toISOString(),
     });
 
     activeSnapshot = createAuthoritativeSnapshot();
@@ -566,7 +565,6 @@ describe('Phase 28 (P28): DirectorRuntime Closed-Loop Integration', { concurrenc
       sessionStore,
       promptBuilder: new DirectorPromptBuilder(),
       llmProvider: mockLlmProvider,
-      strictProductionSafety: false,
     });
 
     coordinator = new ClosedLoopCoordinator({
@@ -672,7 +670,6 @@ describe('Phase 28 (P28): DirectorRuntime Closed-Loop Integration', { concurrenc
       await approvalStore.savePackage({
         ...approvedPackage,
         status: 'PENDING',
-        isDevelopmentAuthorized: false,
       });
 
       const result = await coordinator.coordinateCycle({
@@ -709,7 +706,6 @@ describe('Phase 28 (P28): DirectorRuntime Closed-Loop Integration', { concurrenc
       await approvalStore.savePackage({
         ...approvedPackage,
         status: 'REJECTED',
-        isDevelopmentAuthorized: false,
       });
 
       const result = await coordinator.coordinateCycle({

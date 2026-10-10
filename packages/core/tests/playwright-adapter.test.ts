@@ -127,7 +127,7 @@ test('Playwright Adapter Contract (TASK-P5-02)', async (t) => {
     const obs = await adapter.observeDom({ task_id: '1', correlation_id: '1', selector: '.test' });
     assert.strictEqual(obs.observation_type, 'DOM');
     assert.strictEqual(obs.matches_count, 1);
-    assert.strictEqual(obs.elements[0].tag_name, 'div');
+    assert.strictEqual(obs.elements![0].tag_name, 'div');
   });
 
   await t.test('R8 — Missing selector produces deterministic result/error', async () => {
@@ -147,7 +147,7 @@ test('Playwright Adapter Contract (TASK-P5-02)', async (t) => {
     const obs = await adapter.captureScreenshot({ task_id: '1', correlation_id: '1' });
     assert.strictEqual(obs.observation_type, 'SCREENSHOT');
     assert.strictEqual(obs.mime_type, 'image/png');
-    assert.strictEqual(obs.viewport.width, 1280);
+    assert.strictEqual(obs.viewport?.width, 1280);
     assert.ok(obs.sha256_hash);
   });
 
@@ -176,7 +176,7 @@ test('Playwright Adapter Contract (TASK-P5-02)', async (t) => {
   await t.test('R15 — Provider-specific objects do not escape the adapter', async () => {
     const obs = await adapter.captureScreenshot({ task_id: '1', correlation_id: '1' });
     assert.ok(typeof obs.base64_data === 'string');
-    assert.ok(!(obs.base64_data instanceof Buffer));
+    assert.ok(!((obs.base64_data as unknown) instanceof Buffer));
   });
 
   await t.test('R19 — No credential persistence', async () => {

@@ -420,11 +420,23 @@ describe('P13-01: Failure Diagnosis & Recovery Policy Engine', () => {
 
   // T19
   it('T19: Task DAG is NOT mutated during policy evaluation', () => {
-    const parentFeature = {
+    const parentFeature: TaskDefinition = {
       task_id: 'FEAT-P13',
       parent_feature_id: 'ROOT',
       title: 'Feature P13',
-      hierarchy_level: 'FEATURE' as const,
+      description: 'Feature P13',
+      traceability_sources: [],
+      dependencies: [],
+      acceptance_criteria: [],
+      status: TaskStatus.READY,
+      attempt: 0,
+      max_attempts: 3,
+      priority: TaskPriority.HIGH,
+      risk_level: RiskLevel.SAFE,
+      created_at: new Date().toISOString(),
+      started_at: null,
+      completed_at: null,
+      hierarchy_level: 'FEATURE',
     };
     const tasks = [validTask];
     const initialOrder = dagEngine.topologicalSort(tasks, { parentNodes: [parentFeature] });

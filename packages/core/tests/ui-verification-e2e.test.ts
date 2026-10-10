@@ -188,7 +188,7 @@ describe('Phase 5 End-to-End UI Verification Integration & Hardening (TASK-P5-05
     const service = new UiVerificationService(port);
     const req = {
       ...createBaseRequest([UiObservationType.SCREENSHOT]),
-      screenshot_requirements: { format: 'png' as const, full_page: true },
+      screenshot_requirements: { capture: true, format: 'png' as const, full_page: true },
     };
 
     const exec = await service.execute(req);
@@ -768,7 +768,7 @@ describe('Phase 5 End-to-End UI Verification Integration & Hardening (TASK-P5-05
       unified_diff: null,
       file_hashes_after: null,
       evidence_type: EvidenceType.COMMAND,
-      source: EvidenceSource.SYSTEM_VERIFIED_EVIDENCE as const,
+      source: EvidenceSource.SYSTEM_VERIFIED_EVIDENCE,
     };
     const val = validateSystemVerifiedEvidence(evidenceInput);
     assert.strictEqual(val.valid, true);

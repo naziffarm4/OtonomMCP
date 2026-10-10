@@ -157,9 +157,9 @@ describe('Phase 26 — Director Action Contract (P26)', () => {
       };
 
       const result = ImplementTaskActionZodSchema.safeParse(action);
-      assert.ok(result.success, result.error?.message);
+      assert.equal(result.success, true);
       const unionResult = DirectorActionZodSchema.safeParse(action);
-      assert.ok(unionResult.success, unionResult.error?.message);
+      assert.equal(unionResult.success, true);
     });
 
     it('validates RETRY_TASK action', () => {
@@ -174,7 +174,7 @@ describe('Phase 26 — Director Action Contract (P26)', () => {
       };
 
       const result = RetryTaskActionZodSchema.safeParse(action);
-      assert.ok(result.success, result.error?.message);
+      assert.equal(result.success, true);
       const unionResult = DirectorActionZodSchema.safeParse(action);
       assert.ok(unionResult.success);
     });
@@ -191,7 +191,7 @@ describe('Phase 26 — Director Action Contract (P26)', () => {
       };
 
       const result = CorrectTaskActionZodSchema.safeParse(action);
-      assert.ok(result.success, result.error?.message);
+      assert.equal(result.success, true);
       const unionResult = DirectorActionZodSchema.safeParse(action);
       assert.ok(unionResult.success);
     });
@@ -210,7 +210,7 @@ describe('Phase 26 — Director Action Contract (P26)', () => {
       };
 
       const result = RequestClarificationActionZodSchema.safeParse(action);
-      assert.ok(result.success, result.error?.message);
+      assert.equal(result.success, true);
       const unionResult = DirectorActionZodSchema.safeParse(action);
       assert.ok(unionResult.success);
     });
@@ -226,7 +226,7 @@ describe('Phase 26 — Director Action Contract (P26)', () => {
       };
 
       const result = ReplanActionZodSchema.safeParse(action);
-      assert.ok(result.success, result.error?.message);
+      assert.equal(result.success, true);
       const unionResult = DirectorActionZodSchema.safeParse(action);
       assert.ok(unionResult.success);
     });
@@ -241,7 +241,7 @@ describe('Phase 26 — Director Action Contract (P26)', () => {
       };
 
       const result = ReviewEvidenceActionZodSchema.safeParse(action);
-      assert.ok(result.success, result.error?.message);
+      assert.equal(result.success, true);
       const unionResult = DirectorActionZodSchema.safeParse(action);
       assert.ok(unionResult.success);
     });
@@ -256,7 +256,7 @@ describe('Phase 26 — Director Action Contract (P26)', () => {
       };
 
       const result = AcceptTaskActionZodSchema.safeParse(action);
-      assert.ok(result.success, result.error?.message);
+      assert.equal(result.success, true);
       const unionResult = DirectorActionZodSchema.safeParse(action);
       assert.ok(unionResult.success);
     });
@@ -271,7 +271,7 @@ describe('Phase 26 — Director Action Contract (P26)', () => {
       };
 
       const result = RejectTaskActionZodSchema.safeParse(action);
-      assert.ok(result.success, result.error?.message);
+      assert.equal(result.success, true);
       const unionResult = DirectorActionZodSchema.safeParse(action);
       assert.ok(unionResult.success);
     });
@@ -286,7 +286,7 @@ describe('Phase 26 — Director Action Contract (P26)', () => {
       };
 
       const result = RequestHumanDecisionActionZodSchema.safeParse(action);
-      assert.ok(result.success, result.error?.message);
+      assert.equal(result.success, true);
       const unionResult = DirectorActionZodSchema.safeParse(action);
       assert.ok(unionResult.success);
     });
@@ -309,7 +309,7 @@ describe('Phase 26 — Director Action Contract (P26)', () => {
       };
 
       const result = DeclareProjectCompleteActionZodSchema.safeParse(action);
-      assert.ok(result.success, result.error?.message);
+      assert.equal(result.success, true);
       const unionResult = DirectorActionZodSchema.safeParse(action);
       assert.ok(unionResult.success);
     });

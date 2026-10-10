@@ -70,6 +70,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
 
+import type { AcceptanceCriterion } from '../dist/discovery/acceptance-criteria-types.js';
 import {
   AdaptiveDiscoveryEngine,
   AdaptiveDiscoveryStore,
@@ -107,7 +108,6 @@ import {
   type ProjectArchitectureRevision,
   type ProjectBusinessRulesRevision,
   type ProjectAcceptanceCriteriaRevision,
-  type AcceptanceCriterion,
   type McpRequestEnvelope,
   type McpSuccessResponseEnvelope,
 } from '../dist/index.js';
@@ -249,6 +249,7 @@ describe('Phase 15 Acceptance Criteria Definition (TASK-P15-06)', { concurrency:
               id: 'FREQ-APPT-BOOKING',
               title: 'Appointment Booking',
               description: 'Patients can book and schedule medical appointments with doctors.',
+              source: 'test_requirement',
               businessRules: [
                 'Only authenticated users may book appointments',
                 'Patient phone number must be valid format',
@@ -257,6 +258,8 @@ describe('Phase 15 Acceptance Criteria Definition (TASK-P15-06)', { concurrency:
               ],
             },
           ],
+          behaviors: [],
+          businessRules: [],
         },
         architecture: {
           architecturalConstraints: ['modular-monolith'],
@@ -268,6 +271,7 @@ describe('Phase 15 Acceptance Criteria Definition (TASK-P15-06)', { concurrency:
           requiredTechnologies: ['TypeScript', 'Node.js', 'PostgreSQL'],
           preferredTechnologies: ['Fastify'],
           platformConstraints: ['Linux server', 'Web browsers'],
+          prohibitedTechnologies: [],
         },
         ...explicitOverrides?.sections,
       },
@@ -1005,7 +1009,7 @@ describe('Phase 15 Acceptance Criteria Definition (TASK-P15-06)', { concurrency:
     await createBusinessRulesRevision('proj-clinic');
     await acceptanceCriteriaEngine.derive({ projectId: 'proj-clinic' });
 
-    const packages = await approvalStore.listPackages('proj-clinic');
+    const packages = await approvalStore.listPackages();
     assert.strictEqual(packages.length, 0, 'Must have zero approval packages');
   });
 
@@ -1015,7 +1019,7 @@ describe('Phase 15 Acceptance Criteria Definition (TASK-P15-06)', { concurrency:
     await acceptanceCriteriaEngine.derive({ projectId: 'proj-clinic' });
 
     const state = await durableManager.load();
-    assert.strictEqual(state?.isDevelopmentAuthorized, undefined);
+    assert.strictEqual((state as unknown as Record<string, unknown>)?.['isDevelopmentAuthorized'], undefined);
   });
 
   // T42: no ExecutionIntent

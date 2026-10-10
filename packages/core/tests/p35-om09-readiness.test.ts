@@ -57,13 +57,12 @@ import {
 
 import {
   DirectorRuntime,
-  type LLMProvider,
-  type LlmRequest,
-  type LlmResponse,
   DirectorLlmProviderUnavailableError,
   DirectorLlmResponseInvalidError,
   DirectorActionContextMismatchError,
 } from '../dist/director/index.js';
+import type { LLMProvider } from '../dist/llm-bridge/llm-provider.js';
+import type { LlmRequest, LlmResponse } from '../dist/llm-bridge/llm-types.js';
 
 import { LlmFinishReason } from '../dist/llm-bridge/llm-types.js';
 
@@ -122,6 +121,19 @@ class DeterministicLlmProvider implements LLMProvider {
         model: this.defaultModel,
         content: this.rawStringToReturn,
         finish_reason: LlmFinishReason.STOP,
+        structured_output: null as TStructured,
+        raw_metadata: {},
+        error: null,
+        usage: {
+        reported_input_tokens: 100,
+        reported_output_tokens: 50,
+        reported_cached_tokens: null,
+        estimated_tokens: 150,
+        estimated_cost_usd: null,
+        provider_name: 'mock',
+        model: 'mock-model',
+        is_exact_provider_metric: true,
+      },
       };
     }
 
@@ -154,10 +166,17 @@ class DeterministicLlmProvider implements LLMProvider {
       structured_output: payload as TStructured,
       finish_reason: LlmFinishReason.STOP,
       usage: {
-        prompt_tokens: 150,
-        completion_tokens: 60,
-        total_tokens: 210,
+        reported_input_tokens: 150,
+        reported_output_tokens: 60,
+        reported_cached_tokens: null,
+        estimated_tokens: 210,
+        estimated_cost_usd: null,
+        provider_name: this.providerName,
+        model: this.defaultModel,
+        is_exact_provider_metric: true,
       },
+      raw_metadata: {},
+      error: null,
     };
   }
 }
@@ -203,8 +222,6 @@ class MockAgyExecutor implements ExecutorPort, ExecutionRequestExecutorPort {
         requestId: request.requestId,
         requestBinding: {
           requestId: request.requestId,
-          directorSessionId: request.directorSessionId,
-          directorDecisionId: request.directorDecisionId,
           projectId: request.projectId,
           taskId: request.taskId,
           taskRevision: request.taskRevision,
@@ -233,8 +250,6 @@ class MockAgyExecutor implements ExecutorPort, ExecutionRequestExecutorPort {
         requestId: request.requestId,
         requestBinding: {
           requestId: request.requestId,
-          directorSessionId: request.directorSessionId,
-          directorDecisionId: request.directorDecisionId,
           projectId: request.projectId,
           taskId: request.taskId,
           taskRevision: request.taskRevision,
@@ -264,8 +279,6 @@ class MockAgyExecutor implements ExecutorPort, ExecutionRequestExecutorPort {
         requestId: request.requestId,
         requestBinding: {
           requestId: request.requestId,
-          directorSessionId: request.directorSessionId,
-          directorDecisionId: request.directorDecisionId,
           projectId: request.projectId,
           taskId: request.taskId,
           taskRevision: request.taskRevision,
@@ -298,8 +311,6 @@ class MockAgyExecutor implements ExecutorPort, ExecutionRequestExecutorPort {
       requestId: request.requestId,
       requestBinding: {
         requestId: request.requestId,
-        directorSessionId: request.directorSessionId,
-        directorDecisionId: request.directorDecisionId,
         projectId: request.projectId,
         taskId: request.taskId,
         taskRevision: request.taskRevision,
@@ -378,7 +389,7 @@ describe('P35 — OM-09 Live E2E Readiness Audit Suite', () => {
 
   const parentFeature: TaskDefinition = {
     task_id: 'FEAT-CORE',
-    parent_feature_id: null,
+    parent_feature_id: 'ROOT',
     title: 'Core Feature',
     description: 'Core architectural foundation',
     traceability_sources: ['REQ-01'],
@@ -387,15 +398,19 @@ describe('P35 — OM-09 Live E2E Readiness Audit Suite', () => {
     attempt: 0,
     max_attempts: 1,
     priority: 'HIGH' as any,
-    risk_level: 'LOW' as any,
+    risk_level: 'SAFE' as any,
     dependencies: [],
     created_at: new Date().toISOString(),
+    started_at: null,
+    completed_at: null,
     hierarchy_level: 'FEATURE' as any,
     metadata: {},
   };
 
   const sampleTask: TaskDefinition = {
     task_id: 'task-core-01',
+      started_at: null,
+      completed_at: null,
     parent_feature_id: 'FEAT-CORE',
     title: 'Core Implementation',
     description: 'Implement core functionality',
@@ -405,7 +420,7 @@ describe('P35 — OM-09 Live E2E Readiness Audit Suite', () => {
     attempt: 0,
     max_attempts: 3,
     priority: 'HIGH' as any,
-    risk_level: 'LOW' as any,
+    risk_level: 'SAFE' as any,
     dependencies: [],
     created_at: new Date().toISOString(),
     hierarchy_level: 'TASK' as any,
@@ -486,23 +501,18 @@ describe('P35 — OM-09 Live E2E Readiness Audit Suite', () => {
   ): DirectorContextSnapshot => {
     const nowIso = new Date().toISOString();
     return {
-      snapshotId: `snap-${crypto.randomUUID()}`,
       projectId,
       projectRoot: testDir,
       directorSessionId,
       protocolVersion: 'P9-02',
       schemaVersion: 1,
       synchronizedAt: nowIso,
-      capturedAt: nowIso,
-      syncStatus: 'SYNCED',
+      syncStatus: 'UNCHANGED',
       isComplete: true,
       unavailableSections: [],
       staleSections: [],
       logicalFingerprint: fingerprint,
-      createdAt: nowIso,
-      updatedAt: nowIso,
-      sequenceNumber: 1,
-      warnings: [],
+      sectionMetadata: {} as any,
       sections: {
         projectStatus: {
           initialized: true,
@@ -514,9 +524,8 @@ describe('P35 — OM-09 Live E2E Readiness Audit Suite', () => {
         },
         authorization: {
           isDevelopmentAuthorized: true,
-          authoritySource: 'MANDATE',
-          requiresHumanApproval: false,
-          packageRevision: 1,
+          authoritySource: 'PRODUCT_OWNER',
+          requiresHumanApproval: true,
         },
         approval: {
           hasApprovalPackage: true,
@@ -575,6 +584,7 @@ describe('P35 — OM-09 Live E2E Readiness Audit Suite', () => {
         },
       } as any,
       ...overrides,
+      isDerived: true,
     };
   };
 
@@ -605,22 +615,17 @@ describe('P35 — OM-09 Live E2E Readiness Audit Suite', () => {
 
     historyManager = new HistoryManager({ baseDir: testDir });
     sessionStore = new DirectorSessionStore({ baseDir: testDir });
-    sessionEngine = new DirectorSessionEngine({ sessionStore });
+    sessionEngine = new DirectorSessionEngine({ store: sessionStore });
     decisionStore = new DirectorDecisionStore({ baseDir: testDir });
     approvalStore = new ApprovalStore({ baseDir: testDir });
     approvalPackageEngine = new ApprovalPackageEngine({ approvalStore });
     specStore = new SpecStore({ baseDir: testDir });
     durableStateManager = new DurableStateManager({ baseDir: testDir });
     evidenceStore = new SystemExecutionEvidenceStore({ baseDir: testDir });
-    evidenceCollector = new SystemEvidenceCollector({ workspaceRoot: testDir });
+    evidenceCollector = new SystemEvidenceCollector();
     mandateStore = new ProjectMandateStore({ baseDir: testDir });
 
-    policyEngine = new AuthorizationPolicyEngine({
-      historyManager,
-      mandateStore,
-      specStore,
-      evidenceStore,
-    });
+    policyEngine = new AuthorizationPolicyEngine({ historyManager, mandateStore: new ProjectMandateStore({ baseDir: testDir }), specStore, evidenceStore });
 
     mockAgy = new MockAgyExecutor(testDir);
     executionBridge = new ExecutionBridge({
@@ -628,7 +633,6 @@ describe('P35 — OM-09 Live E2E Readiness Audit Suite', () => {
       specStore,
       approvalStore,
       evidenceStore,
-      evidenceCollector,
       executorPort: mockAgy,
       historyManager,
       durableStateManager,
@@ -655,13 +659,9 @@ describe('P35 — OM-09 Live E2E Readiness Audit Suite', () => {
       actor: 'DIRECTOR',
       actorRole: 'DIRECTOR',
       createdAt: nowIso,
-      updatedAt: nowIso,
       lastActivityAt: nowIso,
       understandingRevision: 1,
       hasImplementationAuthority: false,
-      decisionCount: 0,
-      activeDecisionId: null,
-      contextFingerprint: fingerprint,
       metadata: {},
     });
 
@@ -725,7 +725,6 @@ describe('P35 — OM-09 Live E2E Readiness Audit Suite', () => {
       historyManager,
       durableStateManager,
       evidenceStore,
-      mandateStore,
       authorizationPolicyEngine: policyEngine,
       executionBridge,
       executorPort: mockAgy,
@@ -765,7 +764,7 @@ describe('P35 — OM-09 Live E2E Readiness Audit Suite', () => {
       projectId,
       directorSessionId,
       snapshot,
-      trigger: 'TASK_EXECUTION',
+      trigger: 'PERIODIC_REVIEW',
       objective: 'Implement verified core component',
     });
 
@@ -834,7 +833,7 @@ describe('P35 — OM-09 Live E2E Readiness Audit Suite', () => {
         await runtime.reason({
           projectId,
           directorSessionId,
-          trigger: 'TASK_EXECUTION',
+          trigger: 'PERIODIC_REVIEW',
         }),
       (err: any) => {
         assert.ok(
@@ -865,7 +864,7 @@ describe('P35 — OM-09 Live E2E Readiness Audit Suite', () => {
         await runtime.reason({
           projectId,
           directorSessionId,
-          trigger: 'TASK_EXECUTION',
+          trigger: 'PERIODIC_REVIEW',
         }),
       (err: any) => {
         assert.ok(
@@ -912,7 +911,7 @@ describe('P35 — OM-09 Live E2E Readiness Audit Suite', () => {
         await runtime.reason({
           projectId,
           directorSessionId,
-          trigger: 'TASK_EXECUTION',
+          trigger: 'PERIODIC_REVIEW',
         }),
       (err: any) => {
         assert.ok(
@@ -1068,7 +1067,7 @@ describe('P35 — OM-09 Live E2E Readiness Audit Suite', () => {
         await runtime.reason({
           projectId,
           directorSessionId: invalidSessionId,
-          trigger: 'TASK_EXECUTION',
+          trigger: 'PERIODIC_REVIEW',
         }),
       (err: any) => {
         assert.ok(err.message.includes('does not exist') || err.message.includes('session'));
@@ -1114,17 +1113,9 @@ describe('P35 — OM-09 Live E2E Readiness Audit Suite', () => {
   // F14: Stale context -> no execution
   it('F14: Stale context fails closed, AGY not invoked', async () => {
     const staleSnapshot: DirectorContextSnapshot = {
-      snapshotId: 'snap-stale-f14',
-      projectId,
-      directorSessionId,
-      logicalFingerprint: 'ctx-stale-fp',
-      capturedAt: new Date().toISOString(),
-      isComplete: true,
+      ...createCanonicalSnapshot(),
       syncStatus: 'STALE',
       staleSections: ['taskList'],
-      sections: {
-        taskList: { tasks: [sampleTask] },
-      } as any,
     };
 
     const runtime = new DirectorRuntime({
@@ -1140,7 +1131,7 @@ describe('P35 — OM-09 Live E2E Readiness Audit Suite', () => {
           projectId,
           directorSessionId,
           snapshot: staleSnapshot,
-          trigger: 'TASK_EXECUTION',
+          trigger: 'PERIODIC_REVIEW',
         }),
       (err: any) => {
         assert.ok(err.code === 'DIRECTOR_CONTEXT_STALE' || err.message.includes('stale'));

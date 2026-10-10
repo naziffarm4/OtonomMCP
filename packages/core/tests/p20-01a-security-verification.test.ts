@@ -60,6 +60,59 @@ import {
 describe('Phase 20 TASK-P20-01A — Execution Bridge Final Security & Acceptance Verification', { concurrency: 1 }, () => {
   let tempDir: string;
   let canonicalProjectId: string;
+  const mockUnderstanding = {
+    projectId: 'test-project',
+    projectName: 'test-project',
+    apparentPurpose: { classification: 'UNDERSTOOD' as const, summary: 'Test', domainKeywords: [], evidence: [] },
+    targetUsers: [],
+    technologyStack: {
+      primaryLanguages: ['TypeScript'],
+      frameworks: [],
+      buildTools: [],
+      packageManagers: [],
+      runtimes: [],
+      containerization: [],
+      ciCd: [],
+      workspaceType: 'standalone' as const,
+      dependencies: [],
+      devDependencies: [],
+      evidence: [],
+    },
+    architectureSummary: { summary: 'Modular', architecturalPattern: 'Modular', identifiedAreas: [], evidence: [] },
+    existingCapabilities: [],
+    confirmedRequirements: [],
+    clarifiedRequirements: [],
+    unresolvedUnknowns: [],
+    unresolvedContradictions: [],
+    currentImplementationState: {
+      lifecycleState: 'TASK_LOOP' as const,
+      hasActiveTask: false,
+      isBlocked: false,
+      totalTasksInDag: 0,
+      completedTasksCount: 0,
+      evidence: [],
+    },
+    constraints: [],
+    assumptions: [],
+    nonGoals: [],
+    proposedDevelopmentScope: [],
+    evidenceReferences: [],
+    sourceDiscoveryReference: 'disc-ref',
+    generatedAt: new Date().toISOString(),
+  };
+
+  const mockDevelopmentPlan = {
+    objectives: [],
+    proposedScope: [],
+    proposedFeatureGroups: [],
+    dependencies: [],
+    constraints: [],
+    knownRisks: [],
+    unresolvedIssues: [],
+    excludedScope: [],
+    suggestedImplementationOrder: [],
+  };
+
   let historyManager: HistoryManager;
   let sessionStore: DirectorSessionStore;
   let sessionEngine: DirectorSessionEngine;
@@ -114,15 +167,12 @@ describe('Phase 20 TASK-P20-01A — Execution Bridge Final Security & Acceptance
           requestId: request.requestId,
           requestBinding: {
             requestId: request.requestId,
-            directorSessionId: request.directorSessionId,
-            directorDecisionId: request.directorDecisionId,
             projectId: request.projectId,
             taskId: request.taskId,
             taskRevision: request.taskRevision,
             contextFingerprint: request.contextFingerprint,
             understandingRevision: request.understandingRevision,
             approvalPackageRevision: request.approvalPackageRevision,
-            operationType: request.operationType,
           },
           status: 'FAILURE',
           exitCode: 1,
@@ -133,12 +183,15 @@ describe('Phase 20 TASK-P20-01A — Execution Bridge Final Security & Acceptance
           unverifiedAgentClaims: ['Failed to build'],
           unverifiedModifiedFiles: [],
           startedAt: new Date().toISOString(),
-          completedAt: new Date().toISOString(),
+        completedAt: new Date().toISOString(),
+        timedOut: false,
+        cancelled: false,
         };
       }
 
       // Write files so real EvidenceCollector observes filesystem mutations (unless simulating verbal claim or fake claim)
-      const files = request.targetFiles && request.targetFiles.length > 0 ? request.targetFiles : ['src/index.ts'];
+      const targetFiles = request.instruction?.targetFiles;
+      const files = targetFiles && targetFiles.length > 0 ? targetFiles : ['src/index.ts'];
       if (!this.simulateSelfClaimOnly && !this.fakeModifiedFilesDeclaration) {
         for (const f of files) {
           const full = path.join(tempDir, f);
@@ -152,15 +205,12 @@ describe('Phase 20 TASK-P20-01A — Execution Bridge Final Security & Acceptance
         requestId: request.requestId,
         requestBinding: {
           requestId: request.requestId,
-          directorSessionId: request.directorSessionId,
-          directorDecisionId: request.directorDecisionId,
           projectId: request.projectId,
           taskId: request.taskId,
           taskRevision: request.taskRevision,
           contextFingerprint: request.contextFingerprint,
           understandingRevision: request.understandingRevision,
           approvalPackageRevision: request.approvalPackageRevision,
-          operationType: request.operationType,
         },
         status: 'SUCCESS',
         exitCode: 0,
@@ -172,6 +222,8 @@ describe('Phase 20 TASK-P20-01A — Execution Bridge Final Security & Acceptance
         unverifiedModifiedFiles: this.fakeModifiedFilesDeclaration ?? (this.simulateSelfClaimOnly ? [] : (files as string[])),
         startedAt: new Date().toISOString(),
         completedAt: new Date().toISOString(),
+        timedOut: false,
+        cancelled: false,
       };
     }
   }
@@ -185,6 +237,8 @@ describe('Phase 20 TASK-P20-01A — Execution Bridge Final Security & Acceptance
       revision,
       approvalPackageRevision: revision,
       projectId,
+      projectUnderstanding: { ...mockUnderstanding, projectId },
+      proposedDevelopmentPlan: mockDevelopmentPlan,
       status: 'APPROVED',
       isStale: false,
       createdAt: now,
@@ -962,9 +1016,6 @@ describe('Phase 20 TASK-P20-01A — Execution Bridge Final Security & Acceptance
     assert.throws(() => {
       budgetManager.claimReservationForDispatch({
         reservationId: result.budgetReservationId!,
-        sessionId: intent.directorSessionId,
-        taskId: intent.taskId,
-        idempotencyKey: intent.idempotencyKey,
       });
     }, /Reservation is in SETTLED state|cannot be reused|Cannot claim reservation|ERR_INVALID_RESERVATION_STATE/);
   });

@@ -74,6 +74,8 @@ import {
   evaluateRecoveryDecision,
   type DurableExecutionIntent,
   type RecoverySnapshot,
+  type DurableState,
+  type FilesystemReconciliationDiff,
   DriverLockManager,
   DriverRuntime,
   DriverEngine,
@@ -117,7 +119,6 @@ describe('Phase 30 (P30): Durable Session & Crash Recovery', () => {
       taskRevision: 1,
       projectId: 'test-project',
       verificationDecision: 'ACCEPT',
-      verificationReason: 'All tests passed with zero errors',
       verifiedAt: new Date().toISOString(),
       contextFingerprint: 'ctx-fingerprint-valid',
       understandingRevision: 1,
@@ -139,50 +140,75 @@ describe('Phase 30 (P30): Durable Session & Crash Recovery', () => {
         exitCode: 0,
         durationMs: 120,
       },
-      requestBinding: {
-        directorSessionId: 'session-p30-01',
-        actionId: 'act-p30-01',
-        executionIntentId: 'intent-p30-01',
-        idempotencyKey: 'idem-p30-01',
-      },
       ...overrides,
     };
   }
 
-  // Helper to create a pure in-memory test RecoverySnapshot for testing the decision matrix
-  function createTestSnapshot(overrides: Partial<RecoverySnapshot> = {}): RecoverySnapshot {
+  function makeDurableState(input: Partial<DurableState> = {}): DurableState {
     return {
-      durableState: {
-        currentLifecycleState: LifecycleState.TASK_LOOP,
-        activeTaskId: 'TASK-P30-01',
-        completedTaskIds: [],
-        blockedState: null,
-        lastCheckpoint: 'checkpoint-1',
-        metadata: {
-          contextReference: 'ctx-ref-p30',
-        },
+      schemaVersion: 1,
+      currentLifecycleState: LifecycleState.TASK_LOOP,
+      activeTaskId: 'TASK-P30-01',
+      completedTaskIds: [],
+      blockedState: null,
+      continuationState: 'NONE',
+      continuationPolicy: 'MANUAL',
+      lastCheckpoint: 'checkpoint-1',
+      updatedAt: new Date().toISOString(),
+      metadata: {
+        contextReference: 'ctx-ref-p30',
       },
+      ...input,
+    };
+  }
+
+  // Helper to create a pure in-memory test RecoverySnapshot for testing the decision matrix
+  function createTestSnapshot(
+    overrides: Partial<Omit<RecoverySnapshot, 'durableState' | 'filesystemDiff'>> & {
+      durableState?: Partial<DurableState> | null;
+      filesystemDiff?: Partial<FilesystemReconciliationDiff>;
+    } = {}
+  ): RecoverySnapshot {
+    const durableState =
+      overrides.durableState === null
+        ? null
+        : makeDurableState(overrides.durableState);
+
+    const filesystemDiff: FilesystemReconciliationDiff = {
+      isConsistent: true,
+      unexpectedModified: [],
+      unexpectedRemoved: [],
+      unexpectedAdded: [],
+      corruptedFiles: [],
+      expectedChanges: [],
+      unexpectedExternalChanges: [],
+      classifiedChanges: [],
+      totalExpectedFiles: 0,
+      totalActualFiles: 0,
+      ...overrides.filesystemDiff,
+    };
+
+    const { durableState: _ds, filesystemDiff: _fsd, ...restOverrides } = overrides;
+    return {
       localRuntimeState: null,
+      historyEvents: [],
       l0Records: [],
       scannedFiles: [],
-      filesystemDiff: {
-        modifiedFiles: [],
-        newFiles: [],
-        deletedFiles: [],
+      gitState: {
+        isRepository: true,
+        currentHead: 'head_sha',
+        isClean: true,
+        stagedFiles: [],
+        unstagedFiles: [],
         untrackedFiles: [],
-        corruptedFiles: [],
-        unexpectedRemoved: [],
-        unexpectedExternalChanges: [],
-        unexpectedModified: [],
-        unexpectedAdded: [],
-        expectedChanges: [],
-        hasInconsistencies: false,
       },
       lastEvent: null,
       isRuntimeStale: false,
       isProcessAlive: false,
       validationEvidence: null,
-      ...overrides,
+      ...restOverrides,
+      durableState,
+      filesystemDiff,
     };
   }
 
@@ -248,6 +274,7 @@ describe('Phase 30 (P30): Durable Session & Crash Recovery', () => {
       });
 
       const loaded = await durableManager.load();
+      assert.ok(loaded);
       assert.strictEqual(loaded.metadata?.executionLifecycleState, ExecutionLifecycleState.EXECUTING);
     });
 
@@ -265,6 +292,7 @@ describe('Phase 30 (P30): Durable Session & Crash Recovery', () => {
       });
 
       const loaded = await durableManager.load();
+      assert.ok(loaded);
       assert.strictEqual(loaded.metadata?.executionLifecycleState, ExecutionLifecycleState.EXECUTION_SUCCEEDED);
       assert.ok(loaded.completedTaskIds.includes('TASK-P30-01'));
       assert.strictEqual(loaded.activeTaskId, null);
@@ -284,6 +312,7 @@ describe('Phase 30 (P30): Durable Session & Crash Recovery', () => {
       });
 
       const loaded = await durableManager.load();
+      assert.ok(loaded);
       assert.strictEqual(loaded.metadata?.executionLifecycleState, ExecutionLifecycleState.EXECUTION_FAILED);
       assert.strictEqual(loaded.metadata?.failureReason, 'Test suite compilation failed');
     });
@@ -300,6 +329,7 @@ describe('Phase 30 (P30): Durable Session & Crash Recovery', () => {
           metadata: { iteration: i },
         });
         const current = await durableManager.load();
+        assert.ok(current);
         assert.strictEqual(current.activeTaskId, `TASK-P30-0${i}`);
         assert.strictEqual(current.metadata?.iteration, i);
       }
@@ -501,15 +531,6 @@ describe('Phase 30 (P30): Durable Session & Crash Recovery', () => {
 
       const recoveryEngine = new RecoveryEngine({
         workspaceRoot: tempWorkspace,
-        gitObserver: {
-          observeGitState: async () => ({
-            isGitRepository: true,
-            hasUncommittedChanges: true,
-            headCommit: 'abc123456789',
-            uncommittedFiles: ['src/feature.ts'],
-            currentBranch: 'main',
-          }),
-        },
         processLivenessChecker: () => false,
       });
 
@@ -556,12 +577,6 @@ describe('Phase 30 (P30): Durable Session & Crash Recovery', () => {
         taskRevision: 1,
         verificationDecision: 'ACCEPT',
         verifiedAt: new Date().toISOString(),
-        requestBinding: {
-          directorSessionId: 'session-p30-01',
-          actionId: 'act-01',
-          executionIntentId: 'intent-01',
-          idempotencyKey: 'idem-01',
-        },
       });
       await evidenceStore.saveEvidence(evidence);
 
@@ -811,7 +826,6 @@ describe('Phase 30 (P30): Durable Session & Crash Recovery', () => {
         taskId: 'TASK-KNOWN-FAIL',
         projectId: 'test-project',
         verificationDecision: 'REJECT',
-        verificationReason: 'TypeScript compilation error in test fixture',
         verifiedAt: new Date().toISOString(),
       });
       await evidenceStore.saveEvidence(evidence);
@@ -1026,7 +1040,6 @@ describe('Phase 30 (P30): Durable Session & Crash Recovery', () => {
 
       const driverEngine = new DriverEngine({
         workspaceRoot: tempWorkspace,
-        projectId,
         durableStateManager: durableManager,
       });
 
@@ -1366,7 +1379,7 @@ describe('Phase 30 (P30): Durable Session & Crash Recovery', () => {
       );
 
       assert.strictEqual(result.isError, false);
-      const parsed = JSON.parse(result.content[0].text);
+      const parsed = JSON.parse(result.content[0].text as string);
       assert.strictEqual(parsed.success, true);
       assert.strictEqual(parsed.executionLifecycleState, ExecutionLifecycleState.EXECUTION_UNKNOWN);
       assert.strictEqual(parsed.isExecutionUnknown, true);

@@ -409,11 +409,9 @@ Robust financial transaction processing system with strict idempotency and audit
     await delegate.durableStateManager?.save({
       currentLifecycleState: LifecycleState.INITIALIZING,
       activeTaskId: null,
+      completedTaskIds: [],
       blockedState: null,
       lastCheckpoint: 'chk-init-001',
-      version: 1,
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
     });
 
     // Seed SpecStore with initial empty requirements and decisions
@@ -1503,7 +1501,7 @@ Robust financial transaction processing system with strict idempotency and audit
     const gitStatusAfter = await delegate.gitPort?.inspectState(tempDir);
 
     assert.equal(sourceChecksumBefore, sourceChecksumAfter, 'Target workspace files must remain byte-identical');
-    assert.equal(gitStatusBefore?.headCommit, gitStatusAfter?.headCommit, 'No new git commits may be created');
+    assert.equal(gitStatusBefore?.head_sha, gitStatusAfter?.head_sha, 'No new git commits may be created');
   });
 
   // ==========================================================================
@@ -1511,7 +1509,7 @@ Robust financial transaction processing system with strict idempotency and audit
   // ==========================================================================
   it('T32_full_phase8_lifecycle_integration: executes the complete 18-step Phase 8 lifecycle end-to-end', async () => {
     // 1. Handshake
-    const initRes = await sendRpc(server, 'initialize', {
+    const initRes = await sendRpc<{ protocolVersion: string }>(server, 'initialize', {
       protocolVersion: LATEST_MCP_PROTOCOL_VERSION,
       capabilities: {},
       clientInfo: { name: 'director-e2e', version: '1.0.0' },

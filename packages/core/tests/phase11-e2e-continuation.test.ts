@@ -77,7 +77,7 @@ describe('Phase 11 TASK-P11-05: End-to-End Multi-Task Continuation Integration &
     sessionStore = new DirectorSessionStore({ baseDir: tmpDir, historyManager });
     sessionEngine = new DirectorSessionEngine({ store: sessionStore, workspaceRoot: tmpDir });
     approvalStore = new ApprovalStore({ baseDir: tmpDir, historyManager });
-    specStore = new SpecStore({ baseDir: tmpDir, historyManager });
+    specStore = new SpecStore({ baseDir: tmpDir });
     dagEngine = new TaskDagEngine();
     lock = new ExecutionIntegrationLock({ baseDir: tmpDir, staleThresholdMs: 200, timeoutMs: 1500 });
     integrator = new ExecutionStateIntegrator({
@@ -101,17 +101,51 @@ describe('Phase 11 TASK-P11-05: End-to-End Multi-Task Continuation Integration &
       understandingRevision: 1,
     });
 
-    await sessionStore.saveSnapshot({
+    await sessionStore.saveSnapshot(({
       directorSessionId: sessionId,
-      snapshotId: 'snap-e2e-1',
+      projectId: projectId,
+      projectRoot: tmpDir,
+      syncStatus: 'CHANGED',
       logicalFingerprint: FINGERPRINT,
-      understandingRevision: 1,
-      syncStatus: 'SYNCED',
+      priorFingerprint: null,
       isComplete: true,
-      staleSections: [],
       unavailableSections: [],
-      timestamp: new Date().toISOString(),
-    });
+      staleSections: [],
+      synchronizedAt: new Date().toISOString(),
+      schemaVersion: 1,
+      protocolVersion: 'P9-02',
+      isDerived: true,
+      sectionMetadata: {
+        projectStatus: { synchronized: true, available: true, isStale: false, fingerprint: 'fp-meta' },
+        requirements: { synchronized: true, available: true, isStale: false, fingerprint: 'fp-meta' },
+        decisions: { synchronized: true, available: true, isStale: false, fingerprint: 'fp-meta' },
+        currentTask: { synchronized: true, available: true, isStale: false, fingerprint: 'fp-meta' },
+        taskList: { synchronized: true, available: true, isStale: false, fingerprint: 'fp-meta' },
+        contextEngine: { synchronized: true, available: true, isStale: false, fingerprint: 'fp-meta' },
+        evidence: { synchronized: true, available: true, isStale: false, fingerprint: 'fp-meta' },
+        history: { synchronized: true, available: true, isStale: false, fingerprint: 'fp-meta' },
+        git: { synchronized: true, available: true, isStale: false, fingerprint: 'fp-meta' },
+        discovery: { synchronized: true, available: true, isStale: false, fingerprint: 'fp-meta' },
+        clarification: { synchronized: true, available: true, isStale: false, fingerprint: 'fp-meta' },
+        approval: { synchronized: true, available: true, isStale: false, fingerprint: 'fp-meta' },
+        authorization: { synchronized: true, available: true, isStale: false, fingerprint: 'fp-meta' },
+      },
+      sections: {
+        projectStatus: { initialized: true, lifecycleState: 'DEVELOPMENT', isCompleted: false, isBlocked: false },
+        authorization: { isDevelopmentAuthorized: true, authoritySource: 'PRODUCT_OWNER', requiresHumanApproval: true },
+        approval: { hasApprovalPackage: true, packageId: 'pkg-valid', isReadyForApproval: true, isExplicitlyApproved: true },
+        clarification: { hasActiveSession: false, totalCount: 0, resolvedCount: 0, blockingOpenCount: 0, hasUnresolvedBlocking: false },
+        discovery: { isDiscovered: true, projectName: 'test', apparentPurposeClassification: 'application', technologyStack: [{ name: 'TypeScript' }], entryPointsCount: 0, unknownsCount: 0, contradictionsCount: 0 },
+        requirements: { total: 0, items: [] },
+        decisions: { total: 0, items: [] },
+        taskList: { total: 0, topologicalOrder: [], tasks: [] },
+        currentTask: { hasActiveTask: false, task: null },
+        contextEngine: { isAvailable: true, hasL0Cache: false, inspectedPaths: [] },
+        evidence: { totalAvailable: 0, items: [] },
+        history: { totalEvents: 0, recentEvents: [] },
+        git: { isGitRepository: true, head: null, branch: 'main', workingTreeClean: true, totalAcceptedCheckpoints: 0 },
+      },
+    }));
   }
 
   function createValidTaskInput(overrides?: Partial<TaskDefinitionInput>): TaskDefinitionInput {
@@ -153,9 +187,6 @@ describe('Phase 11 TASK-P11-05: End-to-End Multi-Task Continuation Integration &
       approvalPackageRevision: overrides?.approvalPackageRevision ?? 1,
       verificationDecision: decision,
       verifiedAt: overrides?.verifiedAt ?? new Date().toISOString(),
-      verifierIdentity: 'SYSTEM_EVIDENCE_VERIFIER',
-      deterministicChecksum: 'sha256-checksum',
-      findingsSummary: `Evidence verified with decision ${decision}`,
       repositoryState: {
         baseCommit: 'a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2',
         headCommit: 'b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3',
@@ -225,6 +256,8 @@ describe('Phase 11 TASK-P11-05: End-to-End Multi-Task Continuation Integration &
     // Initial durable state under MANUAL continuation policy
     await durableManager.save({
       currentLifecycleState: LifecycleState.TASK_LOOP,
+      activeTaskId: null,
+      blockedState: null,
       completedTaskIds: [],
       continuationState: 'NONE',
       continuationPolicy: 'MANUAL',
@@ -337,6 +370,8 @@ describe('Phase 11 TASK-P11-05: End-to-End Multi-Task Continuation Integration &
 
     await durableManager.save({
       currentLifecycleState: LifecycleState.TASK_LOOP,
+      activeTaskId: null,
+      blockedState: null,
       completedTaskIds: ['TASK-1'],
       continuationState: 'WAITING',
       continuationPolicy: 'MANUAL',
@@ -407,7 +442,9 @@ describe('Phase 11 TASK-P11-05: End-to-End Multi-Task Continuation Integration &
     const initialCompleted = ['TASK-1'];
     await durableManager.save({
       currentLifecycleState: LifecycleState.TASK_LOOP,
+      activeTaskId: null,
       completedTaskIds: [...initialCompleted],
+      blockedState: null,
       continuationState: 'WAITING',
       continuationPolicy: 'MANUAL',
     });
@@ -450,7 +487,7 @@ describe('Phase 11 TASK-P11-05: End-to-End Multi-Task Continuation Integration &
           title: 'Task 1',
           description: 'First',
           dependencies: [],
-          status: 'COMPLETED',
+          status: 'ACCEPTED',
         }),
         createValidTaskInput({
           task_id: 'TASK-2',
@@ -472,6 +509,8 @@ describe('Phase 11 TASK-P11-05: End-to-End Multi-Task Continuation Integration &
     // Now set continuationState to WAITING
     await durableManager.save({
       currentLifecycleState: LifecycleState.TASK_LOOP,
+      activeTaskId: null,
+      blockedState: null,
       completedTaskIds: ['TASK-1'],
       continuationState: 'WAITING',
       continuationPolicy: 'MANUAL',
@@ -568,6 +607,8 @@ describe('Phase 11 TASK-P11-05: End-to-End Multi-Task Continuation Integration &
 
     await durableManager.save({
       currentLifecycleState: LifecycleState.TASK_LOOP,
+      activeTaskId: null,
+      blockedState: null,
       completedTaskIds: [],
       continuationState: 'NONE',
       continuationPolicy: 'MANUAL',
@@ -691,6 +732,8 @@ describe('Phase 11 TASK-P11-05: End-to-End Multi-Task Continuation Integration &
 
     await durableManager.save({
       currentLifecycleState: LifecycleState.TASK_LOOP,
+      activeTaskId: null,
+      blockedState: null,
       completedTaskIds: ['TASK-1'],
       continuationState: 'NONE',
       continuationPolicy: 'MANUAL',
@@ -732,6 +775,8 @@ describe('Phase 11 TASK-P11-05: End-to-End Multi-Task Continuation Integration &
     // Persist WAITING state
     await durableManager.save({
       currentLifecycleState: LifecycleState.TASK_LOOP,
+      activeTaskId: null,
+      blockedState: null,
       completedTaskIds: ['TASK-1'],
       continuationState: 'WAITING',
       continuationPolicy: 'MANUAL',
@@ -799,6 +844,8 @@ describe('Phase 11 TASK-P11-05: End-to-End Multi-Task Continuation Integration &
 
     await durableManager.save({
       currentLifecycleState: LifecycleState.TASK_LOOP,
+      activeTaskId: null,
+      blockedState: null,
       completedTaskIds: ['TASK-1'],
       continuationState: 'WAITING',
       continuationPolicy: 'MANUAL',
@@ -838,6 +885,8 @@ describe('Phase 11 TASK-P11-05: End-to-End Multi-Task Continuation Integration &
 
     await durableManager.save({
       currentLifecycleState: LifecycleState.TASK_LOOP,
+      activeTaskId: null,
+      blockedState: null,
       completedTaskIds: ['TASK-1'],
       continuationState: 'WAITING',
       continuationPolicy: 'MANUAL',
@@ -892,6 +941,8 @@ describe('Phase 11 TASK-P11-05: End-to-End Multi-Task Continuation Integration &
 
     await durableManager.save({
       currentLifecycleState: LifecycleState.TASK_LOOP,
+      activeTaskId: null,
+      blockedState: null,
       completedTaskIds: [],
       continuationState: 'NONE',
       continuationPolicy: 'MANUAL',

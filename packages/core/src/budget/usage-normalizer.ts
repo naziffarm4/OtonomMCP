@@ -60,6 +60,7 @@
 import { BudgetError, type BudgetErrorCode } from '../errors/budget-error.js';
 import type { LlmRequest, LlmResponse } from '../llm-bridge/llm-types.js';
 import type { PricingRate, TokenUsage } from './budget-types.js';
+import type { TokenTelemetry } from '../token-budget/budget-types.js';
 import type { PricingEngine } from './pricing-engine.js';
 import {
   auditBillingEndpoint,
@@ -82,8 +83,13 @@ export interface NormalizedUsageFailure {
 
 export type UsageNormalizationResult = NormalizedUsageSuccess | NormalizedUsageFailure;
 
+export interface RawUsageResponse {
+  readonly usage?: Record<string, unknown> | TokenTelemetry | null;
+  readonly [key: string]: unknown;
+}
+
 export interface NormalizeUsageParams {
-  response: LlmResponse<unknown>;
+  response: LlmResponse<unknown> | RawUsageResponse;
   request: LlmRequest;
   modelId: string;
   rate: PricingRate;

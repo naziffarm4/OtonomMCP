@@ -157,7 +157,6 @@ describe('Phase 1 Comprehensive Integration Test Suite (TASK-P1-06)', () => {
         timestamp: new Date().toISOString(),
         actor: Actor.ORCHESTRATOR,
         eventType: 'TASK_SELECTED',
-        lifecycleState: LifecycleState.TASK_LOOP,
         taskId: 'TASK-INT-I2',
         payload: { attempt: 1 },
       });
@@ -167,7 +166,6 @@ describe('Phase 1 Comprehensive Integration Test Suite (TASK-P1-06)', () => {
         timestamp: new Date().toISOString(),
         actor: Actor.EXECUTOR,
         eventType: 'FILES_MODIFIED',
-        lifecycleState: LifecycleState.TASK_LOOP,
         taskId: 'TASK-INT-I2',
         payload: {
           files: ['src/i2-feature.ts'],
@@ -179,7 +177,6 @@ describe('Phase 1 Comprehensive Integration Test Suite (TASK-P1-06)', () => {
         timestamp: new Date().toISOString(),
         actor: Actor.ORCHESTRATOR,
         eventType: 'BUILD_VERIFIED',
-        lifecycleState: LifecycleState.TASK_LOOP,
         taskId: 'TASK-INT-I2',
         payload: {
           compilable: true,
@@ -229,7 +226,6 @@ describe('Phase 1 Comprehensive Integration Test Suite (TASK-P1-06)', () => {
         timestamp: new Date().toISOString(),
         actor: Actor.EXECUTOR,
         eventType: 'FILES_MODIFIED',
-        lifecycleState: LifecycleState.TASK_LOOP,
         taskId: 'TASK-OLD-PREVIOUS',
         payload: {
           files: ['src/old-file.ts'],
@@ -796,7 +792,6 @@ describe('Phase 1 Comprehensive Integration Test Suite (TASK-P1-06)', () => {
         timestamp: new Date().toISOString(),
         actor: Actor.ORCHESTRATOR,
         eventType: 'TASK_SELECTED',
-        lifecycleState: LifecycleState.TASK_LOOP,
         taskId: 'TASK-E2E-SUCCESS',
         payload: { attempt: 1 },
       });
@@ -812,7 +807,6 @@ describe('Phase 1 Comprehensive Integration Test Suite (TASK-P1-06)', () => {
         timestamp: new Date().toISOString(),
         actor: Actor.ORCHESTRATOR,
         eventType: 'BUILD_VERIFIED',
-        lifecycleState: LifecycleState.TASK_LOOP,
         taskId: 'TASK-E2E-SUCCESS',
         payload: {
           compilable: true,

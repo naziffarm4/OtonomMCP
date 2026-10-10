@@ -17,8 +17,8 @@ import * as assert from 'node:assert/strict';
 import * as path from 'node:path';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
-
 import {
+  createGitState,
   ExecutorContextService,
   type ExecutorContextPackage,
   type BuildExecutorContextInput,
@@ -57,12 +57,30 @@ class MockGitPort implements GitPort {
   isClean = true;
 
   async inspectState(targetDir: string): Promise<GitState> {
-    return {
-      is_git_repository: true,
+    return createGitState({
+      isRepository: true,
       head_sha: this.headSha,
-      branch: this.branch,
+      current_branch: this.branch,
       working_tree_clean: this.isClean,
-      total_accepted_checkpoints: 1,
+      staged_changes: [],
+      unstaged_changes: [],
+      untracked_files: [],
+      is_detached_head: false,
+    });
+  }
+
+  async verifyRemote(): Promise<any> {
+    return { verified: true, remoteHeadSha: this.headSha };
+  }
+
+  async executeAuthorizedOperation(): Promise<any> {
+    return {
+      success: true,
+      operation: 'CHECKOUT',
+      commitSha: this.headSha,
+      branch: this.branch,
+      output: 'OK',
+      timestamp: new Date().toISOString(),
     };
   }
 }
@@ -289,7 +307,7 @@ describe('Authoritative Executor Context Pipeline', () => {
       workingDirectory: tempDir,
     });
 
-    assert.ok(lowBudgetPkg.budget.maxTokenBudget, 1200);
+    assert.equal(lowBudgetPkg.budget.maxTokenBudget, 1200);
     assert.ok(lowBudgetPkg.budget.estimatedTokens <= 1200 || lowBudgetPkg.budget.isTruncated);
   });
 
@@ -457,9 +475,8 @@ describe('Authoritative Executor Context Pipeline', () => {
       },
       {
         correlation: {
-          requestId: 'mcp-req-001',
-          timestamp: new Date().toISOString(),
-          source: 'TEST',
+          correlationId: 'mcp-req-001',
+          receivedAt: new Date().toISOString(),
         },
         delegate: fakeDelegate,
       }
@@ -467,7 +484,7 @@ describe('Authoritative Executor Context Pipeline', () => {
 
     assert.equal(res.isError, undefined);
     assert.ok(res.content && res.content.length > 0);
-    const body = JSON.parse(res.content[0].text);
+    const body = JSON.parse(res.content![0].text!);
     assert.equal(body.success, true);
     assert.ok(body.packageId.startsWith('ctx-pkg-'));
     assert.equal(body.contextPackage.taskId, 'TASK-USER-01');
@@ -522,7 +539,7 @@ describe('Authoritative Executor Context Pipeline', () => {
     const staleCheck = await service.validateAndLoadContextPackage(pkg.packageId);
     assert.ok(staleCheck);
     assert.equal(staleCheck.validation.isStale, true);
-    assert.ok(staleCheck.validation.message.includes('modified'));
+    assert.ok(staleCheck.validation.message?.includes('modified'));
 
     // 6. Clear cache
     const deletedCount = await service.clearCachedContextPackages();
@@ -782,10 +799,10 @@ describe('Authoritative Executor Context Pipeline', () => {
     // Fresh validation by packageId
     const resFresh = await handler(
       { packageId: pkg.packageId, workingDirectory: tempDir },
-      { correlation: { requestId: 'r1', timestamp: '', source: 'TEST' }, delegate: fakeDelegate }
+      { correlation: { correlationId: 'r1', receivedAt: new Date().toISOString() }, delegate: fakeDelegate }
     );
     assert.equal(resFresh.isError, undefined);
-    const bodyFresh = JSON.parse(resFresh.content[0].text);
+    const bodyFresh = JSON.parse(resFresh.content![0].text!);
     assert.equal(bodyFresh.success, true);
     assert.equal(bodyFresh.isValid, true);
     assert.equal(bodyFresh.isStale, false);
@@ -796,20 +813,20 @@ describe('Authoritative Executor Context Pipeline', () => {
 
     const resStale = await handler(
       { packageId: pkg.packageId, workingDirectory: tempDir },
-      { correlation: { requestId: 'r2', timestamp: '', source: 'TEST' }, delegate: fakeDelegate }
+      { correlation: { correlationId: 'r2', receivedAt: new Date().toISOString() }, delegate: fakeDelegate }
     );
     assert.equal(resStale.isError, undefined);
-    const bodyStale = JSON.parse(resStale.content[0].text);
+    const bodyStale = JSON.parse(resStale.content![0].text!);
     assert.equal(bodyStale.success, true);
     assert.equal(bodyStale.isStale, true);
 
     // Non-existent packageId
     const resMissing = await handler(
       { packageId: 'ctx-pkg-nonexistent0000000000000000', workingDirectory: tempDir },
-      { correlation: { requestId: 'r3', timestamp: '', source: 'TEST' }, delegate: fakeDelegate }
+      { correlation: { correlationId: 'r3', receivedAt: new Date().toISOString() }, delegate: fakeDelegate }
     );
     assert.equal(resMissing.isError, true);
-    const bodyMissing = JSON.parse(resMissing.content[0].text);
+    const bodyMissing = JSON.parse(resMissing.content![0].text!);
     assert.equal(bodyMissing.code, 'ERR_CONTEXT_PACKAGE_NOT_FOUND');
   });
 
@@ -1101,7 +1118,13 @@ describe('Authoritative Executor Context Pipeline', () => {
       workspaceRoot: tempDir,
       invoker: async () => {
         invokerCalled = true;
-        return { exit_code: 0, stdout: '', stderr: '', execution_time_ms: 0 };
+        return {
+          executor_id: 'test',
+          exit_code: 0,
+          stdout: '',
+          stderr: '',
+          timing: { started_at: '', completed_at: '', duration_ms: 0 },
+        };
       },
       requestInvoker: async () => {
         invokerCalled = true;

@@ -100,10 +100,64 @@ describe('Phase 16 — Director ↔ Executor Loop', { concurrency: 1 }, () => {
   let implementDecision: DirectorDecision;
   let testTask: TaskDefinition;
   let canonicalProjectId: string;
+  const mockUnderstanding = {
+    projectId: 'test-project',
+    projectName: 'test-project',
+    apparentPurpose: { classification: 'UNDERSTOOD' as const, summary: 'Test', domainKeywords: [], evidence: [] },
+    targetUsers: [],
+    technologyStack: {
+      primaryLanguages: ['TypeScript'],
+      frameworks: [],
+      buildTools: [],
+      packageManagers: [],
+      runtimes: [],
+      containerization: [],
+      ciCd: [],
+      workspaceType: 'standalone' as const,
+      dependencies: [],
+      devDependencies: [],
+      evidence: [],
+    },
+    architectureSummary: { summary: 'Modular', architecturalPattern: 'Modular', identifiedAreas: [], evidence: [] },
+    existingCapabilities: [],
+    confirmedRequirements: [],
+    clarifiedRequirements: [],
+    unresolvedUnknowns: [],
+    unresolvedContradictions: [],
+    currentImplementationState: {
+      lifecycleState: 'TASK_LOOP' as const,
+      hasActiveTask: false,
+      isBlocked: false,
+      totalTasksInDag: 0,
+      completedTasksCount: 0,
+      evidence: [],
+    },
+    constraints: [],
+    assumptions: [],
+    nonGoals: [],
+    proposedDevelopmentScope: [],
+    evidenceReferences: [],
+    sourceDiscoveryReference: 'disc-ref',
+    generatedAt: new Date().toISOString(),
+  };
+
+  const mockDevelopmentPlan = {
+    objectives: [],
+    proposedScope: [],
+    proposedFeatureGroups: [],
+    dependencies: [],
+    constraints: [],
+    knownRisks: [],
+    unresolvedIssues: [],
+    excludedScope: [],
+    suggestedImplementationOrder: [],
+  };
+
 
   // Mock executor port
   class MockExecutor implements ExecutorPort, ExecutionRequestExecutorPort {
     readonly executorId = 'mock-executor';
+    readonly provider = 'mock';
     readonly supportedOperations = ['IMPLEMENT_TASK'];
     outcomeToReturn: Partial<RawExecutorOutcome> = {
       status: 'SUCCESS',
@@ -130,15 +184,12 @@ describe('Phase 16 — Director ↔ Executor Loop', { concurrency: 1 }, () => {
         requestId: request.requestId,
         requestBinding: {
           requestId: request.requestId,
-          directorSessionId: request.directorSessionId,
-          directorDecisionId: request.directorDecisionId,
           projectId: request.projectId,
           taskId: request.taskId,
           taskRevision: request.taskRevision,
           contextFingerprint: request.contextFingerprint,
           understandingRevision: request.understandingRevision,
           approvalPackageRevision: request.approvalPackageRevision,
-          operationType: request.operationType,
         },
         status: this.outcomeToReturn.status ?? 'SUCCESS',
         exitCode: this.outcomeToReturn.exitCode ?? 0,
@@ -150,6 +201,8 @@ describe('Phase 16 — Director ↔ Executor Loop', { concurrency: 1 }, () => {
         unverifiedModifiedFiles: this.outcomeToReturn.unverifiedModifiedFiles ?? ['src/task.ts'],
         startedAt: new Date().toISOString(),
         completedAt: new Date().toISOString(),
+        timedOut: false,
+        cancelled: false,
       };
     }
   }
@@ -163,6 +216,8 @@ describe('Phase 16 — Director ↔ Executor Loop', { concurrency: 1 }, () => {
       revision,
       approvalPackageRevision: revision,
       projectId,
+      projectUnderstanding: { ...mockUnderstanding, projectId },
+      proposedDevelopmentPlan: mockDevelopmentPlan,
       status: 'APPROVED',
       isStale: false,
       createdAt: now,
@@ -187,6 +242,8 @@ describe('Phase 16 — Director ↔ Executor Loop', { concurrency: 1 }, () => {
       revision,
       approvalPackageRevision: revision,
       projectId,
+      projectUnderstanding: { ...mockUnderstanding, projectId },
+      proposedDevelopmentPlan: mockDevelopmentPlan,
       status: 'PENDING',
       isStale: false,
       createdAt: now,
@@ -256,10 +313,14 @@ describe('Phase 16 — Director ↔ Executor Loop', { concurrency: 1 }, () => {
       synchronizedAt: new Date().toISOString(),
       logicalFingerprint: 'fp-valid-snapshot-sha256',
       isComplete: true,
-      syncStatus: 'SYNCED',
+      syncStatus: 'CHANGED',
+      protocolVersion: 'P9-02',
+      schemaVersion: 1,
+      isDerived: true,
       sections: {
         projectSummary: { fingerprint: 'fp-1', status: 'FRESH' },
       } as any,
+      sectionMetadata: {} as any,
       unavailableSections: [],
       staleSections: [],
     };
@@ -304,7 +365,9 @@ describe('Phase 16 — Director ↔ Executor Loop', { concurrency: 1 }, () => {
       priority: 'HIGH' as any,
       risk_level: 'SAFE' as any,
       hierarchy_level: 'FEATURE' as any,
-      target_files: ['src/task.ts'],
+      created_at: new Date().toISOString(),
+      started_at: null,
+      completed_at: null,
       metadata: { revision: 1 },
     };
 
@@ -322,7 +385,9 @@ describe('Phase 16 — Director ↔ Executor Loop', { concurrency: 1 }, () => {
       priority: 'HIGH' as any,
       risk_level: 'SAFE' as any,
       hierarchy_level: 'TASK' as any,
-      target_files: ['src/task.ts'],
+      created_at: new Date().toISOString(),
+      started_at: null,
+      completed_at: null,
       metadata: {
         revision: 1,
       },
@@ -707,8 +772,7 @@ describe('Phase 16 — Director ↔ Executor Loop', { concurrency: 1 }, () => {
             exitCode: rawOutcome.exitCode,
             durationMs: rawOutcome.durationMs,
           },
-          collectedAt: new Date().toISOString(),
-          verifiedAt: new Date().toISOString(),
+                    verifiedAt: new Date().toISOString(),
         };
       }
     }
@@ -812,8 +876,7 @@ describe('Phase 16 — Director ↔ Executor Loop', { concurrency: 1 }, () => {
           acceptanceCriteria: [{ criterion: 'AC1', criterionId: 'AC1', status: 'FAIL', evidence: 'Failed' }],
           executorOutcomeReference: { status: 'FAILURE', exitCode: 1, durationMs: 100 },
           failureCategory: 'TEST_FAILURE',
-          collectedAt: new Date().toISOString(),
-          verifiedAt: new Date().toISOString(),
+                    verifiedAt: new Date().toISOString(),
         };
       }
     }
@@ -881,8 +944,7 @@ describe('Phase 16 — Director ↔ Executor Loop', { concurrency: 1 }, () => {
           acceptanceCriteria: [{ criterion: 'AC1', criterionId: 'AC1', status: 'BLOCK', evidence: 'Blocked' }],
           executorOutcomeReference: { status: 'ERROR', exitCode: 2, durationMs: 100 },
           failureCategory: 'INFRASTRUCTURE_FAILURE',
-          collectedAt: new Date().toISOString(),
-          verifiedAt: new Date().toISOString(),
+                    verifiedAt: new Date().toISOString(),
         };
       }
     }
@@ -950,8 +1012,7 @@ describe('Phase 16 — Director ↔ Executor Loop', { concurrency: 1 }, () => {
           acceptanceCriteria: [{ criterion: 'AC1', criterionId: 'AC1', status: 'BLOCK', evidence: 'Blocked' }],
           executorOutcomeReference: { status: 'ERROR', exitCode: 2, durationMs: 100 },
           failureCategory: 'INFRASTRUCTURE_FAILURE',
-          collectedAt: new Date().toISOString(),
-          verifiedAt: new Date().toISOString(),
+                    verifiedAt: new Date().toISOString(),
         };
       }
     }
@@ -1023,7 +1084,9 @@ describe('Phase 16 — Director ↔ Executor Loop', { concurrency: 1 }, () => {
       priority: 'MEDIUM' as any,
       risk_level: 'SAFE' as any,
       hierarchy_level: 'TASK' as any,
-      target_files: ['src/dep.ts'],
+      created_at: new Date().toISOString(),
+      started_at: null,
+      completed_at: null,
       metadata: { revision: 1 },
     };
     const currentTasks = await specStore.loadTasks();
@@ -1175,8 +1238,7 @@ describe('Phase 16 — Director ↔ Executor Loop', { concurrency: 1 }, () => {
           acceptanceCriteria: [{ criterion: 'AC1', criterionId: 'AC1', status: 'FAIL', evidence: 'Criterion not met' }],
           executorOutcomeReference: { status: 'FAILURE', exitCode: 1, durationMs: 100 },
           failureCategory: 'TEST_FAILURE',
-          collectedAt: new Date().toISOString(),
-          verifiedAt: new Date().toISOString(),
+                    verifiedAt: new Date().toISOString(),
         };
       }
     }

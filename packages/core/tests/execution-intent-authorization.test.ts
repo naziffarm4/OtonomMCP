@@ -83,7 +83,9 @@ import {
   ExecutionIntentRevisionMismatchError,
   ExecutionIntentTaskInvalidError,
   ExecutionIntentDecisionInvalidError,
+  type TaskDefinition,
 } from '../dist/index.js';
+import { createValidDiscoveryReport } from './helpers/test-discovery-factory.ts';
 
 describe('Phase 10 — Execution Intent Authorization Boundary (TASK-P10-01)', () => {
   let tempDir: string;
@@ -108,49 +110,15 @@ describe('Phase 10 — Execution Intent Authorization Boundary (TASK-P10-01)', (
   let implementDecision: DirectorDecision;
 
   function createMockReport(workspaceRoot: string): ProjectDiscoveryReport {
-    return {
+    return createValidDiscoveryReport({
       projectIdentity: {
-        name: 'test-exec-intent-project',
+        name: 'test-exec-project',
         version: '1.0.0',
         workspaceRoot,
         ecosystem: 'Node.js',
         evidence: [{ sourceType: 'PACKAGE_MANIFEST', sourceIdentifier: 'package.json' }],
       },
-      purpose: {
-        classification: 'UNDERSTOOD',
-        summary: 'A deterministic agent orchestration platform',
-        domainKeywords: ['orchestration', 'agent'],
-        evidence: [{ sourceType: 'FILE', sourceIdentifier: 'README.md' }],
-      },
-      technologyStack: {
-        primaryLanguages: ['TypeScript'],
-        frameworks: [],
-        buildTools: ['tsc'],
-        packageManagers: ['npm'],
-        runtimes: ['node'],
-        containerization: [],
-        ciCd: [],
-        workspaceType: 'standalone',
-      },
-      architecture: {
-        summary: 'Standard modular TypeScript architecture',
-        architecturalPattern: 'Modular',
-        identifiedAreas: [],
-        evidence: [{ sourceType: 'FILE', sourceIdentifier: 'src/index.ts' }],
-      },
-      currentImplementationState: {
-        lifecycleState: 'REQUIREMENTS_INGESTION',
-        hasActiveTask: false,
-        isBlocked: false,
-        totalTasksInDag: 0,
-        completedTasksCount: 0,
-        evidence: [{ sourceType: 'STATE_MANAGER', sourceIdentifier: 'durable-state.json' }],
-      },
-      unknowns: [],
-      contradictions: [],
-      evidenceInventory: [],
-      generatedAt: new Date().toISOString(),
-    };
+    });
   }
 
   /**
@@ -162,7 +130,7 @@ describe('Phase 10 — Execution Intent Authorization Boundary (TASK-P10-01)', (
     statusOverride?: string,
     metadataOverride?: Record<string, unknown>
   ) {
-    const tasks = await specStore.loadTasks().catch(() => []);
+    const tasks: TaskDefinition[] = await specStore.loadTasks().catch(() => []);
     if (!tasks.some(t => t.task_id === 'FEAT-TEST-001')) {
       tasks.push({
         task_id: 'FEAT-TEST-001',
@@ -688,7 +656,7 @@ describe('Phase 10 — Execution Intent Authorization Boundary (TASK-P10-01)', (
     const staleSnapshot = {
       ...snapshot,
       directorSessionId: activeSession.directorSessionId,
-      syncStatus: 'STALE',
+      syncStatus: 'STALE' as const,
       staleSections: ['requirements'],
     };
     await sessionStore.saveSnapshot(staleSnapshot);
@@ -722,7 +690,7 @@ describe('Phase 10 — Execution Intent Authorization Boundary (TASK-P10-01)', (
     const incompleteSnapshot = {
       ...snapshot,
       directorSessionId: activeSession.directorSessionId,
-      syncStatus: 'INCOMPLETE',
+      syncStatus: 'INCOMPLETE' as const,
       isComplete: false,
       unavailableSections: ['tasks'],
     };
@@ -1860,7 +1828,7 @@ describe('Phase 10 — Execution Intent Authorization Boundary (TASK-P10-01)', (
       attempt: 1,
       max_attempts: 3,
       priority: 'MEDIUM',
-      risk_level: 'MEDIUM',
+      risk_level: 'CAUTION',
       created_at: new Date().toISOString(),
       started_at: null,
       completed_at: null,

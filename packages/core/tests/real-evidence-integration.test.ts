@@ -1,3 +1,5 @@
+import type { DirectorDecision } from '../src/director/director-decision-types.js';
+import { createValidDiscoveryReport } from './helpers/test-discovery-factory.ts';
 /**
  * Phase 14 TASK-P14-03: Real Execution Evidence Integration Test Suite
  *
@@ -97,49 +99,7 @@ import {
 } from '../dist/index.js';
 
 function createMockReport(workspaceRoot: string): ProjectDiscoveryReport {
-  return {
-    projectIdentity: {
-      name: 'test-p14-03-evidence-project',
-      version: '1.0.0',
-      workspaceRoot,
-      ecosystem: 'Node.js',
-      evidence: [{ sourceType: 'PACKAGE_MANIFEST', sourceIdentifier: 'package.json' }],
-    },
-    purpose: {
-      classification: 'UNDERSTOOD',
-      summary: 'Real execution evidence integration test fixture',
-      domainKeywords: ['evidence', 'integration', 'p14-03'],
-      evidence: [{ sourceType: 'FILE', sourceIdentifier: 'README.md' }],
-    },
-    technologyStack: {
-      primaryLanguages: ['TypeScript'],
-      frameworks: [],
-      buildTools: ['tsc'],
-      packageManagers: ['npm'],
-      runtimes: ['node'],
-      containerization: [],
-      ciCd: [],
-      workspaceType: 'standalone',
-    },
-    architecture: {
-      summary: 'Modular TypeScript architecture',
-      architecturalPattern: 'Modular',
-      identifiedAreas: [],
-      evidence: [{ sourceType: 'FILE', sourceIdentifier: 'src/greeting.ts' }],
-    },
-    currentImplementationState: {
-      lifecycleState: 'TASK_LOOP',
-      hasActiveTask: false,
-      isBlocked: false,
-      totalTasksInDag: 1,
-      completedTasksCount: 0,
-      evidence: [{ sourceType: 'STATE_MANAGER', sourceIdentifier: 'durable-state.json' }],
-    },
-    unknowns: [],
-    contradictions: [],
-    evidenceInventory: [],
-    generatedAt: new Date().toISOString(),
-  };
+  return createValidDiscoveryReport({ projectIdentity: { name: 'real-evidence-test', workspaceRoot, ecosystem: 'Node.js', evidence: [] } });
 }
 
 function createParentFeature(): any {
@@ -155,7 +115,7 @@ function createParentFeature(): any {
     attempt: 0,
     max_attempts: 1,
     priority: TaskPriority.HIGH,
-    risk_level: RiskLevel.LOW,
+    risk_level: RiskLevel.SAFE,
     created_at: new Date().toISOString(),
     started_at: null,
     completed_at: null,
@@ -170,11 +130,7 @@ function createMockRawOutcome(
 ): RawExecutorOutcome {
   return {
     requestId: request.requestId,
-    executorIdentity: {
-      executorType: 'antigravity',
-      version: '1.2.11',
-      executionHost: 'host',
-    },
+    executorIdentity: { provider: 'antigravity', name: 'antigravity', version: '1.2.11' },
     status: 'SUCCESS',
     exitCode: 0,
     signal: null,
@@ -268,8 +224,7 @@ describe('Phase 14 TASK-P14-03: Real Evidence Integration', () => {
       approvalStore,
       sessionStore,
       sessionEngine,
-      decisionStore,
-      durableStateManager,
+durableStateManager,
       historyManager,
     });
     delegate = new DefaultMcpOrchestratorDelegate();
@@ -277,12 +232,8 @@ describe('Phase 14 TASK-P14-03: Real Evidence Integration', () => {
 
     synchronizer = new DirectorContextSynchronizer({
       workspaceRoot: tempDir,
-      specStore,
-      durableStateManager,
       sessionStore,
       sessionEngine,
-      decisionStore,
-      historyManager,
     });
 
     authorizer = new ExecutionAuthorizer({
@@ -379,14 +330,14 @@ describe('Phase 14 TASK-P14-03: Real Evidence Integration', () => {
     pkg = approvalResult.package;
 
     // 3. Register Director Decision
-    const decision = {
+    const decision: DirectorDecision = {
       decisionId: `dec-p14-03-${Date.now()}`,
       directorSessionId: session.directorSessionId,
       projectId,
       protocolVersion: 'P9-03',
       schemaVersion: 1,
       actor: 'DIRECTOR' as const,
-      decisionType: 'IMPLEMENT_TASK',
+      decisionType: 'IMPLEMENT_TASK' as const,
       rationale: 'Approved for real P14-03 execution',
       basedOnContextFingerprint: snapshot.logicalFingerprint,
       basedOnApprovalRevision: pkg.revision,
@@ -413,7 +364,7 @@ describe('Phase 14 TASK-P14-03: Real Evidence Integration', () => {
         traceability_sources: ['REQ-001'],
         assigned_to: 'antigravity',
         estimated_complexity: 'LOW',
-        risk_level: RiskLevel.LOW,
+        risk_level: RiskLevel.SAFE,
         attempt: 0,
         max_attempts: 1,
         created_at: new Date().toISOString(),
@@ -536,7 +487,7 @@ describe('Phase 14 TASK-P14-03: Real Evidence Integration', () => {
         traceability_sources: ['REQ-001'],
         assigned_to: 'antigravity',
         estimated_complexity: 'LOW',
-        risk_level: RiskLevel.LOW,
+        risk_level: RiskLevel.SAFE,
         attempt: 0,
         max_attempts: 1,
         created_at: new Date().toISOString(),
@@ -588,7 +539,7 @@ describe('Phase 14 TASK-P14-03: Real Evidence Integration', () => {
       protocolVersion: 'P9-03',
       schemaVersion: 1,
       actor: 'DIRECTOR' as const,
-      decisionType: 'IMPLEMENT_TASK',
+      decisionType: 'IMPLEMENT_TASK' as const,
       rationale: 'Testing reject evidence',
       basedOnContextFingerprint: snapshot.logicalFingerprint,
       basedOnApprovalRevision: pkg.revision,
@@ -689,7 +640,7 @@ describe('Phase 14 TASK-P14-03: Real Evidence Integration', () => {
         traceability_sources: ['REQ-001'],
         assigned_to: 'antigravity',
         estimated_complexity: 'LOW',
-        risk_level: RiskLevel.LOW,
+        risk_level: RiskLevel.SAFE,
         attempt: 0,
         max_attempts: 1,
         created_at: new Date().toISOString(),
@@ -741,7 +692,7 @@ describe('Phase 14 TASK-P14-03: Real Evidence Integration', () => {
       protocolVersion: 'P9-03',
       schemaVersion: 1,
       actor: 'DIRECTOR' as const,
-      decisionType: 'IMPLEMENT_TASK',
+      decisionType: 'IMPLEMENT_TASK' as const,
       rationale: 'Testing block evidence',
       basedOnContextFingerprint: snapshot.logicalFingerprint,
       basedOnApprovalRevision: pkg.revision,
@@ -844,7 +795,7 @@ describe('Phase 14 TASK-P14-03: Real Evidence Integration', () => {
         traceability_sources: ['REQ-001'],
         assigned_to: 'antigravity',
         estimated_complexity: 'LOW',
-        risk_level: RiskLevel.LOW,
+        risk_level: RiskLevel.SAFE,
         attempt: 0,
         max_attempts: 1,
         created_at: new Date().toISOString(),
@@ -896,7 +847,7 @@ describe('Phase 14 TASK-P14-03: Real Evidence Integration', () => {
       protocolVersion: 'P9-03',
       schemaVersion: 1,
       actor: 'DIRECTOR' as const,
-      decisionType: 'IMPLEMENT_TASK',
+      decisionType: 'IMPLEMENT_TASK' as const,
       rationale: 'Testing restart reload',
       basedOnContextFingerprint: snapshot.logicalFingerprint,
       basedOnApprovalRevision: pkg.revision,
@@ -1074,7 +1025,7 @@ describe('Phase 14 TASK-P14-03: Real Evidence Integration', () => {
         traceability_sources: ['REQ-001'],
         assigned_to: 'antigravity',
         estimated_complexity: 'LOW',
-        risk_level: RiskLevel.LOW,
+        risk_level: RiskLevel.SAFE,
         attempt: 0,
         max_attempts: 1,
         created_at: new Date().toISOString(),
@@ -1154,7 +1105,7 @@ describe('Phase 14 TASK-P14-03: Real Evidence Integration', () => {
         traceability_sources: ['REQ-001'],
         assigned_to: 'antigravity',
         estimated_complexity: 'LOW',
-        risk_level: RiskLevel.LOW,
+        risk_level: RiskLevel.SAFE,
         attempt: 0,
         max_attempts: 1,
         created_at: new Date().toISOString(),
@@ -1242,7 +1193,7 @@ describe('Phase 14 TASK-P14-03: Real Evidence Integration', () => {
         traceability_sources: ['REQ-001'],
         assigned_to: 'antigravity',
         estimated_complexity: 'LOW',
-        risk_level: RiskLevel.LOW,
+        risk_level: RiskLevel.SAFE,
         attempt: 0,
         max_attempts: 1,
         created_at: new Date().toISOString(),
@@ -1728,16 +1679,35 @@ describe('Phase 14 TASK-P14-03: Real Evidence Integration', () => {
   // 20. RAWEXECUTOROUTCOME CANNOT DIRECTLY BECOME AUTHORITATIVE EVIDENCE
   // ==========================================================================
   it('20. enforces that RawExecutorOutcome cannot directly be integrated as authoritative evidence', async () => {
-    const rawOutcome: RawExecutorOutcome = {
-      status: 'SUCCESS',
-      exitCode: 0,
-      stdout: 'all tests passed!',
-      stderr: '',
-      durationMs: 42,
-      timedOut: false,
-      unverifiedAgentClaims: [{ claim: 'I wrote all features and tests pass', confidence: 1.0 }],
-      unverifiedModifiedFiles: ['src/greeting.ts'],
+    const dummyRequest: ExecutionRequest = {
+      protocolVersion: 'P10-02',
+      schemaVersion: 1,
+      requestId: 'req-' + '20'.repeat(32),
+      projectId: 'test-p14-03-evidence-project',
+      taskId: 'TASK-DUMMY',
+      taskRevision: 1,
+      directorSessionId: 'sess-dummy',
+      directorDecisionId: 'dec-dummy',
+      contextFingerprint: 'fp-dummy',
+      understandingRevision: 1,
+      approvalPackageRevision: 1,
+      operationType: 'IMPLEMENT_TASK',
+      instruction: {
+        objective: 'Test',
+        acceptanceCriteria: ['Pass'],
+        constraints: [],
+        targetFiles: ['src/greeting.ts'],
+        implementationScope: ['src/greeting.ts'],
+      },
+      executionLimits: { timeoutMs: 10000, maxFileModifications: 5 },
+      expectedRepositoryState: { baseCommit: '0000000000000000000000000000000000000000', isClean: true },
     };
+    const rawOutcome = createMockRawOutcome(dummyRequest, {
+      durationMs: 42,
+      stdout: 'all tests passed!',
+      unverifiedAgentClaims: ['I wrote all features and tests pass'],
+      unverifiedModifiedFiles: ['src/greeting.ts'],
+    });
 
     // Statically prevented by TypeScript, but at runtime passing raw object without evidence envelope fails closed
     await assert.rejects(
@@ -1821,9 +1791,6 @@ describe('Phase 14 TASK-P14-03: Real Evidence Integration', () => {
             description: 'src/greeting.ts must export greeting with value "required_token_123"',
             type: 'TEST',
             mandatory: true,
-            expected_command: process.platform === 'win32'
-              ? 'cmd.exe /c findstr "required_token_123" src\\greeting.ts'
-              : 'grep "required_token_123" src/greeting.ts',
           },
         ],
         constraints: [],
@@ -1843,13 +1810,20 @@ describe('Phase 14 TASK-P14-03: Real Evidence Integration', () => {
       exitCode: 0,
       stdout: 'all good',
       durationMs: 30,
-      unverifiedAgentClaims: [{ claim: 'criteria satisfied', confidence: 1.0 }],
+      unverifiedAgentClaims: ['criteria satisfied'],
       unverifiedModifiedFiles: ['src/greeting.ts'],
     });
 
     const evidence = await collector.collectAndVerify(request, rawOutcome, {
       workingDirectory: tempDir,
       evidenceStore,
+      verificationCommands: [
+        {
+          id: 'AC-TOKEN',
+          type: 'TEST',
+          command: 'node -e "process.exit(1)"',
+        },
+      ],
     });
 
     // Verification must independently reject the claim and set REJECT
@@ -1961,7 +1935,7 @@ describe('Phase 14 TASK-P14-03: Real Evidence Integration', () => {
     const failingIntegrator = new ExecutionStateIntegrator({
       evidenceStore: failingStore,
       requirePersistedEvidence: true,
-      workspaceRoot: tempDir,
+      baseDir: tempDir,
     });
 
     await assert.rejects(

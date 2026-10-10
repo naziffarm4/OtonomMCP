@@ -110,8 +110,8 @@ class TestExecutor implements ExecutorPort, ExecutionRequestExecutorPort {
   async execute(request: ExecutionRequest): Promise<RawExecutorOutcome> {
     this.executionCallCount++;
 
-    const files = request.targetFiles && request.targetFiles.length > 0
-      ? request.targetFiles
+    const files = (request.instruction?.targetFiles && request.instruction.targetFiles.length > 0)
+      ? request.instruction.targetFiles
       : ['src/control_plane.ts'];
 
     for (const f of files) {
@@ -125,18 +125,17 @@ class TestExecutor implements ExecutorPort, ExecutionRequestExecutorPort {
       requestId: request.requestId,
       requestBinding: {
         requestId: request.requestId,
-        directorSessionId: request.directorSessionId,
-        directorDecisionId: request.directorDecisionId,
         projectId: request.projectId,
         taskId: request.taskId,
         taskRevision: request.taskRevision,
         contextFingerprint: request.contextFingerprint,
         understandingRevision: request.understandingRevision,
         approvalPackageRevision: request.approvalPackageRevision,
-        operationType: request.operationType,
       },
       status: 'SUCCESS',
       exitCode: 0,
+      timedOut: false,
+      cancelled: false,
       signal: null,
       stdout: `Successfully implemented ${request.taskId}`,
       stderr: '',
@@ -229,7 +228,7 @@ describe('Phase 22 (P22): Director MCP Control Plane', { concurrency: 1 }, () =>
     specStore = new SpecStore({ baseDir: tempDir });
     dagEngine = new TaskDagEngine();
     evidenceStore = new SystemExecutionEvidenceStore({ baseDir: tempDir });
-    evidenceCollector = new SystemEvidenceCollector({ workspaceRoot: tempDir, evidenceStore });
+    evidenceCollector = new SystemEvidenceCollector({ evidenceStore });
     sessionStore = new DirectorSessionStore({ baseDir: tempDir, historyManager });
     sessionEngine = new DirectorSessionEngine({ store: sessionStore, workspaceRoot: tempDir });
     decisionStore = new DirectorDecisionStore({ sessionStore, historyManager });
@@ -238,11 +237,7 @@ describe('Phase 22 (P22): Director MCP Control Plane', { concurrency: 1 }, () =>
 
     mandateStore = new ProjectMandateStore({ baseDir: tempDir });
     identityManager = new IdentityManager({ baseDir: tempDir });
-    authorizationPolicyEngine = new AuthorizationPolicyEngine({
-      mandateStore,
-      identityManager,
-      historyManager,
-    });
+    authorizationPolicyEngine = new AuthorizationPolicyEngine({ mandateStore, historyManager });
 
     const testMandate: ProjectMandate = {
       projectId: validProjectId,
@@ -279,7 +274,6 @@ describe('Phase 22 (P22): Director MCP Control Plane', { concurrency: 1 }, () =>
     await mandateStore.saveMandate(testMandate, { ...payload, signature });
 
     policyEngine = new PolicyEngine({
-      mode: 'audit',
       projectRoot: tempDir,
     });
 
@@ -358,8 +352,6 @@ describe('Phase 22 (P22): Director MCP Control Plane', { concurrency: 1 }, () =>
       actionValidator,
       actionDispatcher,
       executionBridge,
-      mandateStore,
-      identityManager,
       authorizationPolicyEngine,
       recoveryPolicyEngine,
       correctiveTaskService,
@@ -368,7 +360,7 @@ describe('Phase 22 (P22): Director MCP Control Plane', { concurrency: 1 }, () =>
     // Seed task in SpecStore
     const featCore: TaskDefinition = {
       task_id: 'feat-01',
-      parent_feature_id: null,
+      parent_feature_id: 'ROOT',
       title: 'Control Plane Feature',
       description: 'High-level Director MCP Control Plane',
       traceability_sources: ['REQ:01'],
@@ -414,8 +406,7 @@ describe('Phase 22 (P22): Director MCP Control Plane', { concurrency: 1 }, () =>
       actorRole: 'DIRECTOR',
       metadata: { environment: 'test-p22' },
     });
-    activeSession.understandingRevision = 1;
-    await sessionStore.saveSession(activeSession);
+    await sessionStore.saveSession({ ...activeSession, understandingRevision: 1 });
     validSessionId = activeSession.directorSessionId;
     validRevision = 1;
 
@@ -424,11 +415,10 @@ describe('Phase 22 (P22): Director MCP Control Plane', { concurrency: 1 }, () =>
     const initialSnapshot: DirectorContextSnapshot = {
       protocolVersion: 'P9-02',
       schemaVersion: 1,
-      snapshotId: `snap-${Date.now()}`,
       directorSessionId: validSessionId,
       projectId: validProjectId,
       projectRoot: tempDir,
-      syncTimestamp: new Date().toISOString(),
+      synchronizedAt: new Date().toISOString(),
       syncStatus: 'CHANGED',
       isComplete: true,
       unavailableSections: [],
@@ -460,18 +450,8 @@ describe('Phase 22 (P22): Director MCP Control Plane', { concurrency: 1 }, () =>
         approval: { activePackage: null } as any,
         authorization: { isDevelopmentAuthorized: true } as any,
       },
-      metadata: {
-        sectionsIncluded: ['projectStatus', 'taskList'],
-        unavailableSections: [],
-        degradedSections: [],
-        staleSections: [],
-      },
-      provenance: {
-        synchronizedBy: 'P22 Test Runner',
-        synchronizerVersion: '0.1.0',
-        synchronizationDurationMs: 5,
-        sourceStores: ['SpecStore', 'SessionStore'],
-      },
+      isDerived: true,
+      sectionMetadata: {} as any,
     };
     await sessionStore.saveSnapshot(initialSnapshot);
 

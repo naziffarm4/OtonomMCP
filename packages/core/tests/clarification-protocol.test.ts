@@ -1012,6 +1012,8 @@ describe('Phase 8 Ambiguity & Clarification Protocol (TASK-P8-04)', () => {
     await store.saveSession(session);
 
     const stateAfter = await stateManager.load();
+    assert.ok(stateBefore);
+    assert.ok(stateAfter);
     assert.equal(stateBefore.currentLifecycleState, stateAfter.currentLifecycleState);
     assert.equal(stateAfter.currentLifecycleState, 'REQUIREMENTS_INGESTION');
   });

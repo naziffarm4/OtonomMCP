@@ -70,6 +70,7 @@ import {
   AIDM_APPROVAL_PACKAGE_REJECT_TOOL_NAME,
   type McpRequestEnvelope,
   type McpSuccessResponseEnvelope,
+  type McpToolResult,
 } from '../dist/index.js';
 
 const execFile = promisify(execFileCallback);
@@ -1073,9 +1074,9 @@ describe('Phase 8 TASK-P8-05: Initial Project Understanding & Approval Gate Prot
         },
       },
     };
-    const createResp = (await server.handleMessage(createReq)) as McpSuccessResponseEnvelope;
-    assert.equal(createResp.error, undefined);
-    const createResult = JSON.parse(createResp.result.content[0].text);
+    const createResp = (await server.handleMessage(createReq)) as McpSuccessResponseEnvelope<McpToolResult>;
+    assert.ok(createResp.result);
+    const createResult = JSON.parse(createResp.result.content[0].text ?? "{}");
     assert.ok(createResult.packageId);
 
     // 2. Query readiness via MCP
@@ -1091,9 +1092,9 @@ describe('Phase 8 TASK-P8-05: Initial Project Understanding & Approval Gate Prot
         },
       },
     };
-    const readinessResp = (await server.handleMessage(readinessReq)) as McpSuccessResponseEnvelope;
-    assert.equal(readinessResp.error, undefined);
-    const readinessResult = JSON.parse(readinessResp.result.content[0].text);
+    const readinessResp = (await server.handleMessage(readinessReq)) as McpSuccessResponseEnvelope<McpToolResult>;
+    assert.ok(readinessResp.result);
+    const readinessResult = JSON.parse(readinessResp.result.content[0].text ?? "{}");
     assert.equal(readinessResult.packageId, createResult.packageId);
 
     // 3. Approve package via MCP
@@ -1114,9 +1115,9 @@ describe('Phase 8 TASK-P8-05: Initial Project Understanding & Approval Gate Prot
         },
       },
     };
-    const approveResp = (await server.handleMessage(approveReq)) as McpSuccessResponseEnvelope;
-    assert.equal(approveResp.error, undefined);
-    const approveResult = JSON.parse(approveResp.result.content[0].text);
+    const approveResp = (await server.handleMessage(approveReq)) as McpSuccessResponseEnvelope<McpToolResult>;
+    assert.ok(approveResp.result);
+    const approveResult = JSON.parse(approveResp.result.content[0].text ?? "{}");
     assert.equal(approveResult.status, 'APPROVED');
 
     await server.stop();

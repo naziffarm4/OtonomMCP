@@ -22,6 +22,7 @@ import * as path from 'node:path';
 import * as os from 'node:os';
 import * as crypto from 'node:crypto';
 import * as child_process from 'node:child_process';
+import { createValidApprovalPackage } from './helpers/test-discovery-factory.ts';
 
 import {
   ClosedLoopCoordinator,
@@ -123,19 +124,18 @@ describe('Phase A4: Closed-Loop Coordinator Integration', { concurrency: 1 }, ()
           requestId: request.requestId,
           requestBinding: {
             requestId: request.requestId,
-            directorSessionId: request.directorSessionId,
-            directorDecisionId: request.directorDecisionId,
             projectId: request.projectId,
             taskId: request.taskId,
             taskRevision: request.taskRevision,
             contextFingerprint: request.contextFingerprint,
             understandingRevision: request.understandingRevision,
             approvalPackageRevision: request.approvalPackageRevision,
-            operationType: request.operationType,
-          },
-          status: 'SUCCESS',
-          exitCode: 0,
-          signal: null,
+        },
+        status: 'SUCCESS',
+        exitCode: 0,
+        timedOut: false,
+        cancelled: false,
+        signal: null,
           stdout: 'Execution modified files outside allowed scope',
           stderr: '',
           durationMs: 45,
@@ -152,18 +152,17 @@ describe('Phase A4: Closed-Loop Coordinator Integration', { concurrency: 1 }, ()
           requestId: request.requestId,
           requestBinding: {
             requestId: request.requestId,
-            directorSessionId: request.directorSessionId,
-            directorDecisionId: request.directorDecisionId,
             projectId: request.projectId,
             taskId: request.taskId,
             taskRevision: request.taskRevision,
             contextFingerprint: request.contextFingerprint,
             understandingRevision: request.understandingRevision,
             approvalPackageRevision: request.approvalPackageRevision,
-            operationType: request.operationType,
           },
           status: 'FAILURE',
           exitCode: 1,
+          timedOut: false,
+          cancelled: false,
           signal: null,
           stdout: '',
           stderr: 'Compilation error: src/index.ts:1:1: unexpected token',
@@ -196,18 +195,17 @@ describe('Phase A4: Closed-Loop Coordinator Integration', { concurrency: 1 }, ()
         requestId: request.requestId,
         requestBinding: {
           requestId: request.requestId,
-          directorSessionId: request.directorSessionId,
-          directorDecisionId: request.directorDecisionId,
           projectId: request.projectId,
           taskId: request.taskId,
           taskRevision: request.taskRevision,
           contextFingerprint: request.contextFingerprint,
           understandingRevision: request.understandingRevision,
           approvalPackageRevision: request.approvalPackageRevision,
-          operationType: request.operationType,
         },
         status: 'SUCCESS',
         exitCode: 0,
+        timedOut: false,
+        cancelled: false,
         signal: null,
         stdout: `Antigravity executed task ${request.taskId} successfully`,
         stderr: '',
@@ -259,6 +257,7 @@ describe('Phase A4: Closed-Loop Coordinator Integration', { concurrency: 1 }, ()
   }
 
   function createAuthoritativeSnapshot(overrides: Partial<DirectorContextSnapshot> = {}): DirectorContextSnapshot {
+    const baseDerived = true as const;
     return {
       projectId: validProjectId,
       projectRoot: tempDir,
@@ -271,10 +270,7 @@ describe('Phase A4: Closed-Loop Coordinator Integration', { concurrency: 1 }, ()
       unavailableSections: [],
       staleSections: [],
       logicalFingerprint: validFingerprint,
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-      sequenceNumber: 1,
-      warnings: [],
+      isDerived: baseDerived,
       sectionMetadata: {
         requirements: { revision: validRevision },
       } as any,
@@ -379,42 +375,24 @@ describe('Phase A4: Closed-Loop Coordinator Integration', { concurrency: 1 }, ()
       status: 'ACTIVE',
       createdAt: new Date().toISOString(),
       lastActivityAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
       understandingRevision: validRevision,
       protocolVersion: 'P9-01',
       schemaVersion: 1,
       actor: 'DIRECTOR',
       actorRole: 'DIRECTOR',
       hasImplementationAuthority: false,
-      decisionCount: 0,
       metadata: {},
     };
     await sessionStore.saveSession(activeSession);
 
     // Save approved human Product Owner package
     const pkgId = `pkg-a4-${Date.now()}`;
-    const nowIso = new Date().toISOString();
-    approvedPackage = {
+    approvedPackage = createValidApprovalPackage({
       packageId: pkgId,
       projectId: validProjectId,
       revision: validRevision,
       approvalPackageRevision: validRevision,
-      status: 'APPROVED',
-      isStale: false,
-      createdAt: nowIso,
-      updatedAt: nowIso,
-      isDevelopmentAuthorized: true,
-      approvalRecord: {
-        packageId: pkgId,
-        revision: validRevision,
-        actor: 'PRODUCT_OWNER',
-        actorRole: 'PRODUCT_OWNER',
-        intent: 'EXPLICIT_APPROVAL',
-        approvedAt: nowIso,
-        packageHash: 'sha256-approved-package-hash',
-        comment: 'Human Product Owner authorizes task development',
-      },
-    };
+    });
     await approvalStore.savePackage(approvedPackage);
 
     // Save signed project mandate
@@ -435,9 +413,11 @@ describe('Phase A4: Closed-Loop Coordinator Integration', { concurrency: 1 }, ()
       attempt: 0,
       max_attempts: 1,
       priority: 'HIGH',
-      risk_level: 'LOW',
+      risk_level: 'SAFE',
       dependencies: [],
       created_at: new Date().toISOString(),
+      started_at: null,
+      completed_at: null,
       hierarchy_level: 'FEATURE',
       metadata: {},
     };
@@ -453,15 +433,19 @@ describe('Phase A4: Closed-Loop Coordinator Integration', { concurrency: 1 }, ()
       attempt: 1,
       max_attempts: 2,
       priority: 'HIGH',
-      risk_level: 'LOW',
+      risk_level: 'SAFE',
       dependencies: [],
       created_at: new Date().toISOString(),
+      started_at: null,
+      completed_at: null,
       hierarchy_level: 'TASK',
       metadata: { targetFiles: ['src/core.ts'], revision: 1 },
     };
 
     const task2: TaskDefinition = {
       task_id: 'task-02-auth',
+      started_at: null,
+      completed_at: null,
       parent_feature_id: 'FEAT-CORE',
       title: 'Auth Service',
       description: 'Implement token verification service',
@@ -471,7 +455,7 @@ describe('Phase A4: Closed-Loop Coordinator Integration', { concurrency: 1 }, ()
       attempt: 0,
       max_attempts: 2,
       priority: 'HIGH',
-      risk_level: 'LOW',
+      risk_level: 'SAFE',
       dependencies: ['task-01-core'],
       created_at: new Date().toISOString(),
       hierarchy_level: 'TASK',
@@ -684,6 +668,8 @@ describe('Phase A4: Closed-Loop Coordinator Integration', { concurrency: 1 }, ()
     // Create task with unmet dependency
     const taskUnmet: TaskDefinition = {
       task_id: 'task-03-unmet',
+      started_at: null,
+      completed_at: null,
       parent_feature_id: 'FEAT-CORE',
       title: 'Dependent Task',
       description: 'Dependent on missing task',
@@ -693,7 +679,7 @@ describe('Phase A4: Closed-Loop Coordinator Integration', { concurrency: 1 }, ()
       attempt: 0,
       max_attempts: 2,
       priority: 'MEDIUM',
-      risk_level: 'LOW',
+      risk_level: 'SAFE',
       dependencies: ['task-non-existent'], // unmet!
       created_at: new Date().toISOString(),
       hierarchy_level: 'TASK',

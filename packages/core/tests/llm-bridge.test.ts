@@ -599,8 +599,8 @@ describe('LLM Provider Bridge & Typed Protocol Subsystem (TASK-P3-02)', () => {
     });
 
     const json = err.toJSON();
-    assert.equal(json.message.includes(secretApiKey), false);
-    assert.ok(json.message.includes('***REDACTED***'));
+    assert.equal(String(json.message).includes(secretApiKey), false);
+    assert.ok(String(json.message).includes('***REDACTED***'));
     assert.equal(JSON.stringify(json.details).includes(secretApiKey), false);
   });
 

@@ -77,7 +77,6 @@ describe('P32 — Authorization Policy Hardening & Explicit Mandate Enforcement'
       taskRevision: 1,
       projectId: validProjectId,
       verificationDecision: 'ACCEPT',
-      verificationReason: 'All tests passed with zero errors',
       verifiedAt: new Date().toISOString(),
       contextFingerprint: 'ctx-p32-fp',
       understandingRevision: 1,

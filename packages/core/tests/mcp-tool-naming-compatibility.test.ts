@@ -35,6 +35,7 @@ import {
 } from '../dist/index.js';
 
 class MockTransport implements McpTransport {
+  readonly name = 'mock-transport';
   isConnected = true;
   private messageHandler?: (msg: McpMessage) => Promise<void> | void;
 

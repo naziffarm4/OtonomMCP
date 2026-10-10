@@ -55,6 +55,8 @@ import {
   TaskPriority,
   RiskLevel,
   type TaskDefinitionInput,
+  type UIAdapter,
+  type UiVerificationExecutionResult,
 
   // Policy Engine
   PolicyEngine,
@@ -211,20 +213,24 @@ class DeterministicFixtureExecutor implements ExecutorPort {
   async execute(instruction: ExecutorInstruction): Promise<NormalizedExecutorResult> {
     await this.implementationFn(instruction);
     return {
-      instruction_id: instruction.instruction_id,
-      task_id: instruction.task_id,
-      correlation_id: instruction.correlation_id,
+      success: true,
       status: ExecutorExecutionStatus.COMPLETED,
-      operation_type: instruction.requested_operation_type,
-      duration_ms: 50,
-      exit_code: 0,
-      summary: 'Task implementation applied successfully to fixture',
-      raw_outcome: { success: true },
-      policy_authorized: true,
-      modified_files: [],
-      created_files: [],
-      deleted_files: [],
-      metadata: {},
+      exit_info: { code: 0, signal: null, terminated: false },
+      stdout: 'Task implementation applied successfully to fixture',
+      stderr: null,
+      changed_files: [],
+      agent_claims: [],
+      executor_identity: { provider: 'antigravity', name: 'fake-antigravity', version: '1.0.0' },
+      timing: { started_at: new Date().toISOString(), completed_at: new Date().toISOString(), duration_ms: 50 },
+      error: null,
+      correlation: {
+        correlation_id: instruction.correlation_id,
+        task_id: instruction.task_id,
+        instruction_id: instruction.instruction_id,
+        project_id: instruction.project_id,
+        attempt: instruction.attempt,
+      },
+      raw_outcome: { executor_id: 'fake-antigravity', exit_code: 0 },
     };
   }
 }
@@ -318,7 +324,6 @@ describe('Phase 7 Autonomous E2E Integration & Production Readiness (TASK-P7-01)
           max_attempts: 3,
           priority: TaskPriority.HIGH,
           risk_level: RiskLevel.CAUTION,
-          estimated_complexity: 'LOW',
         },
       ];
 
@@ -382,7 +387,6 @@ describe('Phase 7 Autonomous E2E Integration & Production Readiness (TASK-P7-01)
           max_attempts: 3,
           priority: TaskPriority.HIGH,
           risk_level: RiskLevel.CAUTION,
-          estimated_complexity: 'LOW',
         },
         {
           task_id: 'TASK-A',
@@ -398,7 +402,6 @@ describe('Phase 7 Autonomous E2E Integration & Production Readiness (TASK-P7-01)
           max_attempts: 3,
           priority: TaskPriority.HIGH,
           risk_level: RiskLevel.CAUTION,
-          estimated_complexity: 'LOW',
         },
       ];
 
@@ -472,7 +475,6 @@ describe('Phase 7 Autonomous E2E Integration & Production Readiness (TASK-P7-01)
           max_attempts: 3,
           priority: TaskPriority.HIGH,
           risk_level: RiskLevel.CAUTION,
-          estimated_complexity: 'LOW',
         },
       ];
 
@@ -642,7 +644,6 @@ describe('Phase 7 Autonomous E2E Integration & Production Readiness (TASK-P7-01)
           max_attempts: 3,
           priority: TaskPriority.HIGH,
           risk_level: RiskLevel.CAUTION,
-          estimated_complexity: 'LOW',
         },
       ];
 
@@ -870,7 +871,6 @@ describe('Phase 7 Autonomous E2E Integration & Production Readiness (TASK-P7-01)
           max_attempts: 1, // Only 1 attempt
           priority: TaskPriority.HIGH,
           risk_level: RiskLevel.CAUTION,
-          estimated_complexity: 'LOW',
         },
       ];
 
@@ -997,20 +997,28 @@ describe('Phase 7 Autonomous E2E Integration & Production Readiness (TASK-P7-01)
     try {
       // Create a mock UIAdapter that tracks if verifyUI was called
       let uiVerificationCalled = false;
-      const mockUiAdapter = {
+      const mockUiAdapter: UIAdapter = {
         id: 'adapter:ui:mock',
         name: 'Mock UI Adapter',
-        async verifyUI(request: any) {
+        async verifyUI(request: any): Promise<UiVerificationExecutionResult> {
           uiVerificationCalled = true;
           return {
             success: true,
             decision: ReviewDecision.ACCEPT,
             reviewResult: {
               task_id: request.task_id,
+              project_id: request.project_id ?? 'proj-test',
+              correlation_id: request.correlation_id ?? 'corr-test',
+              attempt: 1,
+              max_attempts: 3,
+              summary: 'Accepted',
+              all_mandatory_satisfied: true,
               decision: ReviewDecision.ACCEPT,
-              is_accepted: true,
               findings: [],
               criteria_results: [],
+              evidence_ids_used: [],
+              rejected_claims_count: 0,
+              invalid_evidence_count: 0,
               evaluated_at: new Date().toISOString(),
             },
             pipelineResult: {
@@ -1072,7 +1080,6 @@ describe('Phase 7 Autonomous E2E Integration & Production Readiness (TASK-P7-01)
           max_attempts: 1,
           priority: TaskPriority.HIGH,
           risk_level: RiskLevel.CAUTION,
-          estimated_complexity: 'LOW',
         },
       ];
 

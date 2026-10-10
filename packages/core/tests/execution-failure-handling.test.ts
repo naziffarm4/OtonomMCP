@@ -176,7 +176,7 @@ describe('Phase 14 TASK-P14-04: Execution Failure Handling', () => {
       attempt: 0,
       max_attempts: 3,
       priority: TaskPriority.HIGH,
-      risk_level: RiskLevel.LOW,
+      risk_level: RiskLevel.SAFE,
       created_at: new Date().toISOString(),
       started_at: null,
       completed_at: null,

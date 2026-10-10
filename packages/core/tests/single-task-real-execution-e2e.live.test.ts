@@ -82,10 +82,12 @@ import {
   RiskLevel,
   computeDeterministicRequestId,
   assertNotVerifiedEvidence,
+  createSuccessRawOutcome,
 } from '../dist/index.js';
+import { createValidDiscoveryReport } from './helpers/test-discovery-factory.ts';
 
 function createMockReport(workspaceRoot: string): ProjectDiscoveryReport {
-  return {
+  return createValidDiscoveryReport({
     projectIdentity: {
       name: 'test-p14-02-e2e-project',
       version: '1.0.0',
@@ -93,41 +95,7 @@ function createMockReport(workspaceRoot: string): ProjectDiscoveryReport {
       ecosystem: 'Node.js',
       evidence: [{ sourceType: 'PACKAGE_MANIFEST', sourceIdentifier: 'package.json' }],
     },
-    purpose: {
-      classification: 'UNDERSTOOD',
-      summary: 'Single task end-to-end real execution fixture',
-      domainKeywords: ['e2e', 'execution'],
-      evidence: [{ sourceType: 'FILE', sourceIdentifier: 'README.md' }],
-    },
-    technologyStack: {
-      primaryLanguages: ['TypeScript'],
-      frameworks: [],
-      buildTools: ['tsc'],
-      packageManagers: ['npm'],
-      runtimes: ['node'],
-      containerization: [],
-      ciCd: [],
-      workspaceType: 'standalone',
-    },
-    architecture: {
-      summary: 'Modular TypeScript architecture',
-      architecturalPattern: 'Modular',
-      identifiedAreas: [],
-      evidence: [{ sourceType: 'FILE', sourceIdentifier: 'src/index.ts' }],
-    },
-    currentImplementationState: {
-      lifecycleState: 'TASK_LOOP',
-      hasActiveTask: false,
-      isBlocked: false,
-      totalTasksInDag: 1,
-      completedTasksCount: 0,
-      evidence: [{ sourceType: 'STATE_MANAGER', sourceIdentifier: 'durable-state.json' }],
-    },
-    unknowns: [],
-    contradictions: [],
-    evidenceInventory: [],
-    generatedAt: new Date().toISOString(),
-  };
+  });
 }
 
 function createParentFeature(): any {
@@ -143,7 +111,7 @@ function createParentFeature(): any {
     attempt: 0,
     max_attempts: 1,
     priority: TaskPriority.HIGH,
-    risk_level: RiskLevel.LOW,
+    risk_level: RiskLevel.SAFE,
     created_at: new Date().toISOString(),
     started_at: null,
     completed_at: null,
@@ -225,12 +193,9 @@ describe('Phase 14 TASK-P14-02: Single Task End-to-End Real Execution', () => {
 
     synchronizer = new DirectorContextSynchronizer({
       workspaceRoot: tempDir,
-      specStore,
-      durableStateManager,
+      delegate,
       sessionStore,
       sessionEngine,
-      decisionStore,
-      historyManager,
     });
 
     authorizer = new ExecutionAuthorizer({
@@ -241,7 +206,6 @@ describe('Phase 14 TASK-P14-02: Single Task End-to-End Real Execution', () => {
       decisionStore,
       approvalStore,
       approvalPackageEngine,
-      specStore,
       dagEngine: new TaskDagEngine(),
       historyManager,
     });
@@ -249,7 +213,6 @@ describe('Phase 14 TASK-P14-02: Single Task End-to-End Real Execution', () => {
     requestBuilder = new ExecutionRequestBuilder({
       workspaceRoot: tempDir,
       gitPort,
-      specStore,
       authorizer,
       delegate,
     });
@@ -262,7 +225,6 @@ describe('Phase 14 TASK-P14-02: Single Task End-to-End Real Execution', () => {
     integrator = new ExecutionStateIntegrator({
       baseDir: tempDir,
       durableStateManager,
-      specStore,
       historyManager,
     });
   });
@@ -330,7 +292,7 @@ describe('Phase 14 TASK-P14-02: Single Task End-to-End Real Execution', () => {
       protocolVersion: 'P9-03',
       schemaVersion: 1,
       actor: 'DIRECTOR' as const,
-      decisionType: 'IMPLEMENT_TASK',
+      decisionType: 'IMPLEMENT_TASK' as const,
       rationale: 'Approved for real P14-02 execution',
       basedOnContextFingerprint: snapshot.logicalFingerprint,
       basedOnApprovalRevision: pkg.revision,
@@ -357,7 +319,7 @@ describe('Phase 14 TASK-P14-02: Single Task End-to-End Real Execution', () => {
         traceability_sources: ['REQ-001'],
         assigned_to: 'antigravity',
         estimated_complexity: 'LOW',
-        risk_level: RiskLevel.LOW,
+        risk_level: RiskLevel.SAFE,
         attempt: 0,
         max_attempts: 1,
         created_at: new Date().toISOString(),
@@ -532,7 +494,7 @@ describe('Phase 14 TASK-P14-02: Single Task End-to-End Real Execution', () => {
       protocolVersion: 'P9-03',
       schemaVersion: 1,
       actor: 'DIRECTOR' as const,
-      decisionType: 'IMPLEMENT_TASK',
+      decisionType: 'IMPLEMENT_TASK' as const,
       rationale: 'Approved for negative verification',
       basedOnContextFingerprint: snapshot.logicalFingerprint,
       basedOnApprovalRevision: pkg.revision,
@@ -558,7 +520,7 @@ describe('Phase 14 TASK-P14-02: Single Task End-to-End Real Execution', () => {
         traceability_sources: ['REQ-001'],
         assigned_to: 'antigravity',
         estimated_complexity: 'LOW',
-        risk_level: RiskLevel.LOW,
+        risk_level: RiskLevel.SAFE,
         attempt: 0,
         max_attempts: 1,
         created_at: new Date().toISOString(),
@@ -598,6 +560,12 @@ describe('Phase 14 TASK-P14-02: Single Task End-to-End Real Execution', () => {
 
     // Fabricate an executor outcome claiming SUCCESS
     const fakeRawOutcome: RawExecutorOutcome = {
+      requestId: request.requestId,
+      executorIdentity: { provider: 'test', name: 'fake', version: '1.0.0' },
+      startedAt: new Date().toISOString(),
+      completedAt: new Date().toISOString(),
+      timedOut: false,
+      cancelled: false,
       status: 'SUCCESS',
       exitCode: 0,
       signal: null,
@@ -611,8 +579,6 @@ describe('Phase 14 TASK-P14-02: Single Task End-to-End Real Execution', () => {
         taskId: request.taskId,
         taskRevision: request.taskRevision,
         projectId: request.projectId,
-        directorSessionId: request.directorSessionId,
-        directorDecisionId: request.directorDecisionId,
         contextFingerprint: request.contextFingerprint,
         understandingRevision: request.understandingRevision,
         approvalPackageRevision: request.approvalPackageRevision,
@@ -691,7 +657,7 @@ describe('Phase 14 TASK-P14-02: Single Task End-to-End Real Execution', () => {
       protocolVersion: 'P9-03',
       schemaVersion: 1,
       actor: 'DIRECTOR' as const,
-      decisionType: 'IMPLEMENT_TASK',
+      decisionType: 'IMPLEMENT_TASK' as const,
       rationale: 'Approved for scope leak testing',
       basedOnContextFingerprint: snapshot.logicalFingerprint,
       basedOnApprovalRevision: pkg.revision,
@@ -717,7 +683,7 @@ describe('Phase 14 TASK-P14-02: Single Task End-to-End Real Execution', () => {
         traceability_sources: ['REQ-001'],
         assigned_to: 'antigravity',
         estimated_complexity: 'LOW',
-        risk_level: RiskLevel.LOW,
+        risk_level: RiskLevel.SAFE,
         attempt: 0,
         max_attempts: 1,
         created_at: new Date().toISOString(),
@@ -761,27 +727,15 @@ describe('Phase 14 TASK-P14-02: Single Task End-to-End Real Execution', () => {
     // Also modify the allowed target file
     fs.writeFileSync(path.join(tempDir, 'src', 'greeting.ts'), 'export const greeting = "modified";\n', 'utf8');
 
-    const rawOutcome: RawExecutorOutcome = {
-      status: 'SUCCESS',
-      exitCode: 0,
-      signal: null,
-      stdout: 'Completed',
-      stderr: null,
-      durationMs: 300,
-      unverifiedAgentClaims: ['Modified greeting.ts and package.json'],
+    const rawOutcome = createSuccessRawOutcome({
+      request,
+      executorIdentity: { name: 'fake-antigravity', version: '1.0.0', provider: 'antigravity' },
+      startedAt: new Date().toISOString(),
+      completedAt: new Date().toISOString(),
+      durationMs: 100,
       unverifiedModifiedFiles: ['src/greeting.ts', 'package.json'],
-      requestBinding: {
-        requestId: request.requestId,
-        taskId: request.taskId,
-        taskRevision: request.taskRevision,
-        projectId: request.projectId,
-        directorSessionId: request.directorSessionId,
-        directorDecisionId: request.directorDecisionId,
-        contextFingerprint: request.contextFingerprint,
-        understandingRevision: request.understandingRevision,
-        approvalPackageRevision: request.approvalPackageRevision,
-      },
-    };
+      unverifiedAgentClaims: ['Modified greeting.ts and package.json'],
+    });
 
     // Evidence collector independently detects package.json change via Git!
     const evidence = await collector.collectAndVerify(request, rawOutcome, {
@@ -791,7 +745,7 @@ describe('Phase 14 TASK-P14-02: Single Task End-to-End Real Execution', () => {
     // Verification must FAIL on scope check
     const scopeCheck = evidence.verificationChecks.find((c) => c.checkId === 'CHECK_IMPLEMENTATION_SCOPE');
     assert.strictEqual(scopeCheck?.status, 'FAIL');
-    assert.ok(scopeCheck?.evidence.includes('package.json'));
+    assert.ok(scopeCheck?.evidence?.includes('package.json'));
 
     assert.strictEqual(evidence.verificationDecision, 'REJECT');
 
@@ -827,7 +781,7 @@ describe('Phase 14 TASK-P14-02: Single Task End-to-End Real Execution', () => {
         traceability_sources: ['REQ-001'],
         assigned_to: 'antigravity',
         estimated_complexity: 'LOW',
-        risk_level: RiskLevel.LOW,
+        risk_level: RiskLevel.SAFE,
         attempt: 0,
         max_attempts: 1,
         created_at: new Date().toISOString(),

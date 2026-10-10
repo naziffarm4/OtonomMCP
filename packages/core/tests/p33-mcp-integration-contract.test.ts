@@ -97,8 +97,8 @@ class TestExecutor implements ExecutorPort, ExecutionRequestExecutorPort {
   async execute(request: ExecutionRequest): Promise<RawExecutorOutcome> {
     this.executionCallCount++;
 
-    const files = request.targetFiles && request.targetFiles.length > 0
-      ? request.targetFiles
+    const files = request.instruction?.targetFiles && request.instruction.targetFiles.length > 0
+      ? request.instruction.targetFiles
       : ['src/index.ts'];
 
     for (const f of files) {
@@ -112,18 +112,17 @@ class TestExecutor implements ExecutorPort, ExecutionRequestExecutorPort {
       requestId: request.requestId,
       requestBinding: {
         requestId: request.requestId,
-        directorSessionId: request.directorSessionId,
-        directorDecisionId: request.directorDecisionId,
         projectId: request.projectId,
         taskId: request.taskId,
         taskRevision: request.taskRevision,
         contextFingerprint: request.contextFingerprint,
         understandingRevision: request.understandingRevision,
         approvalPackageRevision: request.approvalPackageRevision,
-        operationType: request.operationType,
       },
       status: 'SUCCESS',
       exitCode: 0,
+      timedOut: false,
+      cancelled: false,
       signal: null,
       stdout: `Successfully implemented ${request.taskId}`,
       stderr: '',
@@ -219,7 +218,7 @@ describe('P33 — MCP Integration Contract Hardening', { concurrency: 1 }, () =>
     approvalPackageEngine = new ApprovalPackageEngine({ approvalStore, historyManager });
     specStore = new SpecStore({ baseDir: tempDir });
     durableStateManager = new DurableStateManager({ baseDir: tempDir });
-    dagEngine = new TaskDagEngine({ specStore, historyManager });
+    dagEngine = new TaskDagEngine();
     evidenceStore = new SystemExecutionEvidenceStore({ baseDir: tempDir });
     evidenceCollector = new SystemEvidenceCollector({ evidenceStore, historyManager });
     mandateStore = new ProjectMandateStore({ baseDir: tempDir });
@@ -254,20 +253,14 @@ describe('P33 — MCP Integration Contract Hardening', { concurrency: 1 }, () =>
       historyManager,
       specStore,
       dagEngine,
-      evidenceCollector,
-      executionBridge,
     });
 
     actionDispatcher = new DirectorActionDispatcher({
-      decisionStore,
-      sessionStore,
       historyManager,
       authorizationPolicyEngine,
     });
 
     actionValidator = new DirectorActionValidator({
-      sessionStore,
-      decisionStore,
       historyManager,
     });
 
@@ -291,7 +284,6 @@ describe('P33 — MCP Integration Contract Hardening', { concurrency: 1 }, () =>
     });
 
     policyEngine = new PolicyEngine({
-      mode: 'audit',
       projectRoot: tempDir,
     });
 
@@ -316,13 +308,10 @@ describe('P33 — MCP Integration Contract Hardening', { concurrency: 1 }, () =>
       synchronizedAt: new Date().toISOString(),
       syncStatus: 'CHANGED',
       isComplete: true,
+      isDerived: true,
       unavailableSections: [],
       staleSections: [],
       logicalFingerprint: validFingerprint,
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-      sequenceNumber: 1,
-      warnings: [],
       sectionMetadata: {} as any,
       sections: {
         projectStatus: { initialized: true, lifecycleState: 'DEVELOPMENT', isCompleted: false, isBlocked: false },
@@ -349,18 +338,6 @@ describe('P33 — MCP Integration Contract Hardening', { concurrency: 1 }, () =>
       resourceAndWorkLimits: { maxFileEdits: 50, maxCommands: 50 },
       policyVersion: 1,
       mandateRevision: 1,
-      mandateHash: 'mandate-hash-p33',
-      rules: [
-        {
-          ruleId: 'RULE-P33-ALLOW',
-          description: 'Allow standard dev operations',
-          actionType: 'IMPLEMENT_TASK' as any,
-          permission: 'ALLOW',
-          conditions: { allowedTaskClasses: ['CODE_IMPLEMENTATION'] },
-        },
-      ],
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
     };
 
     const { publicKey, privateKey, identityId } = await identityManager.getOrCreateIdentity();
@@ -385,7 +362,7 @@ describe('P33 — MCP Integration Contract Hardening', { concurrency: 1 }, () =>
     // Seed task in SpecStore
     const featCore: TaskDefinition = {
       task_id: 'feat-01',
-      parent_feature_id: null,
+      parent_feature_id: 'ROOT',
       title: 'Control Plane Feature',
       description: 'High-level Director MCP Control Plane',
       traceability_sources: ['REQ:01'],
@@ -435,15 +412,10 @@ describe('P33 — MCP Integration Contract Hardening', { concurrency: 1 }, () =>
       dagEngine,
       durableStateManager,
       historyManager,
-      systemExecutionEvidenceStore: evidenceStore,
-      evidenceCollector,
-      projectMandateStore: mandateStore,
       authorizationPolicyEngine,
       closedLoopCoordinator: coordinator,
-      getClosedLoopCoordinator: (_root: string) => coordinator,
       policyEngine,
     });
-    delegate.closedLoopCoordinator = coordinator;
 
     server = createAuthoritativeMcpServer({
       transport,
@@ -711,7 +683,7 @@ describe('P33 — MCP Integration Contract Hardening', { concurrency: 1 }, () =>
   });
 
   it('T17_policy_blocked_normalization: PolicyViolationError normalizes to ERR_MCP_POLICY_BLOCKED', () => {
-    const err = new PolicyViolationError('Policy engine blocked action', ['RULE_VIOLATION']);
+    const err = new PolicyViolationError('Policy engine blocked action', { policyRule: 'RULE_VIOLATION' });
     const normalized = McpErrorNormalizer.normalize(err, { correlationId: 'corr-17', receivedAt: new Date().toISOString() });
 
     assert.equal(normalized.code, McpDomainErrorCode.POLICY_BLOCKED);

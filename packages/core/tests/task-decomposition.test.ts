@@ -1,3 +1,5 @@
+import { InitialProjectUnderstandingBuilder } from '../dist/approval/understanding-builder.js';
+import { createValidDiscoveryReport } from './helpers/test-discovery-factory.ts';
 /**
  * Comprehensive Test Suite for Phase 12 Task Decomposition & Ingestion Boundary (TASK-P12-01)
  *
@@ -143,40 +145,11 @@ describe('Phase 12 Task Decomposition & Ingestion Boundary (TASK-P12-01)', () =>
     activeSessionId = session.directorSessionId;
 
     // 2. Build and Approve Project Approval Package
-    const understanding: InitialProjectUnderstanding = {
-      projectId: session.projectId,
-      projectName: 'TestProject',
-      apparentPurpose: {
-        summary: 'P12 Test project',
-        classification: 'APPLICATION',
-        evidence: [],
-      },
-      targetUsers: ['Engineers'],
-      technologyStack: { primaryLanguages: ['TypeScript'] },
-      architectureSummary: { pattern: 'Modular' },
-      existingCapabilities: [],
-      confirmedRequirements: [
-        {
-          id: 'req-001',
-          type: 'CONFIRMED_FACT',
-          origin: 'EXISTING_REQUIREMENT',
-          statement: 'Support deterministic task ingestion',
-          evidence: [],
-          sourceReferenceId: 'REQ-001',
-        },
-      ],
-      clarifiedRequirements: [],
-      unresolvedUnknowns: [],
-      unresolvedContradictions: [],
-      currentImplementationState: { state: 'Initial' },
-      constraints: ['POSIX paths only'],
-      assumptions: [],
-      nonGoals: ['Autonomous continuation loop'],
-      proposedDevelopmentScope: ['Task ingestion', 'DAG validation'],
-      evidenceReferences: [],
-      sourceDiscoveryReference: 'discovery-test',
-      generatedAt: new Date().toISOString(),
-    };
+    const understanding: InitialProjectUnderstanding = new InitialProjectUnderstandingBuilder().build(
+      createValidDiscoveryReport({ projectIdentity: { name: session.projectId, workspaceRoot: session.projectRoot, ecosystem: 'Node.js', evidence: [] } }),
+      undefined,
+      { projectId: session.projectId }
+    );
 
     const proposedPlan: ProposedDevelopmentPlan = {
       objectives: ['Establish task ingestion', 'Validate graph integrity'],
@@ -1280,27 +1253,11 @@ describe('Phase 12 Task Decomposition & Ingestion Boundary (TASK-P12-01)', () =>
     };
 
     const pkgWithExcluded = approvalEngine.buildPackage(
-      {
-        projectId: approvedPackage.projectId,
-        projectName: 'TestProject',
-        apparentPurpose: { summary: 'P12 test', classification: 'APPLICATION', evidence: [] },
-        targetUsers: ['Devs'],
-        technologyStack: { primaryLanguages: ['TypeScript'] },
-        architectureSummary: { pattern: 'Modular' },
-        existingCapabilities: [],
-        confirmedRequirements: [],
-        clarifiedRequirements: [],
-        unresolvedUnknowns: [],
-        unresolvedContradictions: [],
-        currentImplementationState: { state: 'Initial' },
-        constraints: [],
-        assumptions: [],
-        nonGoals: ['Legacy modules'],
-        proposedDevelopmentScope: ['Task ingestion'],
-        evidenceReferences: [],
-        sourceDiscoveryReference: 'ref-1',
-        generatedAt: new Date().toISOString(),
-      },
+      new InitialProjectUnderstandingBuilder().build(
+        createValidDiscoveryReport({ projectIdentity: { name: approvedPackage.projectId, workspaceRoot: testDir, ecosystem: 'Node.js', evidence: [] } }),
+        undefined,
+        { projectId: approvedPackage.projectId }
+      ),
       planWithExcluded,
       { packageId: 'pkg-excluded-test' }
     );

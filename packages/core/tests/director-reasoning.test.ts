@@ -1,3 +1,4 @@
+import type { LlmRequest } from '../src/llm-bridge/llm-types.js';
 /**
  * @file director-reasoning.test.ts
  * @description Comprehensive test suite for TASK-P18-02: Director Reasoning Runtime.
@@ -2023,7 +2024,7 @@ describe('TASK-P18-02: Director Reasoning Runtime', () => {
     });
 
     it('F-01-REM.3: Rejects proxy wrapper around mock transport in production', () => {
-      const mock = new DeterministicMockTransport();
+      const mock = new DeterministicMockTransport<ReferenceWireRequest, ReferenceWireResponse>();
       const proxy = new Proxy(mock, {
         get(target, prop) {
           if (prop === 'transportKind') return 'network_http';
@@ -2060,7 +2061,7 @@ describe('TASK-P18-02: Director Reasoning Runtime', () => {
     });
 
     it('F-01-REM.4: Rejects proxy wrapper around authentic HttpLlmTransport unless explicitly registered', () => {
-      const realHttp = createHttpLlmTransport({ endpoint: serverUrl });
+      const realHttp = createHttpLlmTransport<ReferenceWireRequest, ReferenceWireResponse>({ endpoint: serverUrl });
       const proxy = new Proxy(realHttp, {});
 
       const adapter = new ReferenceLlmAdapter({
@@ -2085,7 +2086,7 @@ describe('TASK-P18-02: Director Reasoning Runtime', () => {
     });
 
     it('F-01-REM.5: Detects post-construction transport mutation and fails closed in reason()', async () => {
-      const realHttp = createHttpLlmTransport({ endpoint: serverUrl });
+      const realHttp = createHttpLlmTransport<ReferenceWireRequest, ReferenceWireResponse>({ endpoint: serverUrl });
       const adapter = new ReferenceLlmAdapter({
         providerId: 'llm:prod-adapter',
         transport: realHttp,
@@ -2170,7 +2171,7 @@ describe('TASK-P18-02: Director Reasoning Runtime', () => {
     });
 
     it('F-01-REM.8: Authentic HttpLlmTransport created via factory is accepted and frozen', () => {
-      const transport = createHttpLlmTransport({ endpoint: serverUrl });
+      const transport = createHttpLlmTransport<ReferenceWireRequest, ReferenceWireResponse>({ endpoint: serverUrl });
       assert.ok(TransportSecurityRegistry.isTrustedLiveTransport(transport));
       assert.ok(Object.isFrozen(transport));
 
@@ -2190,7 +2191,7 @@ describe('TASK-P18-02: Director Reasoning Runtime', () => {
     });
 
     it('F-01-REM.9: Test and development modes permit mock transport with explicit configuration', () => {
-      const mock = new DeterministicMockTransport();
+      const mock = new DeterministicMockTransport<ReferenceWireRequest, ReferenceWireResponse>();
       const adapter = new ReferenceLlmAdapter({
         providerId: 'llm:test-mock',
         transport: mock,
@@ -2232,6 +2233,11 @@ describe('TASK-P18-02: Director Reasoning Runtime', () => {
               dependencies: [],
               priority: 'P1',
               description: hugeDescription,
+              riskLevel: 'SAFE',
+              acceptanceCriteria: [],
+              traceabilitySources: [],
+              attempt: 0,
+              maxAttempts: 3,
             },
           },
         },
@@ -2258,7 +2264,7 @@ describe('TASK-P18-02: Director Reasoning Runtime', () => {
                 title: hugeReqTitle,
                 status: 'ACTIVE',
                 authority: 'PO',
-                level: 'L1',
+                description: 'Test requirement description',
               },
             ],
           },
@@ -2364,7 +2370,7 @@ describe('TASK-P18-02: Director Reasoning Runtime', () => {
         httpCallCount++;
       };
 
-      const transport = createHttpLlmTransport({ endpoint: serverUrl });
+      const transport = createHttpLlmTransport<ReferenceWireRequest, ReferenceWireResponse>({ endpoint: serverUrl });
       const adapter = new ReferenceLlmAdapter({
         providerId: 'llm:prod-adapter',
         transport,
@@ -2372,7 +2378,7 @@ describe('TASK-P18-02: Director Reasoning Runtime', () => {
 
       // Subclass PromptBuilder to simulate budget overflow during reason()
       class OverflowPromptBuilder extends DirectorPromptBuilder {
-        buildLlmRequest(snapshot: any, options: any) {
+        buildLlmRequest(snapshot: any, options: any): LlmRequest {
           throw new TokenBudgetError(
             'Estimated prompt tokens (20000) exceeds effective token budget (16384)',
             'ERR_MANDATORY_BUDGET_EXCEEDED',
@@ -2437,7 +2443,7 @@ describe('TASK-P18-02: Director Reasoning Runtime', () => {
         res.end(JSON.stringify(wireResp));
       };
 
-      const transport = createHttpLlmTransport({ endpoint: serverUrl });
+      const transport = createHttpLlmTransport<ReferenceWireRequest, ReferenceWireResponse>({ endpoint: serverUrl });
       const adapter = new ReferenceLlmAdapter({
         providerId: 'llm:normal-adapter',
         transport,
