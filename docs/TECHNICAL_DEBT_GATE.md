@@ -258,7 +258,9 @@
      - Argüman verilmediğinde (`pnpm test` ve `pnpm test:live`) orijinal deterministik/canlı süit davranışının eksiksiz korunduğu doğrulandı.
   2. `.github/workflows/ci.yml`:
      - `concurrency: group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}, cancel-in-progress: true` bloğu eklendi.
-     - Aynı ref üzerindeki eski CI çalışmalarının otomatik iptali sağlanarak gereksiz tekrarlı CI kuyruğu ve Windows runner dakikaları önlendi.
+     - Doğrudan `main` dalına `push` olayında hızlı kontroller ve hedefli testler (`pnpm test run-tests-filter fsm actors errors`, ~2 sn) koşturulacak şekilde ayrıldı; 3046 testin her küçük push işleminde gereksiz tekrarlanması önlendi.
+     - `pull_request` ve `workflow_dispatch` olaylarında tam deterministik test süitinin (`pnpm test`) eksiksiz çalıştırılması garanti altına alındı.
+     - Branch protection ve zorunlu kontroller için `validate` iş adı ve sözleşmesi korundu.
   3. `packages/core/tests/run-tests-filter.test.ts`:
      - Test runner filtresinin varsayılan davranışı, canlı bayrağı, desen eşleşmesi, eşleşmeme durumu, yol normalizasyonu, wildcard desteği, `--` argüman ayrıştırma ve yol traversal güvenliğini doğrulayan 10 adet deterministik birim testi oluşturuldu.
 - Doğrulama Çıktıları:
