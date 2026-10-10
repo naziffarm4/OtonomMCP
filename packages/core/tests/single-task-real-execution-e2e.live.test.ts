@@ -224,6 +224,7 @@ describe('Phase 14 TASK-P14-02: Single Task End-to-End Real Execution', () => {
 
     integrator = new ExecutionStateIntegrator({
       baseDir: tempDir,
+      specStore,
       durableStateManager,
       historyManager,
     });
@@ -718,6 +719,7 @@ describe('Phase 14 TASK-P14-02: Single Task End-to-End Real Execution', () => {
         objective: 'Task with strict scope',
         targetFiles: ['src/greeting.ts'],
         implementationScope: ['src/greeting.ts'],
+        acceptanceCriteria: ['Modify src/greeting.ts within scope'],
       },
     });
 

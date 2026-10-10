@@ -341,7 +341,7 @@ describe('OM-09: Live E2E Execution Gate (Real Host & Tooling)', () => {
       workspaceRoot: tempDir,
     });
     assert.ok(snapshot.logicalFingerprint);
-    assert.ok(snapshot.syncStatus === 'UNCHANGED' || snapshot.syncStatus === 'CHANGED');
+    assert.ok(snapshot.syncStatus === 'INITIAL' || snapshot.syncStatus === 'UNCHANGED' || snapshot.syncStatus === 'CHANGED');
 
     // 3. Project Mandate Setup
     const mandate: ProjectMandate = {
