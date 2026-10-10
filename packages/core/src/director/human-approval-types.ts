@@ -60,6 +60,8 @@ export const HUMAN_APPROVAL_VALIDATION_CODES = [
   'PACKAGE_NOT_FOUND',
   'PACKAGE_NOT_READY',
   'SECURITY_VIOLATION',
+  'BLOCKED_ON_AUTH_CONTEXT',
+  'UNVERIFIED_CLIENT_INPUT',
   'VALIDATION_ERROR',
 ] as const;
 
@@ -120,6 +122,12 @@ export interface ValidateHumanApprovalInput {
   readonly intent: string;
   readonly comment?: string;
   readonly timestamp?: string;
+  readonly trustedAssertion?: Record<string, unknown>;
+  readonly trustedAuthToken?: string;
+  readonly authContext?: Record<string, unknown>;
+  readonly provenanceSource?: string;
+  readonly isTrustedHumanAuth?: boolean;
+  readonly authStatus?: 'VERIFIED_HUMAN' | 'UNVERIFIED_CLIENT_INPUT' | 'MOCK_TEST';
 }
 
 export interface SubmitHumanApprovalInput {
@@ -135,6 +143,12 @@ export interface SubmitHumanApprovalInput {
   readonly intent: string;
   readonly comment?: string;
   readonly timestamp?: string;
+  readonly trustedAssertion?: Record<string, unknown>;
+  readonly trustedAuthToken?: string;
+  readonly authContext?: Record<string, unknown>;
+  readonly provenanceSource?: string;
+  readonly isTrustedHumanAuth?: boolean;
+  readonly authStatus?: 'VERIFIED_HUMAN' | 'UNVERIFIED_CLIENT_INPUT' | 'MOCK_TEST';
 }
 
 export interface HumanApprovalValidationResult {
@@ -246,6 +260,12 @@ export const ValidateHumanApprovalInputZodSchema = z.object({
   intent: z.string().min(1, 'intent is required'),
   comment: z.string().optional(),
   timestamp: z.string().optional(),
+  trustedAssertion: z.record(z.string(), z.unknown()).optional(),
+  trustedAuthToken: z.string().optional(),
+  authContext: z.record(z.string(), z.unknown()).optional(),
+  provenanceSource: z.string().optional(),
+  isTrustedHumanAuth: z.boolean().optional(),
+  authStatus: z.enum(['VERIFIED_HUMAN', 'UNVERIFIED_CLIENT_INPUT', 'MOCK_TEST']).optional(),
 });
 
 export const SubmitHumanApprovalInputZodSchema = z.object({
@@ -261,6 +281,12 @@ export const SubmitHumanApprovalInputZodSchema = z.object({
   intent: z.string().min(1, 'intent is required'),
   comment: z.string().optional(),
   timestamp: z.string().optional(),
+  trustedAssertion: z.record(z.string(), z.unknown()).optional(),
+  trustedAuthToken: z.string().optional(),
+  authContext: z.record(z.string(), z.unknown()).optional(),
+  provenanceSource: z.string().optional(),
+  isTrustedHumanAuth: z.boolean().optional(),
+  authStatus: z.enum(['VERIFIED_HUMAN', 'UNVERIFIED_CLIENT_INPUT', 'MOCK_TEST']).optional(),
 });
 
 export const EvaluateResumeInputZodSchema = z.object({

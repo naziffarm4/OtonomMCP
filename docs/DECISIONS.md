@@ -97,3 +97,17 @@
 - **Gerekçe:** Tek Sorumluluk İlkesi'ni korumak, kavram karmaşasını gidermek, kök dışa aktarım çakışmalarını derleme zamanında önlemek ve geriye dönük uyumluluğu %100 muhafaza etmek.
 - **Etkisi:** Ayrıntılı mimari gerekçe, karşılaştırma matrisleri ve geçiş güvencesi `docs/ADR-12-MODULE-OWNERSHIP.md` dokümanında kayıt altına alınmıştır.
 
+---
+
+### ADR-13: Güvenilir Dış İnsan Kimliği ve Onay Sağlayıcısı Mimarisi (P18-04 / Trusted Identity Context)
+- **Aşama:** OM-04 / P18-04 (Trusted Identity Context), ADR-06 ve OM-05 / P20 Check 6.
+- **Karar:**
+  1. İnsan onayı için gerçek dış kimlik sağlayıcısı sözleşmesi (`ITrustedIdentityProvider`) tanımlanmıştır. OIDC/WebAuthn ana dağıtık standart, mTLS kurumsal sıfır güven standardı olarak belirlenmiştir.
+  2. Mevcut yerel DPAPI ve dosya tabanlı anahtar yöneticisi yalnızca `TestDoubleIdentityProviderAdapter` sınıfına atanmış olup üretim güvenlik kanıtı sayılamaz.
+  3. Tüm onaylar `projectId`, `packageId`, `revision`, `contextFingerprint`, `operation` ve tek kullanımlık `nonce` ile zorunlu olarak bağlanır. Replay ve süresi dolmuş iddialar anında reddedilir.
+  4. Sağlayıcı kesintisinde, eksik yapılandırmada veya doğrulama başarısızlığında fail-closed duruş (`BLOCKED_ON_AUTH_CONTEXT`) korunur.
+  5. Gerçek dış IdP yapılandırması bağlanana kadar P18-04 tamamlanmış kabul edilmez, OM-09 genel kabulü verilmez ve OM-10 başlatılmaz.
+- **Gerekçe:** Model veya istemci tarafından üretilen sahte onay alanlarının ayrıcalık yükseltme saldırılarını engellemek ve bağımsız bant dışı insan doğrulama sınırını güvenceye almak.
+- **Etkisi:** Ayrıntılı mimari karşılaştırma ve adaptör sözleşmesi `docs/ADR-13-TRUSTED-IDENTITY-PROVIDER.md` dosyasında kayıt altına alınmıştır.
+
+

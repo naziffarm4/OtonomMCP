@@ -4,3 +4,6 @@ export * from './authorization-policy-engine.js';
 export * from './identity-manager.js';
 export * from './nonce-store.js';
 export * from './auth-context-validator.js';
+export * from './trusted-identity-types.js';
+export * from './trusted-identity-adapters.js';
+export * from './trusted-identity-sanitizer.js';

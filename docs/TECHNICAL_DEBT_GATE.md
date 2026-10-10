@@ -38,6 +38,7 @@
 - [x] **WP-8.3: CI Kalite Kapısı Sıralaması** (.github/workflows/ci.yml: install -> lint -> typecheck -> build -> typecheck:tests -> test, Node .nvmrc ve pnpm 12.3.4 uyumu) — `FIXED`.
 - [x] **WP-8.4: OM-09 İnsan Onayı Sınırı ve OM-10 Karar Düzeltmesi** (Rutin görev kabulü ile insan onayı ayrımı, P18-04 BLOCKED_ON_AUTH_CONTEXT mühürlenmesi, OM-10 geçişinin dürüstçe BLOCKED ilan edilmesi) — `CORRECTED`.
 - [x] **WP-9: Test Tip Borcunun Tamamen Giderilmesi ve P18-04 Kabul Kapısı** (84 test dosyasındaki 835 tip hatasının sıfırlanması, tsconfig.test.json strict: true altında 0 error, P18-04 fail-closed teyidi, OM-10 kapısının BLOCKED olarak mühürlenmesi) — `FIXED`.
+- [x] **WP-10: P18-04 Trusted Identity Context Mimari Sözleşmesi ve Emniyet Kilidi** (ADR-13, ITrustedIdentityProvider, OIDC/mTLS/TestDouble adaptörleri, anti-spoof fail-closed kilidi, 14/14 güvenlik testi, harici bağımlılıkların dürüstçe raporlanması, OM-10'un BLOCKED olarak mühürlü kalması) — `VERIFIED & BLOCKED_ON_EXTERNAL_IDP`.
 
 ---
 
@@ -155,7 +156,42 @@
   - P18-04 Trusted Identity Context mimari olarak incelenmiştir: Harici OIDC, mTLS veya bağımsız güvenilir IdP / insan onay yönetim altyapısı henüz mevcut değildir.
   - Sistemin dış onay mekanizması yokken sahte onay beyanlarını (`actor: "USER"`, `isTrustedHumanAuth: true` vb.) reddetmesi ve fail-closed (`BLOCKED_ON_AUTH_CONTEXT`) durumunda durması güvenlik gereğidir.
   - Bu emniyet kilidinin çalışması, arkada gerçek bir insan onay altyapısı olduğu anlamına GELMEZ; dolayısıyla bağımsız insan onay mekanizması kurulana kadar sistemin dondurulması veya genel kullanıma açılması kabul edilemez.
-  - **OM-10 Kabul Kapısı:** Harici onay altyapısı eksikliği nedeniyle **KESİNLİKLE BLOCKED** olarak mühürlenmiştir. OM-10 başlatılmayacak veya onaylanmayacaktır.
+### WP-10 P18-04 Trusted Identity Context Mimari Sözleşmesi ve Emniyet Kilidi Doğrulama Kanıtı
+- **Amaç:** OtonomMCP'de güvenilir insan kimliği ve hassas işlem onayı için gerçek bir güven sınırı oluşturmak, harici kimlik sağlayıcısı sözleşmesini tasarlamak, istemci ve model kaynaklı sahte onay beyanlarını kesin olarak engellemek, 14 kritik güvenlik senaryosunu test etmek ve harici bağımlılıkları dürüstçe raporlamak.
+- **Mimari Karar (ADR-13):** `docs/ADR-13-TRUSTED-IDENTITY-PROVIDER.md` belgesinde OIDC (WebAuthn/Passkey destekli), mTLS (Karşılıklı TLS x509) ve yerel DPAPI karşılaştırması yapılmış; dağıtık insan onayları için OIDC, kurumsal sıfır güven için mTLS destekleyen adaptör sözleşmesi standardı kabul edilmiştir.
+- **Sözleşme ve Tipler:** `packages/core/src/authorization/trusted-identity-types.ts` içerisinde `ITrustedIdentityProvider`, `TrustedIdentityClaim`, `TrustedApprovalBinding`, `TrustedIdentityAssertion`, `IdentityVerificationResult` tanımlanmıştır.
+- **Sağlayıcı Adaptörleri:** `packages/core/src/authorization/trusted-identity-adapters.ts`:
+  1. `UnconfiguredIdentityProviderAdapter`: Varsayılan fail-closed adaptör (`CONFIG_MISSING` -> `BLOCKED_ON_AUTH_CONTEXT`).
+  2. `OidcIdentityProviderAdapter`: RSA-SHA256 JWT doğrulama, issuer/audience kontrolü, nonce/replay koruması, clock skew toleransı, scope binding (proje, paket, revizyon, context fingerprint, session) ve outage simülasyonu.
+  3. `MtlsIdentityProviderAdapter`: CA fingerprint, subject ve binding doğrulaması.
+  4. `TestDoubleIdentityProviderAdapter`: Yalnızca birim testleri için `isTestDouble: true` işaretli izole test çifti.
+- **Anti-Spoof Güvenlik Kilidi:**
+  - `HumanApprovalEngine`: İstemci tarafından sağlanan `isTrustedHumanAuth: true` veya `authStatus: 'VERIFIED_HUMAN'` alanları, geçerli bir harici IdP assertion'ı olmaksızın gönderildiğinde `HumanApprovalValidationError` ile doğrudan fail-closed reddedilir.
+  - Normal insan onayında harici assertion yoksa `authStatus: 'UNVERIFIED_CLIENT_INPUT'` olarak işaretlenir.
+  - `ExecutionBridge` Check 6 (`6_PRODUCT_OWNER_APPROVAL`): `requireTrustedAuthContext: true` iken harici IdP ile doğrulanmamış (`UNVERIFIED_CLIENT_INPUT` veya `MOCK_TEST`) tüm onayları `BLOCKED_ON_AUTH_CONTEXT` ile engeller.
+- **Hassas Veri Maskeleme:** `packages/core/src/authorization/trusted-identity-sanitizer.ts` (`maskToken`, `sanitizeForAudit`) ile audit kayıtlarında raw JWT, private key ve bearer token'lar otomatik maskelenir.
+- **Güvenlik Test Paketi:** `packages/core/tests/p18-04-trusted-identity-context.test.ts` içerisinde 14 senaryo test edilmiştir:
+  1. Geçerli OIDC assertion ve kriptografik scope binding -> PASS
+  2. Yanlış issuer veya audience -> BLOCKED_ON_AUTH_CONTEXT
+  3. Geçersiz veya tahrif edilmiş imza -> SIGNATURE_INVALID / BLOCKED_ON_AUTH_CONTEXT
+  4. Süresi dolmuş token -> EXPIRED / BLOCKED_ON_AUTH_CONTEXT
+  5. İptal edilmiş kimlik -> REVOKED / BLOCKED_ON_AUTH_CONTEXT
+  6. Binding uyuşmazlığı (cross-project, revision, context fingerprint) -> BINDING_MISMATCH
+  7. Replay ve nonce tekrar kullanımı -> REPLAY_DETECTED
+  8. Yapılandırılmamış sağlayıcı -> CONFIG_MISSING / BLOCKED_ON_AUTH_CONTEXT
+  9. Sağlayıcı kesintisi / ağ hatası -> PROVIDER_OUTAGE / BLOCKED_ON_AUTH_CONTEXT
+  10. Sahte istemci alanlarıyla yetki yükseltme engeli -> HumanApprovalValidationError & ExecutionBridge fail-closed
+  11. Yetkisiz aktör savunması (DIRECTOR, EXECUTOR) -> HumanApprovalUnauthorizedActorError
+  12. Reconnect/resume sırasında onay bağlamının korunması -> RESUME_AUTHORIZED & RESUME_BLOCKED_CONTEXT_MISMATCH
+  13. Test double izolasyonu -> TestDoubleIdentityProviderAdapter.isTestDouble === true
+  14. Hassas kimlik verisi ve JWT maskeleme -> Raw token maskelemesi ve log sanitization
+- **Eksik Harici Bağımlılıklar (Canlı IdP):**
+  - Kurumsal OIDC sağlayıcısı (Okta, Keycloak, Auth0, Entra ID) client_id, jwks_uri / public key ve donanım anahtarı (WebAuthn/Passkey) fiili ortamda bulunmamaktadır.
+  - Canlı dış IdP yapılandırması uydurulmamış; canlı IdP testi `NOT RUN` olarak bırakılmıştır.
+- **OM-10 ve OM-09 Durumu:**
+  - İnsan onayı kapsamı dış IdP bağlanana kadar bilinçli olarak `BLOCKED_ON_AUTH_CONTEXT` durumunda korunmaktadır.
+  - OM-09 genel kabulü **verilmemiştir** (`PARTIALLY_ACCEPTED / BLOCKED_ON_AUTH_CONTEXT`).
+  - OM-10 **kesinlikle başlatılmamıştır** (`BLOCKED` olarak mühürlüdür).
 
 ---
 
@@ -191,15 +227,19 @@
 | **WP-8.3** | CI Kalite Kapısı (install -> lint -> typecheck -> typecheck:tests -> build -> test) | `VERIFIED` | .github/workflows/ci.yml güncellendi |
 | **WP-8.4** | OM-09 İnsan Onayı Sınırı ve Güvenlik Riski Değerlendirmesi | `VERIFIED` | Kapsamlar ayrıldı, risk belgelendi |
 | **WP-9** | Test Tip Borcunun Giderilmesi ve P18-04 Kabul Kapısı (835 tip hatası -> 0 error, tsconfig.test.json strict: true, P18-04 fail-closed teyidi) | `VERIFIED` | 84 dosyada 835 tip hatası giderildi, 0 error |
+| **WP-10** | P18-04 Trusted Identity Context (ADR-13, adaptör sözleşmesi, OIDC/mTLS/TestDouble adaptörleri, anti-spoof fail-closed kilidi, 14 test) | `VERIFIED & BLOCKED_ON_EXTERNAL_IDP` | 14/14 PASS; canlı IdP olmadan fail-closed BLOCKED_ON_AUTH_CONTEXT korundu |
 
-### 5.2 Test ve Kalite Kapıları Doğrulama Çıktıları (WP-8.5 & WP-9)
+### 5.2 Test ve Kalite Kapıları Doğrulama Çıktıları (WP-8.5 & WP-9 & WP-10)
 
+| Komut | Kapsam | Çıkış Kodu | Hedef | Hata | Başarısızlık | Durum |
+|:---|:---|:---:|:---:|:---:|:---:|:---:|
 | `pnpm lint` | Kod hijyeni ve ESLint kuralları | `0` | Tüm repo | 0 error | 0 | **PASS** (2095 uyarı raporlandı) |
 | `pnpm typecheck` | Kaynak kod (`src/**/*`) strict tip denetimi | `0` | Tüm `src/` | 0 error | 0 | **PASS** (Strict 0 error) |
-| `pnpm typecheck:tests` | Test dosyaları (`tests/**/*`) tip denetimi | `0` | 115 test dosyası | 0 error | 0 | **PASS** (835 tip hatasının tamamı giderildi, strict: true altında 0 error) |
+| `pnpm typecheck:tests` | Test dosyaları (`tests/**/*`) tip denetimi | `0` | 116 test dosyası | 0 error | 0 | **PASS** (Strict: true altında 0 error) |
 | `pnpm build` | Paket derlemesi (`tsc -b`) | `0` | `@aidm/core` | 0 error | 0 | **PASS** (36 subpath d.ts ve js üretildi) |
-| `pnpm test` | Deterministik çevrimdışı test süiti | `0` | 115 dosya, 294 suite, 2981 test | 0 fail | 0 skipped | **PASS** (2981/2981 PASS, 0 fail) |
+| `pnpm test` | Deterministik çevrimdışı test süiti (14 yeni P18-04 güvenlik testi dahil) | `0` | 116 dosya, 295 suite, 2995 test | 0 fail | 0 skipped | **PASS** (2995/2995 PASS, 0 fail) |
 | `pnpm test:live` | Canlı host AGY CLI ve OpenAI HTTPS E2E | `0` | 2 suite, 17 test | 0 fail | 0 skipped | **PASS** (Canlı ortamda 17/17 PASS) |
+| `pnpm test:p18-04-live-idp` | Canlı Harici OIDC IdP Entegrasyon Testi | `NOT RUN` | Canlı Kurumsal IdP | - | - | **NOT RUN** (Harici IdP bağlantısı ve canlı credentials olmadan uydurulamaz) |
 
 ### 5.3 OM-10'a Geçiş Kararı
 

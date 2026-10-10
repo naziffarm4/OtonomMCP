@@ -85,6 +85,10 @@ import {
   ValidateContinuationRequestInputZodSchema,
 } from './human-approval-types.js';
 
+import type { ITrustedIdentityProvider, TrustedIdentityAssertion } from '../authorization/trusted-identity-types.js';
+import { UnconfiguredIdentityProviderAdapter } from '../authorization/trusted-identity-adapters.js';
+import { sanitizeForAudit } from '../authorization/trusted-identity-sanitizer.js';
+
 export interface HumanApprovalEngineOptions {
   readonly workspaceRoot?: string;
   readonly delegate?: McpOrchestratorDelegate;
@@ -95,6 +99,7 @@ export interface HumanApprovalEngineOptions {
   readonly decisionStore?: DirectorDecisionStore;
   readonly historyManager?: HistoryManager;
   readonly durableStateManager?: DurableStateManager;
+  readonly identityProvider?: ITrustedIdentityProvider;
 }
 
 export class HumanApprovalEngine {
@@ -107,11 +112,16 @@ export class HumanApprovalEngine {
   readonly decisionStore: DirectorDecisionStore;
   readonly historyManager?: HistoryManager;
   readonly durableStateManager: DurableStateManager;
+  readonly identityProvider: ITrustedIdentityProvider;
 
   constructor(options: HumanApprovalEngineOptions = {}) {
     this.workspaceRoot = options.workspaceRoot ?? options.delegate?.projectRoot;
     this.delegate = options.delegate;
     this.historyManager = options.historyManager ?? options.delegate?.historyManager;
+
+    this.identityProvider =
+      options.identityProvider ??
+      new UnconfiguredIdentityProviderAdapter();
 
     this.durableStateManager =
       options.durableStateManager ??
@@ -460,6 +470,58 @@ export class HumanApprovalEngine {
       };
     }
 
+    // 9. Trusted Identity Assertion & Anti-Spoofing check
+    if (
+      (input.isTrustedHumanAuth === true || input.authStatus === 'VERIFIED_HUMAN') &&
+      !input.trustedAssertion &&
+      !input.trustedAuthToken
+    ) {
+      return {
+        isValid: false,
+        code: 'BLOCKED_ON_AUTH_CONTEXT',
+        message:
+          'Client cannot self-declare isTrustedHumanAuth: true or authStatus: VERIFIED_HUMAN without verified external IdP assertion. Rejected fail-closed.',
+        details: { actor: input.actor, actorRole: input.actorRole },
+      };
+    }
+
+    if (input.trustedAssertion || input.trustedAuthToken) {
+      const assertion: TrustedIdentityAssertion = input.trustedAssertion
+        ? (input.trustedAssertion as unknown as TrustedIdentityAssertion)
+        : {
+            token: input.trustedAuthToken!,
+            binding: {
+              projectId: canonical.projectId,
+              packageId: input.packageId,
+              revision: input.revision,
+              contextFingerprint: input.contextFingerprint,
+              directorSessionId: input.directorSessionId,
+            },
+            authSource: 'EXTERNAL_IDP',
+          };
+
+      const verificationResult = await this.identityProvider.verifyAssertion(
+        assertion,
+        {
+          projectId: canonical.projectId,
+          packageId: input.packageId,
+          revision: input.revision,
+          contextFingerprint: input.contextFingerprint,
+          directorSessionId: input.directorSessionId,
+        },
+        { dryRun: true }
+      );
+
+      if (!verificationResult.isValid) {
+        return {
+          isValid: false,
+          code: 'BLOCKED_ON_AUTH_CONTEXT',
+          message: `External identity assertion validation failed: ${verificationResult.reason}`,
+          details: { status: verificationResult.status, code: verificationResult.code },
+        };
+      }
+    }
+
     return {
       isValid: true,
       code: 'VALID',
@@ -562,7 +624,54 @@ export class HumanApprovalEngine {
       throw new ApprovalPackageNotFoundError(`Package '${input.packageId}' not found.`);
     }
 
-    // 4. Delegate to ApprovalPackageEngine to construct approved package
+    // 4. Verify External Trusted Identity Assertion (if provided) and enforce Anti-Spoofing
+    let isTrustedHumanAuth = false;
+    let authStatus: 'VERIFIED_HUMAN' | 'UNVERIFIED_CLIENT_INPUT' | 'MOCK_TEST' = 'UNVERIFIED_CLIENT_INPUT';
+    let verifiedClaims: Record<string, unknown> | undefined = undefined;
+
+    if (input.trustedAssertion || input.trustedAuthToken) {
+      const assertion: TrustedIdentityAssertion = input.trustedAssertion
+        ? (input.trustedAssertion as unknown as TrustedIdentityAssertion)
+        : {
+            token: input.trustedAuthToken!,
+            binding: {
+              projectId: canonical.projectId,
+              packageId: input.packageId,
+              revision: input.revision,
+              contextFingerprint: input.contextFingerprint,
+              directorSessionId: input.directorSessionId,
+            },
+            authSource: 'EXTERNAL_IDP',
+          };
+
+      const verificationResult = await this.identityProvider.verifyAssertion(assertion, {
+        projectId: canonical.projectId,
+        packageId: input.packageId,
+        revision: input.revision,
+        contextFingerprint: input.contextFingerprint,
+        directorSessionId: input.directorSessionId,
+      });
+
+      if (verificationResult.isValid && verificationResult.isTrustedHumanAuth) {
+        isTrustedHumanAuth = true;
+        authStatus = 'VERIFIED_HUMAN';
+        verifiedClaims = verificationResult.claims ? { ...verificationResult.claims } : undefined;
+      } else {
+        isTrustedHumanAuth = false;
+        authStatus = 'UNVERIFIED_CLIENT_INPUT';
+      }
+    } else if (input.authStatus === 'MOCK_TEST') {
+      isTrustedHumanAuth = false;
+      authStatus = 'MOCK_TEST';
+    } else {
+      // STRICT ANTI-SPOOF:
+      // Even if client input claims isTrustedHumanAuth: true or authStatus: 'VERIFIED_HUMAN',
+      // client boolean declarations without external IdP assertion are strictly forced to UNVERIFIED_CLIENT_INPUT!
+      isTrustedHumanAuth = false;
+      authStatus = 'UNVERIFIED_CLIENT_INPUT';
+    }
+
+    // 5. Delegate to ApprovalPackageEngine to construct approved package
     const approvedPkg = this.approvalPackageEngine.approvePackage(pkg, {
       packageId: input.packageId,
       revision: input.revision,
@@ -576,28 +685,36 @@ export class HumanApprovalEngine {
       understandingRevision: input.understandingRevision ?? null,
       protocolVersion: HUMAN_APPROVAL_PROTOCOL_VERSION,
       schemaVersion: HUMAN_APPROVAL_SCHEMA_VERSION,
+      provenanceSource: input.provenanceSource ?? (isTrustedHumanAuth ? 'TRUSTED_EXTERNAL_IDP' : 'UNVERIFIED_CLIENT_INPUT'),
+      isTrustedHumanAuth,
+      authStatus,
+      authContext: {
+        isTrusted: isTrustedHumanAuth,
+        authSource: isTrustedHumanAuth ? 'EXTERNAL_IDP' : 'UNVERIFIED_CLIENT',
+        verifiedAt: isTrustedHumanAuth ? new Date().toISOString() : undefined,
+      },
     });
 
-    // 5. Persist approved package in ApprovalStore (sole store authority)
+    // 6. Persist approved package in ApprovalStore (sole store authority)
     await this.approvalStore.savePackage(approvedPkg);
 
-    // 6. Touch Director session activity
+    // 7. Touch Director session activity
     await this.sessionEngine.touchSession({
       directorSessionId: input.directorSessionId,
       workspaceRoot: targetRoot,
       projectId: canonical.projectId,
     });
 
-    // 7. Calculate authoritative development authorization state
+    // 8. Calculate authoritative development authorization state
     const authorized = this.approvalPackageEngine.isDevelopmentAuthorized(approvedPkg);
 
-    // 8. Log audit event
+    // 9. Log audit event with credential and PII sanitization
     if (this.historyManager) {
       try {
         await this.historyManager.appendEvent({
           eventType: 'HUMAN_APPROVAL_GRANTED',
           actor: Actor.USER,
-          payload: {
+          payload: sanitizeForAudit({
             packageId: approvedPkg.packageId,
             revision: approvedPkg.revision,
             projectId: approvedPkg.projectId,
@@ -611,7 +728,10 @@ export class HumanApprovalEngine {
             isDevelopmentAuthorized: authorized,
             protocolVersion: HUMAN_APPROVAL_PROTOCOL_VERSION,
             schemaVersion: HUMAN_APPROVAL_SCHEMA_VERSION,
-          },
+            isTrustedHumanAuth,
+            authStatus,
+            claims: verifiedClaims,
+          }),
         });
       } catch {
         // Logging failure does not abort approval
