@@ -154,6 +154,22 @@ Her onay talebi (`TrustedApprovalBinding`), imzalı JWT payload'ı içinde doğr
   - RFC 3879 Site-Local Unicast aralığı (`fec0::/10`) `FORBIDDEN_IPV6_RANGES` listesine eklenmiştir.
   - `parseIpv6` ayrıştırıcısı; üç ardışık iki nokta (`:::`), tekil baştaki/sondaki iki nokta (`:1::`, `::1:`), geçersiz hextet karakterleri/uzunlukları ve gömülü IPv4 adreslerindeki geçersiz/sekizlik (octal) gösterimleri (`::ffff:0127.0.0.1`) fail-closed olarak reddedecek şekilde sertleştirilmiştir.
 
+### 3.11. Nonce Zaman Damgası Şema Sertleştirmesi ve Sayısal Taşma (Overflow) Koruması
+- **Zaman Damgası Kapsamı ve İzin Verilen Tip/Aralık:**
+  - Zaman damgaları `number` tipinde, `Number.isFinite()` ile sonlu, negatif olmayan (`>= 0`, epoch ms) ve güvenli tamsayı tavanını aşmayan (`0 <= ts <= Number.MAX_SAFE_INTEGER`) değerler olmak zorundadır.
+  - `Number.isNaN()` kontrolü tek başına yetersiz kaldığından, `Infinity` ve `-Infinity` değerlerini de dışlayan `isValidNonceTimestamp()` fonksiyonu devreye alınmıştır.
+- **JSON Sayısal Taşmaları ve Fail-Closed Ret:**
+  - JSON ayrıştırması sonrasında oluşan sayısal taşmalar (`1e999` -> `Infinity`, `-1e999` -> `-Infinity`, `1e300` -> aşırı büyük kayan nokta sayısı) tespit edildiğinde anında `StorageError` yükseltilir.
+  - `seenUntil` veya `reserved` haritasında geçersiz veya taşmış zaman damgası bulunan dosya fail-closed olarak reddedilir; diskteki mevcut durum kesinlikle temizlenmiş veya boş durumla ezilmez (byte-for-byte korunur).
+- **Önceden Tüketilmiş Nonce Güvenliği ve Replay Koruması:**
+  - Zaman damgası geçersiz veya bozulmuş bir dosyada yer alan tüketilmiş bir nonce asla silinmez veya tekrar taze bir nonce olarak kabul edilmez.
+  - Geçersiz dosya durumunda tüm rezervasyon, tüketim ve sorgulama operasyonları fail-closed olarak `StorageError` ile durur; sahte replay girişimleri engellenir.
+- **Geriye Dönük Uyumluluk ve Süresi Dolmuş Rezervasyonların Temizlenmesi:**
+  - Eski `string[]` formatı desteği tam olarak korunmuştur; eski girdiler fail-closed olarak süresiz saklanır ve yeni eklemelerle birlikte modern şemaya taşınır.
+  - Geçerli, süresi dolmuş rezervasyonların (`reserved[nonce] <= now`) otomatik temizlenmesi ve aktif rezervasyonların korunması eksiksiz çalışır.
+- **Kilit Kuyruğu Güvencesi:**
+  - Başarılı, şema hatası alan veya taşma içeren operasyonlar sonrasında `inProcessLockQueues` haritası sıfır sızıntı ile temizlenir; deadlock veya sonraki işlemleri engelleme riski ortadan kaldırılmıştır.
+
 ---
 
 ## 4. Kararın Etkileri

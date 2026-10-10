@@ -4,6 +4,48 @@ import { DatabaseSync } from 'node:sqlite';
 import { atomicWriteJson, readJsonFile } from '../storage/atomic-writer.js';
 import { StorageError } from '../errors/storage-error.js';
 
+/**
+ * Strict schema validation for epoch timestamps:
+ * - Must be of type 'number'
+ * - Must be finite via Number.isFinite() (rejects NaN, Infinity, -Infinity)
+ * - Must be non-negative (>= 0 epoch ms)
+ * - Must be less than or equal to Number.MAX_SAFE_INTEGER (rejects numerical overflows from JSON parsing like 1e999, 1e300)
+ *
+ * @param val Value to validate as an epoch timestamp
+ */
+export function isValidNonceTimestamp(val: unknown): val is number {
+  return (
+    typeof val === 'number' &&
+    Number.isFinite(val) &&
+    val >= 0 &&
+    val <= Number.MAX_SAFE_INTEGER
+  );
+}
+
+/**
+ * Persisted schema specification and backward-compatibility rules:
+ *
+ * 1. Root structure:
+ *    - Modern format: JSON Object { seen: string[], seenUntil?: Record<string, number>, reserved: Record<string, number> }
+ *    - Legacy format: JSON Array string[] (representing seen nonces without timestamps)
+ *
+ * 2. Field definitions:
+ *    - `seen`: REQUIRED. Array of non-empty strings. Represents all nonces that have been consumed.
+ *    - `seenUntil`: OPTIONAL. Object map of nonce -> retention epoch timestamp in milliseconds.
+ *      - Timestamp constraints: Must be a non-negative finite safe number (0 <= ts <= Number.MAX_SAFE_INTEGER).
+ *      - Numerical overflows (e.g. 1e999, -1e999, Infinity, -Infinity, NaN, values > MAX_SAFE_INTEGER) are strictly rejected with StorageError.
+ *      - Backward compatibility: If seenUntil is absent or a nonce in `seen` does not have a timestamp in `seenUntil`,
+ *        it is retained indefinitely to enforce fail-closed replay protection.
+ *    - `reserved`: OPTIONAL. Object map of nonce -> expiration epoch timestamp in milliseconds.
+ *      - Timestamp constraints: Same as seenUntil. Must be a non-negative finite safe number.
+ *      - Expired reservations (ts <= now) are cleanly pruned on read. Active reservations (ts > now) block reuse.
+ *
+ * 3. Fail-Closed Invariant:
+ *    - Any malformed JSON, corrupted data, invalid types, or out-of-range/overflow timestamps immediately
+ *      cause `readStateUnderLock` to throw `StorageError`.
+ *    - When `StorageError` is thrown, the SQLite transaction rolls back and the on-disk file is NEVER modified,
+ *      truncated, or overwritten with empty state.
+ */
 export interface PersistedNonceData {
   seen: string[];
   seenUntil?: Record<string, number>; // nonce -> retentionUntil timestamp (epoch ms)
@@ -158,7 +200,7 @@ export class NonceStore {
    * Differentiates:
    * 1. Initial creation (ENOENT): returns fresh empty state.
    * 2. Valid persistent state (object schema or legacy array): parsed & returned.
-   * 3. Corrupt/truncated JSON, I/O errors, permission denied, or invalid schema:
+   * 3. Corrupt/truncated JSON, I/O errors, permission denied, or invalid schema/timestamps:
    *    THROWS StorageError (fail-closed) and refuses to overwrite existing state on disk.
    */
   private async readStateUnderLock(): Promise<PersistedNonceData> {
@@ -270,9 +312,9 @@ export class NonceStore {
         );
       }
       for (const [k, v] of Object.entries(obj.seenUntil as Record<string, unknown>)) {
-        if (typeof v !== 'number' || Number.isNaN(v)) {
+        if (typeof k !== 'string' || k.length === 0 || !isValidNonceTimestamp(v)) {
           throw new StorageError(
-            `Nonce store file '${this.filePath}' has invalid timestamp in 'seenUntil' for key '${k}'.`,
+            `Nonce store file '${this.filePath}' has invalid timestamp in 'seenUntil' for key '${k}'. Value must be a non-negative finite safe number, got ${v}.`,
             {
               filePath: this.filePath,
               operation: 'validateNonceState',
@@ -294,9 +336,9 @@ export class NonceStore {
         );
       }
       for (const [k, v] of Object.entries(obj.reserved as Record<string, unknown>)) {
-        if (typeof v !== 'number' || Number.isNaN(v)) {
+        if (typeof k !== 'string' || k.length === 0 || !isValidNonceTimestamp(v)) {
           throw new StorageError(
-            `Nonce store file '${this.filePath}' has invalid timestamp in 'reserved' for key '${k}'.`,
+            `Nonce store file '${this.filePath}' has invalid timestamp in 'reserved' for key '${k}'. Value must be a non-negative finite safe number, got ${v}.`,
             {
               filePath: this.filePath,
               operation: 'validateNonceState',
@@ -344,6 +386,22 @@ export class NonceStore {
    * Cross-process atomic: returns false if nonce was already seen or is currently reserved.
    */
   async reserveNonce(nonce: string, ttlMs = 30000): Promise<boolean> {
+    if (typeof nonce !== 'string' || nonce.trim().length === 0) {
+      throw new StorageError('Invalid nonce: expected non-empty string.', {
+        filePath: this.filePath,
+        operation: 'reserveNonce',
+      });
+    }
+    if (!isValidNonceTimestamp(ttlMs) || ttlMs === 0) {
+      throw new StorageError(
+        `Invalid ttlMs: ${ttlMs}. Expected positive finite safe number.`,
+        {
+          filePath: this.filePath,
+          operation: 'reserveNonce',
+        }
+      );
+    }
+
     return withCrossProcessNonceLock(this.filePath, async () => {
       const state = await this.readStateUnderLock();
       const now = Date.now();
@@ -367,6 +425,13 @@ export class NonceStore {
    * Cross-process atomic.
    */
   async releaseReservation(nonce: string): Promise<void> {
+    if (typeof nonce !== 'string' || nonce.trim().length === 0) {
+      throw new StorageError('Invalid nonce: expected non-empty string.', {
+        filePath: this.filePath,
+        operation: 'releaseReservation',
+      });
+    }
+
     return withCrossProcessNonceLock(this.filePath, async () => {
       const state = await this.readStateUnderLock();
       if (state.reserved[nonce]) {
@@ -387,6 +452,13 @@ export class NonceStore {
     nonce: string,
     optionsOrExpiresAt?: number | { expiresAt?: number; ttlMs?: number }
   ): Promise<boolean> {
+    if (typeof nonce !== 'string' || nonce.trim().length === 0) {
+      throw new StorageError('Invalid nonce: expected non-empty string.', {
+        filePath: this.filePath,
+        operation: 'markNonceSeen',
+      });
+    }
+
     return withCrossProcessNonceLock(this.filePath, async () => {
       const state = await this.readStateUnderLock();
 
@@ -398,6 +470,15 @@ export class NonceStore {
       let retentionUntil: number;
 
       if (typeof optionsOrExpiresAt === 'number') {
+        if (!isValidNonceTimestamp(optionsOrExpiresAt)) {
+          throw new StorageError(
+            `Invalid expiration/ttl timestamp: ${optionsOrExpiresAt}. Must be non-negative finite safe number.`,
+            {
+              filePath: this.filePath,
+              operation: 'markNonceSeen',
+            }
+          );
+        }
         if (optionsOrExpiresAt > 1e11) {
           retentionUntil = Math.max(optionsOrExpiresAt + this.clockSkewMs, now + this.defaultRetentionMs);
         } else if (optionsOrExpiresAt > 1e9) {
@@ -406,10 +487,31 @@ export class NonceStore {
           retentionUntil = now + Math.max(optionsOrExpiresAt, this.defaultRetentionMs);
         }
       } else if (optionsOrExpiresAt && typeof optionsOrExpiresAt === 'object') {
-        if (typeof optionsOrExpiresAt.expiresAt === 'number') {
-          const expMs = optionsOrExpiresAt.expiresAt > 1e11 ? optionsOrExpiresAt.expiresAt : optionsOrExpiresAt.expiresAt * 1000;
+        if (optionsOrExpiresAt.expiresAt !== undefined) {
+          if (!isValidNonceTimestamp(optionsOrExpiresAt.expiresAt)) {
+            throw new StorageError(
+              `Invalid expiresAt timestamp: ${optionsOrExpiresAt.expiresAt}. Must be non-negative finite safe number.`,
+              {
+                filePath: this.filePath,
+                operation: 'markNonceSeen',
+              }
+            );
+          }
+          const expMs =
+            optionsOrExpiresAt.expiresAt > 1e11
+              ? optionsOrExpiresAt.expiresAt
+              : optionsOrExpiresAt.expiresAt * 1000;
           retentionUntil = Math.max(expMs + this.clockSkewMs, now + this.defaultRetentionMs);
-        } else if (typeof optionsOrExpiresAt.ttlMs === 'number') {
+        } else if (optionsOrExpiresAt.ttlMs !== undefined) {
+          if (!isValidNonceTimestamp(optionsOrExpiresAt.ttlMs)) {
+            throw new StorageError(
+              `Invalid ttlMs: ${optionsOrExpiresAt.ttlMs}. Must be non-negative finite safe number.`,
+              {
+                filePath: this.filePath,
+                operation: 'markNonceSeen',
+              }
+            );
+          }
           retentionUntil = now + Math.max(optionsOrExpiresAt.ttlMs, this.defaultRetentionMs);
         } else {
           retentionUntil = now + this.defaultRetentionMs;
@@ -435,16 +537,60 @@ export class NonceStore {
     nonces: string[],
     optionsOrExpiresAt?: number | { expiresAt?: number; ttlMs?: number }
   ): Promise<number> {
+    if (!Array.isArray(nonces) || !nonces.every((n) => typeof n === 'string' && n.trim().length > 0)) {
+      throw new StorageError('Invalid nonces batch: expected array of non-empty strings.', {
+        filePath: this.filePath,
+        operation: 'markNoncesSeenBatch',
+      });
+    }
+
     return withCrossProcessNonceLock(this.filePath, async () => {
       const state = await this.readStateUnderLock();
       const now = Date.now();
       let retentionUntil = now + this.defaultRetentionMs;
 
       if (typeof optionsOrExpiresAt === 'number') {
+        if (!isValidNonceTimestamp(optionsOrExpiresAt)) {
+          throw new StorageError(
+            `Invalid expiration/ttl timestamp: ${optionsOrExpiresAt}. Must be non-negative finite safe number.`,
+            {
+              filePath: this.filePath,
+              operation: 'markNoncesSeenBatch',
+            }
+          );
+        }
         if (optionsOrExpiresAt > 1e11) {
           retentionUntil = Math.max(optionsOrExpiresAt + this.clockSkewMs, now + this.defaultRetentionMs);
         } else if (optionsOrExpiresAt > 1e9) {
           retentionUntil = Math.max(optionsOrExpiresAt * 1000 + this.clockSkewMs, now + this.defaultRetentionMs);
+        }
+      } else if (optionsOrExpiresAt && typeof optionsOrExpiresAt === 'object') {
+        if (optionsOrExpiresAt.expiresAt !== undefined) {
+          if (!isValidNonceTimestamp(optionsOrExpiresAt.expiresAt)) {
+            throw new StorageError(
+              `Invalid expiresAt timestamp: ${optionsOrExpiresAt.expiresAt}. Must be non-negative finite safe number.`,
+              {
+                filePath: this.filePath,
+                operation: 'markNoncesSeenBatch',
+              }
+            );
+          }
+          const expMs =
+            optionsOrExpiresAt.expiresAt > 1e11
+              ? optionsOrExpiresAt.expiresAt
+              : optionsOrExpiresAt.expiresAt * 1000;
+          retentionUntil = Math.max(expMs + this.clockSkewMs, now + this.defaultRetentionMs);
+        } else if (optionsOrExpiresAt.ttlMs !== undefined) {
+          if (!isValidNonceTimestamp(optionsOrExpiresAt.ttlMs)) {
+            throw new StorageError(
+              `Invalid ttlMs: ${optionsOrExpiresAt.ttlMs}. Must be non-negative finite safe number.`,
+              {
+                filePath: this.filePath,
+                operation: 'markNoncesSeenBatch',
+              }
+            );
+          }
+          retentionUntil = now + Math.max(optionsOrExpiresAt.ttlMs, this.defaultRetentionMs);
         }
       }
 
@@ -469,6 +615,13 @@ export class NonceStore {
    * Cross-process atomic.
    */
   async isNonceSeen(nonce: string): Promise<boolean> {
+    if (typeof nonce !== 'string' || nonce.trim().length === 0) {
+      throw new StorageError('Invalid nonce: expected non-empty string.', {
+        filePath: this.filePath,
+        operation: 'isNonceSeen',
+      });
+    }
+
     return withCrossProcessNonceLock(this.filePath, async () => {
       const state = await this.readStateUnderLock();
       const now = Date.now();

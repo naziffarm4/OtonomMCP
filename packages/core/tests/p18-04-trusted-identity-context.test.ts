@@ -38,6 +38,7 @@ import {
   HistoryManager,
   DurableStateManager,
   NonceStore,
+  isValidNonceTimestamp,
   withInProcessLock,
   inProcessLockQueues,
   withCrossProcessNonceLock,
@@ -2994,6 +2995,288 @@ describe('Phase 18 TASK-P18-04 — Trusted Identity Context Architecture & Verif
     const subsequentOk = await storeGood.markNonceSeen('nonce-ok-4');
     assert.equal(subsequentOk, true, 'Subsequent operation must succeed cleanly');
     assert.equal(inProcessLockQueues.size, 0, 'Queue must remain clean at 0 size');
+  });
+
+  // 11. seenUntil içinde 1e999 / -1e999 gibi sayısal taşmalar ve geçersiz zaman damgaları fail-closed reddedilir
+  it('SEC-38: Numerical overflows and invalid timestamps in seenUntil (1e999, -1e999, 1e300, negative, NaN) fail-closed with StorageError', async () => {
+    // 1. Positive overflow (1e999 parses to Infinity in JSON)
+    const filePosOverflow = path.join(tempDir, `overflow-pos-${crypto.randomUUID()}.json`);
+    await fs.writeFile(filePosOverflow, '{"seen": ["pos-overflow-1"], "seenUntil": {"pos-overflow-1": 1e999}, "reserved": {}}', 'utf8');
+    const storePos = new NonceStore({ filePath: filePosOverflow });
+
+    await assert.rejects(async () => storePos.isNonceSeen('pos-overflow-1'), (err: unknown) => err instanceof StorageError);
+    await assert.rejects(async () => storePos.markNonceSeen('fresh-nonce-1'), (err: unknown) => err instanceof StorageError);
+    await assert.rejects(async () => storePos.reserveNonce('fresh-nonce-1'), (err: unknown) => err instanceof StorageError);
+
+    // 2. Negative overflow (-1e999 parses to -Infinity in JSON)
+    const fileNegOverflow = path.join(tempDir, `overflow-neg-${crypto.randomUUID()}.json`);
+    await fs.writeFile(fileNegOverflow, '{"seen": ["neg-overflow-1"], "seenUntil": {"neg-overflow-1": -1e999}, "reserved": {}}', 'utf8');
+    const storeNeg = new NonceStore({ filePath: fileNegOverflow });
+
+    await assert.rejects(async () => storeNeg.isNonceSeen('neg-overflow-1'), (err: unknown) => err instanceof StorageError);
+    await assert.rejects(async () => storeNeg.markNonceSeen('fresh-nonce-2'), (err: unknown) => err instanceof StorageError);
+    await assert.rejects(async () => storeNeg.reserveNonce('fresh-nonce-2'), (err: unknown) => err instanceof StorageError);
+
+    // 3. Finite but excessive numeric overflow (> Number.MAX_SAFE_INTEGER, e.g. 1e300)
+    const fileLargeSafe = path.join(tempDir, `overflow-large-${crypto.randomUUID()}.json`);
+    await fs.writeFile(fileLargeSafe, '{"seen": ["large-overflow-1"], "seenUntil": {"large-overflow-1": 1e300}, "reserved": {}}', 'utf8');
+    const storeLarge = new NonceStore({ filePath: fileLargeSafe });
+
+    await assert.rejects(async () => storeLarge.isNonceSeen('large-overflow-1'), (err: unknown) => err instanceof StorageError);
+    await assert.rejects(async () => storeLarge.markNonceSeen('fresh-nonce-3'), (err: unknown) => err instanceof StorageError);
+
+    // 4. Negative timestamp value (-500 ms)
+    const fileNegTs = path.join(tempDir, `overflow-neg-ts-${crypto.randomUUID()}.json`);
+    await fs.writeFile(fileNegTs, '{"seen": ["neg-ts-1"], "seenUntil": {"neg-ts-1": -500}, "reserved": {}}', 'utf8');
+    const storeNegTs = new NonceStore({ filePath: fileNegTs });
+
+    await assert.rejects(async () => storeNegTs.isNonceSeen('neg-ts-1'), (err: unknown) => err instanceof StorageError);
+    await assert.rejects(async () => storeNegTs.markNonceSeen('fresh-nonce-4'), (err: unknown) => err instanceof StorageError);
+
+    // 5. Programmatic API calls with invalid timestamps fail closed
+    const fileValid = path.join(tempDir, `overflow-api-valid-${crypto.randomUUID()}.json`);
+    const storeValid = new NonceStore({ filePath: fileValid });
+
+    await assert.rejects(async () => storeValid.markNonceSeen('n-inf', Infinity), (err: unknown) => err instanceof StorageError);
+    await assert.rejects(async () => storeValid.markNonceSeen('n-ninf', -Infinity), (err: unknown) => err instanceof StorageError);
+    await assert.rejects(async () => storeValid.markNonceSeen('n-nan', NaN), (err: unknown) => err instanceof StorageError);
+    await assert.rejects(async () => storeValid.markNonceSeen('n-neg', -100), (err: unknown) => err instanceof StorageError);
+    await assert.rejects(async () => storeValid.markNonceSeen('n-exp-inf', { expiresAt: Infinity }), (err: unknown) => err instanceof StorageError);
+    await assert.rejects(async () => storeValid.markNonceSeen('n-ttl-neg', { ttlMs: -50 }), (err: unknown) => err instanceof StorageError);
+    await assert.rejects(async () => storeValid.markNoncesSeenBatch(['n-b-1'], Infinity), (err: unknown) => err instanceof StorageError);
+    await assert.rejects(async () => storeValid.markNoncesSeenBatch(['n-b-2'], -500), (err: unknown) => err instanceof StorageError);
+  });
+
+  // 12. reserved içinde pozitif ve negatif taşma değerleri fail-closed StorageError ile reddedilir
+  it('SEC-39: Positive and negative overflow values in reserved fail-closed with StorageError', async () => {
+    // 1. Positive overflow in reserved (1e999)
+    const fileResPos = path.join(tempDir, `reserved-pos-overflow-${crypto.randomUUID()}.json`);
+    await fs.writeFile(fileResPos, '{"seen": [], "seenUntil": {}, "reserved": {"res-pos-overflow": 1e999}}', 'utf8');
+    const storeResPos = new NonceStore({ filePath: fileResPos });
+
+    await assert.rejects(async () => storeResPos.isNonceSeen('res-pos-overflow'), (err: unknown) => err instanceof StorageError);
+    await assert.rejects(async () => storeResPos.reserveNonce('fresh-res-1'), (err: unknown) => err instanceof StorageError);
+    await assert.rejects(async () => storeResPos.markNonceSeen('fresh-res-1'), (err: unknown) => err instanceof StorageError);
+
+    // 2. Negative overflow in reserved (-1e999)
+    const fileResNeg = path.join(tempDir, `reserved-neg-overflow-${crypto.randomUUID()}.json`);
+    await fs.writeFile(fileResNeg, '{"seen": [], "seenUntil": {}, "reserved": {"res-neg-overflow": -1e999}}', 'utf8');
+    const storeResNeg = new NonceStore({ filePath: fileResNeg });
+
+    await assert.rejects(async () => storeResNeg.isNonceSeen('res-neg-overflow'), (err: unknown) => err instanceof StorageError);
+    await assert.rejects(async () => storeResNeg.reserveNonce('fresh-res-2'), (err: unknown) => err instanceof StorageError);
+
+    // 3. Negative finite timestamp in reserved (-500)
+    const fileResNegTs = path.join(tempDir, `reserved-neg-ts-${crypto.randomUUID()}.json`);
+    await fs.writeFile(fileResNegTs, '{"seen": [], "seenUntil": {}, "reserved": {"res-neg-ts": -500}}', 'utf8');
+    const storeResNegTs = new NonceStore({ filePath: fileResNegTs });
+
+    await assert.rejects(async () => storeResNegTs.isNonceSeen('res-neg-ts'), (err: unknown) => err instanceof StorageError);
+    await assert.rejects(async () => storeResNegTs.reserveNonce('fresh-res-3'), (err: unknown) => err instanceof StorageError);
+
+    // 4. Large safe overflow in reserved (1e300)
+    const fileResLarge = path.join(tempDir, `reserved-large-${crypto.randomUUID()}.json`);
+    await fs.writeFile(fileResLarge, '{"seen": [], "seenUntil": {}, "reserved": {"res-large": 1e300}}', 'utf8');
+    const storeResLarge = new NonceStore({ filePath: fileResLarge });
+
+    await assert.rejects(async () => storeResLarge.isNonceSeen('res-large'), (err: unknown) => err instanceof StorageError);
+
+    // 5. Direct reserveNonce API invalid ttlMs calls fail closed
+    const fileValidRes = path.join(tempDir, `reserved-api-valid-${crypto.randomUUID()}.json`);
+    const storeValidRes = new NonceStore({ filePath: fileValidRes });
+
+    await assert.rejects(async () => storeValidRes.reserveNonce('n1', Infinity), (err: unknown) => err instanceof StorageError);
+    await assert.rejects(async () => storeValidRes.reserveNonce('n2', -Infinity), (err: unknown) => err instanceof StorageError);
+    await assert.rejects(async () => storeValidRes.reserveNonce('n3', NaN), (err: unknown) => err instanceof StorageError);
+    await assert.rejects(async () => storeValidRes.reserveNonce('n4', 0), (err: unknown) => err instanceof StorageError);
+    await assert.rejects(async () => storeValidRes.reserveNonce('n5', -1000), (err: unknown) => err instanceof StorageError);
+    await assert.rejects(async () => storeValidRes.reserveNonce('n6', 1e300), (err: unknown) => err instanceof StorageError);
+  });
+
+  // 13. Bozuk zaman damgası içeren dosya hata sonrasında bayt bayt aynı kalır ve asla yeniden yazılmaz
+  it('SEC-40: Corrupt timestamp files remain strictly byte-for-byte identical after failed operations without being overwritten or cleared', async () => {
+    const filePath = path.join(tempDir, `byte-integrity-${crypto.randomUUID()}.json`);
+    const rawContent = '{\n  "seen": ["vital-nonce-1"],\n  "seenUntil": {"vital-nonce-1": 1e999},\n  "reserved": {}\n}';
+    const rawBytes = Buffer.from(rawContent, 'utf8');
+    await fs.writeFile(filePath, rawBytes);
+
+    const store = new NonceStore({ filePath });
+
+    // Attempt every variety of store operation against the corrupted file
+    await assert.rejects(async () => store.markNonceSeen('vital-nonce-1'), (err: unknown) => err instanceof StorageError);
+    await assert.rejects(async () => store.markNonceSeen('fresh-nonce-byte-check'), (err: unknown) => err instanceof StorageError);
+    await assert.rejects(async () => store.reserveNonce('vital-nonce-1'), (err: unknown) => err instanceof StorageError);
+    await assert.rejects(async () => store.reserveNonce('fresh-nonce-byte-check'), (err: unknown) => err instanceof StorageError);
+    await assert.rejects(async () => store.isNonceSeen('vital-nonce-1'), (err: unknown) => err instanceof StorageError);
+    await assert.rejects(async () => store.releaseReservation('vital-nonce-1'), (err: unknown) => err instanceof StorageError);
+    await assert.rejects(async () => store.markNoncesSeenBatch(['batch-n1', 'batch-n2']), (err: unknown) => err instanceof StorageError);
+
+    // Read back file content byte-for-byte
+    const afterBytes = await fs.readFile(filePath);
+    assert.equal(Buffer.compare(rawBytes, afterBytes), 0, 'File content must remain byte-for-byte identical after all failed operations');
+    assert.equal(afterBytes.toString('utf8'), rawContent, 'File text must not have been modified, cleared, or reformatted');
+  });
+
+  // 14. Önceden tüketilmiş nonce'ın geçersiz seenUntil yüzünden silinmediği ve yeniden kabul edilmediği doğrulanır
+  it('SEC-41: Previously consumed nonce is not deleted or re-accepted due to invalid seenUntil and replay strictly fails closed', async () => {
+    const filePath = path.join(tempDir, `consumed-replay-tamper-${crypto.randomUUID()}.json`);
+    const consumedNonce = `vital-consumed-nonce-${crypto.randomUUID()}`;
+    const initialContent = JSON.stringify({
+      seen: [consumedNonce],
+      seenUntil: { [consumedNonce]: 1e999 }, // Numeric overflow introduced
+      reserved: {},
+    }, null, 2);
+    await fs.writeFile(filePath, initialContent, 'utf8');
+
+    const store = new NonceStore({ filePath });
+
+    // 1. Attempt to mark the previously consumed nonce again -> MUST reject with StorageError, NOT return true!
+    await assert.rejects(
+      async () => store.markNonceSeen(consumedNonce),
+      (err: unknown) => err instanceof StorageError,
+      'Replay marking of consumed nonce against corrupt seenUntil must reject with StorageError'
+    );
+
+    // 2. Attempt to reserve the previously consumed nonce -> MUST reject with StorageError
+    await assert.rejects(
+      async () => store.reserveNonce(consumedNonce),
+      (err: unknown) => err instanceof StorageError,
+      'Reserving consumed nonce against corrupt seenUntil must reject with StorageError'
+    );
+
+    // 3. Attempt to check isNonceSeen -> MUST reject with StorageError
+    await assert.rejects(
+      async () => store.isNonceSeen(consumedNonce),
+      (err: unknown) => err instanceof StorageError,
+      'isNonceSeen against corrupt seenUntil must reject with StorageError'
+    );
+
+    // 4. Verify file on disk still contains the consumed nonce and was not purged to empty
+    const currentOnDisk = await fs.readFile(filePath, 'utf8');
+    assert.ok(currentOnDisk.includes(consumedNonce), 'Consumed nonce must NOT have been erased from disk');
+    const parsedRaw = JSON.parse(currentOnDisk);
+    assert.ok(Array.isArray(parsedRaw.seen) && parsedRaw.seen.includes(consumedNonce), 'consumedNonce must remain in seen array');
+  });
+
+  // 15. Geçerli eski dosya formatı ve geçerli süresi dolmuş rezervasyonların davranışları korunur
+  it('SEC-42: Backward compatibility for legacy string[] format and automatic cleanup of expired reservations are strictly preserved', async () => {
+    // Part A: Legacy string[] format support
+    const legacyPath = path.join(tempDir, `legacy-format-store-${crypto.randomUUID()}.json`);
+    const legacyNonce1 = `legacy-nonce-1-${crypto.randomUUID()}`;
+    const legacyNonce2 = `legacy-nonce-2-${crypto.randomUUID()}`;
+    const freshNonce = `fresh-nonce-3-${crypto.randomUUID()}`;
+
+    // Write plain JSON array of strings (legacy format)
+    await fs.writeFile(legacyPath, JSON.stringify([legacyNonce1, legacyNonce2]), 'utf8');
+
+    const storeLegacy = new NonceStore({ filePath: legacyPath });
+
+    // Existing legacy nonces are recognized as seen
+    assert.equal(await storeLegacy.isNonceSeen(legacyNonce1), true, 'Legacy nonce 1 must be seen');
+    assert.equal(await storeLegacy.isNonceSeen(legacyNonce2), true, 'Legacy nonce 2 must be seen');
+    assert.equal(await storeLegacy.isNonceSeen(freshNonce), false, 'Fresh nonce must not be seen');
+
+    // Replay of legacy nonces is rejected (returns false)
+    assert.equal(await storeLegacy.markNonceSeen(legacyNonce1), false, 'Replay of legacy nonce 1 must return false');
+    assert.equal(await storeLegacy.markNonceSeen(legacyNonce2), false, 'Replay of legacy nonce 2 must return false');
+
+    // Consuming a fresh nonce succeeds and migrates file schema safely
+    assert.equal(await storeLegacy.markNonceSeen(freshNonce), true, 'Consuming fresh nonce must return true');
+
+    // Verify migrated on-disk schema
+    const migratedRaw = JSON.parse(await fs.readFile(legacyPath, 'utf8'));
+    assert.ok(Array.isArray(migratedRaw.seen), 'Migrated schema has seen array');
+    assert.ok(migratedRaw.seen.includes(legacyNonce1), 'Legacy nonce 1 preserved in migrated seen');
+    assert.ok(migratedRaw.seen.includes(legacyNonce2), 'Legacy nonce 2 preserved in migrated seen');
+    assert.ok(migratedRaw.seen.includes(freshNonce), 'Fresh nonce preserved in migrated seen');
+    assert.ok(migratedRaw.seenUntil[freshNonce] > Date.now(), 'Fresh nonce has valid retentionUntil');
+
+    // Part B: Expired reservations cleanup vs active reservations preservation
+    const resTestPath = path.join(tempDir, `reservations-retention-${crypto.randomUUID()}.json`);
+    const expiredResNonce = `exp-nonce-${crypto.randomUUID()}`;
+    const activeResNonce = `active-nonce-${crypto.randomUUID()}`;
+    const now = Date.now();
+
+    await fs.writeFile(
+      resTestPath,
+      JSON.stringify({
+        seen: [],
+        seenUntil: {},
+        reserved: {
+          [expiredResNonce]: now - 60000, // Expired 1 minute ago
+          [activeResNonce]: now + 300000,  // Active for 5 more minutes
+        },
+      }),
+      'utf8'
+    );
+
+    const storeRes = new NonceStore({ filePath: resTestPath });
+
+    // Expired reservation is cleaned up on read -> isNonceSeen returns false
+    assert.equal(await storeRes.isNonceSeen(expiredResNonce), false, 'Expired reservation must be cleaned up and return false');
+    // Active reservation is active -> isNonceSeen returns true
+    assert.equal(await storeRes.isNonceSeen(activeResNonce), true, 'Active reservation must return true');
+
+    // Expired reservation nonce can now be reserved anew
+    assert.equal(await storeRes.reserveNonce(expiredResNonce), true, 'Expired reservation nonce can be re-reserved');
+    // Active reservation cannot be reserved
+    assert.equal(await storeRes.reserveNonce(activeResNonce), false, 'Active reservation nonce cannot be reserved again');
+  });
+
+  // 16. Başarılı ve başarısız işlemlerden sonra kilit kuyruğu temizliği korunur
+  it('SEC-43: In-process lock queue entries are cleanly deleted after mixed success, schema error, and overflow operations without deadlock', async () => {
+    const fileGood = path.join(tempDir, `queue-mixed-good-${crypto.randomUUID()}.json`);
+    const fileOverflow = path.join(tempDir, `queue-mixed-overflow-${crypto.randomUUID()}.json`);
+    const fileCorrupt = path.join(tempDir, `queue-mixed-corrupt-${crypto.randomUUID()}.json`);
+
+    await fs.writeFile(fileOverflow, '{"seen": ["over"], "seenUntil": {"over": 1e999}, "reserved": {}}', 'utf8');
+    await fs.writeFile(fileCorrupt, '{"broken json": [', 'utf8');
+
+    const storeGood = new NonceStore({ filePath: fileGood });
+    const storeOverflow = new NonceStore({ filePath: fileOverflow });
+    const storeCorrupt = new NonceStore({ filePath: fileCorrupt });
+
+    const mixedOps = [
+      storeGood.markNonceSeen('mixed-good-1'),
+      storeOverflow.markNonceSeen('mixed-over-1'),
+      storeGood.reserveNonce('mixed-good-2'),
+      storeCorrupt.isNonceSeen('mixed-bad-1'),
+      storeOverflow.isNonceSeen('over'),
+      storeGood.isNonceSeen('mixed-good-1'),
+      storeCorrupt.markNonceSeen('mixed-bad-2'),
+      storeGood.markNoncesSeenBatch(['mixed-good-3', 'mixed-good-4']),
+      storeOverflow.reserveNonce('mixed-over-2'),
+      storeGood.releaseReservation('mixed-good-2'),
+    ];
+
+    const results = await Promise.allSettled(mixedOps);
+    assert.equal(results.length, 10);
+
+    // Good operations fulfilled, corrupt/overflow operations rejected
+    assert.equal(results[0].status, 'fulfilled');
+    assert.equal(results[1].status, 'rejected');
+    assert.equal(results[2].status, 'fulfilled');
+    assert.equal(results[3].status, 'rejected');
+    assert.equal(results[4].status, 'rejected');
+    assert.equal(results[5].status, 'fulfilled');
+    assert.equal(results[6].status, 'rejected');
+    assert.equal(results[7].status, 'fulfilled');
+    assert.equal(results[8].status, 'rejected');
+    assert.equal(results[9].status, 'fulfilled');
+
+    // All lock queues must be completely cleared
+    const normGood = path.resolve(fileGood);
+    const normOverflow = path.resolve(fileOverflow);
+    const normCorrupt = path.resolve(fileCorrupt);
+
+    assert.equal(inProcessLockQueues.has(normGood), false, 'normGood lock queue must be deleted');
+    assert.equal(inProcessLockQueues.has(normOverflow), false, 'normOverflow lock queue must be deleted');
+    assert.equal(inProcessLockQueues.has(normCorrupt), false, 'normCorrupt lock queue must be deleted');
+    assert.equal(inProcessLockQueues.size, 0, 'inProcessLockQueues must be completely empty');
+
+    // Subsequent operation runs without hindrance
+    assert.equal(await storeGood.markNonceSeen('mixed-good-final'), true);
+    assert.equal(inProcessLockQueues.size, 0);
   });
 });
 
