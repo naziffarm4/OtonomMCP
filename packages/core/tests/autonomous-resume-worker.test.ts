@@ -145,7 +145,8 @@ describe('resume after interruption + detached workers', { concurrency: 1 }, () 
     const changed = rep(await cli(['--resume']));
     assert.equal(changed.status, 'CONFIGURATION_ERROR');
     assert.match(changed.stopReason, /fingerprint mismatch/);
-    git(dir, 'checkout', '--', 'proje.md');
+    // Restore byte-exact (git checkout could re-add CRLF with core.autocrlf on Windows).
+    fs.writeFileSync(path.join(dir, 'proje.md'), SPEC, 'utf8');
 
     const r = rep(await cli(['--resume']));
     assert.equal(r.status, 'COMPLETED', `${r.stopReason}\n${out.join('\n').slice(-3000)}`);
