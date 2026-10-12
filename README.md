@@ -166,6 +166,8 @@ node packages/core/bin/aidm.js run --spec ./benim-projem.md -C ./hedef-proje --d
 node packages/core/bin/aidm.js run --spec ./benim-projem.md -C ./hedef-proje --budget-usd 5
 ```
 
+Director çıktısı: LLM yalnızca karar alanlarını üretir (`actionType`, `rationale`, `confidence`, görev yükü, `assumptions`); `protocolVersion`, `actionId`, `projectId`, `directorSessionId`, `basedOnContextFingerprint` gibi zarf alanlarını sistem doldurur. LLM bunlardan farklı bir proje/oturum/fingerprint değeri gönderirse eylem reddedilir (fail-closed). `AIDM_LLM_RESPONSE_FORMAT=auto|json_schema|json_schema_loose|json_object` (varsayılan `auto`: strict `json_schema`, sağlayıcı desteklemezse `json_object`), `AIDM_LLM_REPAIR_ATTEMPTS=0..3` (varsayılan 1: doğrulama hatası LLM'e geri beslenir; her istek ayrı bütçe rezervasyonu alır).
+
 Ek seçenekler: `--max-cycles N` (görev başına döngü, varsayılan 3), `--mandate-hours H` (mandate geçerliliği, varsayılan 8, en fazla 24), `--no-commit`, `--llm-endpoint URL`, `--llm-model AD`, `--json`, `--verbose`. MCP üzerinden aynı akış `aidm_autonomous_start` aracıyla çalışır.
 
 **Akış:** `SpecIngestor` (MD → `InitialProjectUnderstanding` + `ProposedDevelopmentPlan` + görevler, SHA-256 ile spec'e bağlı) → otomatik Project Mandate (yalnızca `IMPLEMENTATION` sınıfı = `ALLOW`) → ApprovalPackage → her görev için `ClosedLoopCoordinator` (Director/LLM → Policy → ExecutionBridge → Driver → AGY → bağımsız `SystemExecutionEvidence`) → kabul edilen her görev için commit → `.ai-manager/reports/autonomous-<run>.json|.md` özet raporu (değişen dosyalar, kanıtlar, doğrulama komutları, bütçe, commitler, varsayımlar).
