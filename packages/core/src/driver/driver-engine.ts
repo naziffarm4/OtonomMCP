@@ -533,11 +533,15 @@ export class DriverEngine {
     const decisions = await this.decisionStore.listDecisions({
       sessionId: session.directorSessionId,
     });
-    let decision = decisions.find(
-      (d) =>
-        d.decisionType === 'IMPLEMENT_TASK' &&
-        (d.metadata as any)?.taskId === task.task_id
+    // A task may be attempted several times (bounded repair cycles): prefer the decision based on
+    // the CURRENT authoritative snapshot, else the most recent one for the task — never a stale
+    // first-attempt decision.
+    const taskDecisions = decisions.filter(
+      (d) => d.decisionType === 'IMPLEMENT_TASK' && (d.metadata as any)?.taskId === task.task_id
     );
+    let decision =
+      taskDecisions.find((d) => d.basedOnContextFingerprint === snapshot!.logicalFingerprint) ??
+      [...taskDecisions].sort((x, y) => String(x.createdAt).localeCompare(String(y.createdAt))).at(-1);
 
     if (!decision) {
       // Look for any generic IMPLEMENT_TASK decision without a conflicting taskId
@@ -563,12 +567,25 @@ export class DriverEngine {
 
     // 5. Check or Ingest DirectorInstruction
     const instructions = await this.loopStore.listInstructions(projectId);
-    let instruction = instructions.find(
+    const sameTask = instructions.filter(
       (i) =>
         i.taskId === task.task_id &&
         i.taskRevision === taskRevision &&
         i.directorSessionId === session!.directorSessionId
     );
+    // Reuse an instruction only for the same decision on the same context; a repair attempt on a
+    // changed context gets a fresh instruction (accepted ones are still detected below).
+    let instruction =
+      sameTask.find((i) => i.directorDecisionId === decision!.decisionId && i.contextFingerprint === snapshot!.logicalFingerprint);
+    if (!instruction) {
+      for (const i of sameTask) {
+        const prev = await this.loopStore.getCycleResultByInstructionId(i.instructionId);
+        if (prev && prev.terminalStatus === 'ACCEPTED') {
+          instruction = i;
+          break;
+        }
+      }
+    }
 
     if (instruction) {
       // Check if this exact instruction has ALREADY been executed and accepted

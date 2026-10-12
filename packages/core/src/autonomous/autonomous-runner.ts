@@ -81,6 +81,9 @@ import type { ITrustedIdentityProvider } from '../authorization/trusted-identity
 import { createTrustedIdentityProvider } from '../authorization/trusted-identity-config.js';
 import { NonceStore } from '../authorization/nonce-store.js';
 import { isExternalIdpConfigured } from './idp-client.js';
+import { RunMonitor, runMonitorUrl, monitorText, type RunMonitorEventType, type RunMonitorSnapshotInput, type RunMonitorStatus } from './run-monitor.js';
+import { InstructionChannel, computeInstructionChannelFingerprint, type VerifiedInstruction } from './instruction-channel.js';
+import { exec as execCb } from 'node:child_process';
 import {
   IdpDecisionResolver,
   buildDecisionRecord,
@@ -109,6 +112,7 @@ export type AutonomousRunStatus =
   | 'BLOCKED_ON_HUMAN'
   | 'BUDGET_EXHAUSTED'
   | 'CONFIGURATION_ERROR'
+  | 'STOPPED'
   | 'FAILED';
 
 export type AutonomousEntryPoint = 'aidm run --spec' | 'aidm_autonomous_start';
@@ -162,6 +166,12 @@ export interface AutonomousRunOptions {
   /** Max in-scope refinements (REPLAN splits) and read-only analyses per task. */
   readonly maxRefinementsPerTask?: number;
   readonly maxAnalysesPerTask?: number;
+  /** Pre-assigned run id (external approval: same id from PENDING_APPROVAL to the end). */
+  readonly runId?: string;
+  /** fetch used for the IdP run monitor and instruction channel (tests). */
+  readonly idpFetchFn?: typeof fetch;
+  /** Called once with the monitor URL when the live run monitor is enabled. */
+  readonly onMonitorUrl?: (url: string) => void;
 }
 
 export interface AutonomousRunEvent {
@@ -221,6 +231,14 @@ export interface AutonomousRunReport {
   decisions: Array<{ decisionId: string; taskId: string; question: string; state: string; channel?: string; answer?: unknown }>;
   refinements: string[];
   executorReports: string[];
+  /** Spec commands deferred per task because the files they reference did not exist yet. */
+  deferredCommands: Array<{ taskId: string; commands: string[] }>;
+  /** Run-level acceptance gate (global `## Komutlar` + command-like `## Kabul Kriterleri`). */
+  finalGate?: { status: 'PASS' | 'FAIL' | 'NOT_RUN'; repairs: number; checks: Array<{ command: string; exitCode: number | null; tail?: string }>; criteria: string[] };
+  /** Verified live PO instructions (no tokens). */
+  instructions: Array<{ instructionId: string; mode: string; taskId: string | null; state: string; note?: string }>;
+  monitorUrl?: string;
+  skippedByPo?: string[];
   stopReason?: string;
   reportPath?: string;
 }
@@ -259,8 +277,89 @@ export class AutonomousSpecRunner {
     this.env = options.env ?? process.env;
   }
 
-  private emit(type: string, message: string, taskId?: string): void {
-    this.options.onEvent?.({ type, message, taskId, at: new Date().toISOString() });
+  private monitor: RunMonitor | null = null;
+  private monitorStatus: RunMonitorStatus = 'RUNNING';
+  private currentReport: AutonomousRunReport | null = null;
+  private currentTaskId: string | null = null;
+  private lastDirectorAction: RunMonitorSnapshotInput['lastDirectorAction'] = null;
+  private pendingDecisionIds = new Set<string>();
+  private liveBudget?: () => { limitUsd: number; committedUsd: number; reservedUsd: number };
+  private maxAttemptsOf: (taskId: string) => number | undefined = () => undefined;
+  private instructionChannel: InstructionChannel | null = null;
+  private stopInstruction: VerifiedInstruction | null = null;
+
+  private static readonly MONITOR_TYPES: Record<string, RunMonitorEventType> = {
+    CYCLE_START: 'CYCLE_START',
+    CYCLE_RESULT: 'CYCLE_RESULT',
+    DECISION_REQUESTED: 'DECISION_REQUESTED',
+    DECISION_ANSWERED: 'DECISION_ANSWERED',
+    TASK_REFINED: 'REPLAN',
+    EXECUTOR_REPORT: 'AGY_RESULT',
+    MANDATE_SEALED: 'MANDATE_SEALED',
+    RUN_FINISHED: 'RUN_FINISHED',
+    RUN_STARTED: 'RUN_STARTED',
+    TASK_ACCEPTED: 'TASK_ACCEPTED',
+    TASK_BLOCKED: 'TASK_BLOCKED',
+    VERIFICATION: 'VERIFICATION',
+    DIRECTOR_ACTION: 'DIRECTOR_ACTION',
+    COMMIT: 'COMMIT',
+    ANALYSIS: 'ANALYSIS',
+    FINAL_GATE: 'VERIFICATION',
+    INSTRUCTION: 'INFO',
+  };
+
+  private emit(type: string, message: string, taskId?: string, level: 'info' | 'warn' | 'error' = 'info'): void {
+    try {
+      this.options.onEvent?.({ type, message, taskId, at: new Date().toISOString() });
+    } catch {
+      /* listener errors never affect the run */
+    }
+    if (this.monitor) {
+      this.monitor.event(AutonomousSpecRunner.MONITOR_TYPES[type] ?? 'INFO', message, taskId ?? null, level);
+      if (type !== 'CYCLE_START') this.pushSnapshot();
+    }
+  }
+
+  /** Builds a secret-free monitor snapshot from the live report (never throws). */
+  private snapshotInput(): RunMonitorSnapshotInput | null {
+    const rep = this.currentReport;
+    if (!rep) return null;
+    try {
+      const b = rep.budget ?? this.liveBudget?.() ?? { limitUsd: this.options.budgetUsd ?? 0, committedUsd: 0, reservedUsd: 0 };
+      const model = typeof rep.provider?.model === 'string' ? rep.provider.model : undefined;
+      return {
+        runId: rep.runId,
+        projectId: rep.projectId,
+        projectName: rep.projectName,
+        entryPoint: rep.entryPoint === 'aidm_autonomous_start' ? 'aidm_autonomous_start' : 'aidm_run_spec',
+        status: this.monitorStatus,
+        startedAt: rep.startedAt,
+        finishedAt: rep.finishedAt ?? null,
+        ...(model ? { model } : {}),
+        budget: { limitUsd: b.limitUsd, committedUsd: b.committedUsd, reservedUsd: b.reservedUsd },
+        currentTaskId: this.currentTaskId,
+        tasks: rep.tasks.map((t) => ({
+          taskId: t.taskId,
+          title: t.title,
+          status: t.status,
+          cycles: t.cycles,
+          ...(this.maxAttemptsOf(t.taskId) !== undefined ? { maxAttempts: this.maxAttemptsOf(t.taskId) } : {}),
+          lastSummary: t.lastSummary ?? null,
+        })),
+        lastDirectorAction: this.lastDirectorAction ?? null,
+        pendingApprovalId: null,
+        pendingDecisionIds: [...this.pendingDecisionIds],
+        stopReason: rep.stopReason ?? null,
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  private pushSnapshot(immediate = false): void {
+    if (!this.monitor) return;
+    const snap = this.snapshotInput();
+    if (snap) this.monitor.snapshot(snap, immediate);
   }
 
   async run(): Promise<AutonomousRunReport> {
@@ -268,7 +367,10 @@ export class AutonomousSpecRunner {
     const specPath = path.resolve(this.options.specPath);
     const entryPoint = this.options.entryPoint ?? 'aidm run --spec';
     const dryRun = Boolean(this.options.dryRun);
-    const runId = `run-${new Date().toISOString().replace(/[:.]/g, '-')}-${crypto.randomBytes(3).toString('hex')}`;
+    const runId =
+      this.options.runId && /^[A-Za-z0-9._:-]{1,128}$/.test(this.options.runId)
+        ? this.options.runId
+        : `run-${new Date().toISOString().replace(/[:.]/g, '-')}-${crypto.randomBytes(3).toString('hex')}`;
 
     if (!fs.existsSync(projectRoot) || !fs.statSync(projectRoot).isDirectory()) {
       throw new AutonomousRunError(`Project root does not exist: ${projectRoot}`, 'PROJECT_ROOT_MISSING');
@@ -288,6 +390,7 @@ export class AutonomousSpecRunner {
     const ingestion = new SpecIngestor().ingest(markdown, {
       projectId,
       specPath: path.relative(projectRoot, specPath).startsWith('..') ? specPath : path.relative(projectRoot, specPath),
+      maxAttemptsPerTask: Math.max(1, Math.min(10, Math.floor(this.options.maxCyclesPerTask ?? 3))),
     });
 
     const mandateStore = new ProjectMandateStore({
@@ -336,7 +439,26 @@ export class AutonomousSpecRunner {
       decisions: [],
       refinements: [],
       executorReports: [],
+      deferredCommands: [],
+      instructions: [],
     };
+    this.currentReport = report;
+    if (!dryRun) {
+      this.monitor = RunMonitor.create({ env: this.env, runId, fetchFn: this.options.idpFetchFn });
+      if (this.monitor) {
+        const url = runMonitorUrl(this.env, runId);
+        if (url) {
+          report.monitorUrl = url;
+          try {
+            this.options.onMonitorUrl?.(url);
+          } catch {
+            /* ignore */
+          }
+        }
+        this.emit('RUN_STARTED', `Otonom çalışma başladı: ${ingestion.projectName}`);
+        this.pushSnapshot(true);
+      }
+    }
     for (const a of ingestion.assumptions) this.emit('ASSUMPTION', a);
     let decisionMode: DecisionMode;
     try {
@@ -529,6 +651,19 @@ export class AutonomousSpecRunner {
       budgetManager.createGlobalAccount(budgetUsd);
       // Record this invocation as an explicitly operator-authorized ADR-16 budget period.
       budgetManager.authorizeBudgetPeriod({ limit: budgetUsd, authorizedBy: `operator:${entryPoint}:${runId}` });
+      {
+        const bm = budgetManager;
+        this.liveBudget = () => {
+          const acc = bm.getGlobalAccount();
+          return acc
+            ? {
+                limitUsd: nanoUsdToUsd(acc.limitSpendNanoUsd),
+                committedUsd: nanoUsdToUsd(acc.committedSpendNanoUsd),
+                reservedUsd: nanoUsdToUsd(acc.reservedSpendNanoUsd),
+              }
+            : { limitUsd: budgetUsd, committedUsd: 0, reservedUsd: 0 };
+        };
+      }
 
       let baseProvider: LLMProvider;
       if (this.options.llmProvider) {
@@ -580,6 +715,13 @@ export class AutonomousSpecRunner {
         allowMockProvider: this.options.allowMockProvider ?? false,
         defaultModel: baseProvider.defaultModel,
       });
+      // Global spec commands: per task only when the files they reference already exist;
+      // all of them (plus command-like global criteria) at the final run-level gate.
+      const specCollector = new SpecVerificationEvidenceCollector(
+        { evidenceStore },
+        toVerificationCommands(ingestion.verificationCommands),
+        projectRoot
+      );
       const policyEngine = new AuthorizationPolicyEngine({ mandateStore, historyManager, specStore, evidenceStore });
       const coordinator = new ClosedLoopCoordinator({
         workspaceRoot: projectRoot,
@@ -591,10 +733,7 @@ export class AutonomousSpecRunner {
         durableStateManager,
         historyManager,
         evidenceStore,
-        evidenceCollector: new SpecVerificationEvidenceCollector(
-          { evidenceStore },
-          toVerificationCommands(ingestion.verificationCommands)
-        ),
+        evidenceCollector: specCollector,
         directorRuntime,
         executorPort,
         authorizationPolicyEngine: policyEngine,
@@ -609,7 +748,32 @@ export class AutonomousSpecRunner {
       });
 
       // ------------------------------------------------------------ task loop
-      const maxCycles = Math.max(1, this.options.maxCyclesPerTask ?? 3);
+      const defaultAttempts = Math.max(1, Math.min(10, Math.floor(this.options.maxCyclesPerTask ?? 3)));
+      // Per-task attempt budget: spec override (`Deneme: N`) > --max-cycles > default 3.
+      // Only a verified human answer (retry_2) can raise it, by exactly +2 each time.
+      const allowedAttempts = new Map<string, number>();
+      const attemptsFor = (taskId: string): number => {
+        const cur = allowedAttempts.get(taskId);
+        if (cur !== undefined) return cur;
+        const def = ingestion.tasks.find((t) => t.task_id === taskId) as TaskDefinition | undefined;
+        const fromSpec = Number((def?.metadata as Record<string, unknown> | undefined)?.maxAttemptsFromSpec);
+        const n = Number.isInteger(fromSpec) && fromSpec >= 1 ? fromSpec : defaultAttempts;
+        allowedAttempts.set(taskId, n);
+        return n;
+      };
+      this.maxAttemptsOf = (id) => allowedAttempts.get(id);
+      const setSpecMaxAttempts = async (taskId: string, n: number): Promise<void> => {
+        try {
+          const tasks = await specStore.loadTasks();
+          if (tasks.some((t) => t.task_id === taskId)) {
+            await specStore.saveTasks(tasks.map((t) => (t.task_id === taskId ? { ...t, max_attempts: n } : t)) as never);
+          }
+        } catch {
+          /* best effort */
+        }
+      };
+      const poNotes: Array<{ text: string; taskId: string | null; id: string }> = [];
+      let pauseInstruction: VerifiedInstruction | null = null;
       let clarificationBudget = Math.max(0, this.options.maxClarificationAssumptions ?? 3);
       let stop: { status: AutonomousRunStatus; reason: string } | null = null;
       const maxDecisionsPerTask = Math.max(0, this.options.maxDecisionsPerTask ?? 3);
@@ -637,7 +801,10 @@ export class AutonomousSpecRunner {
       const decisionsAsked = new Map<string, number>();
       const refinementsDone = new Map<string, number>();
       const analysesDone = new Map<string, number>();
-      const waiting = new Map<string, { record: DecisionRecord; promise: Promise<{ taskId: string; outcome: DecisionOutcome }> }>();
+      const waiting = new Map<
+        string,
+        { record: DecisionRecord; kind: 'DIRECTOR' | 'ATTEMPTS_EXHAUSTED'; promise: Promise<{ taskId: string; outcome: DecisionOutcome }> }
+      >();
       const allowedDirs = (report.mandate?.allowedDirectories ?? []).map((d) => d.replace(/\\/g, '/').replace(/\/+$/, ''));
 
       // Executor reports from accepted cycles are carried into the next Director call.
@@ -763,14 +930,114 @@ export class AutonomousSpecRunner {
         return hits.length ? [...new Set(hits)].join(' | ').slice(0, 2000) : undefined;
       };
 
+      // ---- live PO instructions (verified passkey tokens only; text never raises privileges)
+      this.instructionChannel = InstructionChannel.create({
+        env: this.env,
+        fetchFn: this.options.idpFetchFn,
+        provider:
+          this.options.identityProvider ??
+          createTrustedIdentityProvider({ env: this.env, nonceStore: new NonceStore({ baseDir: projectRoot }), fetchFn: this.options.idpFetchFn }),
+        binding: {
+          runId,
+          projectId,
+          packageId: approved.packageId,
+          revision: approved.revision,
+          contextFingerprint: computeInstructionChannelFingerprint({
+            runId,
+            projectId,
+            packageId: approved.packageId,
+            revision: approved.revision,
+            specFingerprint: ingestion.specFingerprint,
+          }),
+        },
+      });
+      if (this.instructionChannel) {
+        this.instructionChannel.taskExists = (id) => taskDefs.has(id);
+        await this.instructionChannel.open();
+      }
+      const channel = this.instructionChannel;
+      const instructionInbox: VerifiedInstruction[] = [];
+      const pollMs = Math.max(500, Number(this.env.AIDM_IDP_POLL_INTERVAL_MS ?? '3000') || 3000);
+      let lastPoll = 0;
+      const pollInstructions = async (force = false): Promise<void> => {
+        if (!channel?.opened) return;
+        if (!force && Date.now() - lastPoll < Math.min(pollMs, 1000)) return;
+        lastPoll = Date.now();
+        const got = await channel.poll();
+        for (const rj of channel.rejected.splice(0)) {
+          report.instructions.push({ instructionId: rj.instructionId, mode: 'UNKNOWN', taskId: null, state: 'REJECTED', note: monitorText(rj.reason, 300) });
+          this.emit('INSTRUCTION', 'Talimat reddedildi (doğrulanamadı)', undefined, 'warn');
+        }
+        instructionInbox.push(...got);
+      };
+      const pollTimer = channel?.opened ? setInterval(() => void pollInstructions(true), pollMs) : null;
+      pollTimer?.unref?.();
+      /** Applied at cycle boundaries only (an AGY step is never interrupted). */
+      const applyInstructions = async (): Promise<void> => {
+        await pollInstructions(true);
+        while (instructionInbox.length) {
+          const ins = instructionInbox.shift()!;
+          const entry: AutonomousRunReport['instructions'][number] = { instructionId: ins.instructionId, mode: ins.mode, taskId: ins.taskId, state: 'RECEIVED' };
+          report.instructions.push(entry);
+          this.emit('INSTRUCTION', `Talimat alındı (${ins.mode})`, ins.taskId ?? undefined);
+          await historyManager.appendEvent({
+            eventType: 'AUTONOMOUS_PO_INSTRUCTION',
+            actor: Actor.USER,
+            taskId: ins.taskId,
+            payload: { instructionId: ins.instructionId, mode: ins.mode, sub: ins.sub },
+          });
+          if (ins.mode === 'STOP') {
+            this.stopInstruction = ins;
+            entry.state = 'APPLIED';
+            stop = { status: 'STOPPED', reason: `Ürün sahibi talimatıyla durduruldu${ins.text ? `: ${monitorText(ins.text, 300)}` : ''}.` };
+            return;
+          }
+          poNotes.push({ text: ins.text, taskId: ins.taskId, id: ins.instructionId });
+          if (ins.mode === 'NOTE') {
+            entry.state = 'APPLIED';
+            await channel?.ack(ins.instructionId, 'APPLIED', "Director bağlamına eklendi.");
+            this.emit('INSTRUCTION', 'Talimat uygulandı (NOTE)', ins.taskId ?? undefined);
+          } else {
+            // PAUSE_AND_APPLY: dispatching pauses at this boundary; the next Director call gets the
+            // instruction first and may replan WITHIN the sealed mandate. ACK after that call.
+            pauseInstruction = ins;
+            for (const t of report.tasks) refinementsDone.delete(t.taskId);
+          }
+        }
+      };
+      const settlePause = async (outcome: { applied: boolean; note: string }): Promise<void> => {
+        const ins = pauseInstruction;
+        if (!ins) return;
+        pauseInstruction = null;
+        const entry = report.instructions.find((x) => x.instructionId === ins.instructionId);
+        const status = outcome.applied ? 'APPLIED' : 'REJECTED';
+        if (entry) {
+          entry.state = status;
+          entry.note = monitorText(outcome.note, 500);
+        }
+        await channel?.ack(ins.instructionId, status, outcome.note);
+        this.emit('INSTRUCTION', outcome.applied ? 'Talimat uygulandı' : 'Talimat reddedildi', ins.taskId ?? undefined, outcome.applied ? 'info' : 'warn');
+      };
+
       /** Runs cycles for one task; returns 'DONE' | 'DEFERRED' (waiting on a decision / split). */
+      let dispatchSeq = 0;
+      const relSpecPath = path.relative(projectRoot, specPath).replace(/\\/g, '/');
+      const specWritable =
+        !relSpecPath.startsWith('..') &&
+        (ingestion.allowedPaths.includes(relSpecPath) || ingestion.requirements.some((r) => r.targetFiles.includes(relSpecPath)));
       const runTask = async (taskReport: AutonomousTaskReport): Promise<'DONE' | 'DEFERRED'> => {
         const task = taskDefs.get(taskReport.taskId)!;
         let extraGuidance = guidance.get(task.task_id) ?? '';
         guidance.delete(task.task_id);
         taskReport.status = 'PENDING';
 
+        const maxCycles = attemptsFor(task.task_id);
+        await setSpecMaxAttempts(task.task_id, maxCycles);
+        this.currentTaskId = task.task_id;
+        let lastFailure = '';
         while (taskReport.cycles < maxCycles) {
+          await applyInstructions();
+          if (stop) break;
           if (isBudgetExhausted(budgetManager!)) {
             stop = { status: 'BUDGET_EXHAUSTED', reason: 'Budget exhausted; raising the budget requires human approval.' };
             break;
@@ -797,7 +1064,13 @@ export class AutonomousSpecRunner {
           const isAnalysis = taskReport.kind === 'ANALYSIS';
           // Ordered by importance: the prompt builder bounds this field (DEFAULT_MAX_FIELD_LENGTH_CHARS),
           // so task, fresh guidance (PO answers, executor reports) come before the static policy text.
+          const pauseText = pauseInstruction
+            ? `PAUSED BY PRODUCT_OWNER (passkey-verified instruction ${(pauseInstruction as VerifiedInstruction).instructionId}): ${(pauseInstruction as VerifiedInstruction).text}\n` +
+              'Apply it now: you may REPLAN (proposedTasks/taskOrder) or adjust this task WITHIN the sealed mandate (allowed paths, budget, operation types). ' +
+              'Anything outside the mandate (new paths, budget, network, dependency install, policy) must NOT be done: say so in rationale and raise REQUEST_HUMAN_DECISION.'
+            : '';
           const instruction = [
+            pauseText,
             `Target task: ${task.task_id} — ${task.title}.`,
             `Task description: ${task.description}`,
             `Acceptance criteria: ${task.acceptance_criteria.join(' | ')}`,
@@ -806,6 +1079,10 @@ export class AutonomousSpecRunner {
               : '',
             extraGuidance,
             carryNote,
+            ...poNotes
+              .filter((n) => !n.taskId || n.taskId === task.task_id)
+              .slice(-5)
+              .map((n) => `BINDING PRODUCT_OWNER INSTRUCTION (passkey-verified ${n.id}): ${n.text}`),
             `Project root is the only allowed workspace; allowed paths: ${(report.mandate?.allowedDirectories ?? []).join(', ')}.`,
             decisionMode === 'assume' ? NO_QUESTIONS_DIRECTOR_INSTRUCTION : policyText,
             DIRECTOR_CAPABILITIES_INSTRUCTION,
@@ -824,7 +1101,10 @@ export class AutonomousSpecRunner {
               contextSnapshot: snapshot,
               targetTaskId: task.task_id,
               instruction,
-              maxRecoveryAttempts: 1,
+              maxRecoveryAttempts: maxCycles,
+              // Each attempt is a distinct dispatch: a repair with an identical payload must not be
+              // swallowed as an idempotent duplicate of the failed attempt.
+              idempotencyKey: `${runId}:${task.task_id}:attempt-${++dispatchSeq}`,
             });
           } catch (err) {
             result = {
@@ -834,16 +1114,66 @@ export class AutonomousSpecRunner {
           }
           taskReport.lastCycleStatus = result.status;
           taskReport.lastSummary = result.summary;
+          // The human spec is the source of authority: the executor must never rewrite it unless the
+          // spec itself lists it as a writable path. Restore and fail closed.
+          if (!specWritable) {
+            let now = '';
+            try {
+              now = await fs.promises.readFile(specPath, 'utf8');
+            } catch {
+              now = '';
+            }
+            if (crypto.createHash('sha256').update(now, 'utf8').digest('hex') !== ingestion.specFingerprint) {
+              await fs.promises.writeFile(specPath, markdown, 'utf8').catch(() => undefined);
+              taskReport.status = 'BLOCKED';
+              stop = { status: 'BLOCKED_ON_HUMAN', reason: `Spec file '${path.basename(specPath)}' was modified during task ${task.task_id}; restored. The executor may not edit the spec.` };
+              this.emit('TASK_BLOCKED', stop.reason, task.task_id, 'error');
+              break;
+            }
+          }
           if (result.systemEvidence) {
             taskReport.evidenceIds.push(result.systemEvidence.evidenceId);
             taskReport.verificationChecks.push(
               ...result.systemEvidence.verificationChecks.map((c) => ({ type: c.type, status: String(c.status), command: c.command }))
             );
+            // Independently observed changes (incl. untracked new files) count even when the cycle failed.
+            taskReport.filesChanged = [
+              ...new Set([...taskReport.filesChanged, ...result.systemEvidence.changedFiles.map((f) => f.path)]),
+            ];
+            const failing = result.systemEvidence.verificationChecks.filter((c) => c.status === 'FAIL' || c.status === 'BLOCK');
+            lastFailure = failing.length ? formatFailingChecks(failing) : '';
+            if (failing.length) this.emit('VERIFICATION', `${failing.length} kontrol başarısız: ${failing.map((c) => c.command ?? c.type).join(', ')}`, task.task_id, 'warn');
+          }
+          const deferred = specCollector.takeDeferred(task.task_id);
+          if (deferred.length) report.deferredCommands.push({ taskId: task.task_id, commands: deferred });
+          if (result.directorAction) {
+            this.lastDirectorAction = {
+              actionType: String(result.directorAction.actionType),
+              taskId: task.task_id,
+              rationale: monitorText((result.directorAction as unknown as { rationale?: string }).rationale ?? '', 1000),
+              at: new Date().toISOString(),
+            };
           }
           this.emit('CYCLE_RESULT', `${result.status}: ${result.summary}`, task.task_id);
 
           const action = (result.directorAction ?? {}) as unknown as Record<string, unknown>;
           const actionType = result.directorAction?.actionType as string | undefined;
+          if (pauseInstruction) {
+            if (actionType === 'REPLAN' || actionType === 'UPDATE_PLAN' || actionType === 'CREATE_TASK') {
+              const ref = await tryRefine(taskReport, action);
+              await settlePause({ applied: ref.applied, note: ref.applied ? ref.note : `Kapsam dışı veya uygulanamadı: ${ref.note || 'değişiklik yok'}` });
+              if ((taskReport.status as string) === 'SPLIT') return 'DEFERRED';
+              taskReport.cycles--;
+              extraGuidance = `${ref.note || ''} Continue with IMPLEMENT_TASK for ${task.task_id}.`;
+              continue;
+            } else if (actionType === 'REQUEST_HUMAN_DECISION') {
+              await settlePause({ applied: false, note: 'Talimat sözleşme (mandate) dışında bir değişiklik gerektiriyor; insan kararı istendi.' });
+            } else if (!actionType) {
+              await settlePause({ applied: false, note: 'Director geçerli bir eylem üretmedi; talimat uygulanamadı.' });
+            } else {
+              await settlePause({ applied: true, note: `Director talimatı uyguladı (${actionType}).` });
+            }
+          }
           // Executor (AGY) questions/blockers/findings are routed to the Director, never to the human.
           const execReport = executorQuestions(result);
           if (execReport) {
@@ -899,7 +1229,8 @@ export class AutonomousSpecRunner {
               .resolve(record)
               .catch((err): DecisionOutcome => ({ status: 'FAILED', reason: err instanceof Error ? err.message : String(err) }))
               .then((outcome) => ({ taskId: task.task_id, outcome }));
-            waiting.set(task.task_id, { record, promise });
+            waiting.set(task.task_id, { record, kind: 'DIRECTOR', promise });
+            this.pendingDecisionIds.add(record.decisionId);
             return 'DEFERRED';
           }
 
@@ -950,6 +1281,7 @@ export class AutonomousSpecRunner {
             if (execNote) carryNote = `(From the previous task ${task.task_id}) ${execNote}`;
             taskReport.status = 'ACCEPTED';
             accepted.add(task.task_id);
+            this.emit('TASK_ACCEPTED', `${task.task_id} kabul edildi (bağımsız kanıt)`, task.task_id);
             await this.markTaskAccepted(specStore, task.task_id);
             // The closed loop may already checkpoint-commit accepted work; otherwise commit here.
             const headAfter = await gitHead(projectRoot);
@@ -998,7 +1330,7 @@ export class AutonomousSpecRunner {
             result.status === 'BLOCKED_ON_APPROVAL' ||
             result.status === 'REJECTED_BY_POLICY' ||
             result.status === 'EXECUTION_UNKNOWN' ||
-            result.humanDecisionRequired
+            (result.humanDecisionRequired && result.status !== 'MAX_ATTEMPTS_EXCEEDED')
           ) {
             taskReport.status = 'BLOCKED';
             stop = {
@@ -1017,8 +1349,70 @@ export class AutonomousSpecRunner {
           }
 
           // EXECUTION_FAILED / CORRECTIVE_TASK_CREATED / MAX_ATTEMPTS_EXCEEDED: bounded retry
-          extraGuidance = `Previous attempt failed: ${result.summary}. ${execNote} Fix the cause and retry IMPLEMENT_TASK for ${task.task_id}.`;
+          // Repair cycle: the independent verification output goes back to the Director.
+          extraGuidance = [
+            `Attempt ${taskReport.cycles}/${maxCycles} for ${task.task_id} failed independent verification: ${monitorText(result.summary, 300)}.`,
+            lastFailure ? `Failing checks (AIDM-collected output tails):\n${lastFailure}` : '',
+            execNote,
+            `Direct the executor to fix exactly these failures (keep already-correct files), then retry IMPLEMENT_TASK for ${task.task_id}.`,
+          ]
+            .filter(Boolean)
+            .join('\n');
           if (result.status === 'MAX_ATTEMPTS_EXCEEDED') break;
+        }
+
+        // Attempts exhausted: the RUNNER (never the Director) asks the PO what to do.
+        if (taskReport.status === 'PENDING' && !stop && taskReport.kind !== 'ANALYSIS' && (taskReport.cycles >= maxCycles || taskReport.lastCycleStatus === 'MAX_ATTEMPTS_EXCEEDED')) {
+          if (decisionMode === 'ask' && decisionResolver) {
+            const budgetLeft = !isBudgetExhausted(budgetManager!);
+            const diagnosis = monitorText(this.lastDirectorAction?.taskId === task.task_id ? this.lastDirectorAction.rationale : '', 300);
+            const question = [
+              `Görev ${task.task_id} ('${monitorText(task.title, 120)}') ${taskReport.cycles} denemede bağımsız doğrulamayı geçemedi.`,
+              lastFailure ? `Son başarısız kontrol: ${monitorText(lastFailure, 400)}` : `Son durum: ${monitorText(taskReport.lastSummary, 300)}`,
+              diagnosis ? `Director teşhisi: ${diagnosis}` : '',
+              'Ne yapılsın?',
+            ]
+              .filter(Boolean)
+              .join(' ');
+            const record = buildDecisionRecord({
+              projectRoot,
+              projectId,
+              runId,
+              taskId: task.task_id,
+              packageId: approved.packageId,
+              revision: approved.revision,
+              question,
+              reason: 'Deneme hakkı bitti (sistem tarafından açılan karar; Director cevaplayamaz).',
+              options: [
+                { id: 'retry_2', label: 'Bu göreve 2 deneme daha ver' },
+                { id: 'skip', label: 'Görevi atla (bağımlı görevler de atlanır)' },
+                { id: 'stop', label: 'Çalışmayı durdur' },
+              ],
+              recommendation: budgetLeft ? 'retry_2' : undefined,
+              allowFreeText: true,
+            });
+            (record as { kind?: string }).kind = 'ATTEMPTS_EXHAUSTED';
+            await saveDecisionRecord(record);
+            report.decisions.push({ decisionId: record.decisionId, taskId: task.task_id, question: record.question, state: 'PENDING', channel: decisionResolver.channel });
+            taskReport.status = 'WAITING_DECISION';
+            this.pendingDecisionIds.add(record.decisionId);
+            this.emit('DECISION_REQUESTED', `Deneme hakkı bitti: ${task.task_id} (${record.decisionId})`, task.task_id, 'warn');
+            const resolver = decisionResolver;
+            const promise = resolver
+              .resolve(record)
+              .catch((err): DecisionOutcome => ({ status: 'FAILED', reason: err instanceof Error ? err.message : String(err) }))
+              .then((outcome) => ({ taskId: task.task_id, outcome }));
+            waiting.set(task.task_id, { record, kind: 'ATTEMPTS_EXHAUSTED', promise });
+            return 'DEFERRED';
+          }
+          taskReport.status = 'BLOCKED';
+          stop = {
+            status: 'BLOCKED_ON_HUMAN',
+            reason: `Task ${task.task_id} did not pass independent verification within ${maxCycles} attempt(s)${
+              lastFailure ? ` (last failure: ${monitorText(lastFailure, 300)})` : ''
+            }. ${decisionMode === 'assume' ? 'AIDM_DECISION_MODE=assume never auto-retries.' : 'No human decision channel to grant more attempts.'}`,
+          };
+          this.emit('TASK_BLOCKED', stop.reason, task.task_id, 'error');
         }
 
         if (taskReport.status === 'PENDING') taskReport.status = stop ? 'BLOCKED' : 'FAILED';
@@ -1059,10 +1453,20 @@ export class AutonomousSpecRunner {
             }
             break;
           }
-          // Only tasks waiting on human decisions remain: wait for the first answer.
-          const { taskId, outcome } = await Promise.race([...waiting.values()].map((w) => w.promise));
+          // Only tasks waiting on human decisions remain: wait for the first answer
+          // (instructions — e.g. STOP — are still polled meanwhile).
+          const raced = await Promise.race([
+            ...[...waiting.values()].map((w) => w.promise),
+            new Promise<null>((res) => setTimeout(() => res(null), channel?.opened ? pollMs : 2_147_000_000).unref?.()),
+          ]);
+          if (!raced) {
+            await applyInstructions();
+            continue;
+          }
+          const { taskId, outcome } = raced;
           const w = waiting.get(taskId)!;
           waiting.delete(taskId);
+          this.pendingDecisionIds.delete(w.record.decisionId);
           const tr = report.tasks.find((t) => t.taskId === taskId)!;
           const entry = report.decisions.find((d) => d.decisionId === w.record.decisionId);
           w.record.state = outcome.status === 'ANSWERED' ? 'ANSWERED' : outcome.status;
@@ -1073,6 +1477,64 @@ export class AutonomousSpecRunner {
               entry.answer = outcome.answer;
             }
             await saveDecisionRecord(w.record);
+            if (w.kind === 'ATTEMPTS_EXHAUSTED') {
+              const sel = outcome.answer.selectedOptionId;
+              const note = outcome.answer.freeText ? monitorText(outcome.answer.freeText, 2000) : '';
+              this.emit('DECISION_ANSWERED', `${w.record.decisionId}: ${sel ?? 'serbest metin'}`, taskId);
+              await historyManager.appendEvent({
+                eventType: 'AUTONOMOUS_DECISION_ANSWERED',
+                actor: Actor.USER,
+                taskId,
+                payload: { decisionId: w.record.decisionId, kind: 'ATTEMPTS_EXHAUSTED', selectedOptionId: sel ?? null, answeredBy: outcome.answer.answeredBy },
+              });
+              if (sel === 'retry_2') {
+                const n = attemptsFor(taskId) + 2; // exactly +2; budget cap untouched
+                allowedAttempts.set(taskId, n);
+                report.assumptions.push(`[${taskId}] PO granted 2 more attempts (now ${n}).`);
+                guidance.set(
+                  taskId,
+                  [
+                    'AUTHORITATIVE PRODUCT_OWNER DECISION: 2 more attempts granted for this task.',
+                    note ? `Product Owner guidance for the retry: ${note}` : '',
+                    tr.lastSummary ? `Last failure: ${monitorText(tr.lastSummary, 400)}` : '',
+                  ]
+                    .filter(Boolean)
+                    .join('\n')
+                );
+                tr.status = 'PENDING';
+                queue.unshift(tr);
+              } else if (sel === 'skip') {
+                const skipped = new Set([taskId]);
+                let grew = true;
+                while (grew) {
+                  grew = false;
+                  for (const t of report.tasks) {
+                    if (skipped.has(t.taskId)) continue;
+                    const deps = taskDefs.get(t.taskId)?.dependencies ?? [];
+                    if (deps.some((d) => skipped.has(d)) || (t.parentTaskId && skipped.has(t.parentTaskId) && t.status !== 'ACCEPTED')) {
+                      skipped.add(t.taskId);
+                      grew = true;
+                    }
+                  }
+                }
+                for (const t of report.tasks) {
+                  if (skipped.has(t.taskId) && t.status !== 'ACCEPTED') {
+                    t.status = 'SKIPPED';
+                    t.lastSummary = `Ürün sahibi kararıyla atlandı (${w.record.decisionId}).`;
+                  }
+                }
+                for (let i = queue.length - 1; i >= 0; i--) if (skipped.has(queue[i].taskId)) queue.splice(i, 1);
+                report.skippedByPo = [...(report.skippedByPo ?? []), ...skipped];
+              } else if (sel === 'stop') {
+                tr.status = 'BLOCKED';
+                stop = { status: 'STOPPED', reason: `Ürün sahibi kararıyla durduruldu (${w.record.decisionId}).` };
+              } else {
+                // Free text without an option grants nothing (fail closed).
+                tr.status = 'BLOCKED';
+                stop = { status: 'BLOCKED_ON_HUMAN', reason: `Task ${taskId}: answer to ${w.record.decisionId} selected no option; no attempts granted.` };
+              }
+              continue;
+            }
             const statement = formatDecisionForDirector(w.record, outcome.answer);
             report.assumptions.push(`[${taskId}] PO decision: ${statement.split('\n').slice(1).join(' ')}`);
             await historyManager.appendEvent({
@@ -1104,9 +1566,58 @@ export class AutonomousSpecRunner {
         }
       }
 
-      const allAccepted = report.tasks
-        .filter((t) => t.kind !== 'ANALYSIS')
-        .every((t) => t.status === 'ACCEPTED' || t.status === 'SKIPPED');
+      // ---- Final run-level acceptance gate: ALL global commands (+ command-like global
+      // criteria) must pass on the finished tree. Missing referenced files = FAIL (fail closed).
+      const gateCommands = finalGateCommands(ingestion.verificationCommands, ingestion.globalAcceptanceCriteria);
+      const everyTaskAccepted = (): boolean =>
+        report.tasks.filter((t) => t.kind !== 'ANALYSIS').every((t) => t.status === 'ACCEPTED' || t.status === 'SKIPPED');
+      report.finalGate = { status: 'NOT_RUN', repairs: 0, checks: [], criteria: [...ingestion.globalAcceptanceCriteria] };
+      if (!stop && everyTaskAccepted() && !(report.skippedByPo?.length) && gateCommands.length) {
+        const lastTop = [...report.tasks].reverse().find((t) => t.kind === 'TASK' && t.status === 'ACCEPTED');
+        for (;;) {
+          const checks = await runGateCommands(projectRoot, gateCommands);
+          const failed = checks.filter((c) => c.exitCode !== 0);
+          report.finalGate.checks = checks;
+          report.finalGate.status = failed.length ? 'FAIL' : 'PASS';
+          this.emit('FINAL_GATE', `Son kabul kapısı: ${report.finalGate.status} (${checks.length - failed.length}/${checks.length})`, undefined, failed.length ? 'warn' : 'info');
+          if (!failed.length || report.finalGate.repairs >= 2 || !lastTop || stop || isBudgetExhausted(budgetManager!)) break;
+          report.finalGate.repairs++;
+          const parent = taskDefs.get(lastTop.taskId)!;
+          const fix = addSubtask(parent, `GATE-FIX-${report.finalGate.repairs}`, 'SUBTASK', {
+            title: 'Son kabul kapısını geçir',
+            description:
+              `FINAL ACCEPTANCE GATE failed. Make ALL of these commands pass without breaking accepted work: ${gateCommands.join(' ; ')}. ` +
+              `Global acceptance criteria: ${ingestion.globalAcceptanceCriteria.join(' | ')}. Failures:\n${formatGateFailures(failed)}`,
+            acceptance: ['All final gate commands exit 0', ...ingestion.globalAcceptanceCriteria.slice(0, 8)],
+            // Scope = files the run already touched + files the failing gate commands reference.
+            targetFiles: [
+              ...new Set([
+                ...report.tasks.filter((t) => t.status === 'ACCEPTED').flatMap((t) => t.filesChanged),
+                ...ingestion.requirements.flatMap((r) => [...r.targetFiles]),
+                ...failed.flatMap((c) => referencedPaths(c.command).filter((p) => p !== 'package.json')),
+              ]),
+            ].slice(0, 50),
+          });
+          fix.parentTaskId = undefined;
+          await saveTaskDefs();
+          specCollector.enforceAllFor.add(fix.taskId);
+          await runTask(fix);
+          if (fix.status !== 'ACCEPTED') break;
+        }
+        if (report.finalGate.status === 'FAIL' && !stop) {
+          stop = {
+            status: 'PARTIAL',
+            reason: `Final acceptance gate failed: ${report.finalGate.checks.filter((c) => c.exitCode !== 0).map((c) => c.command).join(', ')}`,
+          };
+        }
+      }
+      if (pollTimer) clearInterval(pollTimer);
+
+      const allAccepted =
+        !stop &&
+        !(report.skippedByPo?.length) &&
+        report.finalGate?.status !== 'FAIL' &&
+        report.tasks.filter((t) => t.kind !== 'ANALYSIS').every((t) => t.status === 'ACCEPTED' || t.status === 'SKIPPED');
       await historyManager.appendEvent({
         eventType: allAccepted ? 'AUTONOMOUS_RUN_COMPLETED' : 'AUTONOMOUS_RUN_STOPPED',
         actor: Actor.ORCHESTRATOR,
@@ -1175,7 +1686,16 @@ export class AutonomousSpecRunner {
       // UTF-8 with BOM so Windows tools (PowerShell 5 Get-Content, Notepad) detect UTF-8 reliably.
       await fs.promises.writeFile(jsonPath.replace(/\.json$/, '.md'), `\uFEFF${renderAutonomousReportMarkdown(report)}`, 'utf8');
     }
-    this.emit('RUN_FINISHED', `${status}${reason ? `: ${reason}` : ''}`);
+    this.emit('RUN_FINISHED', `${status}${reason ? `: ${reason}` : ''}`, undefined, status === 'COMPLETED' || status === 'DRY_RUN_OK' ? 'info' : 'warn');
+    if (this.stopInstruction && this.instructionChannel) {
+      await this.instructionChannel.ack(this.stopInstruction.instructionId, 'APPLIED', 'Çalışma durduruldu, rapor yazıldı.').catch(() => false);
+    }
+    if (this.instructionChannel) await this.instructionChannel.close().catch(() => undefined);
+    if (this.monitor) {
+      this.monitorStatus = toMonitorStatus(status);
+      const snap = this.snapshotInput();
+      await this.monitor.close(snap ?? undefined);
+    }
     return report;
   }
 }
@@ -1200,12 +1720,33 @@ export class AutonomousRunError extends Error {
  */
 export class SpecVerificationEvidenceCollector extends SystemEvidenceCollector {
   private readonly specCommands: readonly VerificationCommandSpec[];
+  private readonly projectRoot?: string;
+  /** Tasks that must run ALL spec commands (final-gate repair tasks). */
+  readonly enforceAllFor = new Set<string>();
+  private readonly deferred = new Map<string, Set<string>>();
   constructor(
     options: ConstructorParameters<typeof SystemEvidenceCollector>[0],
-    specCommands: readonly VerificationCommandSpec[]
+    specCommands: readonly VerificationCommandSpec[],
+    projectRoot?: string
   ) {
     super(options);
     this.specCommands = specCommands;
+    this.projectRoot = projectRoot;
+  }
+  /**
+   * A global spec command applies to a task once every file/dir it references exists (after the
+   * executor step). Before that it is deferred to the final run-level gate, where it is mandatory.
+   * Without a project root (legacy construction) every command applies, as before.
+   */
+  applies(taskId: string, c: VerificationCommandSpec, workingDir?: string): boolean {
+    const root = workingDir ?? this.projectRoot;
+    if (!root || this.enforceAllFor.has(taskId)) return true;
+    return referencedPaths(c.command).every((p) => fs.existsSync(path.resolve(root, p)));
+  }
+  takeDeferred(taskId: string): string[] {
+    const d = this.deferred.get(taskId);
+    this.deferred.delete(taskId);
+    return d ? [...d] : [];
   }
   override collectAndVerify(
     request: ExecutionRequest,
@@ -1213,9 +1754,98 @@ export class SpecVerificationEvidenceCollector extends SystemEvidenceCollector {
     options: SystemEvidenceCollectorOptions = {}
   ) {
     const merged = [...(options.verificationCommands ?? [])];
-    for (const c of this.specCommands) if (!merged.some((m) => m.command === c.command)) merged.push(c);
+    const wd = (request.metadata?.workingDirectory as string | undefined) ?? this.projectRoot;
+    for (const c of this.specCommands) {
+      if (merged.some((m) => m.command === c.command)) continue;
+      if (this.applies(request.taskId, c, wd)) merged.push(c);
+      else {
+        const set = this.deferred.get(request.taskId) ?? new Set<string>();
+        set.add(c.command);
+        this.deferred.set(request.taskId, set);
+      }
+    }
     return super.collectAndVerify(request, rawOutcome, { ...options, verificationCommands: merged });
   }
+}
+
+function toMonitorStatus(s: AutonomousRunStatus): RunMonitorStatus {
+  switch (s) {
+    case 'COMPLETED':
+    case 'DRY_RUN_OK':
+      return 'COMPLETED';
+    case 'BLOCKED_ON_HUMAN':
+    case 'BLOCKED_ON_AUTH_CONTEXT':
+    case 'BUDGET_EXHAUSTED':
+      return 'BLOCKED_ON_HUMAN';
+    case 'CONFIGURATION_ERROR':
+      return 'CONFIGURATION_ERROR';
+    case 'STOPPED':
+      return 'STOPPED';
+    default:
+      return 'FAILED';
+  }
+}
+
+/** Short, secret-masked tails of failing verification checks for the Director (bounded). */
+export function formatFailingChecks(checks: ReadonlyArray<{ command?: string; type: string; status: unknown; evidence?: string; details?: unknown }>): string {
+  const per = Math.max(200, Math.floor(1100 / Math.max(1, checks.length)));
+  return checks
+    .slice(0, 4)
+    .map((c) => {
+      const d = (c.details ?? {}) as { exitCode?: unknown; stdoutTail?: unknown; stderrTail?: unknown };
+      const tail = [typeof d.stderrTail === 'string' ? d.stderrTail : '', typeof d.stdoutTail === 'string' ? d.stdoutTail : '']
+        .filter(Boolean)
+        .join(' | ');
+      const body = tail ? tail.slice(-per) : String(c.evidence ?? '').slice(0, per);
+      return `- [${c.type}] ${c.command ?? ''} exit=${String(d.exitCode ?? '?')}: ${monitorText(body, per)}`;
+    })
+    .join('\n');
+}
+
+const GATE_COMMAND_RE = /^(node|npm|pnpm|yarn|npx|python3?|pytest|go|cargo|make|deno|bun)\b/;
+
+/** Global `## Komutlar` + command-like backticked items of `## Kabul Kriterleri`. */
+export function finalGateCommands(commands: readonly string[], criteria: readonly string[]): string[] {
+  const out = [...commands];
+  for (const c of criteria) {
+    for (const m of c.matchAll(/`([^`]+)`/g)) {
+      const cmd = m[1].trim();
+      if (GATE_COMMAND_RE.test(cmd) && !out.includes(cmd)) out.push(cmd);
+    }
+  }
+  return out;
+}
+
+function formatGateFailures(failed: ReadonlyArray<{ command: string; exitCode: number | null; tail?: string }>): string {
+  return failed.map((f) => `- ${f.command} exit=${f.exitCode}: ${monitorText(f.tail ?? '', 400)}`).join('\n');
+}
+
+async function runGateCommands(cwd: string, commands: readonly string[]): Promise<Array<{ command: string; exitCode: number | null; tail?: string }>> {
+  const out: Array<{ command: string; exitCode: number | null; tail?: string }> = [];
+  for (const command of commands) {
+    const res = await new Promise<{ code: number | null; text: string }>((resolve) => {
+      execCb(command, { cwd, timeout: 10 * 60_000, maxBuffer: 10 * 1024 * 1024, windowsHide: true }, (err, stdout, stderr) => {
+        const code = err ? (typeof (err as { code?: unknown }).code === 'number' ? ((err as { code: number }).code) : 1) : 0;
+        resolve({ code, text: `${String(stderr ?? '')}\n${String(stdout ?? '')}` });
+      });
+    });
+    out.push({ command, exitCode: res.code, ...(res.code !== 0 ? { tail: monitorText(res.text.slice(-1500), 1500) } : {}) });
+  }
+  return out;
+}
+
+/** Path-like operands a command depends on (files/dirs); npm-style runners depend on package.json. */
+export function referencedPaths(command: string): string[] {
+  const tokens = command.split(/\s+/).filter(Boolean);
+  if (!tokens.length) return [];
+  if (/^(npm|pnpm|yarn|bun)$/.test(tokens[0])) return ['package.json'];
+  const refs: string[] = [];
+  for (const t0 of tokens.slice(1)) {
+    const t = t0.replace(/^['"]|['"]$/g, '');
+    if (!t || t.startsWith('-') || /[*?$|&;<>]/.test(t) || /^[a-z]+:\/\//i.test(t)) continue;
+    if (t.includes('/') || t.includes('\\') || /\.[A-Za-z0-9]{1,6}$/.test(t)) refs.push(t.replace(/\\/g, '/'));
+  }
+  return refs;
 }
 
 export function toVerificationCommands(commands: readonly string[]): VerificationCommandSpec[] {

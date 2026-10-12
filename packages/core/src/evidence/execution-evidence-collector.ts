@@ -733,7 +733,12 @@ export class SystemEvidenceCollector {
             : isMissingBinary
             ? `Verification command failed due to missing tool binary: ${(res.stderr || res.stdout).slice(0, 300)}`
             : `Command '${cmdSpec.command}' failed with exit code ${res.exitCode}. stderr: ${(res.stderr || res.stdout).slice(0, 300)}`,
-          details: { exitCode: res.exitCode, stdoutSnippet: res.stdout.slice(0, 500) },
+          details: {
+            exitCode: res.exitCode,
+            stdoutSnippet: res.stdout.slice(0, 500),
+            // Tails carry the actual failure (test runners print summaries last); fed back to the Director.
+            ...(passed ? {} : { stdoutTail: res.stdout.slice(-2000), stderrTail: (res.stderr ?? '').slice(-2000) }),
+          },
         });
       } catch (err: unknown) {
         const errMessage = err instanceof Error ? err.message : String(err);

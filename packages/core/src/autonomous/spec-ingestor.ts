@@ -42,6 +42,25 @@ export interface SpecRequirement {
   readonly description: string;
   readonly acceptanceCriteria: readonly string[];
   readonly targetFiles: readonly string[];
+  /** Per-requirement override: a line `Deneme: N` / `Max attempts: N` (1..10) inside the requirement. */
+  readonly maxAttempts?: number;
+}
+
+/** `Deneme: 5`, `Deneme sayısı: 5`, `Maksimum deneme: 5`, `Max attempts: 5` (1..10). */
+const ATTEMPTS_RE = /^(?:deneme(?:\s*say[ıi]s[ıi])?|maksimum\s*deneme|max(?:imum)?\s*attempts)\s*[:=]\s*(\d{1,2})\s*\.?$/i;
+export const DEFAULT_MAX_ATTEMPTS_PER_TASK = 3;
+
+function extractAttempts(items: string[]): number | undefined {
+  let found: number | undefined;
+  for (let i = items.length - 1; i >= 0; i--) {
+    const m = ATTEMPTS_RE.exec(items[i].trim());
+    if (m) {
+      const n = Number(m[1]);
+      if (n >= 1 && n <= 10) found = n;
+      items.splice(i, 1);
+    }
+  }
+  return found;
 }
 
 export interface SpecIngestionOptions {
@@ -71,6 +90,11 @@ export interface SpecIngestionResult {
   readonly allowedPaths: readonly string[];
   /** Commands the spec declares for verification (## Test / ## Komutlar). */
   readonly verificationCommands: readonly string[];
+  /**
+   * Global `## Kabul Kriterleri` items. They are NOT imposed on every task: they form the
+   * run-level final acceptance gate (together with `## Komutlar`).
+   */
+  readonly globalAcceptanceCriteria: readonly string[];
   /** Human text of `## Karar Politikası` / `## Decision Policy` (what the Director must ask the PO about). */
   readonly decisionPolicy?: string;
 }
@@ -247,7 +271,7 @@ function fencedOrListCommands(lines: readonly string[]): string[] {
  * acceptance bullets) or top-level bullet items (one requirement per bullet,
  * indented sub-bullets become acceptance criteria).
  */
-function parseRequirementBlocks(lines: readonly string[]): Array<{ title: string; body: string; criteria: string[] }> {
+function parseRequirementBlocks(lines: readonly string[]): Array<{ title: string; body: string; criteria: string[]; attempts?: number }> {
   const blocks: Array<{ title: string; body: string[]; criteria: string[] }> = [];
   const hasH3 = lines.some((l) => /^###\s+/.test(l));
 
@@ -261,6 +285,12 @@ function parseRequirementBlocks(lines: readonly string[]): Array<{ title: string
         continue;
       }
       if (!cur) continue;
+      const am = ATTEMPTS_RE.exec(stripMarkdown(l.replace(/^\s*[-*+]\s+/, '')).trim());
+      if (am) {
+        const n = Number(am[1]);
+        if (n >= 1 && n <= 10) (cur as { attempts?: number }).attempts = n;
+        continue;
+      }
       const m = LIST_ITEM_RE.exec(l);
       if (m) cur.criteria.push(stripMarkdown(m[1]));
       else if (l.trim()) cur.body.push(l.trim());
@@ -282,7 +312,12 @@ function parseRequirementBlocks(lines: readonly string[]): Array<{ title: string
     }
   }
 
-  return blocks.map((b) => ({ title: b.title, body: b.body.join(' '), criteria: b.criteria }));
+  return blocks.map((b) => ({
+    title: b.title,
+    body: b.body.join(' '),
+    criteria: b.criteria,
+    ...((b as { attempts?: number }).attempts ? { attempts: (b as { attempts?: number }).attempts } : {}),
+  }));
 }
 
 // ============================================================================
@@ -362,7 +397,9 @@ export class SpecIngestor {
 
     const requirements: SpecRequirement[] = reqBlocks.map((b, i) => {
       const id = `REQ-${String(i + 1).padStart(3, '0')}`;
-      const criteria = b.criteria.length > 0 ? b.criteria : [...globalCriteria];
+      // Global criteria belong to the final run-level gate, not to each task.
+      const criteria = [...b.criteria];
+      const attempts = (b as { attempts?: number }).attempts ?? extractAttempts(criteria);
       if (criteria.length === 0) {
         assumptions.push(`${id} has no acceptance criteria; assumed "implementation exists and project checks pass".`);
         criteria.push('Implementation exists and project verification checks pass');
@@ -374,6 +411,7 @@ export class SpecIngestor {
         description: (b.body || b.title).slice(0, 2000),
         acceptanceCriteria: criteria,
         targetFiles,
+        ...(attempts ? { maxAttempts: attempts } : {}),
       };
     });
 
@@ -483,7 +521,7 @@ export class SpecIngestor {
       throw new SpecIngestionError(`Generated plan is invalid: ${p.error.issues[0]?.message}`, 'SPEC_PLAN_INVALID');
     }
 
-    const maxAttempts = options.maxAttemptsPerTask ?? 2;
+    const maxAttempts = options.maxAttemptsPerTask ?? DEFAULT_MAX_ATTEMPTS_PER_TASK;
     const featureId = 'FEAT-SPEC';
     const feature: TaskDefinition = {
       task_id: featureId,
@@ -516,7 +554,7 @@ export class SpecIngestor {
       hierarchy_level: 'TASK',
       status: TaskStatus.READY,
       attempt: 0,
-      max_attempts: maxAttempts,
+      max_attempts: r.maxAttempts ?? maxAttempts,
       priority: TaskPriority.HIGH,
       risk_level: RiskLevel.CAUTION,
       created_at: generatedAt,
@@ -526,6 +564,7 @@ export class SpecIngestor {
         // Task class is assigned by the deterministic ingestor from the human-written
         // spec, never by LLM output. Only IMPLEMENTATION is auto-executable.
         taskClass: 'IMPLEMENTATION',
+        ...(r.maxAttempts ? { maxAttemptsFromSpec: r.maxAttempts } : {}),
         revision: 1,
         targetFiles: [...r.targetFiles],
         requirementId: r.id,
@@ -544,6 +583,7 @@ export class SpecIngestor {
       assumptions,
       warnings,
       allowedPaths,
+      globalAcceptanceCriteria: globalCriteria,
       ...(byKind('DECISION_POLICY').length
         ? {
             decisionPolicy: byKind('DECISION_POLICY')

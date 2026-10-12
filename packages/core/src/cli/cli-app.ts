@@ -183,7 +183,7 @@ export async function executeCli(
 
       case 'run': {
         if (flags['spec'] !== undefined) {
-          const parsed = parseRunSpecArgs(flags, { projectRoot, cwd, json, verbose });
+          const parsed = parseRunSpecArgs(flags, { projectRoot, cwd, json, verbose, explicitRoot: flags['project-root'] !== undefined || flags['C'] !== undefined });
           if (!parsed.ok) {
             if (json) writer.writeJson({ success: false, error: parsed.error, exitCode: CliExitCode.USAGE_ERROR });
             else writer.writeError(`Usage Error: ${parsed.error}`);

@@ -29,6 +29,7 @@ import {
 } from '../llm-bridge/reference-llm-adapter.js';
 import { HttpLlmTransport } from '../llm-bridge/http-llm-transport.js';
 import type { BudgetManager } from '../budget/budget-manager.js';
+import { PricingEngine } from '../budget/pricing-engine.js';
 import { DEFAULT_OPENAI_DIRECTOR_MODEL, DEFAULT_REASONING_EFFORT } from '../director/openai-director-runtime.js';
 import { STANDARD_OPENAI_HOSTS, registerCustomEndpointContract } from '../budget/endpoint-audit.js';
 
@@ -324,4 +325,34 @@ export function resolveDirectorOutputSettings(env: Env = process.env): DirectorO
     throw new LlmProviderConfigError('AIDM_LLM_REPAIR_ATTEMPTS must be an integer between 0 and 3.', 'LLM_CONFIG_INVALID');
   }
   return { responseFormatMode: mode, autoFallbackToJsonObject: fmt === 'auto', maxRepairAttempts: repair };
+}
+
+/**
+ * Validates a live provider configuration WITHOUT network calls or spending: endpoint, model,
+ * API key present, verified pricing available. Used before an external approval request is
+ * created so a passkey approval is never consumed by a run that cannot start.
+ */
+export function preflightLlmProvider(env: Env = process.env): { ok: true; description: Record<string, unknown> } | { ok: false; code: string; message: string } {
+  try {
+    const config = resolveLlmProviderConfig(env);
+    createConfiguredLlmProvider(config, env); // throws LLM_API_KEY_MISSING
+    if (!config.pricing) {
+      let rate: unknown;
+      try {
+        rate = new PricingEngine().getRate(config.billingProviderId, config.model, 'standard');
+      } catch {
+        rate = undefined;
+      }
+      if (!rate) {
+        throw new LlmProviderConfigError(
+          `No verified pricing for model '${config.model}' on '${config.billingProviderId}'. Set AIDM_LLM_INPUT_USD_PER_MTOK and AIDM_LLM_OUTPUT_USD_PER_MTOK.`,
+          'LLM_PRICING_REQUIRED'
+        );
+      }
+    }
+    return { ok: true, description: describeLlmProviderConfig(config) };
+  } catch (err) {
+    const code = err && typeof err === 'object' && 'code' in err ? String((err as { code: unknown }).code) : 'LLM_CONFIG_INVALID';
+    return { ok: false, code, message: err instanceof Error ? err.message : String(err) };
+  }
 }

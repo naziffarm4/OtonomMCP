@@ -11,3 +11,5 @@ export * from '../director/director-decision-reasoner.js';
 export * from './idp-client.js';
 export * from './external-approval.js';
 export * from './decision-requests.js';
+export * from './run-monitor.js';
+export * from './instruction-channel.js';

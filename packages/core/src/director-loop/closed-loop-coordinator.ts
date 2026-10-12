@@ -992,7 +992,11 @@ export class ClosedLoopCoordinator {
     if (actionEnvelope && actionEnvelope.actionType === 'IMPLEMENT_TASK' && targetTaskId) {
       const existingDecisions = await this.decisionStore.listDecisions({ sessionId: session.directorSessionId });
       const hasDecision = existingDecisions.some(
-        (d) => d.decisionType === 'IMPLEMENT_TASK' && (d.metadata as any)?.taskId === targetTaskId
+        (d) =>
+          d.decisionType === 'IMPLEMENT_TASK' &&
+          (d.metadata as any)?.taskId === targetTaskId &&
+          // A bounded repair attempt on a changed context is a NEW authoritative decision.
+          d.basedOnContextFingerprint === actionEnvelope!.basedOnContextFingerprint
       );
       if (!hasDecision) {
         await this.decisionStore.saveDecision({

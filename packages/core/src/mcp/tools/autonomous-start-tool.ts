@@ -40,7 +40,7 @@ export const autonomousStartToolDefinition: McpToolDefinition = Object.freeze({
     type: 'object' as const,
     properties: {
       specPath: { type: 'string', description: 'Path to the Markdown spec (relative to workspaceRoot or absolute).' },
-      workspaceRoot: { type: 'string', description: 'Project root (defaults to the server project root).' },
+      workspaceRoot: { type: 'string', description: 'Project root (defaults to the folder containing the spec .md). Pass the same value to aidm_autonomous_resume/status.' },
       budgetUsd: { type: 'number', description: 'Hard LLM budget in USD (required for live runs).' },
       dryRun: { type: 'boolean', description: 'Plan only; no state writes, no LLM/AGY calls.' },
       maxCyclesPerTask: { type: 'number' },
@@ -79,14 +79,16 @@ export function createAutonomousStartHandler(deps: AutonomousToolDeps = {}): Mcp
   const { fetchFn, identityProvider, foregroundResume: _fg, ...runnerDeps } = deps;
   void _fg;
   return async (args: Readonly<Record<string, unknown>>, context: McpRequestContext): Promise<McpToolResult> => {
-    const root = path.resolve(
-      (typeof args.workspaceRoot === 'string' && args.workspaceRoot) ||
-        (context.delegate as { projectRoot?: string } | undefined)?.projectRoot ||
-        process.cwd()
-    );
     if (typeof args.specPath !== 'string' || !/\.(md|markdown)$/i.test(args.specPath)) {
       return textResult({ success: false, code: 'INVALID_ARGUMENT', error: 'specPath must be a .md file' }, true);
     }
+    // Explicit workspaceRoot wins; otherwise the project root is the folder containing the spec.
+    // (Previously: server project root, then process.cwd().) A relative specPath is resolved
+    // against the explicit root, else against the server root / cwd.
+    const explicitRoot = typeof args.workspaceRoot === 'string' && args.workspaceRoot.trim() ? args.workspaceRoot : undefined;
+    const base = path.resolve(explicitRoot || (context.delegate as { projectRoot?: string } | undefined)?.projectRoot || process.cwd());
+    const specAbs = path.resolve(base, args.specPath);
+    const root = explicitRoot ? base : path.dirname(specAbs);
     const budgetUsd = typeof args.budgetUsd === 'number' ? args.budgetUsd : undefined;
     const authContext =
       args.authContext && typeof args.authContext === 'object' ? (args.authContext as Record<string, unknown>) : undefined;
@@ -102,15 +104,16 @@ export function createAutonomousStartHandler(deps: AutonomousToolDeps = {}): Mcp
       // Asynchronous human approval: fix the binding, persist it, ask the external IdP.
       const res = await startExternalApproval({
         projectRoot: root,
-        specPath: path.resolve(root, args.specPath),
+        specPath: specAbs,
         budgetUsd,
         maxCyclesPerTask: typeof args.maxCyclesPerTask === 'number' ? args.maxCyclesPerTask : undefined,
         mandateHours: typeof args.mandateHours === 'number' ? args.mandateHours : undefined,
         env,
         fetchFn,
+        providerInjected: Boolean(runnerDeps.llmProvider),
       });
       return textResult(
-        { success: res.success, code: res.code, requestId: res.requestId, approvalUrl: res.approvalUrl, message: res.message },
+        { success: res.success, code: res.code, requestId: res.requestId, approvalUrl: res.approvalUrl, monitorUrl: res.monitorUrl, workspaceRoot: root, message: res.message },
         !res.success
       );
     }
@@ -118,7 +121,7 @@ export function createAutonomousStartHandler(deps: AutonomousToolDeps = {}): Mcp
     try {
       const report = await new AutonomousSpecRunner({
         projectRoot: root,
-        specPath: path.resolve(root, args.specPath),
+        specPath: specAbs,
         budgetUsd,
         dryRun: args.dryRun === true,
         maxCyclesPerTask: typeof args.maxCyclesPerTask === 'number' ? args.maxCyclesPerTask : undefined,

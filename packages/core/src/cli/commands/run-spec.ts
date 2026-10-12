@@ -53,7 +53,7 @@ function positiveNumber(name: string, raw: string | boolean | undefined): number
 /** Pure argument parsing for `aidm run --spec` (unit tested). */
 export function parseRunSpecArgs(
   flags: Readonly<Record<string, string | boolean>>,
-  ctx: { projectRoot: string; cwd: string; json: boolean; verbose: boolean }
+  ctx: { projectRoot: string; cwd: string; json: boolean; verbose: boolean; explicitRoot?: boolean }
 ): ParseRunSpecResult {
   const spec = flags['spec'];
   if (typeof spec !== 'string' || spec.trim().length === 0) {
@@ -80,7 +80,8 @@ export function parseRunSpecArgs(
   return {
     ok: true,
     options: {
-      projectRoot: ctx.projectRoot,
+      // -C/--project-root wins; otherwise the folder containing the spec (previously: cwd).
+      projectRoot: ctx.explicitRoot ? ctx.projectRoot : path.dirname(path.resolve(ctx.cwd, spec.trim())),
       specPath: path.resolve(ctx.cwd, spec.trim()),
       budgetUsd: budget,
       dryRun: Boolean(flags['dry-run']),
@@ -104,6 +105,7 @@ export function exitCodeForAutonomousStatus(status: AutonomousRunStatus): CliExi
     case 'BLOCKED_ON_AUTH_CONTEXT':
     case 'BLOCKED_ON_HUMAN':
     case 'BUDGET_EXHAUSTED':
+    case 'STOPPED':
       return CliExitCode.HUMAN_BLOCKED;
     case 'CONFIGURATION_ERROR':
       return CliExitCode.USAGE_ERROR;
@@ -153,6 +155,7 @@ export async function executeRunSpec(
       maxCyclesPerTask: options.maxCyclesPerTask,
       mandateHours: options.mandateValidityHours,
       env,
+      providerInjected: Boolean(appOptions?.autonomous?.llmProvider),
     });
     if (!started.success || !started.requestId) {
       const msg = `${started.code}: ${started.message ?? ''}`;
@@ -163,6 +166,7 @@ export async function executeRunSpec(
     if (!options.json) {
       writer.write(`Onay bekleniyor (passkey): ${started.approvalUrl ?? '(IdP arayüzü)'}`);
       writer.write(`  requestId: ${started.requestId}`);
+      if (started.monitorUrl) writer.write(`Canlı izleme: ${started.monitorUrl}`);
     }
     const pollMs = Number((env as Record<string, string | undefined>).AIDM_IDP_POLL_INTERVAL_MS ?? '3000') || 3000;
     for (;;) {
@@ -208,6 +212,7 @@ export async function executeRunSpec(
       ...ttyResolver,
       ...(appOptions?.autonomous ?? {}),
       onEvent,
+      onMonitorUrl: options.json ? undefined : (url: string) => writer.write(`Canlı izleme: ${url}`),
     }).run();
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);

@@ -169,7 +169,7 @@ export function checkContractClaims(
   const iat = Number(payload.iat);
   const exp = Number(payload.exp);
   if (!Number.isFinite(iat) || !Number.isFinite(exp) || exp - iat > (opts.maxLifetimeSec ?? 300) || exp <= iat) {
-    return fail('UNVERIFIED', 'Token lifetime must be positive and at most 300 seconds.');
+    return fail('UNVERIFIED', `Token lifetime must be positive and at most ${opts.maxLifetimeSec ?? 300} seconds.`);
   }
   for (const [k, v] of Object.entries(expected)) {
     if (v === undefined || v === null) {
@@ -191,7 +191,7 @@ export async function verifyIdpToken(
   token: string,
   binding: TrustedApprovalBinding,
   expectedClaims: Readonly<Record<string, unknown>>,
-  options: { consumeNonce: boolean }
+  options: { consumeNonce: boolean; maxLifetimeSec?: number }
 ): Promise<TokenCheckResult> {
   if (!provider.isConfigured()) {
     return { ok: false, status: 'CONFIG_MISSING', reason: 'No external IdP configured (AIDM_IDP_*).' };
@@ -210,5 +210,5 @@ export async function verifyIdpToken(
   } catch {
     return { ok: false, status: 'UNVERIFIED', reason: 'Malformed token payload.' };
   }
-  return checkContractClaims(payload, expectedClaims);
+  return checkContractClaims(payload, expectedClaims, { maxLifetimeSec: options.maxLifetimeSec });
 }

@@ -27,6 +27,8 @@ import type { ITrustedIdentityProvider, TrustedApprovalBinding } from '../author
 import { IdpClient, IdpClientError, canonicalJson, sha256Hex, verifyIdpToken } from './idp-client.js';
 import { AutonomousSpecRunner, type AutonomousRunOptions, type AutonomousRunReport } from './autonomous-runner.js';
 import { listDecisionRecords } from './decision-requests.js';
+import { preflightLlmProvider } from './llm-provider-config.js';
+import { RunMonitor, runMonitorUrl, type RunMonitorStatus } from './run-monitor.js';
 
 type Env = Readonly<Record<string, string | undefined>>;
 
@@ -81,6 +83,7 @@ export interface ExternalApprovalResult {
   readonly approvalUrl?: string;
   readonly record?: ExternalApprovalRecord;
   readonly report?: AutonomousRunReport;
+  readonly monitorUrl?: string;
 }
 
 export { isExternalIdpConfigured } from './idp-client.js';
@@ -158,6 +161,30 @@ export interface StartExternalApprovalOptions {
   readonly mandateHours?: number;
   readonly env?: Env;
   readonly fetchFn?: typeof fetch;
+  /** True when the caller injects its own LLM provider (tests/embedding): skip env provider preflight. */
+  readonly providerInjected?: boolean;
+}
+
+/** One-shot monitor snapshot for the approval phase (fire-and-forget, bounded, never throws). */
+async function approvalMonitor(rec: ExternalApprovalRecord, status: RunMonitorStatus, env: Env, fetchFn?: typeof fetch): Promise<void> {
+  if (!rec.runId) return;
+  const m = RunMonitor.create({ env, runId: rec.runId, fetchFn });
+  if (!m) return;
+  if (status === 'PENDING_APPROVAL') m.event('APPROVAL_REQUESTED', 'Passkey onayı bekleniyor');
+  await m.close({
+    runId: rec.runId,
+    projectId: rec.projectId,
+    projectName: rec.projectName,
+    entryPoint: 'aidm_autonomous_start',
+    status,
+    startedAt: rec.requestedAt,
+    finishedAt: status === 'REJECTED' ? new Date().toISOString() : null,
+    budget: { limitUsd: rec.budgetUsd, committedUsd: 0, reservedUsd: 0 },
+    tasks: [],
+    pendingApprovalId: status === 'PENDING_APPROVAL' ? rec.requestId : null,
+    pendingDecisionIds: [],
+    stopReason: rec.reason ?? null,
+  });
 }
 
 export async function startExternalApproval(o: StartExternalApprovalOptions): Promise<ExternalApprovalResult> {
@@ -177,6 +204,11 @@ export async function startExternalApproval(o: StartExternalApprovalOptions): Pr
     return { success: false, code: 'CONFIGURATION_ERROR', message: 'mandateHours must be in (0, 24].' };
   }
   const maxCyclesPerTask = Math.max(1, Math.floor(o.maxCyclesPerTask ?? DEFAULT_MAX_CYCLES));
+  // Never ask the human for a passkey approval that a misconfigured provider would waste.
+  if (!o.providerInjected) {
+    const pf = preflightLlmProvider(env);
+    if (!pf.ok) return { success: false, code: 'CONFIGURATION_ERROR', message: `${pf.code}: ${pf.message}` };
+  }
 
   let markdown: string;
   try {
@@ -225,6 +257,7 @@ export async function startExternalApproval(o: StartExternalApprovalOptions): Pr
     expiresAt: new Date(now + APPROVAL_REQUEST_TTL_MS).toISOString(),
     state: 'PENDING',
     updatedAt: new Date(now).toISOString(),
+    runId: `run-${new Date(now).toISOString().replace(/[:.]/g, '-')}-${crypto.randomBytes(3).toString('hex')}`,
   };
 
   let client: IdpClient;
@@ -265,6 +298,7 @@ export async function startExternalApproval(o: StartExternalApprovalOptions): Pr
     });
     rec.approvalUrl = res.approvalUrl;
     await saveRecord(rec);
+    await approvalMonitor(rec, 'PENDING_APPROVAL', env, o.fetchFn);
   } catch (err) {
     rec.state = 'VERIFICATION_FAILED';
     rec.reason = err instanceof Error ? err.message : String(err);
@@ -278,6 +312,7 @@ export async function startExternalApproval(o: StartExternalApprovalOptions): Pr
     requestId,
     approvalUrl: rec.approvalUrl,
     record: rec,
+    ...(rec.runId && runMonitorUrl(env, rec.runId) ? { monitorUrl: runMonitorUrl(env, rec.runId)! } : {}),
   };
 }
 
@@ -376,6 +411,7 @@ export async function resumeExternalApproval(o: ResumeExternalApprovalOptions): 
       rec.state = st.status;
       rec.reason = typeof st.reason === 'string' ? st.reason.slice(0, 500) : `IdP reported ${st.status}.`;
       await saveRecord(rec);
+      await approvalMonitor(rec, 'REJECTED', env, o.fetchFn);
       return { success: false, code: st.status, requestId: rec.requestId, record: rec, message: rec.reason };
     }
     if (st.status !== 'APPROVED' || typeof st.token !== 'string') {
@@ -445,6 +481,8 @@ export async function resumeExternalApproval(o: ResumeExternalApprovalOptions): 
     mandateValidityHours: record.mandateHours,
     entryPoint: 'aidm_autonomous_start',
     authContext,
+    ...(record.runId ? { runId: record.runId } : {}),
+    ...(o.fetchFn ? { idpFetchFn: o.fetchFn } : {}),
     preboundApproval: {
       packageId: record.packageId,
       revision: record.revision,
