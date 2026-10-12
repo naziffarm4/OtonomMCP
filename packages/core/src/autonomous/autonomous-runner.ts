@@ -293,7 +293,7 @@ export interface AutonomousRunReport {
   /** Spec commands deferred per task because the files they reference did not exist yet. */
   deferredCommands: Array<{ taskId: string; commands: string[] }>;
   /** Run-level acceptance gate (global `## Komutlar` + command-like `## Kabul Kriterleri`). */
-  finalGate?: { status: 'PASS' | 'FAIL' | 'NOT_RUN'; repairs: number; checks: Array<{ command: string; exitCode: number | null; tail?: string }>; criteria: string[] };
+  finalGate?: { status: 'PASS' | 'FAIL' | 'NOT_RUN' | 'NO_CHECKS'; repairs: number; checks: Array<{ command: string; exitCode: number | null; tail?: string }>; criteria: string[] };
   /** Verified live PO instructions (no tokens). */
   instructions: Array<{ instructionId: string; mode: string; taskId: string | null; state: string; note?: string }>;
   monitorUrl?: string;
@@ -2159,6 +2159,15 @@ export class AutonomousSpecRunner {
       const everyTaskAccepted = (): boolean =>
         report.tasks.filter((t) => t.kind !== 'ANALYSIS').every((t) => t.status === 'ACCEPTED' || t.status === 'SKIPPED');
       report.finalGate = { status: 'NOT_RUN', repairs: 0, checks: [], criteria: [...ingestion.globalAcceptanceCriteria] };
+      if (!stop && everyTaskAccepted() && !(report.skippedByPo?.length) && !gateCommands.length) {
+        // Nothing to run: never let COMPLETED read as a fully verified result.
+        report.finalGate.status = 'NO_CHECKS';
+        const w =
+          "Son kabul kapısı çalıştırılamadı: spec'te '## Komutlar' / komut içeren kabul kriteri yok ve netleştirmeden üretilmiş kontrol de yok. " +
+          'Görevler tek tek bağımsız kanıtla kabul edildi ama projenin bütünü otomatik olarak doğrulanmadı; elle kontrol et ya da spec\'e test/kontrol komutu ekle.';
+        report.warnings.push(w);
+        this.emit('FINAL_GATE', w, undefined, 'warn');
+      }
       if (!stop && everyTaskAccepted() && !(report.skippedByPo?.length) && gateCommands.length) {
         const lastTop = [...report.tasks].reverse().find((t) => t.kind === 'TASK' && t.status === 'ACCEPTED');
         for (;;) {
@@ -2647,6 +2656,14 @@ export function renderAutonomousReportMarkdown(r: AutonomousRunReport): string {
   if (r.budget) {
     lines.push(
       `- Bütçe: limit $${r.budget.limitUsd.toFixed(4)}, harcanan $${r.budget.committedUsd.toFixed(4)}, rezerve $${r.budget.reservedUsd.toFixed(4)}`
+    );
+  }
+  if (r.finalGate) {
+    const g = r.finalGate;
+    lines.push(
+      `- Son kabul kapısı: **${g.status}**${
+        g.status === 'NO_CHECKS' ? ' — çalıştırılacak kontrol yok, bütün proje otomatik doğrulanmadı' : g.checks.length ? ` (${g.checks.filter((c) => c.exitCode === 0).length}/${g.checks.length})` : ''
+      }`
     );
   }
   if (r.clarification) {

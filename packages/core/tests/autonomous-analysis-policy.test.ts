@@ -99,6 +99,9 @@ describe('analysis policy', { concurrency: 1, timeout: 600_000 }, () => {
     assert.ok(prompts.some((p) => p.includes(NO_ANALYSIS_DIRECTOR_INSTRUCTION)));
     assert.ok(prompts.some((p) => p.includes('not available for')));
     for (const t of rep.tasks.filter((x: Any) => x.kind !== 'ANALYSIS' && x.status === 'ACCEPTED')) assert.equal(t.cycles, 1, JSON.stringify(t));
+    // No commands / command-like criteria in the spec: COMPLETED must not read as fully verified.
+    assert.equal(rep.finalGate.status, 'NO_CHECKS');
+    assert.ok(rep.warnings.some((w: string) => w.includes('Son kabul kapısı çalıştırılamadı')));
   });
 
   it('İnceleme: her görev → analysis for every task', async () => {
