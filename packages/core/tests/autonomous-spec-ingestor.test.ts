@@ -66,8 +66,9 @@ describe('SpecIngestor', () => {
     assert.equal(r.requirements.length, 2);
     assert.equal(r.requirements[0].title, 'Toplama');
     assert.deepEqual([...r.requirements[0].acceptanceCriteria], ['add(2, 3) === 5', 'Negatif sayılar desteklenir']);
-    // Requirement without own criteria inherits global acceptance criteria
-    assert.deepEqual([...r.requirements[1].acceptanceCriteria], ['Tüm testler geçer']);
+    // Global acceptance criteria are the run-level final gate, not imposed on each task.
+    assert.deepEqual([...r.requirements[1].acceptanceCriteria], ['Implementation exists and project verification checks pass']);
+    assert.deepEqual([...r.globalAcceptanceCriteria], ['Tüm testler geçer']);
     assert.deepEqual([...r.requirements[0].targetFiles], ['src/add.ts']);
     assert.deepEqual([...r.requirements[1].targetFiles], ['src/subtract.ts']);
     assert.deepEqual([...r.understanding.targetUsers], ['Geliştiriciler']);

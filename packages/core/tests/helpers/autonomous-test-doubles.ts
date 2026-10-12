@@ -135,6 +135,10 @@ export class MockAgyExecutor implements ExecutorPort, ExecutionRequestExecutorPo
   /** Optional per-request stdout (e.g. "QUESTIONS: ..." / "FINDINGS: ..."). */
   stdoutFor?: (request: ExecutionRequest) => string | undefined;
   readonly requestsSeen: ExecutionRequest[] = [];
+  /** Optional file content per request/file (default: a tiny ESM stub). */
+  contentFor?: (request: ExecutionRequest, file: string, call: number) => string;
+  /** Called during execute (simulates work in progress). */
+  onExecute?: (request: ExecutionRequest) => void | Promise<void>;
   private readonly root: string;
   constructor(root: string) {
     this.root = root;
@@ -151,9 +155,10 @@ export class MockAgyExecutor implements ExecutorPort, ExecutionRequestExecutorPo
       for (const f of files) {
         const full = path.join(this.root, f);
         fs.mkdirSync(path.dirname(full), { recursive: true });
-        fs.writeFileSync(full, `// ${request.taskId}\nexport const done = true;\n`, 'utf8');
+        fs.writeFileSync(full, this.contentFor?.(request, f, this.calls) ?? `// ${request.taskId}\nexport const done = true;\n`, 'utf8');
       }
     }
+    await this.onExecute?.(request);
     const now = new Date().toISOString();
     return {
       executorIdentity: { provider: 'antigravity', name: this.executorId, version: '1.0.0' },

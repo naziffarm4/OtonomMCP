@@ -30,6 +30,15 @@ export class FakeIdp {
   /** Called on every decision GET poll; may answer the decision by setting st. */
   onDecisionPoll?: (id: string) => void;
   unauthorized = 0;
+  /** Run monitor + instruction channel (contracts v1). */
+  readonly monitorPuts: Array<Record<string, unknown>> = [];
+  readonly monitorEvents: Array<Record<string, unknown>> = [];
+  readonly rawBodies: string[] = [];
+  readonly channels = new Map<string, Record<string, unknown> | null>();
+  readonly instructions = new Map<string, { runId: string; createdAt: string; mode: string; token: string; state: string; acks: Array<Record<string, unknown>> }>();
+  /** Test hooks: force status / delay for monitor endpoints. */
+  monitorStatus = 200;
+  monitorDelayMs = 0;
   private server?: http.Server;
   port = 0;
 
@@ -117,8 +126,94 @@ export class FakeIdp {
     );
   }
 
+  instructionToken(runId: string, instructionId: string, claims: Record<string, unknown>, key = this.keys.privateKey): string {
+    const ch = this.channels.get(runId) ?? {};
+    return signEs256(
+      this.baseClaims({
+        exp: Math.floor(Date.now() / 1000) + 900,
+        nonce: crypto.randomBytes(18).toString('base64url'),
+        preferred_username: 'nazif',
+        instructionId,
+        runId,
+        projectId: ch.projectId,
+        packageId: ch.packageId,
+        revision: ch.revision,
+        contextFingerprint: ch.contextFingerprint,
+        operation: 'AUTONOMOUS_INSTRUCTION',
+        taskId: null,
+        text: '',
+        ...claims,
+      }),
+      key,
+      this.kid
+    );
+  }
+
+  /** Queue an instruction (as if Nazif signed it in the UI). Returns instructionId. */
+  addInstruction(runId: string, mode: string, text: string, extra: Record<string, unknown> = {}, opts: { key?: crypto.KeyObject; id?: string } = {}): string {
+    const id = opts.id ?? crypto.randomUUID();
+    const token = this.instructionToken(runId, id, { mode, text, ...extra }, opts.key);
+    this.instructions.set(id, { runId, createdAt: new Date().toISOString(), mode, token, state: 'PENDING_DELIVERY', acks: [] });
+    return id;
+  }
+
   answer(decisionId: string, answer: { selectedOptionId?: string; freeText?: string }, overrides: Record<string, unknown> = {}): void {
     this.decisions.get(decisionId)!.st = { status: 'ANSWERED', token: this.decisionToken(decisionId, answer, overrides) };
+  }
+
+  private async handleRuns(req: http.IncomingMessage, res: http.ServerResponse, url: URL, send: (c: number, b: unknown) => void): Promise<void> {
+    let raw = '';
+    for await (const chunk of req) raw += chunk;
+    if (req.headers.authorization !== `Bearer ${CLIENT_TOKEN}`) {
+      this.unauthorized++;
+      return send(401, { error: 'unauthorized' });
+    }
+    if (raw) this.rawBodies.push(raw);
+    const body = raw ? (JSON.parse(raw) as Record<string, unknown>) : {};
+    const parts = url.pathname.split('/').slice(3).map(decodeURIComponent); // [runId, ...]
+    const runId = parts[0];
+    if (parts.length === 1 && req.method === 'PUT') {
+      if (this.monitorDelayMs) await new Promise((r) => setTimeout(r, this.monitorDelayMs));
+      if (this.monitorStatus !== 200) return send(this.monitorStatus, { error: 'forced' });
+      this.monitorPuts.push(body);
+      return send(200, { runId, stored: true });
+    }
+    if (parts[1] === 'events' && req.method === 'POST') {
+      if (this.monitorDelayMs) await new Promise((r) => setTimeout(r, this.monitorDelayMs));
+      if (this.monitorStatus !== 200) return send(this.monitorStatus, { error: 'forced' });
+      const evs = (body.events as Array<Record<string, unknown>>) ?? [];
+      this.monitorEvents.push(...evs);
+      return send(200, { runId, accepted: evs.length, duplicates: 0 });
+    }
+    if (parts[1] === 'instruction-channel') {
+      if (req.method === 'PUT') {
+        this.channels.set(runId, body);
+        return send(200, { runId, open: true });
+      }
+      if (req.method === 'DELETE') {
+        this.channels.set(runId, null);
+        return send(200, { runId, open: false });
+      }
+    }
+    if (parts[1] === 'instructions' && req.method === 'GET' && parts.length === 2) {
+      const list = [...this.instructions.entries()]
+        .filter(([, v]) => v.runId === runId && v.state === 'PENDING_DELIVERY')
+        .slice(0, 20)
+        .map(([instructionId, v]) => ({ instructionId, createdAt: v.createdAt, mode: v.mode, token: v.token }));
+      return send(200, { instructions: list });
+    }
+    if (parts[1] === 'instructions' && parts[3] === 'ack' && req.method === 'POST') {
+      const ins = this.instructions.get(parts[2]);
+      if (!ins) return send(404, { error: 'nf' });
+      const ok =
+        (ins.state === 'PENDING_DELIVERY' && (body.status === 'RECEIVED' || body.status === 'REJECTED')) ||
+        (ins.state === 'RECEIVED' && (body.status === 'APPLIED' || body.status === 'REJECTED'));
+      if (!ok) return send(409, { error: 'transition' });
+      ins.state = String(body.status);
+      ins.acks.push(body);
+      return send(200, { ok: true });
+    }
+    return send(404, { error: 'nf' });
   }
 
   async start(): Promise<void> {
@@ -144,6 +239,7 @@ export class FakeIdp {
       res.writeHead(200, { 'content-type': 'application/x-pem-file' });
       return void res.end(this.publicKeyPem);
     }
+    if (url.pathname.startsWith('/api/runs/')) return this.handleRuns(req, res, url, send);
     if (req.headers.authorization !== `Bearer ${CLIENT_TOKEN}`) {
       this.unauthorized++;
       return send(401, { error: 'unauthorized' });

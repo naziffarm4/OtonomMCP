@@ -75,7 +75,8 @@ Değerleri asla repoya yazmayın; aşağıda yalnızca adlar vardır.
 | `AIDM_IDP_PUBLIC_KEY_FILE` | Aynı PEM, dosyadan (localhost için önerilen). |
 | `AIDM_IDP_JWKS_URL` | JWKS adresi (https; 443/8443). PEM ile birlikte verilemez. |
 | `AIDM_IDP_ALLOW_LOOPBACK_JWKS` | `1` ise loopback (127.0.0.1/localhost) JWKS'e açıkça izin verir. |
-| `AIDM_IDP_POLL_INTERVAL_MS` | CLI `--approval idp` onay yoklama aralığı (varsayılan 3000). |
+| `AIDM_IDP_POLL_INTERVAL_MS` | IdP yoklama aralığı: onay, karar ve canlı talimat kanalı (varsayılan 3000, en az 500). |
+| `AIDM_IDP_RUN_MONITOR` | `off` ise canlı çalışma izleyicisi (IdP `#/runs`) kapatılır. Aksi halde `AIDM_IDP_URL` + `AIDM_IDP_CLIENT_TOKEN` tanımlıysa açıktır. Yalnızca bilgilendirme amaçlıdır; hiçbir zaman çalışmayı engellemez, sır/prompt/dosya içeriği göndermez. |
 | `AIDM_DECISION_MODE` | `ask` (varsayılan): Director ürün kararlarını sorar. `assume`: önerilen seçenek varsayım olarak kaydedilir. |
 
 Kurallar: tam olarak bir anahtar kaynağı (PEM, PEM dosyası veya JWKS) verilmelidir; geçersiz PEM, çift kaynak
