@@ -108,7 +108,7 @@ export class BudgetAwareLlmAdapter implements LLMProvider {
   }
 
   async generate<TStructured = unknown>(request: LlmRequest): Promise<LlmResponse<TStructured>> {
-    const correlationId = request.correlation?.correlation_id ?? `corr_${Date.now()}`;
+    const correlationId = withInvocationDiscriminator(request.correlation?.correlation_id ?? `corr_${Date.now()}`, request.metadata);
     const attempt = request.correlation?.attempt ?? 1;
     const model = request.model?.trim() || this.defaultModel;
     const providerId = this.providerName;
@@ -190,7 +190,19 @@ export class BudgetAwareLlmAdapter implements LLMProvider {
       idempotencyKey: reservationKey,
     });
 
-    // 3. Mark Reservation DISPATCHED before issuing the HTTP call
+    // 3. Mark Reservation DISPATCHED before issuing the HTTP call.
+    // An idempotent replay of the same request key returns the EXISTING reservation.
+    // - SETTLED: genuine replay of a reconciled request (existing contract: no double charge).
+    // - DISPATCHED / UNKNOWN: the earlier outcome is unreconciled; dispatching again would add
+    //   provider spend on top of an open hold without its own reservation -> fail closed.
+    // Distinct logical requests must carry distinct correlation ids / attempts / invocation ids.
+    if (reservation.state === ReservationState.DISPATCHED || reservation.state === ReservationState.UNKNOWN) {
+      throw new BudgetError(
+        `Budget reservation '${reservation.reservationId}' for idempotency key '${reservationKey}' is ${reservation.state} (unreconciled); refusing to dispatch another provider request under the same reservation.`,
+        'ERR_BUDGET_DUPLICATE_DISPATCH',
+        { reservationId: reservation.reservationId, state: reservation.state, idempotencyKey: reservationKey }
+      );
+    }
     if (reservation.state === ReservationState.PREPARED) {
       this.budgetManager.markDispatched(reservation.reservationId);
     }
@@ -219,6 +231,27 @@ export class BudgetAwareLlmAdapter implements LLMProvider {
       // If error is timeout or unknown network failure after dispatch: mark UNKNOWN (retaining hold)
       const isTimeout = err instanceof LlmTimeoutError ||
         (err instanceof Error && (err.name === 'AbortError' || err.message.toLowerCase().includes('timeout')));
+
+      // A completion WAS received but rejected locally (e.g. structured-output validation):
+      // the provider billed it, so settle against the provider-reported usage when available.
+      const reportedUsage = !isTimeout ? extractReportedUsage(err) : null;
+      if (reportedUsage) {
+        const settled = this.trySettleFromUsage({
+          usage: reportedUsage,
+          request,
+          authorizedRequest,
+          reservationId: reservation.reservationId,
+          model,
+          billingProvider,
+          providerId,
+          correlationId,
+          settlementKey,
+          endpoint: resolvedEndpoint.effectiveUrl,
+          endpointKind: auditResult.endpointKind,
+          serviceTier: estimatedTokens.serviceTier ?? 'standard',
+        });
+        if (settled) throw err;
+      }
 
       if (isTimeout) {
         this.budgetManager.recordUnknown({
@@ -292,4 +325,77 @@ export class BudgetAwareLlmAdapter implements LLMProvider {
 
     return response;
   }
+
+  /** Settles a reservation from provider-reported usage attached to a rejected response. */
+  private trySettleFromUsage(p: {
+    usage: Record<string, unknown>;
+    request: LlmRequest;
+    authorizedRequest: LlmRequest;
+    reservationId: string;
+    model: string;
+    billingProvider: string;
+    providerId: string;
+    correlationId: string;
+    settlementKey: string;
+    endpoint: string | undefined;
+    endpointKind: Parameters<typeof UsageNormalizer.normalizeAndReconcile>[0]['expectedEndpointKind'];
+    serviceTier: string;
+  }): boolean {
+    try {
+      const rate = this.budgetManager.getPricingRate(p.billingProvider, p.model, p.serviceTier);
+      if (!rate) return false;
+      const pseudoResponse = {
+        correlation: p.request.correlation,
+        provider: p.providerId,
+        model: typeof p.usage.model === 'string' ? p.usage.model : p.model,
+        content: '',
+        structured_output: null,
+        finish_reason: 'STOP',
+        usage: p.usage,
+        raw_metadata: null,
+        error: null,
+      } as unknown as LlmResponse<unknown>;
+      const norm = UsageNormalizer.normalizeAndReconcile({
+        response: pseudoResponse,
+        request: p.authorizedRequest,
+        modelId: p.model,
+        rate,
+        pricingEngine: this.budgetManager.pricingEngine,
+        providerId: p.billingProvider,
+        endpoint: p.endpoint,
+        expectedEndpointKind: p.endpointKind,
+      });
+      if (!norm.success) return false;
+      this.budgetManager.settle({
+        reservationId: p.reservationId,
+        reportedUsage: norm.usage,
+        providerCorrelationId: p.correlationId,
+        idempotencyKey: p.settlementKey,
+      }, p.providerId);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+}
+
+function extractReportedUsage(err: unknown): Record<string, unknown> | null {
+  if (!err || typeof err !== 'object') return null;
+  const e = err as { usage?: unknown; details?: { usage?: unknown } };
+  const u = e.usage ?? e.details?.usage;
+  if (!u || typeof u !== 'object') return null;
+  const rec = u as Record<string, unknown>;
+  // Only provider-reported (non-estimated) usage may settle actual spend.
+  if (rec.is_exact_provider_metric === false || rec.is_estimated === true) return null;
+  return rec;
+}
+
+/**
+ * Distinct logical requests that share a deterministic correlation id (e.g. a new Director cycle
+ * for the same task/trigger) carry metadata.llm_invocation_id and get their own reservation and
+ * settlement keys. A genuine retry of the same request keeps the same id and stays idempotent.
+ */
+function withInvocationDiscriminator(correlationId: string, metadata: LlmRequest['metadata']): string {
+  const raw = metadata?.llm_invocation_id;
+  return typeof raw === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test(raw) ? `${correlationId}_inv_${raw}` : correlationId;
 }
