@@ -14,12 +14,46 @@ import {
 import { BudgetManager } from '../dist/budget/index.js';
 
 describe('Autonomous LLM provider config', () => {
-  it('defaults to OpenAI chat completions + gpt-4o with AIDM_LLM_API_KEY', () => {
+  it('defaults to OpenAI chat completions + gpt-6-luna (medium effort) with AIDM_LLM_API_KEY', () => {
     const c = resolveLlmProviderConfig({ AIDM_LLM_API_KEY: 'sk-test' });
     assert.equal(c.kind, 'openai');
     assert.equal(c.endpoint, 'https://api.openai.com/v1/chat/completions');
-    assert.equal(c.model, 'gpt-4o');
+    assert.equal(c.model, 'gpt-6-luna');
+    assert.equal(c.reasoningEffort, 'medium');
     assert.equal(c.apiKeyEnvVar, 'AIDM_LLM_API_KEY');
+  });
+
+  it('AIDM_LLM_REASONING_EFFORT is honored, validated and omitted for non-reasoning models', () => {
+    assert.equal(resolveLlmProviderConfig({ AIDM_LLM_API_KEY: 'k', AIDM_LLM_REASONING_EFFORT: 'High' }).reasoningEffort, 'high');
+    assert.equal(resolveLlmProviderConfig({ AIDM_LLM_API_KEY: 'k', AIDM_LLM_MODEL: 'gpt-4o', AIDM_LLM_REASONING_EFFORT: 'high' }).reasoningEffort, undefined);
+    assert.throws(() => resolveLlmProviderConfig({ AIDM_LLM_API_KEY: 'k', AIDM_LLM_REASONING_EFFORT: 'turbo' }), LlmProviderConfigError);
+  });
+
+  it('gpt-6-luna has built-in verified pricing and its wire body is reasoning-aware', async () => {
+    const bm = new BudgetManager();
+    bm.open();
+    const env = { AIDM_LLM_API_KEY: 'sk-test-luna' };
+    const c = resolveLlmProviderConfig(env);
+    assert.doesNotThrow(() => registerProviderBudgetTerms(c, bm));
+    bm.close();
+    let body: any;
+    const fetchFn = (async (_url: string, init: any) => {
+      body = JSON.parse(init.body);
+      return new Response(JSON.stringify({ id: 'x', model: 'gpt-6-luna', choices: [{ index: 0, finish_reason: 'stop', message: { role: 'assistant', content: '{}' } }], usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } }), { status: 200, headers: { 'content-type': 'application/json' } });
+    }) as unknown as typeof fetch;
+    const p = createConfiguredLlmProvider(c, env, { fetchFn });
+    await p.generate({
+      correlation: { correlation_id: 'c', project_id: 'p', task_id: 't', attempt: 1 },
+      messages: [{ role: 'user', content: 'hi' }],
+      model: 'gpt-6-luna', temperature: 0.1, max_tokens: 4000,
+      response_format: 'JSON_SCHEMA', json_schema: { name: 'd', schema: { type: 'object' }, strict: true },
+    } as any).catch(() => undefined);
+    assert.ok(body, 'request was sent');
+    assert.equal(body.reasoning_effort, 'medium');
+    assert.equal(body.temperature, undefined);
+    assert.equal(body.max_completion_tokens, 4000);
+    assert.equal(body.response_format.type, 'json_schema');
+    assert.equal(body.response_format.json_schema.strict, true);
   });
 
   it('key precedence: AIDM_LLM_API_KEY > OPENAI_API_KEY > XAI_API_KEY', () => {

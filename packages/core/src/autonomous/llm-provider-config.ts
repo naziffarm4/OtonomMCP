@@ -6,7 +6,9 @@
  *   AIDM_LLM_API_KEY | OPENAI_API_KEY | XAI_API_KEY   (first non-empty wins, in this order)
  *   AIDM_LLM_ENDPOINT  (default: https://api.openai.com/v1/chat/completions,
  *                       or https://api.x.ai/v1/chat/completions when only XAI_API_KEY is set)
- *   AIDM_LLM_MODEL     (default: gpt-4o for OpenAI, grok-4 for xAI)
+ *   AIDM_LLM_MODEL     (default: gpt-6-luna for OpenAI — same default as the OpenAI DirectorRuntime —, grok-4 for xAI)
+ *   AIDM_LLM_REASONING_EFFORT  none|minimal|low|medium|high|xhigh|max (reasoning models only;
+ *                       default medium). Invalid values fail closed.
  *   AIDM_LLM_INPUT_USD_PER_MTOK / AIDM_LLM_OUTPUT_USD_PER_MTOK / AIDM_LLM_CACHED_INPUT_USD_PER_MTOK
  *     Operator-declared pricing (USD per 1M tokens). REQUIRED for any non-OpenAI host
  *     (e.g. api.x.ai) and for OpenAI models without built-in verified pricing.
@@ -19,11 +21,15 @@
 import type { LLMProvider } from '../llm-bridge/llm-provider.js';
 import {
   ReferenceLlmAdapter,
+  OPENAI_REASONING_EFFORTS,
+  isOpenAiReasoningModel,
+  type OpenAiReasoningEffort,
   type ReferenceWireRequest,
   type ReferenceWireResponse,
 } from '../llm-bridge/reference-llm-adapter.js';
 import { HttpLlmTransport } from '../llm-bridge/http-llm-transport.js';
 import type { BudgetManager } from '../budget/budget-manager.js';
+import { DEFAULT_OPENAI_DIRECTOR_MODEL, DEFAULT_REASONING_EFFORT } from '../director/openai-director-runtime.js';
 import { STANDARD_OPENAI_HOSTS, registerCustomEndpointContract } from '../budget/endpoint-audit.js';
 
 export const DEFAULT_OPENAI_ENDPOINT = 'https://api.openai.com/v1/chat/completions';
@@ -47,6 +53,8 @@ export interface ResolvedLlmProviderConfig {
   readonly pricing: LlmPricingUsdPerMTok | null;
   /** Billing provider id used for pricing lookup ('openai' or the host for custom endpoints). */
   readonly billingProviderId: string;
+  /** Effective reasoning_effort (undefined for non-reasoning models). */
+  readonly reasoningEffort?: OpenAiReasoningEffort;
 }
 
 export class LlmProviderConfigError extends Error {
@@ -76,6 +84,7 @@ function parseUsd(name: string, raw: string | undefined): number | undefined {
 export interface ResolveLlmConfigOverrides {
   readonly endpoint?: string;
   readonly model?: string;
+  readonly reasoningEffort?: string;
 }
 
 /** Pure resolution of provider configuration from env (+ optional CLI overrides). */
@@ -126,7 +135,7 @@ export function resolveLlmProviderConfig(
     nonEmpty(overrides.model) ??
     nonEmpty(env.AIDM_LLM_MODEL) ??
     nonEmpty(env.OPENAI_MODEL) ??
-    (kind === 'xai' ? 'grok-4' : kind === 'openai' ? 'gpt-4o' : '');
+    (kind === 'xai' ? 'grok-4' : kind === 'openai' ? DEFAULT_OPENAI_DIRECTOR_MODEL : '');
   if (!model) {
     throw new LlmProviderConfigError('AIDM_LLM_MODEL is required for custom OpenAI-compatible endpoints.', 'LLM_MODEL_REQUIRED');
   }
@@ -142,6 +151,17 @@ export function resolveLlmProviderConfig(
   }
   const pricing = input !== undefined && output !== undefined ? { input, output, cachedInput: cached } : null;
 
+  const rawEffort = (nonEmpty(overrides.reasoningEffort) ?? nonEmpty(env.AIDM_LLM_REASONING_EFFORT))?.toLowerCase();
+  if (rawEffort !== undefined && !(OPENAI_REASONING_EFFORTS as readonly string[]).includes(rawEffort)) {
+    throw new LlmProviderConfigError(
+      `AIDM_LLM_REASONING_EFFORT must be one of ${OPENAI_REASONING_EFFORTS.join(', ')} (got '${rawEffort}').`,
+      'LLM_CONFIG_INVALID'
+    );
+  }
+  const reasoningEffort = isOpenAiReasoningModel(model)
+    ? ((rawEffort as OpenAiReasoningEffort | undefined) ?? DEFAULT_REASONING_EFFORT)
+    : undefined;
+
   return Object.freeze({
     kind,
     endpoint,
@@ -151,6 +171,7 @@ export function resolveLlmProviderConfig(
     hasApiKey: apiKeyEnvVar !== null,
     pricing,
     billingProviderId: kind === 'openai' ? 'openai' : host,
+    ...(reasoningEffort ? { reasoningEffort } : {}),
   });
 }
 
@@ -228,6 +249,9 @@ export function createConfiguredLlmProvider(
     timeoutMs,
     endpoint: config.endpoint,
     wireFormat: 'openai',
+    // Reasoning-aware wire (shared with the OpenAI DirectorRuntime): reasoning_effort,
+    // max_completion_tokens, no temperature unless effort is 'none', strict json_schema.
+    ...(config.reasoningEffort ? { reasoningEffort: config.reasoningEffort } : {}),
   });
 }
 
@@ -258,6 +282,7 @@ export function describeLlmProviderConfig(
     kind: config.kind,
     endpoint: config.endpoint,
     model: config.model,
+    reasoningEffort: config.reasoningEffort ?? null,
     apiKeyEnvVar: config.apiKeyEnvVar,
     hasApiKey: config.hasApiKey,
     /** True when a verified budget rate is available (operator env or built-in registry). */

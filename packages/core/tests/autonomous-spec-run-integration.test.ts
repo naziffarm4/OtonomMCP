@@ -157,6 +157,14 @@ describe('aidm run --spec (integration, mocked LLM + mocked AGY, real closed loo
     assert.equal(agy.calls, 0);
   });
 
+  it('budget above the ADR-16 per-period ceiling (10 USD) fails closed before any LLM/AGY call', async () => {
+    const r = await run(['--budget-usd', '10.5']);
+    const rep = report(r);
+    assert.equal(rep.status, 'CONFIGURATION_ERROR');
+    assert.match(rep.stopReason, /ADR-16 per-period ceiling of \$10/);
+    assert.equal(agy.calls, 0);
+  });
+
   it('dirty working tree (foreign uncommitted changes) fails closed instead of being auto-committed', async () => {
     fs.writeFileSync(path.join(dir, 'user-notes.txt'), 'wip', 'utf8');
     const r = await run(['--budget-usd', '1']);

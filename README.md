@@ -148,7 +148,8 @@ API anahtarı + tek bir Markdown dosyası verildiğinde AIDM, kullanıcıya soru
 ```bash
 # OpenAI
 export AIDM_LLM_API_KEY="sk-..."
-export AIDM_LLM_MODEL="gpt-4o"            # varsayılan; doğrulanmış fiyatı yerleşik
+export AIDM_LLM_MODEL="gpt-6-luna"        # varsayılan (OpenAI DirectorRuntime ile aynı); doğrulanmış fiyatı yerleşik
+export AIDM_LLM_REASONING_EFFORT="medium" # none|minimal|low|medium|high|xhigh|max (varsayılan medium; geçersiz değer = fail-closed)
 
 # veya Grok / xAI (OpenAI uyumlu chat completions)
 export XAI_API_KEY="xai-..."              # ya da AIDM_LLM_API_KEY
@@ -163,8 +164,10 @@ export AIDM_AGY_PATH="agy"                # Antigravity CLI yolu
 node packages/core/bin/aidm.js run --spec ./benim-projem.md -C ./hedef-proje --dry-run
 
 # Gerçek çalışma
-node packages/core/bin/aidm.js run --spec ./benim-projem.md -C ./hedef-proje --budget-usd 5
+node packages/core/bin/aidm.js run --spec ./benim-projem.md -C ./hedef-proje --budget-usd 5   # ADR-16: en fazla 10 USD (dönem tavanı); üstü CONFIGURATION_ERROR
 ```
+
+Reasoning modellerinde (gpt-6-luna, gpt-5*, o-serisi) istek gövdesi `reasoning_effort` ve `max_completion_tokens` içerir; `temperature` yalnızca `AIDM_LLM_REASONING_EFFORT=none` iken gönderilir; strict `json_schema` korunur. Her `aidm run --spec` çağrısı kendi `budget.db` dosyasında açıkça yetkilendirilmiş bir ADR-16 bütçe dönemi olarak kaydedilir.
 
 Director çıktısı: LLM yalnızca karar alanlarını üretir (`actionType`, `rationale`, `confidence`, görev yükü, `assumptions`); `protocolVersion`, `actionId`, `projectId`, `directorSessionId`, `basedOnContextFingerprint` gibi zarf alanlarını sistem doldurur. LLM bunlardan farklı bir proje/oturum/fingerprint değeri gönderirse eylem reddedilir (fail-closed). `AIDM_LLM_RESPONSE_FORMAT=auto|json_schema|json_schema_loose|json_object` (varsayılan `auto`: strict `json_schema`, sağlayıcı desteklemezse `json_object`), `AIDM_LLM_REPAIR_ATTEMPTS=0..3` (varsayılan 1: doğrulama hatası LLM'e geri beslenir; her istek ayrı bütçe rezervasyonu alır).
 

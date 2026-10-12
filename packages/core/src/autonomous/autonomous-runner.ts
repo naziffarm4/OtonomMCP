@@ -70,7 +70,7 @@ import {
 } from '../evidence/execution-evidence-collector.js';
 import type { ExecutionRequest } from '../executor-bridge/execution-request-types.js';
 import type { RawExecutorOutcome } from '../executor-bridge/raw-executor-outcome.js';
-import { nanoUsdToUsd } from '../budget/budget-types.js';
+import { nanoUsdToUsd, MAX_PERIOD_BUDGET_NANO_USD } from '../budget/budget-types.js';
 import type { LLMProvider } from '../llm-bridge/llm-provider.js';
 import type { ExecutorPort } from '../executor-bridge/executor-port.js';
 import { AntigravityAdapter } from '../executor-bridge/antigravity-adapter.js';
@@ -307,6 +307,16 @@ export class AutonomousSpecRunner {
         'A positive budget is required for live runs (--budget-usd N or AIDM_BUDGET_USD). Budget control cannot be bypassed.'
       );
     }
+    // ADR-16: an authorized budget period has a hard 10 USD ceiling. Never silently cap: fail closed.
+    const maxPeriodUsd = nanoUsdToUsd(MAX_PERIOD_BUDGET_NANO_USD);
+    if (budgetUsd > maxPeriodUsd) {
+      return this.finish(
+        report,
+        'CONFIGURATION_ERROR',
+        `Budget $${budgetUsd} exceeds the ADR-16 per-period ceiling of $${maxPeriodUsd}. ` +
+          `Use --budget-usd <= ${maxPeriodUsd}; a further period requires a new explicit human authorization.`
+      );
+    }
 
     // ---------------------------------------------------------------- authorization
     const lockPath = path.join(projectRoot, AUTONOMOUS_RUN_LOCK_FILE);
@@ -439,6 +449,8 @@ export class AutonomousSpecRunner {
       });
       budgetManager.open();
       budgetManager.createGlobalAccount(budgetUsd);
+      // Record this invocation as an explicitly operator-authorized ADR-16 budget period.
+      budgetManager.authorizeBudgetPeriod({ limit: budgetUsd, authorizedBy: `operator:${entryPoint}:${runId}` });
 
       let baseProvider: LLMProvider;
       if (this.options.llmProvider) {
