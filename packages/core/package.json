@@ -156,6 +156,10 @@
     "./logging": {
       "types": "./dist/logging/index.d.ts",
       "import": "./dist/logging/index.js"
+    },
+    "./autonomous": {
+      "types": "./dist/autonomous/index.d.ts",
+      "import": "./dist/autonomous/index.js"
     }
   },
   "bin": {

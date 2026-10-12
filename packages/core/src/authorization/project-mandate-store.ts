@@ -3,12 +3,19 @@ import * as fs from 'node:fs';
 import { ProjectMandate, ProjectMandateZodSchema } from './authorization-policy-types.js';
 import { readJsonFile, atomicWriteJson } from '../storage/atomic-writer.js';
 import { StorageError } from '../errors/storage-error.js';
+import type { IdentityManager } from './identity-manager.js';
 
 export class ProjectMandateStore {
   readonly filePath: string;
   readonly baseDir: string;
+  private readonly identityManagerOverride?: IdentityManager;
 
-  constructor(options?: { baseDir?: string; filePath?: string }) {
+  /**
+   * @param options.identityManager Optional injected identity keystore (DI seam for
+   *   non-Windows hosts and tests). Validation rules are unchanged; only key storage differs.
+   */
+  constructor(options?: { baseDir?: string; filePath?: string; identityManager?: IdentityManager }) {
+    this.identityManagerOverride = options?.identityManager;
     if (options?.filePath) {
       this.filePath = options.filePath;
       this.baseDir = path.dirname(path.dirname(path.dirname(options.filePath)));
@@ -48,7 +55,10 @@ export class ProjectMandateStore {
     const { NonceStore } = await import('./nonce-store.js');
     const { AuthContextValidator } = await import('./auth-context-validator.js');
     
-    const validator = new AuthContextValidator(new IdentityManager({ baseDir: this.baseDir }), new NonceStore({ baseDir: this.baseDir }));
+    const validator = new AuthContextValidator(
+      this.identityManagerOverride ?? new IdentityManager({ baseDir: this.baseDir }),
+      new NonceStore({ baseDir: this.baseDir })
+    );
     const result = await validator.validate(authContext, mandate.projectId);
 
     if (!result.isValid) {

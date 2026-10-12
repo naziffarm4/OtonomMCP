@@ -65,3 +65,4 @@ export {
 
 export * from './authorization/index.js';
 export * from './logging/index.js';
+export * from './autonomous/index.js';

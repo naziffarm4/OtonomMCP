@@ -40,6 +40,33 @@ export interface ValidatedAuthContext {
   claims?: Partial<TrustedIdentityClaim>;
 }
 
+/** Max lifetime of an operator CLI invocation authorization (issuedAt -> expiresAt). */
+export const OPERATOR_CLI_INVOCATION_MAX_TTL_MS = 15 * 60 * 1000;
+
+/**
+ * Operator CLI invocation (`aidm run --spec`): the human operator explicitly invoked the
+ * autonomous run from their own shell. Signed with the local, OS-user-protected identity key.
+ * Stricter than TRUSTED_IDE: must be USER-originated, nonce-bound (anti-replay), project-bound,
+ * short-lived and bound to the exact spec fingerprint. It is NEVER produced from LLM output.
+ */
+export function isValidOperatorCliInvocation(
+  ctx: ValidatedAuthContext & Record<string, unknown>,
+  currentProjectId: string
+): boolean {
+  if (ctx.authSource !== 'OPERATOR_CLI_INVOCATION') return false;
+  if (ctx.actorType !== 'USER') return false;
+  if (typeof ctx.nonce !== 'string' || ctx.nonce.length < 16) return false;
+  if (ctx.projectId !== currentProjectId) return false;
+  if (typeof ctx.specFingerprint !== 'string' || !/^[a-f0-9]{64}$/.test(ctx.specFingerprint)) return false;
+  if (typeof ctx.issuedAt !== 'string' || typeof ctx.expiresAt !== 'string') return false;
+  const issued = Date.parse(ctx.issuedAt);
+  const expires = Date.parse(ctx.expiresAt);
+  if (Number.isNaN(issued) || Number.isNaN(expires)) return false;
+  if (expires <= issued || expires - issued > OPERATOR_CLI_INVOCATION_MAX_TTL_MS) return false;
+  if (issued > Date.now() + 60_000) return false;
+  return true;
+}
+
 export class AuthContextValidator {
   private readonly identityManager: IdentityManager;
   private readonly nonceStore: NonceStore;
@@ -219,7 +246,9 @@ export class AuthContextValidator {
       if (this.identityProvider.isConfigured()) {
         isTrueHumanInteraction = false;
       } else {
-        isTrueHumanInteraction = ctx.verified === true && ctx.authSource === 'TRUSTED_IDE';
+        isTrueHumanInteraction =
+          ctx.verified === true &&
+          (ctx.authSource === 'TRUSTED_IDE' || isValidOperatorCliInvocation(ctx, currentProjectId));
       }
 
       return { isValid: true, isTrueHumanInteraction };
