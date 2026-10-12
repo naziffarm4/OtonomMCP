@@ -110,4 +110,47 @@
 - **Gerekçe:** Model veya istemci tarafından üretilen sahte onay alanlarının ayrıcalık yükseltme saldırılarını engellemek ve bağımsız bant dışı insan doğrulama sınırını güvenceye almak.
 - **Etkisi:** Ayrıntılı mimari karşılaştırma ve adaptör sözleşmesi `docs/ADR-13-TRUSTED-IDENTITY-PROVIDER.md` dosyasında kayıt altına alınmıştır.
 
+---
+
+### ADR-14: Oturum Dosya Kotası Semantiği ve Net Değişen Benzersiz Dosya Sayımı
+- **Aşama:** Revizyon 6 / AIDM-PLAN-REV6 (Kaynak Kotası ve Mutasyon Yönetimi).
+> [!NOTE]
+> **Revizyon Notu (2026-10-10):** Bu kararda yer alan "oturum başına 100 dosya" sayısal sınırı, ADR-16 ile yürürlükten kaldırılmıştır. Dosya bazlı SHA-256 baseline takibi, kanıt toplama ve kapsam denetimi kuralları ise ADR-16 altında korunmaktadır.
+- **Karar:**
+  1. Oturum başına 100 dosya sınırı (ADR-16 ile kaldırıldı), görev sonunda net değişen benzersiz dosya sayısı olarak tanımlanmıştır. Fiziksel yazma sayısı değildir; bir dosya değiştirilip eski hâline döndürülürse bu değişiklik tespit edilmeyebilir. `fs.watch` kesin güvenlik kanıtı değil, yardımcı telemetridir.
+  2. Görev öncesinde `targetFiles` ve izin verilen kapsam (`packages` ve `docs`) doğrulanacaktır.
+  3. Çalışma ağacı kapsam denetimi yalnızca hedef dosyaları değil, izin verilen kapsam (`packages` ve `docs`) dışındaki beklenmeyen tüm değişiklikleri kapsayacaktır. Symlink ve path traversal (`..`, mutlak yollar) riskleri kesin olarak reddedilir ve `SCOPE_VIOLATION` üretir.
+  4. Görev öncesi ve sonrası dosya varlığı ve SHA-256 özetleri karşılaştırılacaktır (`preHash !== postHash`, yeni oluşturulan veya silinen). Değişen, oluşturulan veya silinen her benzersiz dosya tam bir kez (+1) sayılacaktır. Aynı görevde aynı dosyaya yapılan birden fazla değişiklik tek dosya olarak sayılacaktır.
+  5. Önceden mevcut çalışma ağacı değişikliklerini yeni mutasyonlardan ayırmak için görev öncesi temel durum kaydı (Pre-Execution Baseline) oluşturulacaktır.
+  6. İptal ve başarısız görevlerde disk üzerinde gerçekleşmiş net mutasyonlar varsa kanıt kaydına alınır.
+- **Gerekçe:** Yanıltıcı fiziksel yazma iddialarından kaçınmak, çalışma ağacındaki mevcut değişiklikleri korumak ve matematiksel olarak kanıtlanabilir net kota denetimi sağlamak.
+- **Etkisi:** `EvidenceCollector` net hash mutasyonlarını doğrular.
+
+---
+
+### ADR-15: Windows Süreç Ağacı Güvenliği, Bağımsız Doğrulama ve Fail-Closed İzolasyon Blokajı
+- **Aşama:** Revizyon 6 / AIDM-PLAN-REV6 (Süreç Güvenliği ve İzolasyon).
+- **Karar:**
+  1. Zaman aşımı veya iptal durumunda `taskkill /PID <pid> /T /F` ile süreç ağacının sonlandırılması denenecektir; ancak bu komut tek başına mutlak izolasyon garantisi sayılmayacaktır.
+  2. Süreç ağacının tamamen sonlandığı bağımsız biçimde işletim sistemi süreç tablosu üzerinden (`Win32_Process` / `tasklist`) doğrulanacaktır.
+  3. Sonlandırma veya doğrulama belirsizliğinde sistem derhal `BLOCKED` durumuna geçecek ve blokaj nedeni `PROCESS_ISOLATION_UNCERTAINTY` olarak kaydedilecektir.
+  4. **Yürütmenin Devam Şartı:** Yalnızca insan onayı yeterli değildir; işletim sistemi düzeyinde yetim/zombi alt süreç kalmadığı **bağımsız olarak yeniden doğrulanmadan** yürütme kesinlikle devam edemez (`DISPATCH_BLOCKED`). Blokaj otomatik yeniden deneme (auto-retry) ile aşılamaz.
+  5. Mevcut CLI tabanlı yürütme mimarisi (`agy.exe`) korunacaktır.
+- **Gerekçe:** Windows ortamında yetim kalan torun süreçlerin geç yazma (late write) yaparak çalışma ağacını bozmasını veya yetki sınırlarını aşmasını fail-closed duruşla engellemek.
+- **Etkisi:** Süreç belirsizliği durumunda sistem insan kontrolüne ve yeniden izolasyon doğrulamasına devredilerek kilitlenir.
+
+---
+
+### ADR-16: Dönem Başına 10 USD Bütçe, 7 Günlük Mandate Geçerliliği ve Kotaların Kaldırılması
+- **Aşama:** Revizyon 6 Nihai Kararlar (AIDM-PLAN-REV6-FINAL).
+- **Tarih:** 2026-10-10.
+- **Karar:**
+  1. **Dönem Başına 10 USD Bütçe:** Her yeni ve açıkça yetkilendirilmiş bütçe dönemi için harcama tavanı 10 USD (`10_000_000_000n` nano-USD) olarak belirlenmiştir. Her bütçe dönemi için `budget.db` içinde ayrı kayıt tutulur. Önceki dönemlerin harcamaları, rezervasyonları ve denetim kayıtları korunur, asla silinmez veya sıfırlanmaz. Kullanılmamış bütçe sonraki döneme aktarılmaz. Bütçe tükenince yeni API harcamaları durur. Yeni dönem, gerçek yetkili insan onayı ve bütçe tahsisi tamamlanmadan başlayamaz. 10 USD, dönem başına tavan anlamına gelir; proje toplam harcaması zaman içinde 10 USD'yi aşabilir. Mükerrer tahsis ve yarış koşulları engellenir.
+  2. **Mandate Başına En Fazla 7 Gün Geçerlilik:** Her mandate en fazla 7 günlük geçerlilik dönemine sahiptir. Süre dolduğunda mevcut mandate otomatik olarak uzatılmaz. Sonraki dönem için yeni geçerlilik aralığı, gerçek Ed25519 Trusted IDE imzası ve zorunlu insan yetkilendirmesi gerekir.
+  3. **İki Bağımsız Yetkilendirme Kapısı:** Yeni bütçe tahsisi tek başına yürütme yetkisi vermez; yeni mandate tek başına bütçe yetkisi vermez. Bütçe ve mandate yenilemeleri birbirinden bağımsız doğrulanır; her iki koşul sağlanmadan yürütme başlamaz. Süre veya bütçe dolduğunda yenileme tamamlanana kadar yürütme kapalı kalır. Sahte imza, otomatik onay veya sessiz uzatma yasaktır.
+  4. **Dosya ve Komut Kotalarının Kaldırılması:** Oturum başına 100 dosya ve 500 komut sınırları kaldırılmıştır. Görevler dosya sayısı veya komut adedi nedeniyle reddedilmeyecek veya durdurulmayacaktır.
+  5. **Korunan Güvenlik Sınırları:** Dosya değişikliği kanıtı, SHA-256 pre/post temel durum kaydı, `packages` ve `docs` çalışma ağacı kapsam denetimi, symlink / traversal koruması ve komut güvenlik sınıflandırması aynen korunur. Yürütme yalnızca bütçe tükenmesi, mandate süresinin dolması, güvenlik ihlali veya süreç izolasyon belirsizliği (`PROCESS_ISOLATION_UNCERTAINTY`) nedeniyle durdurulabilir.
+  6. **Korunan Sabitler:** İzinli dizinler (`packages` ve `docs`), 4 otomatik görev sınıfı (`ROUTINE_BUG_FIX`, `TEST_MODIFICATION`, `FEATURE_IMPLEMENTATION`, `REFACTORING`), `UNCLASSIFIED` fail-closed kuralı, yasaklı eylemler (`PUSH`, `RESET_HARD`, `PUBLISH`, `GIT_FORCE_PUSH`, `WORKSPACE_ESCAPE`, `BULK_DELETION`), Product Owner insan onayı, Ed25519 Trusted IDE imzası, `D:\ÇALIŞMALAR-D\OtonomMCP-External-IdP` izolasyonu ve CLI tabanlı yürütme mimarisi aynen korunur.
+- **Gerekçe:** Proje toplam harcamasını ve uzun vadeli gelişimini tek bir 10 USD oturuma veya yapay 100 dosya / 500 komut sınırına sıkıştırmadan, her dönemi bağımsız insan onayı ve Ed25519 imzasıyla denetlenen güvenli bir periyodik yaşam döngüsü kurmak.
+- **Etkisi:** Dosya ve komut kotaları kaldırılmış; bütçe ve yetki süreleri dönem bazlı bağımsız iki kapı olarak yapılandırılmıştır.
 

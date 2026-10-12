@@ -150,8 +150,27 @@ export class BudgetAwareLlmAdapter implements LLMProvider {
     const reservationKey = `idemp_res_${correlationId}_att_${attempt}`;
     const settlementKey = `idemp_set_${correlationId}_att_${attempt}`;
 
+    // Resolve target account ID: if caller specifies account or project has dedicated account, reserve against it
+    const targetAccountId =
+      (request.metadata?.account_id as string | undefined) ??
+      (request.metadata?.accountId as string | undefined) ??
+      (() => {
+        const projectId =
+          request.correlation?.project_id ??
+          (request.metadata?.project_id as string | undefined) ??
+          (request.director_context?.project_id as string | undefined);
+        if (projectId) {
+          const projectAccount = this.budgetManager.getProjectAccount(projectId);
+          if (projectAccount) {
+            return projectAccount.accountId;
+          }
+        }
+        return this.budgetManager.getGlobalAccount()?.accountId;
+      })();
+
     // 1. Pre-dispatch Budget Validation (fails closed if budget insufficient or pricing missing)
     this.budgetManager.preDispatchValidate({
+      accountId: targetAccountId,
       sessionId: correlationId,
       taskId: request.correlation?.task_id ?? null,
       providerId: billingProvider,
@@ -162,6 +181,7 @@ export class BudgetAwareLlmAdapter implements LLMProvider {
 
     // 2. Atomic Budget Reservation in PREPARED state
     const reservation = this.budgetManager.reserve({
+      accountId: targetAccountId,
       sessionId: correlationId,
       taskId: request.correlation?.task_id ?? null,
       providerId: billingProvider,
@@ -184,6 +204,7 @@ export class BudgetAwareLlmAdapter implements LLMProvider {
         ...(request.metadata ?? {}),
         __aidm_budget_authorized: true,
         __aidm_reservation_id: reservation.reservationId,
+        __aidm_account_id: reservation.accountId,
         __aidm_dispatch_claim_id: dispatchClaimId,
         __aidm_effective_endpoint: resolvedEndpoint.effectiveUrl,
         __aidm_endpoint_kind: auditResult.endpointKind,

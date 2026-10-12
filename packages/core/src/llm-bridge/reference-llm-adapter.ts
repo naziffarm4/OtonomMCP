@@ -166,6 +166,24 @@ export interface ReferenceLlmAdapterConfig {
    * - 'auto': Uses 'openai' when endpoint includes 'openai.com' or provider is 'openai', otherwise 'reference'. Defaults to 'auto'.
    */
   readonly wireFormat?: 'reference' | 'openai' | 'auto';
+  /**
+   * OpenAI reasoning effort for reasoning models (o-series, gpt-5*, gpt-6*), sent as
+   * `reasoning_effort`. Omitted when undefined. With 'none', gpt-5/gpt-6 accept sampling params.
+   */
+  readonly reasoningEffort?: OpenAiReasoningEffort;
+}
+
+export const OPENAI_REASONING_EFFORTS = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'] as const;
+export type OpenAiReasoningEffort = (typeof OPENAI_REASONING_EFFORTS)[number];
+
+/** Reasoning model families (reject temperature/top_p/logprobs unless reasoning_effort is 'none'). */
+export function isOpenAiReasoningModel(model: string): boolean {
+  return /^(o[0-9]|gpt-5|gpt-6)/i.test(model);
+}
+
+/** Legacy o1 models do not support strict structured outputs; gpt-5/gpt-6 and o3+ do. */
+function supportsStrictStructuredOutput(model: string): boolean {
+  return !/^o1(-|$)/i.test(model);
 }
 
 // ============================================================================
@@ -185,6 +203,7 @@ export class ReferenceLlmAdapter implements LLMProvider {
   readonly transport: LlmTransport<ReferenceWireRequest, ReferenceWireResponse>;
   private readonly defaultTimeoutMs: number;
   private readonly endpoint?: string;
+  readonly reasoningEffort?: OpenAiReasoningEffort;
 
   constructor(config: ReferenceLlmAdapterConfig) {
     if (!config.transport) {
@@ -195,6 +214,7 @@ export class ReferenceLlmAdapter implements LLMProvider {
     this.providerName = config.providerName ?? 'reference-llm';
     this.defaultModel = config.defaultModel ?? 'ref-model-v1';
     this.enforceBudget = config.enforceBudget ?? false;
+    this.reasoningEffort = config.reasoningEffort;
     this.budgetManager = config.budgetManager;
     this.supportedModels = Object.freeze(
       config.supportedModels && config.supportedModels.length > 0
@@ -250,12 +270,17 @@ export class ReferenceLlmAdapter implements LLMProvider {
    * Strips out internal orchestrator metadata from JSON body to prevent HTTP 400 Bad Request.
    */
   translateToOpenAiWire(wire: ReferenceWireRequest): Record<string, unknown> {
-    const isReasoningModel = /^(o[0-9]|gpt-5|gpt-6)/i.test(wire.model);
+    const isReasoningModel = isOpenAiReasoningModel(wire.model);
     const body: Record<string, unknown> = {
       model: wire.model,
       messages: wire.messages,
     };
-    if (!isReasoningModel && typeof wire.temperature === 'number' && Number.isFinite(wire.temperature)) {
+    if (isReasoningModel && this.reasoningEffort) {
+      body.reasoning_effort = this.reasoningEffort;
+    }
+    // Sampling params are rejected by reasoning models unless reasoning is disabled ('none').
+    const samplingAllowed = !isReasoningModel || this.reasoningEffort === 'none';
+    if (samplingAllowed && typeof wire.temperature === 'number' && Number.isFinite(wire.temperature)) {
       body.temperature = wire.temperature;
     }
     if (typeof wire.max_tokens === 'number' && Number.isFinite(wire.max_tokens)) {
@@ -271,7 +296,7 @@ export class ReferenceLlmAdapter implements LLMProvider {
           type: 'json_schema',
           json_schema: {
             name: wire.response_format.schema_name || 'director_decision',
-            strict: isReasoningModel ? false : (wire.response_format.strict ?? true),
+            strict: supportsStrictStructuredOutput(wire.model) ? (wire.response_format.strict ?? true) : false,
             schema: wire.response_format.schema ?? {},
           },
         };

@@ -152,6 +152,7 @@ export interface RepositoryStateEvidence {
 export interface ChangedFileEvidence {
   readonly path: string;
   readonly status: string;
+  readonly sha256?: string | null;
 }
 
 export interface VerificationCheck {
@@ -251,6 +252,7 @@ export const ChangedFileEvidenceZodSchema = z.object({
     message: 'Changed file path must be a safe POSIX relative path without traversal or drive prefix',
   }),
   status: z.string().min(1),
+  sha256: z.string().nullable().optional(),
 });
 
 export const VerificationCheckZodSchema = z.object({

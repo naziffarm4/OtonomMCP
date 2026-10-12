@@ -915,7 +915,7 @@ describe('Phase 10 TASK-P10-03: Antigravity Executor Adapter Boundary', () => {
     assert.ok(payloadCaptured);
     assert.ok((payloadCaptured as AntigravityTranslatedPayload).structuredPrompt.includes('=== AIDM AUTHORIZED EXECUTION REQUEST ==='));
     assert.ok((payloadCaptured as AntigravityTranslatedPayload).structuredPrompt.includes('Task ID: TASK-P10-01'));
-    assert.ok((payloadCaptured as AntigravityTranslatedPayload).args.includes('--print'));
+    assert.ok((payloadCaptured as AntigravityTranslatedPayload).args.some((a) => a.startsWith('--print')));
     assert.strictEqual(outcome.status, 'SUCCESS');
   });
 

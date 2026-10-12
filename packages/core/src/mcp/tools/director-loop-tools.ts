@@ -16,7 +16,7 @@
 import type { McpToolDefinition, McpToolHandler, McpRequestContext } from '../mcp-types.js';
 import type { McpOrchestratorDelegate } from '../mcp-delegate.js';
 import type { McpServer } from '../mcp-server.js';
-import { sanitizeMcpPayload } from '../mcp-errors.js';
+import { sanitizeMcpPayload, sanitizeMcpSecrets } from '../mcp-errors.js';
 import { ClosedLoopCoordinator } from '../../director-loop/closed-loop-coordinator.js';
 import { resolveCanonicalProjectIdentity } from '../../director/project-identity-resolver.js';
 import {
@@ -30,6 +30,8 @@ import {
 
 export const DIRECTOR_INGEST_INSTRUCTION_TOOL_NAME = 'director.ingestInstruction';
 export const DIRECTOR_EXECUTE_CYCLE_TOOL_NAME = 'director.executeCycle';
+export const DIRECTOR_RUN_AUTOLOOP_TOOL_NAME = 'director.runAutoLoop';
+export const DIRECTOR_RUN_AUTOLOOP_COMPAT_NAME = 'director_runAutoLoop';
 export const DIRECTOR_GET_CYCLE_RESULT_TOOL_NAME = 'director.getCycleResult';
 export const DIRECTOR_EVALUATE_NEXT_ACTION_TOOL_NAME = 'director.evaluateNextAction';
 
@@ -102,6 +104,30 @@ export const directorExecuteCycleToolDefinition: McpToolDefinition = {
   },
 };
 
+export const directorRunAutoLoopToolDefinition: McpToolDefinition = {
+  name: DIRECTOR_RUN_AUTOLOOP_TOOL_NAME,
+  description:
+    'Executes an autonomous closed-loop cycle sequence initiated by a single user instruction, coordinating reasoning, execution, and independent verification through ClosedLoopCoordinator. Strictly enforces safety boundaries, project isolation, max cycles, budget, and halts fail-closed on human approval required or EXECUTION_UNKNOWN.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      instruction: {
+        type: 'string',
+        description: 'Single user instruction or objective initiating the autonomous closed loop',
+      },
+      workspaceRoot: { type: 'string', description: 'Workspace root path' },
+      projectId: { type: 'string', description: 'Canonical project identifier' },
+      directorSessionId: { type: 'string', description: 'Optional active Director session ID' },
+      targetTaskId: { type: 'string', description: 'Optional target task ID to begin or focus execution on' },
+      maxCycles: { type: 'number', description: 'Maximum execution cycles allowed (default: 10, strictly bounded)' },
+      maxRecoveryAttempts: { type: 'number', description: 'Maximum recovery attempts per task (default: 2)' },
+      timeoutMs: { type: 'number', description: 'Optional execution timeout in milliseconds per cycle' },
+      authContext: { type: 'object', description: 'Optional verified cryptographic authorization context' },
+    },
+    required: ['instruction'],
+  },
+};
+
 export const directorGetCycleResultToolDefinition: McpToolDefinition = {
   name: DIRECTOR_GET_CYCLE_RESULT_TOOL_NAME,
   description:
@@ -148,6 +174,9 @@ function getCoordinator(
   if (delegate?.closedLoopCoordinator) {
     return delegate.closedLoopCoordinator;
   }
+  const directorRuntime =
+    delegate?.directorRuntime ?? delegate?.getDirectorRuntime?.(resolvedRoot);
+
   return new ClosedLoopCoordinator({
     workspaceRoot: resolvedRoot,
     sessionStore: delegate?.directorSessionStore,
@@ -159,7 +188,8 @@ function getCoordinator(
     durableStateManager: delegate?.durableStateManager,
     historyManager: delegate?.historyManager,
     executorPort: delegate?.executorPort,
-    directorRuntime: delegate?.directorRuntime,
+    directorRuntime,
+    budgetManager: delegate?.budgetManager,
     authorizationPolicyEngine: delegate?.authorizationPolicyEngine,
   });
 }
@@ -582,6 +612,145 @@ export function createDirectorExecuteCycleHandler(
   };
 }
 
+export function createDirectorRunAutoLoopHandler(
+  serverRoot?: string,
+  serverDelegate?: McpOrchestratorDelegate
+): McpToolHandler {
+  return async (rawArgs: Readonly<Record<string, unknown>>, context: McpRequestContext) => {
+    const delegate = context.delegate ?? serverDelegate;
+    const resolvedRoot =
+      (rawArgs.workspaceRoot as string | undefined) ??
+      serverRoot ??
+      delegate?.projectRoot ??
+      process.cwd();
+
+    const correlationId = context.correlation.correlationId;
+
+    // 1. Project identity isolation
+    const canonical = resolveCanonicalProjectIdentity(resolvedRoot);
+    const requestedProjectId = rawArgs.projectId as string | undefined;
+    if (requestedProjectId && requestedProjectId !== canonical.projectId) {
+      const payload = {
+        success: false,
+        error: {
+          code: 'ERR_PROJECT_MISMATCH',
+          message: `Canonical project identity mismatch: expected '${canonical.projectId}', got '${requestedProjectId}' at '${canonical.projectRoot}'. Accidental cross-project execution rejected.`,
+          details: { canonicalProjectId: canonical.projectId, requestedProjectId },
+          correlationId,
+        },
+      };
+      return {
+        content: [{ type: 'text', text: JSON.stringify(payload, null, 2) }],
+        isError: true,
+      };
+    }
+
+    const projectId = canonical.projectId;
+    const coordinator = getCoordinator(resolvedRoot, delegate);
+
+    try {
+      const instruction = rawArgs.instruction as string | undefined;
+      if (!instruction || typeof instruction !== 'string' || instruction.trim().length === 0) {
+        const payload = {
+          success: false,
+          error: {
+            code: 'ERR_INVALID_INSTRUCTION',
+            message: 'A non-empty user instruction is required to initiate the autonomous closed loop.',
+            correlationId,
+          },
+        };
+        return {
+          content: [{ type: 'text', text: JSON.stringify(payload, null, 2) }],
+          isError: true,
+        };
+      }
+
+      const maxCycles =
+        typeof rawArgs.maxCycles === 'number' && rawArgs.maxCycles > 0
+          ? Math.floor(rawArgs.maxCycles)
+          : undefined;
+      const maxRecoveryAttempts =
+        typeof rawArgs.maxRecoveryAttempts === 'number' && rawArgs.maxRecoveryAttempts >= 0
+          ? Math.floor(rawArgs.maxRecoveryAttempts)
+          : undefined;
+      const timeoutMs =
+        typeof rawArgs.timeoutMs === 'number' && rawArgs.timeoutMs > 0
+          ? rawArgs.timeoutMs
+          : undefined;
+      const targetTaskId = rawArgs.targetTaskId as string | undefined;
+      const directorSessionId = rawArgs.directorSessionId as string | undefined;
+      const authContext = rawArgs.authContext as any;
+      const signal =
+        (rawArgs.signal as AbortSignal | undefined) ??
+        ((context as any).signal as AbortSignal | undefined);
+
+      const loopResult = await coordinator.coordinateAutoLoop({
+        workspaceRoot: resolvedRoot,
+        projectId,
+        directorSessionId,
+        instruction,
+        targetTaskId,
+        maxCycles,
+        maxRecoveryAttempts,
+        timeoutMs,
+        signal,
+        authContext,
+      });
+
+      const payload = {
+        success: loopResult.isSuccess,
+        correlationId,
+        projectId,
+        directorSessionId: loopResult.directorSessionId,
+        loopId: loopResult.loopId,
+        terminalStatus: loopResult.terminalStatus,
+        isSuccess: loopResult.isSuccess,
+        cyclesRun: loopResult.cyclesRun,
+        tasksCompleted: loopResult.tasksCompleted,
+        summary: loopResult.summary,
+        humanDecisionRequired: loopResult.humanDecisionRequired,
+        humanDecisionPoint: loopResult.humanDecisionPoint
+          ? sanitizeMcpPayload(loopResult.humanDecisionPoint)
+          : undefined,
+        lastCycleResult: loopResult.lastCycleResult
+          ? sanitizeMcpPayload(loopResult.lastCycleResult as unknown as Record<string, unknown>)
+          : undefined,
+        completedCycles: sanitizeMcpPayload(loopResult.completedCycles as unknown as Record<string, unknown>[]),
+        completedAt: loopResult.completedAt,
+      };
+
+      const sanitizedPayload = sanitizeMcpPayload(payload);
+
+      const isError =
+        !loopResult.isSuccess &&
+        (loopResult.terminalStatus === 'EXECUTION_FAILED' ||
+          loopResult.terminalStatus === 'REJECTED_BY_POLICY' ||
+          loopResult.terminalStatus === 'EXECUTION_UNKNOWN' ||
+          loopResult.terminalStatus === 'MAX_ATTEMPTS_EXCEEDED');
+
+      return {
+        content: [{ type: 'text', text: JSON.stringify(sanitizedPayload, null, 2) }],
+        isError,
+      };
+    } catch (err: any) {
+      const payload = {
+        success: false,
+        error: {
+          code: err.code ?? err.name ?? 'ERR_DIRECTOR_AUTOLOOP_FAILED',
+          message: sanitizeMcpSecrets(err.message ?? 'Unknown error'),
+          details: sanitizeMcpPayload(err.details ?? {}),
+          correlationId,
+        },
+      };
+
+      return {
+        content: [{ type: 'text', text: JSON.stringify(sanitizeMcpPayload(payload), null, 2) }],
+        isError: true,
+      };
+    }
+  };
+}
+
 export function createDirectorGetCycleResultHandler(
   serverRoot?: string,
   serverDelegate?: McpOrchestratorDelegate
@@ -778,6 +947,10 @@ export function registerDirectorLoopTools(server: McpServer): void {
   server.registerTool(
     directorExecuteCycleToolDefinition,
     createDirectorExecuteCycleHandler(undefined, server.delegate)
+  );
+  server.registerTool(
+    directorRunAutoLoopToolDefinition,
+    createDirectorRunAutoLoopHandler(undefined, server.delegate)
   );
   server.registerTool(
     directorGetCycleResultToolDefinition,

@@ -24,7 +24,9 @@
  *    within strict max attempts limits. No infinite retry loops.
  */
 
+import * as path from 'node:path';
 import * as crypto from 'node:crypto';
+import * as child_process from 'node:child_process';
 import { Actor } from '../actors.js';
 import { LifecycleState } from '../lifecycle.js';
 import {
@@ -33,12 +35,24 @@ import {
   type ClosedLoopCycleStatus,
   type ClosedLoopStep,
   ClosedLoopCycleInputZodSchema,
+  type ClosedLoopAutoLoopInput,
+  type ClosedLoopAutoLoopResult,
+  type ClosedLoopAutoLoopTerminalStatus,
+  ClosedLoopAutoLoopInputZodSchema,
+  type ProcessIsolationBlockRecord,
+  type UnblockProcessIsolationInput,
+  type UnblockProcessIsolationResult,
+  UnblockProcessIsolationInputZodSchema,
 } from './closed-loop-types.js';
 import {
   type DirectorInstruction,
   type DirectorExecutionCycleResult,
   computeDeterministicCycleId,
 } from './director-loop-types.js';
+import {
+  createOpenAiDirectorRuntime,
+  resolveOpenAiDirectorConfig,
+} from '../director/openai-director-runtime.js';
 import { DirectorLoopStore } from './director-loop-store.js';
 import { DirectorLoopEngine } from './director-loop-engine.js';
 import { resolveCanonicalProjectIdentity } from '../director/project-identity-resolver.js';
@@ -123,6 +137,53 @@ export interface ClosedLoopCoordinatorOptions {
   readonly recoveryEngine?: RecoveryEngine;
   /** Explicit test-only flag to allow legacy reasoning engine fallback */
   readonly allowLegacyReasoning?: boolean;
+  /** Whether to automatically resolve and initialize OpenAI DirectorRuntime if credentials exist (default: true) */
+  readonly autoResolveDirectorRuntime?: boolean;
+  /** Independent OS process verifier for G-10 two-phase unblocking (default: queries tasklist / OS table) */
+  readonly processVerifier?: (pids?: number[]) => Promise<{ verifiedDead: boolean; error?: string; output?: string }>;
+}
+
+async function defaultProcessVerifier(
+  pids?: number[]
+): Promise<{ verifiedDead: boolean; error?: string; output?: string }> {
+  if (!pids || pids.length === 0) {
+    return { verifiedDead: true, output: 'No specific PIDs supplied to check' };
+  }
+
+  if (process.platform === 'win32') {
+    for (const pid of pids) {
+      if (typeof pid !== 'number' || pid <= 0) continue;
+      try {
+        const out = child_process.execSync(`tasklist /FO CSV /FI "PID eq ${pid}"`, {
+          encoding: 'utf8',
+          stdio: ['ignore', 'pipe', 'ignore'],
+          timeout: 3000,
+        });
+        if (out.includes(`"${pid}"`)) {
+          return { verifiedDead: false, output: `Process PID ${pid} is still active in Windows process table.` };
+        }
+      } catch (err: any) {
+        return {
+          verifiedDead: false,
+          error: `Failed to query Windows process table for PID ${pid}: ${err.message}`,
+        };
+      }
+    }
+    return { verifiedDead: true, output: `All checked PIDs [${pids.join(', ')}] confirmed dead in Windows process table.` };
+  } else {
+    for (const pid of pids) {
+      if (typeof pid !== 'number' || pid <= 0) continue;
+      try {
+        process.kill(pid, 0);
+        return { verifiedDead: false, output: `Process PID ${pid} is still alive.` };
+      } catch (err: any) {
+        if (err.code !== 'ESRCH') {
+          return { verifiedDead: false, error: `Failed to query process status for PID ${pid}: ${err.message}` };
+        }
+      }
+    }
+    return { verifiedDead: true, output: `All checked PIDs [${pids.join(', ')}] confirmed dead.` };
+  }
 }
 
 export class ClosedLoopCoordinator {
@@ -156,6 +217,9 @@ export class ClosedLoopCoordinator {
   readonly budgetManager?: BudgetManager;
   readonly executorPort?: ExecutorPort;
   readonly recoveryEngine: RecoveryEngine;
+  readonly processVerifier: (pids?: number[]) => Promise<{ verifiedDead: boolean; error?: string; output?: string }>;
+  private isUnblockingProcess = false;
+  private static readonly activeUnblockWorkspaces = new Set<string>();
 
   constructor(options: ClosedLoopCoordinatorOptions = {}) {
     this.workspaceRoot = options.workspaceRoot;
@@ -165,6 +229,7 @@ export class ClosedLoopCoordinator {
     this.authorizationPolicyEngine = options.authorizationPolicyEngine;
     this.runtimeStateManager = options.runtimeStateManager;
     this.allowLegacyReasoning = options.allowLegacyReasoning ?? false;
+    this.processVerifier = options.processVerifier ?? defaultProcessVerifier;
 
     this.specStore = options.specStore ?? new SpecStore({ baseDir: this.workspaceRoot });
     this.dagEngine = options.dagEngine ?? new TaskDagEngine();
@@ -306,7 +371,24 @@ export class ClosedLoopCoordinator {
         authorizationPolicyEngine: this.authorizationPolicyEngine,
       });
 
-    this.directorRuntime = options.directorRuntime;
+    const autoResolve = options.autoResolveDirectorRuntime ?? true;
+    if (options.directorRuntime) {
+      this.directorRuntime = options.directorRuntime;
+    } else if (autoResolve && !this.allowLegacyReasoning && this.budgetManager) {
+      // Auto-resolution only with an authoritative BudgetManager: a live LLM Director without
+      // budget hold/settle would bypass budget governance (P18-03). Without it: no runtime (fail-closed).
+      const openAiConfig = resolveOpenAiDirectorConfig();
+      if (openAiConfig.hasValidApiKey) {
+        this.directorRuntime = createOpenAiDirectorRuntime({
+          workspaceRoot: this.workspaceRoot,
+          sessionStore: this.sessionStore,
+          sessionEngine: this.sessionEngine,
+          historyManager: this.historyManager,
+          budgetManager: this.budgetManager,
+        });
+      }
+    }
+
     this.reasoningEngine = options.reasoningEngine;
     this.actionPipeline =
       options.actionPipeline ??
@@ -355,6 +437,29 @@ export class ClosedLoopCoordinator {
         projectId,
         directorSessionId: input.directorSessionId ?? 'unknown',
       });
+    }
+
+    // Pre-Execution Boundary: Check if system is permanently BLOCKED due to PROCESS_ISOLATION_UNCERTAINTY (G-8 / G-10)
+    const existingDurable = await this.durableStateManager.load();
+    if (existingDurable?.blockedState?.blockingReason === 'PROCESS_ISOLATION_UNCERTAINTY') {
+      const blockMeta = (existingDurable.blockedState.metadata ?? {}) as Record<string, unknown>;
+      return {
+        cycleId: `cycle-${Date.now()}-dispatch-blocked`,
+        projectId,
+        directorSessionId: input.directorSessionId ?? 'unknown',
+        status: 'BLOCKED',
+        isSuccess: false,
+        summary: `DISPATCH_BLOCKED: System is permanently BLOCKED due to PROCESS_ISOLATION_UNCERTAINTY. New dispatch is rejected until two-phase unblocking (PO approval + independent OS process verification) is completed.`,
+        stepReached: 'CONTEXT_SYNC',
+        humanDecisionRequired: true,
+        humanDecisionPoint: {
+          code: 'ERR_PROCESS_ISOLATION_UNCERTAINTY',
+          blockingReason: 'PROCESS_ISOLATION_UNCERTAINTY',
+          blockId: blockMeta.blockId,
+          blockedState: existingDurable.blockedState,
+        },
+        completedAt: new Date().toISOString(),
+      };
     }
 
     // ------------------------------------------------------------------------
@@ -858,6 +963,31 @@ export class ClosedLoopCoordinator {
 
     const activePkg = await this.approvalStore.getActivePackage(projectId);
 
+    // Non-IMPLEMENT_TASK actions (e.g. DECLARE_PROJECT_COMPLETE, REQUEST_PLANNING) do not dispatch implementation to bridge
+    // RETRY_TASK / CORRECT_TASK are execution actions (dispatcher routes them through
+    // handleImplementTask): they MUST reach the bridge and independent evidence, never succeed here.
+    if (
+      actionEnvelope &&
+      actionEnvelope.actionType !== 'IMPLEMENT_TASK' &&
+      actionEnvelope.actionType !== 'RETRY_TASK' &&
+      actionEnvelope.actionType !== 'CORRECT_TASK'
+    ) {
+      return {
+        cycleId: `cycle-${Date.now()}-${actionEnvelope.actionType.toLowerCase()}`,
+        projectId,
+        directorSessionId: session.directorSessionId,
+        status: 'COMPLETED_SUCCESS',
+        isSuccess: true,
+        summary: dispatchResult.reason ?? `Action ${actionEnvelope.actionType} dispatched and accepted.`,
+        stepReached: 'STATE_INTEGRATION_RECOVERY',
+        actionEnvelope,
+        directorAction,
+        dispatchResult,
+        humanDecisionRequired: false,
+        completedAt: new Date().toISOString(),
+      };
+    }
+
     // Persist authoritative Director decision if action is IMPLEMENT_TASK
     if (actionEnvelope && actionEnvelope.actionType === 'IMPLEMENT_TASK' && targetTaskId) {
       const existingDecisions = await this.decisionStore.listDecisions({ sessionId: session.directorSessionId });
@@ -955,6 +1085,90 @@ export class ClosedLoopCoordinator {
         requestId: intent.executionIntentId,
         evidenceId: bridgeResult.systemEvidence?.evidenceId ?? `ev-${Date.now()}`,
       });
+
+    // Check for Process Tree Isolation Uncertainty -> fail-closed to BLOCKED_ON_APPROVAL (ADR-15)
+    const isIsolationUncertain =
+      bridgeResult.code === 'ERR_PROCESS_ISOLATION_UNCERTAINTY' ||
+      bridgeResult.systemEvidence?.failureCategory === 'PROCESS_ISOLATION_UNCERTAINTY';
+
+    if (isIsolationUncertain) {
+      const blockId = `block-${Date.now()}-${crypto.randomUUID().slice(0, 8)}`;
+      const detectedPid = (bridgeResult.systemEvidence as any)?.processPid ?? (bridgeResult as any)?.rawOutcome?.processPid;
+
+      const curState = (await this.durableStateManager.load()) ?? {
+        currentLifecycleState: LifecycleState.TASK_LOOP,
+        completedTaskIds: [],
+        activeTaskId: intent.taskId,
+        blockedState: null,
+      };
+
+      await this.durableStateManager.save({
+        ...curState,
+        currentLifecycleState: LifecycleState.BLOCKED_ON_HUMAN,
+        activeTaskId: intent.taskId,
+        blockedState: {
+          blockedTaskId: intent.taskId,
+          blockedIteration: 1,
+          blockedContextReference: intent.basedOnContextFingerprint,
+          blockingReason: 'PROCESS_ISOLATION_UNCERTAINTY',
+          resumePoint: 'TASK_LOOP',
+          timestamp: completedAt,
+          metadata: {
+            blockId,
+            reason: 'Process tree termination could not be independently verified. Orphan process may exist.',
+            cycleId,
+            projectId,
+            processPid: detectedPid,
+            state: 'BLOCKED',
+            resumptionCondition: 'Human PO approval and independent OS-level verification that no orphan processes remain alive.',
+          },
+        },
+      });
+
+      if (this.historyManager) {
+        await this.historyManager
+          .appendEvent({
+            eventType: 'PROCESS_ISOLATION_BLOCKED',
+            actor: Actor.ORCHESTRATOR,
+            payload: {
+              blockId,
+              cycleId,
+              taskId: intent.taskId,
+              projectId,
+              reason: 'PROCESS_ISOLATION_UNCERTAINTY',
+              blockedAt: completedAt,
+              processPid: detectedPid,
+            },
+          })
+          .catch(() => {});
+      }
+
+      return {
+        cycleId,
+        projectId,
+        directorSessionId: session.directorSessionId,
+        status: 'BLOCKED',
+        isSuccess: false,
+        summary: `BLOCKED on PROCESS_ISOLATION_UNCERTAINTY: Process tree termination could not be independently verified. Orphan process may exist.`,
+        stepReached: 'DRIVER_EXECUTION',
+        taskId: intent.taskId,
+        reasoningResult,
+        actionEnvelope,
+        directorAction,
+        dispatchResult,
+        bridgeResult,
+        cycleResult: bridgeResult.cycleResult,
+        systemEvidence: bridgeResult.systemEvidence,
+        humanDecisionRequired: true,
+        humanDecisionPoint: {
+          code: 'ERR_PROCESS_ISOLATION_UNCERTAINTY',
+          blockId,
+          cycleId,
+          reason: 'PROCESS_ISOLATION_UNCERTAINTY: Process termination could not be verified dead. OS-level re-verification required before resuming.',
+        },
+        completedAt,
+      };
+    }
 
     // Check for Ambiguous Timeout / Abort -> EXECUTION_UNKNOWN
     if (bridgeResult.status === ExecutionBridgeStatus.EXECUTION_UNKNOWN) {
@@ -1365,5 +1579,607 @@ export class ClosedLoopCoordinator {
       directorDecision,
       humanDecisionRequired,
     };
+  }
+
+  /**
+   * Authoritative Closed-Loop Automation Engine (Phase OM-09 / Director Runtime Automation).
+   * Executes continuous, bounded cycles from a single user instruction until all tasks are complete,
+   * human approval is required, a policy violation occurs, or unknown execution state is reached.
+   *
+   * HARD ARCHITECTURAL INVARIANTS:
+   * 1. Bounded execution: Strictly enforced maxCycles (never runs indefinitely).
+   * 2. Zero executor trust: Independent SystemExecutionEvidence verification on every cycle.
+   * 3. Unknown state fail-closed: EXECUTION_UNKNOWN halts the loop immediately without re-dispatch.
+   * 4. Human approval boundary: Halts in BLOCKED_ON_APPROVAL when human authorization is required.
+   * 5. Fresh context guarantee: Re-synchronizes context snapshot before each reasoning cycle.
+   * 6. Cancellation: Reacts immediately to AbortSignal cancellation.
+   */
+  async coordinateAutoLoop(input: ClosedLoopAutoLoopInput): Promise<ClosedLoopAutoLoopResult> {
+    if (input.signal?.aborted) {
+      return {
+        loopId: `loop-cancelled-${Date.now()}`,
+        projectId: input.projectId ?? 'unknown',
+        directorSessionId: input.directorSessionId ?? 'unknown',
+        terminalStatus: 'CANCELLED',
+        isSuccess: false,
+        cyclesRun: 0,
+        completedCycles: [],
+        tasksCompleted: [],
+        summary: 'Auto-loop cancelled via AbortSignal before start.',
+        humanDecisionRequired: false,
+        completedAt: new Date().toISOString(),
+      };
+    }
+
+    const parseResult = ClosedLoopAutoLoopInputZodSchema.safeParse(input);
+    if (!parseResult.success) {
+      const errReason = `Invalid auto-loop input: ${parseResult.error.issues[0]?.message ?? 'validation failed'}`;
+      return {
+        loopId: `loop-${Date.now()}-invalid`,
+        projectId: input.projectId ?? 'unknown',
+        directorSessionId: input.directorSessionId ?? 'unknown',
+        terminalStatus: 'EXECUTION_FAILED',
+        isSuccess: false,
+        cyclesRun: 0,
+        completedCycles: [],
+        tasksCompleted: [],
+        summary: errReason,
+        humanDecisionRequired: false,
+        completedAt: new Date().toISOString(),
+      };
+    }
+
+    const workingDir = input.workspaceRoot ?? this.workspaceRoot ?? process.cwd();
+    const canonical = resolveCanonicalProjectIdentity(workingDir);
+    const projectId = input.projectId ?? canonical.projectId;
+
+    if (canonical.projectId !== projectId) {
+      return {
+        loopId: `loop-${Date.now()}-mismatch`,
+        projectId,
+        directorSessionId: input.directorSessionId ?? 'unknown',
+        terminalStatus: 'EXECUTION_FAILED',
+        isSuccess: false,
+        cyclesRun: 0,
+        completedCycles: [],
+        tasksCompleted: [],
+        summary: `Canonical project identity mismatch: expected '${projectId}', got '${canonical.projectId}' at '${canonical.projectRoot}'. Accidental cross-project execution rejected.`,
+        humanDecisionRequired: false,
+        completedAt: new Date().toISOString(),
+      };
+    }
+
+    const maxCycles = input.maxCycles ?? 10;
+    const maxRecoveryAttempts = input.maxRecoveryAttempts ?? 2;
+    const loopId = `loop-${canonical.projectId}-${Date.now()}`;
+    const completedCycles: ClosedLoopCycleResult[] = [];
+    const tasksCompleted: string[] = [];
+    const taskFailureCounts = new Map<string, number>();
+
+    let currentSession = null;
+    if (input.directorSessionId) {
+      try {
+        currentSession = await this.sessionEngine.getSession(input.directorSessionId, {
+          workspaceRoot: workingDir,
+          projectId,
+        });
+      } catch (err: any) {
+        return {
+          loopId,
+          projectId,
+          directorSessionId: input.directorSessionId,
+          terminalStatus: 'EXECUTION_FAILED',
+          isSuccess: false,
+          cyclesRun: 0,
+          completedCycles: [],
+          tasksCompleted: [],
+          summary: `Failed to resolve Director session '${input.directorSessionId}': ${err.message}`,
+          humanDecisionRequired: false,
+          completedAt: new Date().toISOString(),
+        };
+      }
+    } else {
+      currentSession = await this.sessionStore.getActiveSession();
+    }
+
+    if (!currentSession || currentSession.status !== 'ACTIVE') {
+      return {
+        loopId,
+        projectId,
+        directorSessionId: currentSession?.directorSessionId ?? 'unknown',
+        terminalStatus: 'EXECUTION_FAILED',
+        isSuccess: false,
+        cyclesRun: 0,
+        completedCycles: [],
+        tasksCompleted: [],
+        summary: `Director session '${currentSession?.directorSessionId ?? 'none'}' is ${currentSession?.status ?? 'MISSING'}. An ACTIVE session is required for auto-loop execution.`,
+        humanDecisionRequired: false,
+        completedAt: new Date().toISOString(),
+      };
+    }
+
+    // Check pre-existing blocked state in DurableStateManager
+    const durableState = await this.durableStateManager.load();
+    if (durableState?.blockedState) {
+      const isIsolationBlock = durableState.blockedState.blockingReason === 'PROCESS_ISOLATION_UNCERTAINTY';
+      return {
+        loopId,
+        projectId,
+        directorSessionId: currentSession.directorSessionId,
+        terminalStatus: isIsolationBlock ? 'DISPATCH_BLOCKED' : 'BLOCKED_ON_APPROVAL',
+        isSuccess: false,
+        cyclesRun: 0,
+        completedCycles: [],
+        tasksCompleted: [],
+        summary: isIsolationBlock
+          ? `DISPATCH_BLOCKED: Auto-loop dispatch rejected because system is permanently BLOCKED on PROCESS_ISOLATION_UNCERTAINTY. Two-phase unblocking (PO approval + OS process verification) required.`
+          : `Durable state is currently blocked on human decision: ${durableState.blockedState.blockingReason}`,
+        humanDecisionRequired: true,
+        humanDecisionPoint: durableState.blockedState,
+        completedAt: new Date().toISOString(),
+      };
+    }
+
+    let nextTargetTaskId = input.targetTaskId;
+    let terminalStatus: ClosedLoopAutoLoopTerminalStatus = 'ALL_TASKS_COMPLETED';
+    let summary = 'Auto-loop completed successfully.';
+    let humanDecisionRequired = false;
+    let humanDecisionPoint: unknown = undefined;
+
+    for (let cycleNum = 1; cycleNum <= maxCycles; cycleNum++) {
+      // 1. Check AbortSignal for user cancellation
+      if (input.signal?.aborted) {
+        terminalStatus = 'CANCELLED';
+        summary = 'Auto-loop cancelled via AbortSignal.';
+        break;
+      }
+
+      // 2. Synchronize Context Snapshot before each cycle (Freshness Guarantee)
+      try {
+        const synchronizer = new DirectorContextSynchronizer({
+          workspaceRoot: workingDir,
+          sessionStore: this.sessionStore,
+          sessionEngine: this.sessionEngine,
+        });
+        await synchronizer.synchronize({
+          directorSessionId: currentSession.directorSessionId,
+          projectId,
+        });
+      } catch {
+        // Sync failure logged; coordinateCycle validates snapshot staleness fail-closed
+      }
+
+      // 3. Execute Single Controlled Cycle
+      const cycleResult = await this.coordinateCycle({
+        workspaceRoot: workingDir,
+        projectId,
+        directorSessionId: currentSession.directorSessionId,
+        instruction: input.instruction,
+        targetTaskId: nextTargetTaskId,
+        timeoutMs: input.timeoutMs,
+        signal: input.signal,
+        authContext: input.authContext,
+        maxRecoveryAttempts,
+      });
+
+      completedCycles.push(cycleResult);
+
+      if (input.onCycleCompleted) {
+        await input.onCycleCompleted(cycleResult, cycleNum);
+      }
+
+      // 4. Evaluate Cycle Outcome & Enforce Fail-Closed Invariants
+      if (cycleResult.status === 'BLOCKED') {
+        terminalStatus = 'BLOCKED';
+        summary = `Auto-loop halted fail-closed: System entered BLOCKED state due to PROCESS_ISOLATION_UNCERTAINTY (${cycleResult.summary}).`;
+        humanDecisionRequired = true;
+        humanDecisionPoint = cycleResult.humanDecisionPoint;
+        break;
+      }
+
+      if (cycleResult.status === 'EXECUTION_UNKNOWN') {
+        terminalStatus = 'EXECUTION_UNKNOWN';
+        summary = `Auto-loop halted fail-closed: Execution state is unknown (${cycleResult.summary}). Invariant: Zero blind re-dispatch. Human intervention required.`;
+        humanDecisionRequired = true;
+        humanDecisionPoint = { reason: cycleResult.summary, cycleId: cycleResult.cycleId };
+        break;
+      }
+
+      if (cycleResult.status === 'REJECTED_BY_POLICY') {
+        terminalStatus = 'REJECTED_BY_POLICY';
+        summary = `Auto-loop halted fail-closed: Action rejected by policy (${cycleResult.summary}).`;
+        break;
+      }
+
+      if (cycleResult.humanDecisionRequired || cycleResult.status === 'BLOCKED_ON_APPROVAL') {
+        terminalStatus = 'BLOCKED_ON_APPROVAL';
+        summary = `Auto-loop stopped safely: Human approval or decision required (${cycleResult.summary}).`;
+        humanDecisionRequired = true;
+        humanDecisionPoint = cycleResult.humanDecisionPoint;
+        break;
+      }
+
+      if (cycleResult.status === 'NO_ACTION_REQUIRED') {
+        terminalStatus = 'COMPLETED_SUCCESS';
+        summary = `Auto-loop concluded: ${cycleResult.summary}`;
+        break;
+      }
+
+      if (cycleResult.status === 'COMPLETED_SUCCESS' && cycleResult.isSuccess) {
+        if (cycleResult.taskId && !tasksCompleted.includes(cycleResult.taskId)) {
+          tasksCompleted.push(cycleResult.taskId);
+        }
+
+        // Check if all tasks in SpecStore are completed
+        const allTasks = await this.specStore.loadTasks();
+        const pendingTasks = allTasks.filter(
+          (t) => t.status !== 'ACCEPTED' && !tasksCompleted.includes(t.task_id)
+        );
+        if (pendingTasks.length === 0) {
+          terminalStatus = 'ALL_TASKS_COMPLETED';
+          summary = `All tasks in project specification are completed and verified (${tasksCompleted.length} tasks completed).`;
+          break;
+        }
+
+        // Reset target task ID to allow next cycle to select next ready task
+        nextTargetTaskId = undefined;
+      } else {
+        // Cycle did not succeed
+        const failedTaskId = cycleResult.taskId ?? 'unknown';
+        const failCount = (taskFailureCounts.get(failedTaskId) ?? 0) + 1;
+        taskFailureCounts.set(failedTaskId, failCount);
+
+        if (failCount > maxRecoveryAttempts) {
+          terminalStatus = 'MAX_ATTEMPTS_EXCEEDED';
+          summary = `Auto-loop halted: Task '${failedTaskId}' exceeded maximum recovery attempts (${maxRecoveryAttempts}).`;
+          humanDecisionRequired = true;
+          humanDecisionPoint = { taskId: failedTaskId, attempts: failCount, reason: cycleResult.summary };
+          break;
+        }
+
+        if (cycleResult.status === 'CORRECTIVE_TASK_CREATED' && cycleResult.correctiveTaskId) {
+          // Point next cycle at corrective task
+          nextTargetTaskId = cycleResult.correctiveTaskId;
+        } else {
+          terminalStatus = cycleResult.status;
+          summary = `Auto-loop stopped: Cycle ${cycleNum} ended with status ${cycleResult.status} (${cycleResult.summary}).`;
+          break;
+        }
+      }
+
+      // Check maxCycles limit
+      if (cycleNum === maxCycles) {
+        terminalStatus = 'MAX_CYCLES_REACHED';
+        summary = `Auto-loop reached maximum cycle limit (${maxCycles}). Stopping safely.`;
+        break;
+      }
+    }
+
+    const isSuccess =
+      terminalStatus === 'ALL_TASKS_COMPLETED' ||
+      terminalStatus === 'COMPLETED_SUCCESS';
+
+    return {
+      loopId,
+      projectId,
+      directorSessionId: currentSession.directorSessionId,
+      terminalStatus,
+      isSuccess,
+      cyclesRun: completedCycles.length,
+      completedCycles,
+      lastCycleResult: completedCycles[completedCycles.length - 1],
+      tasksCompleted,
+      summary,
+      humanDecisionRequired,
+      humanDecisionPoint,
+      completedAt: new Date().toISOString(),
+    };
+  }
+
+  /**
+   * Helper to check if coordinator durable state is actively blocked on PROCESS_ISOLATION_UNCERTAINTY.
+   */
+  async isIsolationBlocked(): Promise<boolean> {
+    const cur = await this.durableStateManager.load();
+    return cur?.blockedState?.blockingReason === 'PROCESS_ISOLATION_UNCERTAINTY';
+  }
+
+  /**
+   * G-10: Two-phase unblocking service for PROCESS_ISOLATION_UNCERTAINTY.
+   * Requires BOTH:
+   * 1. Condition A: Valid, authenticated Product Owner human approval record/package.
+   * 2. Condition B: Independent OS-level process re-verification confirming no surviving orphan processes.
+   */
+  async unblockProcessIsolation(
+    input: UnblockProcessIsolationInput
+  ): Promise<UnblockProcessIsolationResult> {
+    const parseResult = UnblockProcessIsolationInputZodSchema.safeParse(input);
+    if (!parseResult.success) {
+      return {
+        success: false,
+        state: 'BLOCKED',
+        reason: `Invalid unblock input: ${parseResult.error.issues[0]?.message ?? 'validation failed'}`,
+      };
+    }
+
+    const workspaceKey = path.resolve(this.workspaceRoot ?? process.cwd());
+    if (this.isUnblockingProcess || ClosedLoopCoordinator.activeUnblockWorkspaces.has(workspaceKey)) {
+      return {
+        success: false,
+        state: 'BLOCKED',
+        reason: 'Concurrent unblock operation in progress for this workspace. Re-entrant or parallel unblock requests are rejected.',
+      };
+    }
+
+    this.isUnblockingProcess = true;
+    ClosedLoopCoordinator.activeUnblockWorkspaces.add(workspaceKey);
+    try {
+      const curDurable = await this.durableStateManager.load();
+      if (!curDurable?.blockedState || curDurable.blockedState.blockingReason !== 'PROCESS_ISOLATION_UNCERTAINTY') {
+        return {
+          success: false,
+          state: 'UNBLOCKED',
+          reason: 'System is not currently blocked on PROCESS_ISOLATION_UNCERTAINTY.',
+        };
+      }
+
+      const blockMetadata = (curDurable.blockedState.metadata ?? {}) as Record<string, unknown>;
+      const activeBlockId = (blockMetadata.blockId as string) ?? 'active-isolation-block';
+
+      // Strict Block ID binding verification
+      if (!input.blockId || input.blockId !== activeBlockId) {
+        return {
+          success: false,
+          blockId: activeBlockId,
+          state: 'BLOCKED',
+          reason: `Block ID mismatch: provided proof blockId '${input.blockId}' does not match active blockId '${activeBlockId}'. Replay rejected.`,
+        };
+      }
+
+      const projectId = input.projectId ?? (blockMetadata.projectId as string) ?? this.workspaceRoot;
+
+      // ------------------------------------------------------------------------
+      // Condition A: Authoritative Product Owner Approval Verification
+      // ------------------------------------------------------------------------
+      const poApprovalId = input.poPackageId ?? input.poApprovalId;
+
+      // Single-use proof policy: prevent re-use of previously consumed PO approvals across cycles
+      const consumedApprovals = (curDurable.metadata?.consumedPoApprovalIds as string[]) ?? [];
+      if (
+        consumedApprovals.includes(poApprovalId) ||
+        curDurable.metadata?.unblockedByPoApprovalId === poApprovalId
+      ) {
+        const reason = `Condition A FAIL: Approval package '${poApprovalId}' has already been consumed to unblock a prior isolation block. Single-use proof policy strictly forbids re-using consumed approvals.`;
+        return {
+          success: false,
+          blockId: activeBlockId,
+          state: 'BLOCKED',
+          reason,
+        };
+      }
+
+      let approvalPackage = null;
+      try {
+        approvalPackage = await this.approvalStore.loadPackage(poApprovalId, undefined, projectId);
+      } catch {
+        // Fallback
+      }
+
+      if (!approvalPackage && projectId) {
+        try {
+          const activePkg = await this.approvalStore.getActivePackage(projectId);
+          if (activePkg && (activePkg.packageId === poApprovalId || activePkg.approvalRecord?.packageId === poApprovalId)) {
+            approvalPackage = activePkg;
+          }
+        } catch {
+          // Fallback
+        }
+      }
+
+      if (!approvalPackage) {
+        const reason = `Condition A FAIL: Product Owner approval package '${poApprovalId}' could not be found in ApprovalStore. Client-asserted approval without authoritative record is rejected.`;
+        if (this.historyManager) {
+          await this.historyManager
+            .appendEvent({
+              eventType: 'ISOLATION_UNBLOCK_FAILED',
+              actor: Actor.ORCHESTRATOR,
+              payload: { blockId: activeBlockId, condition: 'A_PO_APPROVAL', reason },
+            })
+            .catch(() => {});
+        }
+        return {
+          success: false,
+          blockId: activeBlockId,
+          state: 'BLOCKED',
+          reason,
+        };
+      }
+
+      // Cross-project scope binding check
+      if (approvalPackage.projectId && projectId && approvalPackage.projectId !== projectId) {
+        const reason = `Condition A FAIL: Approval package projectId '${approvalPackage.projectId}' does not match active project '${projectId}'. Cross-project approval rejected.`;
+        return {
+          success: false,
+          blockId: activeBlockId,
+          state: 'BLOCKED',
+          reason,
+        };
+      }
+
+      if (approvalPackage.status !== 'APPROVED') {
+        const reason = `Condition A FAIL: Approval package '${poApprovalId}' status is '${approvalPackage.status}', expected 'APPROVED'.`;
+        if (this.historyManager) {
+          await this.historyManager
+            .appendEvent({
+              eventType: 'ISOLATION_UNBLOCK_FAILED',
+              actor: Actor.ORCHESTRATOR,
+              payload: { blockId: activeBlockId, condition: 'A_PO_APPROVAL', reason },
+            })
+            .catch(() => {});
+        }
+        return {
+          success: false,
+          blockId: activeBlockId,
+          state: 'BLOCKED',
+          reason,
+        };
+      }
+
+      const appRecord = approvalPackage.approvalRecord;
+      if (!appRecord) {
+        return {
+          success: false,
+          blockId: activeBlockId,
+          state: 'BLOCKED',
+          reason: `Condition A FAIL: Approval package '${poApprovalId}' has no authoritative approval record. Fail-closed.`,
+        };
+      }
+      if ((appRecord.actorRole as string) !== 'PRODUCT_OWNER') {
+        const reason = `Condition A FAIL: Approval record actorRole '${appRecord.actorRole}' is not an authorized Product Owner authority.`;
+        return {
+          success: false,
+          blockId: activeBlockId,
+          state: 'BLOCKED',
+          reason,
+        };
+      }
+
+      // Replay Protection: Ensure approval package is not stale compared to block timestamp
+      const blockTimeMs = Date.parse(curDurable.blockedState.timestamp ?? '1970-01-01');
+      const approvalTimeMs = Date.parse(appRecord?.approvedAt ?? approvalPackage.updatedAt ?? '1970-01-01');
+      if (approvalTimeMs < blockTimeMs - 1000) {
+        const reason = `Condition A FAIL: Approval record was created at ${appRecord?.approvedAt ?? approvalPackage.updatedAt}, before isolation block occurred at ${curDurable.blockedState.timestamp}. Replay of prior approval is forbidden.`;
+        return {
+          success: false,
+          blockId: activeBlockId,
+          state: 'BLOCKED',
+          reason,
+        };
+      }
+
+      // ------------------------------------------------------------------------
+      // Condition B: Independent OS Process Re-Verification
+      // ------------------------------------------------------------------------
+      const pidsToCheck: number[] = [];
+      if (blockMetadata.processPid && typeof blockMetadata.processPid === 'number') {
+        pidsToCheck.push(blockMetadata.processPid);
+      }
+      if (input.processVerificationProof?.checkedPids) {
+        for (const p of input.processVerificationProof.checkedPids) {
+          if (!pidsToCheck.includes(p)) pidsToCheck.push(p);
+        }
+      }
+
+      // ADR-15.4: re-verification must be real. With no PID to check, the verifier would report
+      // "dead" vacuously, so an empty PID set is treated as unverifiable (fail-closed).
+      if (pidsToCheck.length === 0) {
+        return {
+          success: false,
+          blockId: activeBlockId,
+          state: 'BLOCKED',
+          reason: 'Condition B FAIL: No process PID recorded for this block and none supplied for independent OS verification. Fail-closed.',
+        };
+      }
+
+      // If caller provided explicit proof, check it first
+      if (input.processVerificationProof) {
+        if (!input.processVerificationProof.verifiedDead || input.processVerificationProof.error) {
+          const reason = `Condition B FAIL: Caller processVerificationProof reported uncertainty or surviving process: ${input.processVerificationProof.error ?? 'not verified dead'}.`;
+          return {
+            success: false,
+            blockId: activeBlockId,
+            state: 'BLOCKED',
+            reason,
+          };
+        }
+      }
+
+      // Run independent coordinator processVerifier
+      const osVerif = await this.processVerifier(pidsToCheck);
+      if (!osVerif.verifiedDead || osVerif.error) {
+        const reason = `Condition B FAIL: Independent OS process table verification failed: ${osVerif.error ?? osVerif.output ?? 'Process still alive'}. Fail-closed.`;
+        if (this.historyManager) {
+          await this.historyManager
+            .appendEvent({
+              eventType: 'ISOLATION_UNBLOCK_FAILED',
+              actor: Actor.ORCHESTRATOR,
+              payload: { blockId: activeBlockId, condition: 'B_PROCESS_VERIFICATION', reason },
+            })
+            .catch(() => {});
+        }
+        return {
+          success: false,
+          blockId: activeBlockId,
+          state: 'BLOCKED',
+          reason,
+        };
+      }
+
+      // ------------------------------------------------------------------------
+      // Both Conditions PASS -> Safely Lift Blockade
+      // ------------------------------------------------------------------------
+      // Optimistic concurrency double check before save
+      const latestDurable = await this.durableStateManager.load();
+      if (!latestDurable?.blockedState || latestDurable.blockedState.blockingReason !== 'PROCESS_ISOLATION_UNCERTAINTY') {
+        return {
+          success: false,
+          state: 'UNBLOCKED',
+          reason: 'System state was already unblocked concurrently.',
+        };
+      }
+      const latestConsumed = (latestDurable.metadata?.consumedPoApprovalIds as string[]) ?? [];
+      if (latestConsumed.includes(poApprovalId) || latestDurable.metadata?.unblockedByPoApprovalId === poApprovalId) {
+        return {
+          success: false,
+          blockId: activeBlockId,
+          state: 'BLOCKED',
+          reason: `Condition A FAIL: Approval package '${poApprovalId}' was consumed concurrently. Single-use proof policy strictly forbids re-using consumed approvals.`,
+        };
+      }
+
+      const unblockedAt = new Date().toISOString();
+      await this.durableStateManager.save({
+        ...latestDurable,
+        currentLifecycleState: LifecycleState.TASK_LOOP,
+        blockedState: null,
+        metadata: {
+          ...(latestDurable.metadata ?? {}),
+          lastUnblockedAt: unblockedAt,
+          lastUnblockedBlockId: activeBlockId,
+          unblockedByPoApprovalId: poApprovalId,
+          consumedPoApprovalIds: [...latestConsumed, poApprovalId],
+        },
+      });
+
+      if (this.historyManager) {
+        await this.historyManager
+          .appendEvent({
+            eventType: 'PROCESS_ISOLATION_UNBLOCKED',
+            actor: Actor.ORCHESTRATOR,
+            payload: {
+              blockId: activeBlockId,
+              unblockedAt,
+              poApprovalId,
+              verifiedDead: true,
+            },
+          })
+          .catch(() => {});
+      }
+
+      return {
+        success: true,
+        blockId: activeBlockId,
+        state: 'UNBLOCKED',
+        unblockedAt,
+        unblockDetails: {
+          poApprovalId,
+          verifiedByActor: appRecord?.actor ?? 'PRODUCT_OWNER',
+          processVerificationTimestamp: unblockedAt,
+        },
+      };
+    } finally {
+      ClosedLoopCoordinator.activeUnblockWorkspaces.delete(workspaceKey);
+      this.isUnblockingProcess = false;
+    }
   }
 }

@@ -66,6 +66,8 @@ export function classifyMcpTool(toolName: string): McpToolPolicyClassification {
     norm.includes('director.act') ||
     norm.includes('executecycle') ||
     norm.includes('execute_cycle') ||
+    norm.includes('runautoloop') ||
+    norm.includes('run_autoloop') ||
     norm.includes('ingestinstruction') ||
     norm.includes('ingest_instruction') ||
     norm.includes('driver.start') ||

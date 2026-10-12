@@ -1715,5 +1715,67 @@ describe('Phase 10 TASK-P10-04: System Evidence Collection & Verification Pipeli
       assert.equal(testCheck.status, 'FAIL');
       assert.equal(evidence.verificationDecision, 'REJECT');
     });
+
+    // ==========================================================================
+    // T33: Unexpected .git/ modification is detected as scope leak and rejected
+    // ==========================================================================
+    it('T33: Unexpected .git/ modification is detected as scope leak and not silently ignored', async () => {
+      fakeGitPort.currentState = {
+        ...fakeGitPort.currentState,
+        staged_changes: ['packages/core/src/foo.ts', '.git/hooks/pre-commit'],
+        unstaged_changes: [],
+        untracked_files: [],
+      };
+
+      const req: ExecutionRequest = {
+        ...sampleRequest,
+        instruction: {
+          ...sampleRequest.instruction,
+          implementationScope: ['packages/core/src'],
+        },
+      };
+
+      const evidence = await collector.collectAndVerify(req, sampleRawOutcome);
+
+      assert.equal(evidence.verificationDecision, 'REJECT');
+      const scopeCheck = evidence.verificationChecks.find((c) => c.type === 'FILE_SCOPE');
+      assert.ok(scopeCheck);
+      assert.equal(scopeCheck.status, 'FAIL');
+      assert.ok(scopeCheck.evidence?.includes('.git/hooks/pre-commit'));
+    });
+
+    // ==========================================================================
+    // T34: Unexpected .ai-manager/ script is detected as scope leak, while narrow metadata is handled
+    // ==========================================================================
+    it('T34: Unexpected .ai-manager/ script is not silently ignored and produces REJECT', async () => {
+      fakeGitPort.currentState = {
+        ...fakeGitPort.currentState,
+        staged_changes: [
+          'packages/core/src/foo.ts',
+          '.ai-manager/evidence/ev-authoritative.json', // valid AIDM internal metadata
+          '.ai-manager/malicious.js', // unauthorized unexpected script
+        ],
+        unstaged_changes: [],
+        untracked_files: [],
+      };
+
+      const req: ExecutionRequest = {
+        ...sampleRequest,
+        instruction: {
+          ...sampleRequest.instruction,
+          implementationScope: ['packages/core/src'],
+        },
+      };
+
+      const evidence = await collector.collectAndVerify(req, sampleRawOutcome);
+
+      assert.equal(evidence.verificationDecision, 'REJECT');
+      const scopeCheck = evidence.verificationChecks.find((c) => c.type === 'FILE_SCOPE');
+      assert.ok(scopeCheck);
+      assert.equal(scopeCheck.status, 'FAIL');
+      assert.ok(scopeCheck.evidence?.includes('.ai-manager/malicious.js'));
+      // Valid AIDM internal metadata must NOT be treated as unexpected project code change
+      assert.equal(scopeCheck.evidence?.includes('.ai-manager/evidence/ev-authoritative.json'), false);
+    });
   });
 });

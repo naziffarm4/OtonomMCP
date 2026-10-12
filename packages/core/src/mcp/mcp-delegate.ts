@@ -49,6 +49,12 @@ import type { ExecutorPort } from '../executor-bridge/executor-port.js';
 import type { ExecutorContextService } from '../executor-bridge/executor-context-service.js';
 import { ClosedLoopCoordinator } from '../director-loop/closed-loop-coordinator.js';
 import type { DirectorRuntime } from '../director/director-runtime.js';
+import {
+  createOpenAiDirectorRuntime,
+  resolveOpenAiDirectorConfig,
+} from '../director/openai-director-runtime.js';
+import { DirectorSessionEngine } from '../director/director-session-engine.js';
+import type { BudgetManager } from '../budget/budget-manager.js';
 import { AuthorizationPolicyEngine } from '../authorization/authorization-policy-engine.js';
 import { ProjectMandateStore } from '../authorization/project-mandate-store.js';
 
@@ -210,9 +216,19 @@ export interface McpOrchestratorDelegate {
   readonly directorRuntime?: DirectorRuntime;
 
   /**
+   * Authoritative BudgetManager instance (SQLite nano-USD token and cost manager).
+   */
+  readonly budgetManager?: BudgetManager;
+
+  /**
    * Authoritative AuthorizationPolicyEngine instance.
    */
   readonly authorizationPolicyEngine?: AuthorizationPolicyEngine;
+
+  /**
+   * Resolves or instantiates the authoritative DirectorRuntime for a given workspace root.
+   */
+  getDirectorRuntime?(workspaceRoot?: string): DirectorRuntime | undefined;
 
   /**
    * Resolves or instantiates the authoritative ClosedLoopCoordinator for a given workspace root.
@@ -276,6 +292,7 @@ export interface DefaultMcpOrchestratorDelegateOptions {
   readonly contextService?: ExecutorContextService;
   readonly closedLoopCoordinator?: ClosedLoopCoordinator;
   readonly directorRuntime?: DirectorRuntime;
+  readonly budgetManager?: BudgetManager;
   readonly authorizationPolicyEngine?: AuthorizationPolicyEngine;
   readonly evidenceProvider?: (
     params: {
@@ -343,8 +360,54 @@ export class DefaultMcpOrchestratorDelegate implements McpOrchestratorDelegate {
   readonly contextService?: ExecutorContextService;
   readonly closedLoopCoordinator?: ClosedLoopCoordinator;
   readonly directorRuntime?: DirectorRuntime;
+  readonly budgetManager?: BudgetManager;
   readonly authorizationPolicyEngine?: AuthorizationPolicyEngine;
   private _cachedCoordinator?: ClosedLoopCoordinator;
+  private _cachedDirectorRuntime?: DirectorRuntime;
+
+  getDirectorRuntime(workspaceRoot?: string): DirectorRuntime | undefined {
+    const resolvedRoot = workspaceRoot ?? this.projectRoot ?? process.cwd();
+    if (this.directorRuntime && (!workspaceRoot || workspaceRoot === this.projectRoot)) {
+      return this.directorRuntime;
+    }
+    if (this._cachedDirectorRuntime && (!workspaceRoot || workspaceRoot === this.projectRoot)) {
+      return this._cachedDirectorRuntime;
+    }
+
+    const { hasValidApiKey } = resolveOpenAiDirectorConfig();
+    if (!hasValidApiKey) {
+      return undefined;
+    }
+    // Never auto-create a live LLM Director without an authoritative BudgetManager: that would
+    // dispatch paid requests with no budget hold/settle (P18-03). Fail-closed: no runtime.
+    if (!this.budgetManager) {
+      return undefined;
+    }
+
+    const sessionStore =
+      this.directorSessionStore ??
+      new DirectorSessionStore({
+        baseDir: resolvedRoot,
+        historyManager: this.historyManager,
+      });
+
+    const sessionEngine = new DirectorSessionEngine({
+      store: sessionStore,
+      workspaceRoot: resolvedRoot,
+    });
+
+    const runtime = createOpenAiDirectorRuntime({
+      sessionStore,
+      sessionEngine,
+      historyManager: this.historyManager,
+      budgetManager: this.budgetManager,
+    });
+
+    if (!workspaceRoot || workspaceRoot === this.projectRoot) {
+      this._cachedDirectorRuntime = runtime;
+    }
+    return runtime;
+  }
 
   getClosedLoopCoordinator(workspaceRoot?: string): ClosedLoopCoordinator {
     const resolvedRoot = workspaceRoot ?? this.projectRoot ?? process.cwd();
@@ -366,6 +429,9 @@ export class DefaultMcpOrchestratorDelegate implements McpOrchestratorDelegate {
           })
         : undefined);
 
+    const directorRuntime =
+      this.directorRuntime ?? this.getDirectorRuntime(resolvedRoot);
+
     const coordinator = new ClosedLoopCoordinator({
       workspaceRoot: resolvedRoot,
       sessionStore: this.directorSessionStore,
@@ -377,7 +443,8 @@ export class DefaultMcpOrchestratorDelegate implements McpOrchestratorDelegate {
       durableStateManager: this.durableStateManager,
       historyManager: this.historyManager,
       executorPort: this.executorPort,
-      directorRuntime: this.directorRuntime,
+      directorRuntime,
+      budgetManager: this.budgetManager,
       authorizationPolicyEngine: authEngine,
     });
 
@@ -650,6 +717,7 @@ export class DefaultMcpOrchestratorDelegate implements McpOrchestratorDelegate {
     this.contextService = options.contextService;
     this.closedLoopCoordinator = options.closedLoopCoordinator;
     this.directorRuntime = options.directorRuntime;
+    this.budgetManager = options.budgetManager;
     this.authorizationPolicyEngine = options.authorizationPolicyEngine;
   }
 

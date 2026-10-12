@@ -726,6 +726,14 @@ export class DirectorLoopEngine {
       workingDirectory: workingDir,
     });
 
+    // 5b. Capture Pre-Execution Baseline SHA-256
+    let preExecutionBaseline: Map<string, string | null> | undefined;
+    try {
+      preExecutionBaseline = await this.evidenceCollector.captureBaseline(workingDir);
+    } catch {
+      // Non-fatal if baseline capture fails before execution
+    }
+
     // 6. Step 4: Execute via ExecutorPort
     // AntigravityAdapter or mock executor
     let rawOutcome;
@@ -746,6 +754,7 @@ export class DirectorLoopEngine {
     const systemEvidence = await this.evidenceCollector.collectAndVerify(request, rawOutcome, {
       workingDirectory: workingDir,
       evidenceStore: this.evidenceStore,
+      preExecutionBaseline,
     });
 
     // 8. Step 6: State Integration (ExecutionStateIntegrator)

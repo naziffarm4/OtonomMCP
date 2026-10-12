@@ -42,6 +42,7 @@ import type { RecoveryPolicyDecision } from '../recovery/recovery-policy-types.j
 export type ClosedLoopCycleStatus =
   | 'COMPLETED_SUCCESS'
   | 'BLOCKED_ON_APPROVAL'
+  | 'BLOCKED'
   | 'REJECTED_BY_POLICY'
   | 'EXECUTION_FAILED'
   | 'EXECUTION_UNKNOWN'
@@ -161,4 +162,140 @@ export interface ClosedLoopCycleResult {
   readonly humanDecisionPoint?: unknown;
   /** Timestamp when cycle completed */
   readonly completedAt: string;
+}
+
+// ============================================================================
+// 4. AUTO-LOOP CONTRACT (Phase OM-09 / Director Runtime Automation)
+// ============================================================================
+
+export type ClosedLoopAutoLoopTerminalStatus =
+  | ClosedLoopCycleStatus
+  | 'CANCELLED'
+  | 'MAX_CYCLES_REACHED'
+  | 'ALL_TASKS_COMPLETED'
+  | 'DISPATCH_BLOCKED';
+
+export interface ClosedLoopAutoLoopInput {
+  /** Target workspace root directory */
+  readonly workspaceRoot?: string;
+  /** Expected canonical project identifier */
+  readonly projectId?: string;
+  /** Active Director session identifier */
+  readonly directorSessionId?: string;
+  /** User instruction guiding the auto loop */
+  readonly instruction?: string;
+  /** Optional target task ID to begin with */
+  readonly targetTaskId?: string;
+  /** Maximum number of closed-loop cycles to run (default: 10, strictly bounded) */
+  readonly maxCycles?: number;
+  /** Maximum allowable recovery / corrective attempts per task (default: 2) */
+  readonly maxRecoveryAttempts?: number;
+  /** Execution timeout per cycle in milliseconds (default: 60000) */
+  readonly timeoutMs?: number;
+  /** AbortSignal for user cancellation */
+  readonly signal?: AbortSignal;
+  /** Optional cryptographic authorization context */
+  readonly authContext?: unknown;
+  /** Optional callback invoked after each cycle completes */
+  readonly onCycleCompleted?: (result: ClosedLoopCycleResult, cycleNumber: number) => void | Promise<void>;
+}
+
+export const ClosedLoopAutoLoopInputZodSchema = z.object({
+  workspaceRoot: z.string().optional(),
+  projectId: z.string().optional(),
+  directorSessionId: z.string().optional(),
+  instruction: z.string().optional(),
+  targetTaskId: z.string().optional(),
+  maxCycles: z.number().int().positive().max(100).optional(),
+  maxRecoveryAttempts: z.number().int().nonnegative().max(10).optional(),
+  timeoutMs: z.number().int().positive().optional(),
+  authContext: z.unknown().optional(),
+});
+
+export interface ClosedLoopAutoLoopResult {
+  readonly loopId: string;
+  readonly projectId: string;
+  readonly directorSessionId: string;
+  readonly terminalStatus: ClosedLoopAutoLoopTerminalStatus;
+  readonly isSuccess: boolean;
+  readonly cyclesRun: number;
+  readonly completedCycles: readonly ClosedLoopCycleResult[];
+  readonly lastCycleResult?: ClosedLoopCycleResult;
+  readonly tasksCompleted: readonly string[];
+  readonly summary: string;
+  readonly humanDecisionRequired: boolean;
+  readonly humanDecisionPoint?: unknown;
+  readonly completedAt: string;
+}
+
+// ============================================================================
+// 5. PROCESS ISOLATION BLOCK & UNBLOCK CONTRACT (G-8 / G-10 Revision 6)
+// ============================================================================
+
+export interface ProcessIsolationBlockRecord {
+  readonly blockId: string;
+  readonly projectId: string;
+  readonly directorSessionId: string;
+  readonly cycleId: string;
+  readonly taskId?: string;
+  readonly reason: 'PROCESS_ISOLATION_UNCERTAINTY';
+  readonly processPid?: number;
+  readonly processDetails?: Record<string, unknown>;
+  readonly blockedAt: string;
+  readonly state: 'BLOCKED' | 'UNBLOCKED';
+  readonly unblockedAt?: string;
+  readonly unblockDetails?: {
+    readonly poApprovalId: string;
+    readonly verifiedByActor: string;
+    readonly processVerificationTimestamp: string;
+  };
+}
+
+export interface UnblockProcessIsolationInput {
+  readonly blockId: string;
+  readonly projectId?: string;
+  readonly directorSessionId?: string;
+  /** Condition A: Authoritative Product Owner approval package ID or approval record ID */
+  readonly poApprovalId: string;
+  readonly poPackageId?: string;
+  readonly poActor?: string;
+  /** Condition B: Independent process tree verification proof */
+  readonly processVerificationProof?: {
+    readonly verifiedDead: boolean;
+    readonly checkedPids?: number[];
+    readonly output?: string;
+    readonly queryTimestamp?: string;
+    readonly error?: string;
+  };
+}
+
+export const UnblockProcessIsolationInputZodSchema = z.object({
+  blockId: z.string().min(1, 'blockId is required'),
+  projectId: z.string().optional(),
+  directorSessionId: z.string().optional(),
+  poApprovalId: z.string().min(1, 'poApprovalId is required'),
+  poPackageId: z.string().optional(),
+  poActor: z.string().optional(),
+  processVerificationProof: z
+    .object({
+      verifiedDead: z.boolean(),
+      checkedPids: z.array(z.number().int()).optional(),
+      output: z.string().optional(),
+      queryTimestamp: z.string().optional(),
+      error: z.string().optional(),
+    })
+    .optional(),
+});
+
+export interface UnblockProcessIsolationResult {
+  readonly success: boolean;
+  readonly blockId?: string;
+  readonly state: 'BLOCKED' | 'UNBLOCKED';
+  readonly reason?: string;
+  readonly unblockedAt?: string;
+  readonly unblockDetails?: {
+    readonly poApprovalId: string;
+    readonly verifiedByActor: string;
+    readonly processVerificationTimestamp: string;
+  };
 }

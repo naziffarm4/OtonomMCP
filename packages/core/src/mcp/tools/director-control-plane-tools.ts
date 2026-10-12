@@ -219,6 +219,9 @@ function getCoordinator(
       mandateStore,
     });
 
+  const directorRuntime =
+    delegate?.directorRuntime ?? delegate?.getDirectorRuntime?.(resolvedRoot);
+
   return new ClosedLoopCoordinator({
     workspaceRoot: resolvedRoot,
     sessionStore: delegate?.directorSessionStore,
@@ -230,7 +233,8 @@ function getCoordinator(
     durableStateManager: delegate?.durableStateManager,
     historyManager,
     executorPort: delegate?.executorPort,
-    directorRuntime: delegate?.directorRuntime,
+    directorRuntime,
+    budgetManager: delegate?.budgetManager,
     authorizationPolicyEngine: authEngine,
   });
 }

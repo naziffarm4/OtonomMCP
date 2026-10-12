@@ -3,6 +3,7 @@ import type { HistoryManager } from '../storage/history-manager.js';
 import type { LLMProvider } from '../llm-bridge/llm-provider.js';
 import {
   type BudgetAccount,
+  type BudgetPeriod,
   type BudgetReservation,
   type PricingRate,
   type PricingRateInput,
@@ -18,6 +19,7 @@ import {
   BudgetAccountType,
   BudgetAccountState,
   usdToNanoUsd,
+  MAX_PERIOD_BUDGET_NANO_USD,
 } from './budget-types.js';
 import { BudgetError } from '../errors/budget-error.js';
 import { BudgetDatabase } from './budget-database.js';
@@ -486,7 +488,64 @@ export class BudgetManager {
     return resetAccount;
   }
 
+  /**
+   * Authorizes a new budget period with a ceiling of up to 10 USD (10_000_000_000 nano-USD).
+   * Enforces independent multi-period tracking without deleting past transaction records.
+   */
+  authorizeBudgetPeriod(options: {
+    accountId?: string;
+    limit?: number | bigint;
+    authorizedBy: string;
+  }): BudgetPeriod {
+    const targetAccountId = options.accountId ?? this.db.getGlobalAccount()?.accountId;
+    if (!targetAccountId) {
+      throw new BudgetError('Cannot authorize period: no budget account found', 'ERR_INVALID_BUDGET_ACCOUNT');
+    }
+
+    const limitNanoUsd = options.limit !== undefined
+      ? (typeof options.limit === 'bigint' ? options.limit : usdToNanoUsd(options.limit))
+      : MAX_PERIOD_BUDGET_NANO_USD;
+
+    const period = this.db.startBudgetPeriod({
+      accountId: targetAccountId,
+      limitSpendNanoUsd: limitNanoUsd,
+      authorizedBy: options.authorizedBy,
+    });
+
+    this.db.inTransaction(() => {
+      this.db.addOutboxRecord({
+        eventType: 'BUDGET_PERIOD_AUTHORIZED',
+        actor: Actor.USER,
+        payload: {
+          periodId: period.periodId,
+          accountId: period.accountId,
+          periodIndex: period.periodIndex,
+          limitSpendNanoUsd: period.limitSpendNanoUsd.toString(),
+          authorizedBy: period.authorizedBy,
+          startedAt: period.startedAt,
+        },
+      });
+      return true;
+    });
+
+    void this.drainOutbox();
+    return period;
+  }
+
+  getActivePeriod(accountId?: string): BudgetPeriod | undefined {
+    const targetAccountId = accountId ?? this.db.getGlobalAccount()?.accountId;
+    if (!targetAccountId) return undefined;
+    return this.db.getActiveBudgetPeriod(targetAccountId);
+  }
+
+  listPeriods(accountId?: string): BudgetPeriod[] {
+    const targetAccountId = accountId ?? this.db.getGlobalAccount()?.accountId;
+    if (!targetAccountId) return [];
+    return this.db.listBudgetPeriods(targetAccountId);
+  }
+
   // --- Pricing Management ---
+
 
   registerPricingRate(input: PricingRateInput): PricingRate {
     const rate = this.pricingEngine.registerRate(input);

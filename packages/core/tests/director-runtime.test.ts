@@ -418,6 +418,51 @@ describe('Phase 27 — Director Reasoning Runtime (P27)', () => {
     assert.equal(result.contextFingerprint, validFingerprint);
   });
 
+  it('3b. envelope backfill uses schema constants, safe scope fallback and unique actionIds', async () => {
+    const sessionStore = createMockSessionStore(createMockSession());
+    const raw = makeImplementTaskAction();
+    delete raw.protocolVersion;
+    delete raw.schemaVersion;
+    delete raw.actionId;
+    delete raw.implementationScope;
+    delete raw.targetFiles; // absent targetFiles previously produced implementationScope=false
+    const provider = new DeterministicDirectorLlmProvider({
+      responseGenerator: () => makeSuccessLlmResponse(structuredClone(raw)),
+    });
+    const runtime = new DirectorRuntime({ sessionStore, llmProvider: provider });
+    const input = {
+      projectId: validProjectId,
+      directorSessionId: validSessionId,
+      trigger: 'TASK_READY' as const,
+      snapshot: createMockSnapshot(),
+    };
+    const r1 = await runtime.reason(input);
+    const r2 = await runtime.reason(input);
+    const a1 = r1.action as any;
+    assert.equal(a1.protocolVersion, DIRECTOR_ACTION_PROTOCOL_VERSION);
+    assert.equal(a1.schemaVersion, DIRECTOR_ACTION_SCHEMA_VERSION);
+    assert.equal(a1.implementationScope, 'packages/');
+    assert.match(a1.actionId, /^act-[0-9a-f-]{36}$/);
+    assert.notEqual(a1.actionId, (r2.action as any).actionId);
+  });
+
+  it('3c. envelope backfill never overrides an LLM-supplied conflicting projectId (rejected)', async () => {
+    const sessionStore = createMockSessionStore(createMockSession());
+    const raw = makeImplementTaskAction({ projectId: 'attacker-project' });
+    const provider = new DeterministicDirectorLlmProvider({
+      responseGenerator: () => makeSuccessLlmResponse(raw),
+    });
+    const runtime = new DirectorRuntime({ sessionStore, llmProvider: provider });
+    await assert.rejects(() =>
+      runtime.reason({
+        projectId: validProjectId,
+        directorSessionId: validSessionId,
+        trigger: 'TASK_READY',
+        snapshot: createMockSnapshot(),
+      })
+    );
+  });
+
   it('4. stale snapshot reddedilir', async () => {
     const sessionStore = createMockSessionStore(createMockSession());
     const snapshot = createMockSnapshot({

@@ -29,6 +29,21 @@ export const ReservationState = {
 
 export type ReservationState = (typeof ReservationState)[keyof typeof ReservationState];
 
+export const MAX_PERIOD_BUDGET_NANO_USD = 10_000_000_000n; // Exactly 10 USD per authorized period
+
+export interface BudgetPeriod {
+  periodId: string;
+  accountId: string;
+  periodIndex: number;
+  limitSpendNanoUsd: bigint;
+  reservedSpendNanoUsd: bigint;
+  committedSpendNanoUsd: bigint;
+  authorizedBy: string;
+  startedAt: string;
+  endedAt?: string | null;
+  state: 'ACTIVE' | 'EXHAUSTED' | 'CLOSED';
+}
+
 export interface BudgetAccount {
   accountId: string;
   accountType: BudgetAccountType;
@@ -41,6 +56,7 @@ export interface BudgetAccount {
   createdAt: string;
   updatedAt: string;
 }
+
 
 export interface ContextTierPricing {
   inputRateNum: bigint;

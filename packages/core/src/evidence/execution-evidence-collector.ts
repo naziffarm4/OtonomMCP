@@ -18,6 +18,8 @@
  */
 
 import * as path from 'node:path';
+import * as fs from 'node:fs';
+import * as crypto from 'node:crypto';
 import type { GitPort } from '../git/git-port.js';
 import { DefaultGitPort } from '../git/default-git-port.js';
 import type {
@@ -70,6 +72,37 @@ export interface VerificationCommandSpec {
   readonly mandatory?: boolean;
 }
 
+/**
+ * Safely computes SHA-256 hash for a file. Returns null if file does not exist or cannot be read.
+ */
+export function computeFileSha256Sync(filePath: string): string | null {
+  try {
+    if (!fs.existsSync(filePath)) return null;
+    const stat = fs.statSync(filePath);
+    if (!stat.isFile()) return null;
+    const content = fs.readFileSync(filePath);
+    return crypto.createHash('sha256').update(content).digest('hex');
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Captures pre-execution baseline SHA-256 hashes for target/candidate paths in the workspace.
+ */
+export function capturePreExecutionBaseline(
+  workingDir: string,
+  relativePaths: readonly string[]
+): Map<string, string | null> {
+  const baseline = new Map<string, string | null>();
+  for (const rel of relativePaths) {
+    const normalized = rel.replace(/\\/g, '/').trim();
+    const full = path.resolve(workingDir, normalized);
+    baseline.set(normalized, computeFileSha256Sync(full));
+  }
+  return baseline;
+}
+
 export interface SystemEvidenceCollectorOptions {
   /** Override working directory for Git and command execution */
   readonly workingDirectory?: string;
@@ -83,6 +116,10 @@ export interface SystemEvidenceCollectorOptions {
   readonly strictFileScope?: boolean;
   /** Optional durable evidence store to persist verified evidence automatically */
   readonly evidenceStore?: SystemExecutionEvidenceStore;
+  /** Pre-execution file SHA-256 baseline to differentiate pre-existing modifications from task mutations */
+  readonly preExecutionBaseline?: ReadonlyMap<string, string | null> | Record<string, string | null>;
+  /** Whether to enforce the workspace mandate scope ('packages' and 'docs'). Defaults to true if in workspace root. */
+  readonly enforceMandateScope?: boolean;
 }
 
 export interface BindingValidationResult {
@@ -111,6 +148,24 @@ export class SystemEvidenceCollector {
     this.processExecutor = dependencies.processExecutor ?? new NodeProcessExecutor();
     this.historyManager = dependencies.historyManager;
     this.evidenceStore = dependencies.evidenceStore;
+  }
+
+  /**
+   * Captures the pre-execution SHA-256 baseline of any dirty, staged, or untracked files
+   * currently existing in the repository before task execution starts.
+   */
+  async captureBaseline(workingDir: string): Promise<Map<string, string | null>> {
+    try {
+      const gitState = await this.gitPort.inspectState(workingDir);
+      const dirty = [
+        ...gitState.staged_changes,
+        ...gitState.unstaged_changes,
+        ...gitState.untracked_files,
+      ];
+      return capturePreExecutionBaseline(workingDir, dirty);
+    } catch {
+      return new Map();
+    }
   }
 
   /**
@@ -303,10 +358,49 @@ export class SystemEvidenceCollector {
     const changedFiles: ChangedFileEvidence[] = [];
     const seenPaths = new Set<string>();
     const unsafePathsFound: string[] = [];
+    const workspaceEscapesFound: string[] = [];
+
+    let realWorkingDir: string;
+    try {
+      realWorkingDir = fs.realpathSync(workingDir);
+    } catch {
+      realWorkingDir = path.resolve(workingDir);
+    }
+
+    const preBaseline = options.preExecutionBaseline;
 
     // Helper to process changed file safely
     const processPath = (rawPath: string, status: string) => {
       const normalized = rawPath.replace(/\\/g, '/').trim();
+      // Internal AIDM state stores: only narrow, explicit metadata exceptions are recognized.
+      // Unexpected modifications (e.g. non-metadata scripts, backdoors) or VCS (.git/) mutations must NOT be silently ignored.
+      const isAidmMetadataException = (p: string): boolean => {
+        if (!p.startsWith('.ai-manager/')) return false;
+        const sub = p.slice('.ai-manager/'.length);
+        const allowedSubdirs = [
+          'sessions/',
+          'decisions/',
+          'evidence/',
+          'specs/',
+          'runtime/',
+          'durable-state/',
+          'approvals/',
+          'clarifications/',
+          'history/',
+          'locks/',
+          'logs/',
+          'checkpoints/',
+          'driver/',
+          'budget/',
+        ];
+        const inAllowedDir = allowedSubdirs.some((dir) => sub.startsWith(dir));
+        const hasAllowedExt = /\.(json|db|lock|log|sqlite|sqlite-journal|sqlite-wal|sqlite-shm|ndjson)$/i.test(sub);
+        return inAllowedDir && hasAllowedExt;
+      };
+
+      if (isAidmMetadataException(normalized)) {
+        return;
+      }
       if (normalized.includes(' -> ')) {
         const parts = normalized.split(' -> ');
         const oldP = parts[0]?.trim() ?? '';
@@ -329,7 +423,9 @@ export class SystemEvidenceCollector {
 
         if (!seenPaths.has(normalized)) {
           seenPaths.add(normalized);
-          changedFiles.push({ path: normalized, status });
+          const fullNew = path.resolve(workingDir, newP);
+          const postHash = computeFileSha256Sync(fullNew);
+          changedFiles.push({ path: normalized, status, sha256: postHash });
         }
         return;
       }
@@ -344,9 +440,52 @@ export class SystemEvidenceCollector {
         }
         return; // strictly exclude unsafe path from verified changedFiles!
       }
+
+      // Check symlink, junction or escape outside workspace
+      const fullPath = path.resolve(workingDir, normalized);
+      let isEscape = false;
+      try {
+        if (fs.existsSync(fullPath)) {
+          const lstat = fs.lstatSync(fullPath);
+          if (lstat.isSymbolicLink()) {
+            isEscape = true;
+          }
+          const realTarget = fs.realpathSync(fullPath);
+          const relToWorking = path.relative(realWorkingDir, realTarget);
+          if (relToWorking.startsWith('..') || path.isAbsolute(relToWorking)) {
+            isEscape = true;
+          }
+        }
+      } catch {
+        // ignore fs errors
+      }
+
+      if (isEscape) {
+        workspaceEscapesFound.push(normalized);
+        if (options.throwOnSecurityViolation) {
+          throw new SystemEvidenceSecurityViolationError(
+            `Symlink, junction, or workspace escape detected: '${normalized}'. Path resolves outside workspace.`,
+            { path: normalized }
+          );
+        }
+        return;
+      }
+
+      // Pre-execution baseline check: filter out pre-existing dirty files with identical SHA-256
+      const postHash = computeFileSha256Sync(fullPath);
+      if (preBaseline) {
+        const preHash = preBaseline instanceof Map
+          ? preBaseline.get(normalized)
+          : (preBaseline as Record<string, string | null>)[normalized];
+        if (preHash !== undefined && preHash !== null && postHash !== null && preHash === postHash) {
+          // File was already modified before task execution and was NOT mutated by this task.
+          return;
+        }
+      }
+
       if (!seenPaths.has(normalized)) {
         seenPaths.add(normalized);
-        changedFiles.push({ path: normalized, status });
+        changedFiles.push({ path: normalized, status, sha256: postHash });
       }
     };
 
@@ -377,6 +516,33 @@ export class SystemEvidenceCollector {
         type: 'SECURITY',
         status: 'PASS',
         evidence: 'All changed file paths verified as safe relative POSIX paths',
+      });
+    }
+
+    // Symlink / Workspace escape check record
+    if (workspaceEscapesFound.length > 0) {
+      verificationChecks.push({
+        checkId: 'CHECK_WORKSPACE_ESCAPE',
+        type: 'SECURITY',
+        status: 'FAIL',
+        evidence: `Symlink, junction, or workspace escape detected: [${workspaceEscapesFound.join(', ')}]`,
+      });
+    } else {
+      verificationChecks.push({
+        checkId: 'CHECK_WORKSPACE_ESCAPE',
+        type: 'SECURITY',
+        status: 'PASS',
+        evidence: 'All changed files verified within workspace boundaries without symlink/junction escapes',
+      });
+    }
+
+    // Pre-execution baseline check record
+    if (preBaseline) {
+      verificationChecks.push({
+        checkId: 'CHECK_SHA256_BASELINE',
+        type: 'BASELINE',
+        status: 'PASS',
+        evidence: `Verified net file mutations against pre-execution baseline: ${changedFiles.length} actual mutation(s)`,
       });
     }
 
@@ -469,6 +635,45 @@ export class SystemEvidenceCollector {
           type: 'FILE_SCOPE',
           status: 'PASS',
           evidence: `No explicit targetFiles restriction; recorded ${changedFiles.length} modified file(s)`,
+        });
+      }
+    }
+
+    // 5b. Workspace Mandate Scope Verification ('packages' and 'docs')
+    let isWorkspaceRoot = false;
+    try {
+      isWorkspaceRoot =
+        fs.existsSync(path.resolve(workingDir, 'packages')) &&
+        fs.existsSync(path.resolve(workingDir, 'docs'));
+    } catch {
+      isWorkspaceRoot = false;
+    }
+    const shouldEnforceMandate = options.enforceMandateScope ?? isWorkspaceRoot;
+
+    if (shouldEnforceMandate && changedFiles.length > 0) {
+      const outOfMandate = changedFiles.filter((c) => {
+        const p = c.path;
+        return !p.startsWith('packages/') && !p.startsWith('docs/');
+      });
+
+      if (outOfMandate.length > 0) {
+        verificationChecks.push({
+          checkId: 'CHECK_MANDATE_SCOPE',
+          type: 'FILE_SCOPE',
+          status: 'FAIL',
+          evidence: `Changes detected outside authorized mandate scope ('packages' and 'docs'): [${outOfMandate.map((c) => c.path).join(', ')}]`,
+        });
+        for (const f of outOfMandate) {
+          if (!unexpectedFiles.includes(f.path)) {
+            unexpectedFiles.push(f.path);
+          }
+        }
+      } else {
+        verificationChecks.push({
+          checkId: 'CHECK_MANDATE_SCOPE',
+          type: 'FILE_SCOPE',
+          status: 'PASS',
+          evidence: `All changed files are within authorized mandate scope ('packages' and 'docs')`,
         });
       }
     }
@@ -571,6 +776,7 @@ export class SystemEvidenceCollector {
         bindingValid: bindingResult.valid,
         gitBaselineMismatch,
         unsafePathsFound: unsafePathsFound.length > 0,
+        workspaceEscapesFound: workspaceEscapesFound.length > 0,
         unexpectedFiles: unexpectedFiles.length > 0,
         verificationChecks,
         verificationDecision,
@@ -683,11 +889,16 @@ export class SystemEvidenceCollector {
     bindingValid: boolean;
     gitBaselineMismatch: boolean;
     unsafePathsFound: boolean;
+    workspaceEscapesFound?: boolean;
     unexpectedFiles: boolean;
     verificationChecks: readonly VerificationCheck[];
     verificationDecision: VerificationDecision;
   }): ExecutionFailureCategory {
-    // 1. Security failure has highest priority
+    // 1. Workspace escape or security failure has highest priority
+    if (params.workspaceEscapesFound) {
+      return ExecutionFailureCategory.WORKSPACE_ESCAPE;
+    }
+
     if (
       !params.bindingValid ||
       params.gitBaselineMismatch ||

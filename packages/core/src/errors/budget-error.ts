@@ -18,7 +18,8 @@ export type BudgetErrorCode =
   | 'ERR_USAGE_MISSING'
   | 'ERR_USAGE_INCOMPLETE'
   | 'ERR_USAGE_MALFORMED'
-  | 'ERR_USAGE_INCONSISTENT';
+  | 'ERR_USAGE_INCONSISTENT'
+  | 'ERR_PERIOD_BUDGET_LIMIT_EXCEEDED';
 
 export interface BudgetErrorDetails extends AidmErrorDetails {
   accountId?: string;

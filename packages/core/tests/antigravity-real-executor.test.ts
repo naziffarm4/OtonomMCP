@@ -681,7 +681,7 @@ describe('Phase 14 TASK-P14-01: Real Antigravity Executor Boundary', () => {
       await adapter.execute(sampleRequest);
 
       assert.strictEqual(capturedArgs.includes('--dangerously-skip-permissions'), false);
-      assert.ok(capturedArgs.includes('--print'));
+      assert.ok(capturedArgs.some((a) => a.startsWith('--print')));
       assert.ok(capturedArgs.includes('--input-format'));
       assert.ok(capturedArgs.includes('--output-format'));
     });

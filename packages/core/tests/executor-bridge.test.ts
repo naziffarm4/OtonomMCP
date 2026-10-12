@@ -358,7 +358,7 @@ describe('Antigravity Executor Bridge Contract & Adapter Boundary (TASK-P3-01)',
         'Adapter must never include --dangerously-skip-permissions'
       );
       // Verify normal invocation flags are present
-      assert.ok(payload.args.includes('--print'));
+      assert.ok(payload.args.some((a: string) => a.startsWith('--print')));
       assert.ok(payload.args.includes('--input-format'));
       assert.ok(payload.args.includes('--output-format'));
       assert.ok(payload.args.includes('--project'));
@@ -541,7 +541,7 @@ describe('Antigravity Executor Bridge Contract & Adapter Boundary (TASK-P3-01)',
       assert.equal(result.success, true);
       assert.equal(result.status, ExecutorExecutionStatus.COMPLETED);
       assert.equal(capturedArgs.includes('--dangerously-skip-permissions'), false);
-      assert.ok(capturedArgs.includes('--print'));
+      assert.ok(capturedArgs.some((a: string) => a.startsWith('--print')));
       assert.ok(capturedArgs.includes('--project'));
     });
 
@@ -665,7 +665,7 @@ describe('Antigravity Executor Bridge Contract & Adapter Boundary (TASK-P3-01)',
 
       // CLI Arguments: Must NEVER have --dangerously-skip-permissions!
       assert.equal(payload.args.includes('--dangerously-skip-permissions'), false);
-      assert.ok(payload.args.includes('--print'));
+      assert.ok(payload.args.some((a: string) => a.startsWith('--print')));
       assert.ok(payload.args.includes('--input-format'));
       assert.ok(payload.args.includes('--output-format'));
       assert.ok(payload.args.includes('--project'));

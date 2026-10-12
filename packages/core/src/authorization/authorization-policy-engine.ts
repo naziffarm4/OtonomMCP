@@ -7,6 +7,7 @@ import {
   AuthorizationDecisionResult,
   PolicyDecisionRecord,
   ProjectMandate,
+  MAX_MANDATE_DURATION_MS,
 } from './authorization-policy-types.js';
 import { ProjectMandateStore } from './project-mandate-store.js';
 import { RiskLevel } from '../risk.js';
@@ -111,6 +112,18 @@ export class AuthorizationPolicyEngine {
         decisionResult: AuthorizationDecisionResult.DENY,
         reason: `Current time is outside the project mandate authorization window.`,
         appliedRules: ['MANDATE_EXPIRED_OR_NOT_STARTED'],
+        riskLevel: RiskLevel.CRITICAL,
+        policyVersion: mandate.policyVersion,
+        mandateRevision: mandate.mandateRevision,
+      });
+    }
+
+    if (endTime - startTime > MAX_MANDATE_DURATION_MS) {
+      return this.createDecision({
+        action,
+        decisionResult: AuthorizationDecisionResult.DENY,
+        reason: `Project mandate duration exceeds the maximum allowed 7 days.`,
+        appliedRules: ['MANDATE_DURATION_EXCEEDS_MAX_7_DAYS'],
         riskLevel: RiskLevel.CRITICAL,
         policyVersion: mandate.policyVersion,
         mandateRevision: mandate.mandateRevision,
@@ -283,6 +296,18 @@ export class AuthorizationPolicyEngine {
         decisionResult: AuthorizationDecisionResult.DENY,
         reason: `Current time is outside the project mandate authorization window.`,
         appliedRules: ['MANDATE_EXPIRED_OR_NOT_STARTED'],
+        riskLevel: RiskLevel.CRITICAL,
+        policyVersion: mandate.policyVersion,
+        mandateRevision: mandate.mandateRevision,
+      });
+    }
+
+    if (endTime - startTime > MAX_MANDATE_DURATION_MS) {
+      return this.createDecisionFromIntent({
+        intent,
+        decisionResult: AuthorizationDecisionResult.DENY,
+        reason: `Project mandate duration exceeds the maximum allowed 7 days.`,
+        appliedRules: ['MANDATE_DURATION_EXCEEDS_MAX_7_DAYS'],
         riskLevel: RiskLevel.CRITICAL,
         policyVersion: mandate.policyVersion,
         mandateRevision: mandate.mandateRevision,
@@ -650,13 +675,16 @@ export class AuthorizationPolicyEngine {
       if (
         (found.status as string) === 'UNKNOWN' ||
         foundRecord.taskClass === 'UNKNOWN' ||
+        foundRecord.taskClass === 'UNCLASSIFIED' ||
         found.metadata?.taskClass === 'UNKNOWN' ||
-        found.metadata?.category === 'UNKNOWN'
+        found.metadata?.taskClass === 'UNCLASSIFIED' ||
+        found.metadata?.category === 'UNKNOWN' ||
+        found.metadata?.category === 'UNCLASSIFIED'
       ) {
         return {
           result: AuthorizationDecisionResult.DENY,
           appliedRules: ['UNKNOWN_DEPENDENCY_STATE_DENIED'],
-          reason: `Authoritative task '${taskId}' has UNKNOWN state or task class. Fail-closed.`,
+          reason: `Authoritative task '${taskId}' has UNKNOWN or UNCLASSIFIED state or task class. Fail-closed.`,
         };
       }
 
@@ -669,11 +697,11 @@ export class AuthorizationPolicyEngine {
         foundRecord.category;
       const taskClass = typeof rawClass === 'string' ? rawClass.trim() : '';
 
-      if (!taskClass || taskClass === 'UNKNOWN') {
+      if (!taskClass || taskClass === 'UNKNOWN' || taskClass === 'UNCLASSIFIED') {
         return {
           result: AuthorizationDecisionResult.DENY,
           appliedRules: ['AUTHORITATIVE_TASK_CLASS_UNRESOLVED'],
-          reason: `Task '${taskId}' has no authoritative taskClass defined in SpecStore. Cannot resolve task class without default fallback. Fail-closed.`,
+          reason: `Task '${taskId}' has no authoritative taskClass or is UNCLASSIFIED in SpecStore. Cannot resolve task class without default fallback. Fail-closed.`,
         };
       }
 

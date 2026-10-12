@@ -29,6 +29,8 @@ import { Actor } from '../actors.js';
 import {
   type DirectorAction,
   type DirectorActionType,
+  DIRECTOR_ACTION_PROTOCOL_VERSION,
+  DIRECTOR_ACTION_SCHEMA_VERSION,
 } from './director-action-types.js';
 import { DirectorActionZodSchema } from './director-action-schema.js';
 import {
@@ -233,14 +235,68 @@ export class DirectorRuntime {
     // Step 8: Strict authority invariant: anti-spoofing
     // Director CANNOT generate hasImplementationAuthority
     // ------------------------------------------------------------------------
-    if (
-      rawAction &&
-      typeof rawAction === 'object' &&
-      'hasImplementationAuthority' in rawAction &&
-      Boolean((rawAction as Record<string, unknown>).hasImplementationAuthority)
-    ) {
-      // Forcefully strip or invalidate - Director action proposal never has authority
-      delete (rawAction as Record<string, unknown>).hasImplementationAuthority;
+    if (rawAction && typeof rawAction === 'object') {
+      const rec = rawAction as Record<string, unknown>;
+      const payload = (rec.payload && typeof rec.payload === 'object') ? rec.payload as Record<string, unknown> : null;
+      if (payload) {
+        for (const [k, v] of Object.entries(payload)) {
+          if (rec[k] === undefined) {
+            rec[k] = v;
+          }
+        }
+      }
+      // System-owned protocol constants (the envelope schema only accepts these literals).
+      if (!rec.protocolVersion) {
+        rec.protocolVersion = DIRECTOR_ACTION_PROTOCOL_VERSION;
+      }
+      if (!rec.schemaVersion) {
+        rec.schemaVersion = DIRECTOR_ACTION_SCHEMA_VERSION;
+      }
+      // NOTE: projectId / directorSessionId / basedOnContextFingerprint are only backfilled when
+      // absent; an LLM-supplied conflicting value is NOT trusted — Step 10 rejects any mismatch.
+      if (!rec.projectId) {
+        rec.projectId = input.projectId;
+      }
+      if (!rec.directorSessionId) {
+        rec.directorSessionId = input.directorSessionId;
+      }
+      if (!rec.basedOnContextFingerprint) {
+        rec.basedOnContextFingerprint = snapshot.logicalFingerprint;
+      }
+      if (typeof rec.actionId === 'string') {
+        let sanitizedId = rec.actionId
+          .replace(/[^a-zA-Z0-9_\-\.]/g, '-')
+          .replace(/\.{2,}/g, '.');
+        if (sanitizedId.length < 3) {
+          sanitizedId = `act-${sanitizedId}`;
+        }
+        rec.actionId = sanitizedId;
+      } else if (!rec.actionId) {
+        // Collision-free system id (Date.now() alone collides within the same millisecond and
+        // would trip action idempotency as a false duplicate).
+        rec.actionId = `act-${crypto.randomUUID()}`;
+      }
+
+      if (!rec.taskId) {
+        rec.taskId = payload?.taskId ?? rec.targetTaskId ?? rec.selectedTaskId ?? input.taskId;
+      }
+      if (rec.actionType === 'IMPLEMENT_TASK') {
+        if (!rec.objective) {
+          rec.objective = payload?.objective ?? input.objective ?? rec.rationale ?? 'Objective execution';
+        }
+        if (!rec.implementationScope) {
+          // `||` (not `??`): `false` from the targetFiles check must fall through to the default.
+          rec.implementationScope =
+            payload?.implementationScope ||
+            (Array.isArray(rec.targetFiles) && typeof rec.targetFiles[0] === 'string' && rec.targetFiles[0]) ||
+            'packages/';
+        }
+      }
+
+      if ('hasImplementationAuthority' in rec && Boolean(rec.hasImplementationAuthority)) {
+        // Forcefully strip or invalidate - Director action proposal never has authority
+        delete rec.hasImplementationAuthority;
+      }
     }
 
     // ------------------------------------------------------------------------
@@ -248,10 +304,13 @@ export class DirectorRuntime {
     // ------------------------------------------------------------------------
     const parseResult = DirectorActionZodSchema.safeParse(rawAction);
     if (!parseResult.success) {
+      const issue = parseResult.error.issues[0];
+      const issuePath = issue?.path?.length ? ` at path '${issue.path.join('.')}'` : '';
       throw new DirectorActionValidationFailedError(
-        `LLM output failed DirectorAction schema validation: ${parseResult.error.issues[0]?.message ?? 'validation failed'}`,
+        `LLM output failed DirectorAction schema validation: ${issue?.message ?? 'validation failed'}${issuePath}`,
         {
           issues: parseResult.error.issues,
+          rawAction,
           correlationId: promptBuild.correlationId,
         }
       );

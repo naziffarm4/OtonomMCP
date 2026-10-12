@@ -33,6 +33,8 @@ export interface PolicyDecisionRecord {
   policyVersion: number;
 }
 
+export const MAX_MANDATE_DURATION_MS = 7 * 24 * 60 * 60 * 1000; // 7 days in milliseconds
+
 export const ProjectMandateZodSchema = z.object({
   projectId: z.string().min(1, 'projectId is required'),
   allowedDirectories: z.array(z.string()).default([]),
@@ -49,6 +51,15 @@ export const ProjectMandateZodSchema = z.object({
   }).default({}),
   policyVersion: z.number().int().positive().default(1),
   mandateRevision: z.number().int().positive().default(1),
-}).strict();
+}).strict().refine((data) => {
+  const start = Date.parse(data.authorizationStartTime);
+  const end = Date.parse(data.authorizationEndTime);
+  if (Number.isNaN(start) || Number.isNaN(end)) return true; // Let regex / date checks handle invalid dates
+  if (end <= start) return false;
+  return (end - start) <= MAX_MANDATE_DURATION_MS;
+}, {
+  message: 'Project mandate validity period must be positive and cannot exceed 7 days (604800000 ms)',
+  path: ['authorizationEndTime'],
+});
 
 export type ProjectMandate = z.infer<typeof ProjectMandateZodSchema>;

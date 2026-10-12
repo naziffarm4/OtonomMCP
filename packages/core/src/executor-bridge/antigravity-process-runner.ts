@@ -46,7 +46,9 @@ export interface AntigravityProcessResult {
   readonly timedOut: boolean;
   readonly cancelled: boolean;
   readonly spawnError?: Error | null;
+  readonly isolationUncertain?: boolean;
 }
+
 
 export interface AntigravityProcessRunner {
   run(options: AntigravityProcessOptions): Promise<AntigravityProcessResult>;
@@ -305,12 +307,7 @@ export class NodeAntigravityProcessRunner implements AntigravityProcessRunner {
 
       let child: child_process.ChildProcess;
       try {
-        const spawnArgs = options.args.filter((arg) => {
-          if (arg === '--print' && options.args.includes('--input-format')) {
-            return false;
-          }
-          return true;
-        });
+        const spawnArgs = options.args.map((arg) => (arg === '--print' ? '--print=' : arg));
 
         let spawnExe = options.executable;
         let finalSpawnArgs = spawnArgs;
@@ -365,35 +362,44 @@ export class NodeAntigravityProcessRunner implements AntigravityProcessRunner {
         );
       }
 
-      // Handler for abort / cancellation
-      const onCallerAbort = () => {
-        didCancel = true;
-        try {
-          child.kill('SIGTERM');
-        } catch {
-          // ignore
-        }
-        if (killFallbackTimer) clearTimeout(killFallbackTimer);
-        killFallbackTimer = setTimeout(() => {
+      let isolationUncertain = false;
+
+      const terminateProcessTree = () => {
+        if (!child.pid) {
           try {
-            if (!settled && child.exitCode === null && child.signalCode === null) {
-              child.kill('SIGKILL');
-            }
+            child.kill('SIGTERM');
           } catch {
             // ignore
           }
-        }, 1000);
-        killFallbackTimer.unref();
-      };
+          return;
+        }
 
-      if (options.signal) {
-        options.signal.addEventListener('abort', onCallerAbort, { once: true });
-      }
+        if (process.platform === 'win32') {
+          try {
+            child_process.execSync(`taskkill /pid ${child.pid} /T /F`, { stdio: 'ignore' });
+          } catch {
+            // taskkill may return non-zero if process already terminated
+          }
 
-      // Handler for timeout
-      if (options.timeoutMs && options.timeoutMs > 0) {
-        timeoutTimer = setTimeout(() => {
-          didTimeout = true;
+          // Independent verification of process termination
+          let isDead = false;
+          try {
+            const out = child_process.execSync(`tasklist /FO CSV /FI "PID eq ${child.pid}"`, {
+              encoding: 'utf8',
+              stdio: ['ignore', 'pipe', 'ignore'],
+              timeout: 2000,
+            });
+            if (!out.includes(`"${child.pid}"`)) {
+              isDead = true;
+            }
+          } catch {
+            isDead = false;
+          }
+
+          if (!isDead && child.exitCode === null) {
+            isolationUncertain = true;
+          }
+        } else {
           try {
             child.kill('SIGTERM');
           } catch {
@@ -410,8 +416,27 @@ export class NodeAntigravityProcessRunner implements AntigravityProcessRunner {
             }
           }, 1000);
           killFallbackTimer.unref();
+        }
+      };
+
+      // Handler for abort / cancellation
+      const onCallerAbort = () => {
+        didCancel = true;
+        terminateProcessTree();
+      };
+
+      if (options.signal) {
+        options.signal.addEventListener('abort', onCallerAbort, { once: true });
+      }
+
+      // Handler for timeout
+      if (options.timeoutMs && options.timeoutMs > 0) {
+        timeoutTimer = setTimeout(() => {
+          didTimeout = true;
+          terminateProcessTree();
         }, options.timeoutMs);
       }
+
 
       // Stdin piping
       if (child.stdin) {
@@ -481,7 +506,9 @@ export class NodeAntigravityProcessRunner implements AntigravityProcessRunner {
             timedOut: didTimeout,
             cancelled: didCancel,
             spawnError,
+            isolationUncertain,
           })
+
         );
       });
     });

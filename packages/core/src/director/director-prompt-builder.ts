@@ -78,7 +78,8 @@ export const DIRECTOR_ACTION_JSON_SCHEMA: Readonly<Record<string, unknown>> = Ob
     },
     actionId: {
       type: 'string',
-      description: 'Unique identifier for the action',
+      pattern: '^[a-zA-Z0-9_\\-\\.]+$',
+      description: 'Unique identifier for the action (alphanumeric characters, underscores, dashes, and periods only, e.g. act-001)',
     },
     directorSessionId: {
       type: 'string',
@@ -270,6 +271,20 @@ export class DirectorPromptBuilder {
       '4. STRICT STRUCTURED OUTPUT:',
       '   You MUST respond ONLY with a valid JSON object matching the DirectorAction schema. No markdown code fences, no extra preamble.',
       '',
+      '=== TASK QUALITY AND AUTONOMOUS PROGRESSION ===',
+      '- Before proposing implementation work, inspect the synchronized requirements, decisions, architecture constraints, current task, and dependency graph.',
+      '- Every implementation task must be traceable to one or more existing product requirements or an explicitly recorded decision.',
+      '- Every task must have concrete, observable, testable acceptance criteria. Generic statements such as "fully implemented", "works correctly", or "production ready" are insufficient by themselves.',
+      '- If the available project context is sufficient, resolve task ambiguity yourself and propose a corrected task plan without asking the user to restate existing information.',
+      '- If required information is absent, distinguish a genuine Product Owner decision from a technical detail that can be derived from existing requirements.',
+      '- Request clarification only for a genuine unresolved Product Owner decision that blocks safe progress. Record the question and its impact through the authorized AIDM workflow.',
+      '- Do not propose IMPLEMENT_TASK when its requirements or acceptance criteria are materially underspecified.',
+      '- Prefer continuing independent ready tasks when another task is blocked, provided authorization and dependency constraints permit it.',
+      '- After execution, inspect independent evidence and test results. Do not accept an executor self-report as sufficient proof of success.',
+      '- When a task fails or evidence reveals a defect, propose a concrete corrective action and regression test.',
+      '- Do not claim that task-quality enforcement is implemented unless an AIDM policy gate and regression tests actually enforce it.',
+      '- Preserve Product Owner approval, budget, scope, security, and execution authorization boundaries. Never invent approvals or bypass policy.',
+      '',
       '=== SUPPORTED ACTION TYPES ===',
       `Valid actionTypes: ${DIRECTOR_ACTION_TYPES.join(', ')}`,
     ].join('\n');
@@ -343,14 +358,14 @@ export class DirectorPromptBuilder {
     // 6. Current Task
     const currentTaskSummary = s.currentTask.task
       ? {
-          taskId: s.currentTask.task.taskId,
-          title: this.boundAndSanitize(s.currentTask.task.title, 120),
-          status: s.currentTask.task.status,
-          attempt: s.currentTask.task.attempt,
-          maxAttempts: s.currentTask.task.maxAttempts,
-          dependencies: s.currentTask.task.dependencies,
-          acceptanceCriteria: s.currentTask.task.acceptanceCriteria.slice(0, 8).map((ac) => this.boundAndSanitize(ac, 150)),
-        }
+        taskId: s.currentTask.task.taskId,
+        title: this.boundAndSanitize(s.currentTask.task.title, 120),
+        status: s.currentTask.task.status,
+        attempt: s.currentTask.task.attempt,
+        maxAttempts: s.currentTask.task.maxAttempts,
+        dependencies: s.currentTask.task.dependencies,
+        acceptanceCriteria: s.currentTask.task.acceptanceCriteria.slice(0, 8).map((ac) => this.boundAndSanitize(ac, 150)),
+      }
       : null;
 
     // 7. Task List
@@ -468,6 +483,7 @@ export class DirectorPromptBuilder {
       `3. You MUST set directorSessionId to "${input.directorSessionId}".`,
       `4. You MUST set projectId to "${input.projectId}".`,
       '5. Output ONLY the JSON object conforming to the DirectorAction schema.',
+      '6. actionId must contain ONLY letters, numbers, underscores, dashes, and periods (e.g. "act-001", NO colons or spaces).',
     ].join('\n');
   }
 

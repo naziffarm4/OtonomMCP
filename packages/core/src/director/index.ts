@@ -26,3 +26,4 @@ export * from './director-action-errors.js';
 export * from './director-runtime-errors.js';
 export * from './director-prompt-builder.js';
 export * from './director-runtime.js';
+export * from './openai-director-runtime.js';

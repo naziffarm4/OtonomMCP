@@ -5,6 +5,7 @@ import * as crypto from 'node:crypto';
 import { BudgetError } from '../errors/budget-error.js';
 import {
   type BudgetAccount,
+  type BudgetPeriod,
   type BudgetReservation,
   type ClaimReservationRequest,
   type PricingRate,
@@ -12,6 +13,7 @@ import {
   type ReservationState,
   BudgetAccountState,
   BudgetAccountType,
+  MAX_PERIOD_BUDGET_NANO_USD,
 } from './budget-types.js';
 
 type DbRow = Record<string, unknown>;
@@ -191,6 +193,21 @@ export class BudgetDatabase {
       );
 
       CREATE INDEX IF NOT EXISTS idx_budget_outbox_status ON budget_outbox(status);
+
+      CREATE TABLE IF NOT EXISTS budget_periods (
+        period_id TEXT PRIMARY KEY NOT NULL,
+        account_id TEXT NOT NULL REFERENCES budget_accounts(account_id),
+        period_index INTEGER NOT NULL,
+        limit_spend_nano_usd INTEGER NOT NULL CHECK(limit_spend_nano_usd >= 0),
+        committed_spend_nano_usd INTEGER NOT NULL DEFAULT 0 CHECK(committed_spend_nano_usd >= 0),
+        reserved_spend_nano_usd INTEGER NOT NULL DEFAULT 0 CHECK(reserved_spend_nano_usd >= 0),
+        authorized_by TEXT NOT NULL,
+        started_at TEXT NOT NULL,
+        ended_at TEXT,
+        state TEXT NOT NULL CHECK(state IN ('ACTIVE', 'EXHAUSTED', 'CLOSED'))
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_budget_periods_acc_state ON budget_periods(account_id, state);
     `);
 
     try {
@@ -909,6 +926,99 @@ export class BudgetDatabase {
       availableSpendNanoUsd: available,
       createdAt: row.created_at as string,
       updatedAt: row.updated_at as string,
+    };
+  }
+
+  startBudgetPeriod(input: {
+    accountId: string;
+    limitSpendNanoUsd?: bigint;
+    authorizedBy: string;
+  }): BudgetPeriod {
+    const limit = input.limitSpendNanoUsd ?? MAX_PERIOD_BUDGET_NANO_USD;
+    if (limit > MAX_PERIOD_BUDGET_NANO_USD) {
+      throw new BudgetError(
+        `Period budget (${limit.toString()} nUSD) cannot exceed the maximum ceiling of 10 USD (${MAX_PERIOD_BUDGET_NANO_USD.toString()} nUSD)`,
+        'ERR_PERIOD_BUDGET_LIMIT_EXCEEDED'
+      );
+    }
+
+    return this.inTransaction(() => {
+      const db = this.assertDb();
+      const account = this.getAccount(input.accountId);
+      if (!account) {
+        throw new BudgetError(`Cannot start period: account '${input.accountId}' not found`, 'ERR_INVALID_BUDGET_ACCOUNT');
+      }
+
+      const now = new Date().toISOString();
+
+      // Close any active period for this account
+      db.prepare(`
+        UPDATE budget_periods
+        SET state = 'CLOSED', ended_at = ?
+        WHERE account_id = ? AND state = 'ACTIVE';
+      `).run(now, input.accountId);
+
+      // Determine next period_index
+      const maxRow = db.prepare('SELECT MAX(period_index) as max_idx FROM budget_periods WHERE account_id = ?;').get(input.accountId) as { max_idx: number | null };
+      const nextIndex = (maxRow?.max_idx ?? 0) + 1;
+      const periodId = `period_${input.accountId}_${nextIndex}_${Date.now()}`;
+
+      db.prepare(`
+        INSERT INTO budget_periods (
+          period_id, account_id, period_index, limit_spend_nano_usd,
+          committed_spend_nano_usd, reserved_spend_nano_usd, authorized_by,
+          started_at, ended_at, state
+        ) VALUES (?, ?, ?, ?, 0, 0, ?, ?, NULL, 'ACTIVE');
+      `).run(
+        periodId,
+        input.accountId,
+        nextIndex,
+        limit,
+        input.authorizedBy,
+        now
+      );
+
+      // Reset committed spend for the new authorized period while preserving total audit ledger.
+      // Outstanding holds (PREPARED / DISPATCHED / UNKNOWN reservations) are real pending spend and
+      // are carried over: zeroing them would release unreconciled holds and break later settlement.
+      db.prepare(`
+        UPDATE budget_accounts
+        SET limit_spend_nano_usd = ?,
+            committed_spend_nano_usd = 0,
+            account_state = 'ACTIVE',
+            updated_at = ?
+        WHERE account_id = ?;
+      `).run(limit, now, input.accountId);
+
+      return this.getActiveBudgetPeriod(input.accountId)!;
+    });
+  }
+
+  getActiveBudgetPeriod(accountId: string): BudgetPeriod | undefined {
+    const db = this.assertDb();
+    const row = db.prepare("SELECT * FROM budget_periods WHERE account_id = ? AND state = 'ACTIVE' ORDER BY period_index DESC LIMIT 1;").get(accountId) as DbRow | undefined;
+    if (!row) return undefined;
+    return this.mapBudgetPeriod(row);
+  }
+
+  listBudgetPeriods(accountId: string): BudgetPeriod[] {
+    const db = this.assertDb();
+    const rows = db.prepare('SELECT * FROM budget_periods WHERE account_id = ? ORDER BY period_index ASC;').all(accountId) as DbRow[];
+    return rows.map((r) => this.mapBudgetPeriod(r));
+  }
+
+  private mapBudgetPeriod(row: DbRow): BudgetPeriod {
+    return {
+      periodId: row.period_id as string,
+      accountId: row.account_id as string,
+      periodIndex: Number(row.period_index),
+      limitSpendNanoUsd: BigInt(row.limit_spend_nano_usd as string | number | bigint),
+      reservedSpendNanoUsd: BigInt(row.reserved_spend_nano_usd as string | number | bigint),
+      committedSpendNanoUsd: BigInt(row.committed_spend_nano_usd as string | number | bigint),
+      authorizedBy: row.authorized_by as string,
+      startedAt: row.started_at as string,
+      endedAt: (row.ended_at as string | undefined) ?? null,
+      state: row.state as 'ACTIVE' | 'EXHAUSTED' | 'CLOSED',
     };
   }
 

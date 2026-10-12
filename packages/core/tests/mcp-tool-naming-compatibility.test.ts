@@ -331,7 +331,7 @@ describe('MCP Tool Naming Compatibility & Antigravity Invariants', () => {
 
       const tools = server.getRegisteredTools();
       assert.ok(tools.length >= 71, `Expected at least 71 registered tools, got ${tools.length}`);
-      assert.equal(tools.length, 77, `Expected exactly 77 registered tools, got ${tools.length}`);
+      assert.equal(tools.length, 78, `Expected exactly 78 registered tools, got ${tools.length}`);
 
       const exposedNames = new Set<string>();
       const antigravityPrefix = 'mcp_OtonomMCP_';

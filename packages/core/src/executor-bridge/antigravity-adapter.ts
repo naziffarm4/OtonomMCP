@@ -137,6 +137,38 @@ export interface ParsedExecutorOutput {
 }
 
 /**
+ * Detects headless / MCP tool permission denial or interactive authorization blocks.
+ */
+export function detectPermissionDenial(
+  stdout?: string | null,
+  stderr?: string | null
+): { isDenied: boolean; reason?: string } {
+  const combined = `${stderr ?? ''}\n${stdout ?? ''}`.toLowerCase();
+  const patterns = [
+    'permission denied',
+    'permission required',
+    'tool execution denied',
+    'operation not permitted',
+    'unauthorized access',
+    'user denied permission',
+    'action rejected: permission',
+    'not authorized to edit',
+    'headless confirmation required',
+    'requires interactive confirmation',
+    'tool permission rejected',
+  ];
+  for (const pattern of patterns) {
+    if (combined.includes(pattern)) {
+      return {
+        isDenied: true,
+        reason: `Executor tool execution denied or required permission: matched '${pattern}'`,
+      };
+    }
+  }
+  return { isDenied: false };
+}
+
+/**
  * Safely parses stdout from an Antigravity CLI process execution.
  * Distinguishes safe output from corrupted / malformed output.
  */
@@ -340,7 +372,7 @@ export class AntigravityAdapter implements ExecutorPort, ExecutionRequestExecuto
 
     // Assemble deterministic CLI arguments (NO permission bypass flags!)
     const args: string[] = [
-      '--print',
+      '--print=',
       '--input-format',
       'stream-json',
       '--output-format',
@@ -794,6 +826,23 @@ export class AntigravityAdapter implements ExecutorPort, ExecutionRequestExecuto
           });
         }
 
+        // Condition 4: Timeout or Cancellation with Process Isolation Uncertainty
+        if (procResult.isolationUncertain) {
+          return createErrorRawOutcome({
+            request: validatedRequest,
+            executorIdentity: this.executorIdentity,
+            startedAt,
+            completedAt,
+            durationMs,
+            failureCategory: ExecutionFailureCategory.PROCESS_ISOLATION_UNCERTAINTY,
+            error: {
+              code: 'ERR_PROCESS_ISOLATION_UNCERTAINTY',
+              message: 'Process tree could not be verified as terminated. Isolation uncertainty fail-closed.',
+              details: { isolationUncertain: true },
+            },
+          });
+        }
+
         // Condition 4: Timeout
         if (procResult.timedOut || didTimeout) {
           return createTimeoutRawOutcome({
@@ -806,6 +855,7 @@ export class AntigravityAdapter implements ExecutorPort, ExecutionRequestExecuto
             stderr: procResult.stderr || `Execution timed out after ${timeoutMs}ms`,
           });
         }
+
 
         // Cancellation
         if (procResult.cancelled || abortController.signal.aborted || options.signal?.aborted) {
@@ -1036,7 +1086,7 @@ export class AntigravityAdapter implements ExecutorPort, ExecutionRequestExecuto
     try {
       // 2. Assemble deterministic CLI arguments
       const args: string[] = [
-        '--print',
+        '--print=',
         '--input-format',
         'stream-json',
         '--output-format',

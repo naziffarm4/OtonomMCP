@@ -139,10 +139,10 @@ export const ImplementTaskActionZodSchema = DirectorActionEnvelopeZodSchema.exte
   actionType: z.literal('IMPLEMENT_TASK'),
   taskId: z.string().min(1, 'taskId cannot be empty'),
   objective: z.string().min(1, 'objective cannot be empty'),
-  targetFiles: z.array(z.string()),
+  targetFiles: z.array(z.string()).optional().default([]),
   implementationScope: z.string().min(1, 'implementationScope cannot be empty'),
-  acceptanceCriteria: z.array(z.string()),
-  constraints: z.array(z.string()),
+  acceptanceCriteria: z.array(z.string()).optional().default([]),
+  constraints: z.array(z.string()).optional().default([]),
 });
 
 export const RetryTaskActionZodSchema = DirectorActionEnvelopeZodSchema.extend({
@@ -151,7 +151,7 @@ export const RetryTaskActionZodSchema = DirectorActionEnvelopeZodSchema.extend({
   previousExecutionId: z.string().min(1, 'previousExecutionId cannot be empty'),
   reason: z.string().min(1, 'reason cannot be empty'),
   correctionStrategy: z.string().optional(),
-  acceptanceCriteria: z.array(z.string()),
+  acceptanceCriteria: z.array(z.string()).optional().default([]),
 });
 
 export const CorrectTaskActionZodSchema = DirectorActionEnvelopeZodSchema.extend({
@@ -159,8 +159,8 @@ export const CorrectTaskActionZodSchema = DirectorActionEnvelopeZodSchema.extend
   taskId: z.string().min(1, 'taskId cannot be empty'),
   failureAnalysis: z.string().min(1, 'failureAnalysis cannot be empty'),
   correctionPlan: z.string().min(1, 'correctionPlan cannot be empty'),
-  targetFiles: z.array(z.string()),
-  acceptanceCriteria: z.array(z.string()),
+  targetFiles: z.array(z.string()).optional().default([]),
+  acceptanceCriteria: z.array(z.string()).optional().default([]),
 });
 
 // --- Evaluation Action Schemas ---

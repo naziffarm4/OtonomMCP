@@ -46,7 +46,11 @@ export const ExecutionFailureCategory = {
   VERIFICATION_FAILURE: 'VERIFICATION_FAILURE',
   INFRASTRUCTURE_BLOCK: 'INFRASTRUCTURE_BLOCK',
   SECURITY_FAILURE: 'SECURITY_FAILURE',
+  PROCESS_ISOLATION_UNCERTAINTY: 'PROCESS_ISOLATION_UNCERTAINTY',
+  WORKSPACE_ESCAPE: 'WORKSPACE_ESCAPE',
+  PERMISSION_DENIED: 'PERMISSION_DENIED',
 } as const;
+
 
 export type ExecutionFailureCategory = (typeof ExecutionFailureCategory)[keyof typeof ExecutionFailureCategory];
 export const EXECUTION_FAILURE_CATEGORIES = Object.values(ExecutionFailureCategory) as readonly ExecutionFailureCategory[];

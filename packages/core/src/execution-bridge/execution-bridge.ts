@@ -247,6 +247,43 @@ export class ExecutionBridge {
     const workingDir = this.workspaceRoot ?? process.cwd();
 
     // ------------------------------------------------------------------------
+    // Check 0: Process Isolation Uncertainty Block Guard (G-8 / G-10)
+    // ------------------------------------------------------------------------
+    if (this.durableStateManager) {
+      try {
+        const durable = await this.durableStateManager.load();
+        if (durable?.blockedState?.blockingReason === 'PROCESS_ISOLATION_UNCERTAINTY') {
+          const failDetail: PreExecutionCheckDetail = {
+            checkName: '0_PROCESS_ISOLATION_BLOCK_GUARD',
+            passed: false,
+            reason: 'System is permanently BLOCKED due to PROCESS_ISOLATION_UNCERTAINTY. Dispatch prohibited.',
+            code: 'ERR_PROCESS_ISOLATION_BLOCKED',
+            details: { blockedState: durable.blockedState },
+          };
+          return {
+            isValid: false,
+            failedChecks: [failDetail],
+            allChecks: [failDetail],
+            reason: 'Execution rejected fail-closed: System is permanently BLOCKED due to PROCESS_ISOLATION_UNCERTAINTY. New dispatch is strictly prohibited until two-phase unblocking is completed.',
+          };
+        }
+      } catch (err: any) {
+        const failDetail: PreExecutionCheckDetail = {
+          checkName: '0_PROCESS_ISOLATION_BLOCK_GUARD',
+          passed: false,
+          reason: `Failed to verify durable state isolation block: ${err.message}`,
+          code: 'ERR_PROCESS_ISOLATION_BLOCKED',
+        };
+        return {
+          isValid: false,
+          failedChecks: [failDetail],
+          allChecks: [failDetail],
+          reason: `Execution rejected fail-closed: Failed to load durable state: ${err.message}`,
+        };
+      }
+    }
+
+    // ------------------------------------------------------------------------
     // Check 1: Workspace instance lock ownership
     // ------------------------------------------------------------------------
     let check1Passed = true;
@@ -1055,11 +1092,18 @@ export class ExecutionBridge {
     if (this.durableStateManager) {
       try {
         const curDurable = await this.durableStateManager.load();
+        if (curDurable?.blockedState?.blockingReason === 'PROCESS_ISOLATION_UNCERTAINTY') {
+          throw new ExecutionBridgeError(
+            `Execution rejected fail-closed: System is permanently BLOCKED due to PROCESS_ISOLATION_UNCERTAINTY. New dispatch is strictly prohibited until two-phase unblocking is completed.`,
+            'DISPATCH_BLOCKED',
+            { taskId: intent.taskId, blockedState: curDurable.blockedState }
+          );
+        }
         await this.durableStateManager.save({
           currentLifecycleState: curDurable?.currentLifecycleState ?? LifecycleState.TASK_LOOP,
           activeTaskId: intent.taskId,
           completedTaskIds: curDurable?.completedTaskIds ?? [],
-          blockedState: null,
+          blockedState: curDurable?.blockedState ?? null,
           metadata: {
             ...(curDurable?.metadata ?? {}),
             executionIntent: durableIntent,
@@ -1067,6 +1111,7 @@ export class ExecutionBridge {
           },
         });
       } catch (err: any) {
+        if (err instanceof ExecutionBridgeError) throw err;
         throw new ExecutionBridgeError(
           `Failed to persist durable execution intent before execution: ${err.message}`,
           'FAILED_TO_PERSIST_INTENT',
@@ -1210,7 +1255,8 @@ export class ExecutionBridge {
 
       // Rule: Zero-trust on AGY verbal claims.
       // If no independent filesystem modifications were detected and no independent functional verification commands passed,
-      // AGY verbal claims alone cannot satisfy task completion!
+      // AGY verbal claims alone cannot satisfy task completion, UNLESS the task is explicitly a read-only task
+      // whose baseline and criteria have been independently verified by SystemExecutionEvidence.
       const hasIndependentChanges = systemEvidence.changedFiles && systemEvidence.changedFiles.length > 0;
       const hasPassedFunctionalChecks =
         systemEvidence.verificationChecks &&
@@ -1218,7 +1264,32 @@ export class ExecutionBridge {
         systemEvidence.verificationChecks.some(
           (c: any) => (c.type === 'TEST' || c.type === 'BUILD' || c.type === 'COMMAND') && c.status === 'PASS'
         );
-      const isPurelyVerbalClaim = !hasIndependentChanges && !hasPassedFunctionalChecks;
+
+      const rawIntent = intent as any;
+      const rawReq = (cycleResult as any)?.executionRequest;
+      const rawInstruction = rawReq?.instruction;
+      const isReadOnlyTask =
+        rawIntent.taskClass === 'READ_ONLY_INSPECTION' ||
+        rawIntent.taskClass === 'INSPECTION' ||
+        rawIntent.operationType === 'FILE_READ' ||
+        rawIntent.operationType === 'READ_ONLY_INSPECTION' ||
+        Boolean(rawIntent.metadata?.isReadOnly) ||
+        Boolean(rawIntent.metadata?.readOnly) ||
+        Boolean(rawInstruction?.metadata?.isReadOnly) ||
+        Boolean(rawInstruction?.metadata?.readOnly) ||
+        Boolean(rawInstruction?.constraints?.some?.((c: string) => /do not (delete or )?modify/i.test(c))) ||
+        /read-only|without modifying/i.test(String(rawInstruction?.objective ?? '')) ||
+        /read-only|without modifying/i.test(String(rawIntent.objective ?? ''));
+
+      const hasPassedReadOnlyVerification =
+        isReadOnlyTask &&
+        systemEvidence.verificationChecks &&
+        systemEvidence.verificationChecks.length > 0 &&
+        systemEvidence.verificationChecks.some((c: any) => c.type === 'GIT' && c.status === 'PASS') &&
+        systemEvidence.verificationChecks.every((c: any) => c.status === 'PASS') &&
+        evidenceDecision === 'ACCEPT';
+
+      const isPurelyVerbalClaim = !hasIndependentChanges && !hasPassedFunctionalChecks && !hasPassedReadOnlyVerification;
 
       if (isPurelyVerbalClaim) {
         terminalStatus = ExecutionBridgeStatus.EXECUTION_FAILED;

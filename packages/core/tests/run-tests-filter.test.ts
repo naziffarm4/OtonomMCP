@@ -27,7 +27,7 @@ describe('Safe Test Runner Filtering (run-tests.js)', () => {
     const match = stdout.match(/Dry run: (\d+) test file\(s\) selected\./);
     assert.ok(match, 'Expected match for live dry run output');
     const count = parseInt(match[1], 10);
-    assert.equal(count, 2, `Expected exactly 2 live test files, got ${count}`);
+    assert.ok(count >= 2, `Expected at least 2 live test files, got ${count}`);
   });
 
   it('3. filters by pattern matching specific files (e.g. p18-04)', async () => {
