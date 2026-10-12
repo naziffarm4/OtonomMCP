@@ -28,7 +28,7 @@ import * as crypto from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 
-import { SpecIngestor, type SpecIngestionResult } from './spec-ingestor.js';
+import { SpecIngestor, type SpecIngestionResult, type AnalysisPolicy } from './spec-ingestor.js';
 import {
   buildAutonomousMandate,
   sealAutonomousMandate,
@@ -275,6 +275,25 @@ export const DIRECTOR_CAPABILITIES_INSTRUCTION = [
   'to reorder remaining tasks. Scope, budget and policy changes are NOT yours: raise REQUEST_HUMAN_DECISION instead.',
   'Executor output and questions come back to you; the executor never talks to the human. Independent evidence decides.',
 ].join(' ');
+
+/** Added to the Director prompt when a separate analysis subtask is not available for this cycle. */
+export const NO_ANALYSIS_DIRECTOR_INSTRUCTION =
+  'SPEED RULE: do NOT emit ANALYZE_PROJECT / DISCOVER_PROJECT / REVIEW_EVIDENCE for this task; no separate analysis step is available now. ' +
+  'Emit IMPLEMENT_TASK directly and tell the executor in "objective" which files to read first.';
+
+/** Whether a separate read-only analysis subtask may run for the current cycle. */
+export function isAnalysisAllowed(
+  policy: AnalysisPolicy,
+  ctx: { readonly firstTaskOfSegment: boolean; readonly afterFailedAttempt: boolean }
+): boolean {
+  if (policy === 'EVERY_TASK') return true;
+  if (policy === 'NEVER') return false;
+  return ctx.firstTaskOfSegment || ctx.afterFailedAttempt;
+}
+
+export function analysisPolicyLabel(policy: AnalysisPolicy): string {
+  return policy === 'EVERY_TASK' ? 'her görev' : policy === 'NEVER' ? 'hiç' : 'gerektiğinde';
+}
 
 /** Instruction prepended to every Director reasoning call in no-questions mode. */
 export const NO_QUESTIONS_DIRECTOR_INSTRUCTION = [
@@ -962,6 +981,11 @@ export class AutonomousSpecRunner {
       const decisionsAsked = new Map<string, number>();
       const refinementsDone = new Map<string, number>();
       const analysesDone = new Map<string, number>();
+      // Analysis policy (spec `İnceleme:`): a separate read-only AGY analysis costs minutes, so by
+      // default it only runs for the first task of this run segment and after a failed attempt.
+      const analysisPolicy = ingestion.analysisPolicy ?? 'ON_DEMAND';
+      let firstSegmentTaskId: string | undefined;
+      const analysisRefusals = new Map<string, number>();
       const waiting = new Map<
         string,
         { record: DecisionRecord; kind: 'DIRECTOR' | 'ATTEMPTS_EXHAUSTED'; promise: Promise<{ taskId: string; outcome: DecisionOutcome }> }
@@ -1204,6 +1228,7 @@ export class AutonomousSpecRunner {
         const maxCycles = attemptsFor(task.task_id);
         await setSpecMaxAttempts(task.task_id, maxCycles);
         this.currentTaskId = task.task_id;
+        if (taskReport.kind !== 'ANALYSIS' && firstSegmentTaskId === undefined) firstSegmentTaskId = task.task_id;
         let lastFailure = '';
         while (taskReport.cycles < maxCycles) {
           await applyInstructions();
@@ -1232,6 +1257,10 @@ export class AutonomousSpecRunner {
           }
 
           const isAnalysis = taskReport.kind === 'ANALYSIS';
+          const analysisAllowed = !isAnalysis && isAnalysisAllowed(analysisPolicy, {
+            firstTaskOfSegment: task.task_id === firstSegmentTaskId,
+            afterFailedAttempt: taskReport.cycles >= 2 || lastFailure !== '',
+          });
           // Ordered by importance: the prompt builder bounds this field (DEFAULT_MAX_FIELD_LENGTH_CHARS),
           // so task, fresh guidance (PO answers, executor reports) come before the static policy text.
           const pauseText = pauseInstruction
@@ -1246,7 +1275,9 @@ export class AutonomousSpecRunner {
             `Acceptance criteria: ${task.acceptance_criteria.join(' | ')}`,
             isAnalysis
               ? 'This is a READ-ONLY ANALYSIS task: emit IMPLEMENT_TASK whose objective starts with "Read-only analysis without modifying files:" and asks the executor to report results under "FINDINGS:". No file may change.'
-              : '',
+              : analysisAllowed
+                ? ''
+                : NO_ANALYSIS_DIRECTOR_INSTRUCTION,
             extraGuidance,
             carryNote,
             ...poNotes
@@ -1333,7 +1364,9 @@ export class AutonomousSpecRunner {
             this.emit(
               'CYCLE_RESULT',
               analysisReroute
-                ? `${at}: Director salt-okunur analiz istedi → analiz alt görevi olarak çalıştırılıyor (deneme sayılmaz).`
+                ? analysisAllowed
+                  ? `${at}: Director salt-okunur analiz istedi → analiz alt görevi olarak çalıştırılıyor (deneme sayılmaz).`
+                  : `${at}: Director analiz istedi ama bu görevde ayrı analiz yok (İnceleme: ${analysisPolicyLabel(analysisPolicy)}) → doğrudan uygulama istenecek.`
                 : `${result.status}: ${result.summary}`,
               task.task_id
             );
@@ -1427,9 +1460,29 @@ export class AutonomousSpecRunner {
             continue;
           }
 
+          // ---- Analysis requested where the policy does not allow it: refuse once (not counted),
+          // then fall through to the normal (counted) handling so it can never loop.
+          if (
+            !isAnalysis &&
+            !analysisAllowed &&
+            (actionType === 'ANALYZE_PROJECT' || actionType === 'DISCOVER_PROJECT' || actionType === 'REVIEW_EVIDENCE') &&
+            result.status !== 'REJECTED_BY_POLICY'
+          ) {
+            const refused = analysisRefusals.get(task.task_id) ?? 0;
+            analysisRefusals.set(task.task_id, refused + 1);
+            if (refused < 1) {
+              taskReport.cycles--;
+              extraGuidance = `A separate read-only analysis is not available for ${task.task_id} now (analysis policy: ${analysisPolicyLabel(
+                analysisPolicy
+              )}). The executor inspects the relevant files while implementing. Emit IMPLEMENT_TASK for ${task.task_id} now. ${execNote}`.trim();
+              continue;
+            }
+          }
+
           // ---- Read-only analysis dispatched to AGY through the governed pipeline
           if (
             !isAnalysis &&
+            analysisAllowed &&
             (actionType === 'ANALYZE_PROJECT' || actionType === 'DISCOVER_PROJECT' || actionType === 'REVIEW_EVIDENCE') &&
             result.status !== 'REJECTED_BY_POLICY'
           ) {
@@ -2091,7 +2144,7 @@ function extractQuestion(result: ClosedLoopCycleResult): string | undefined {
 }
 
 async function git(cwd: string, args: string[]): Promise<string> {
-  const { stdout } = await execFileAsync('git', args, { cwd, maxBuffer: 16 * 1024 * 1024 });
+  const { stdout } = await execFileAsync('git', args, { cwd, maxBuffer: 16 * 1024 * 1024, windowsHide: true });
   return stdout.trim();
 }
 
@@ -2130,7 +2183,7 @@ export async function foreignUncommittedChanges(
     ({ stdout: status } = await execFileAsync(
       'git',
       ['-c', 'core.quotepath=false', 'status', '--porcelain=v1', '-z', '--untracked-files=all'],
-      { cwd: projectRoot, maxBuffer: 16 * 1024 * 1024 }
+      { cwd: projectRoot, maxBuffer: 16 * 1024 * 1024, windowsHide: true }
     ));
   } catch {
     return { dirty: [], foreign: [] };

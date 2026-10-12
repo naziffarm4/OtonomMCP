@@ -63,6 +63,34 @@ function extractAttempts(items: string[]): number | undefined {
   return found;
 }
 
+/**
+ * Run-wide analysis policy (`İnceleme: her görev | gerektiğinde | hiç`), anywhere in the spec.
+ * - EVERY_TASK: the Director may request a read-only AGY analysis before any task.
+ * - ON_DEMAND (default): only for the first task of a run segment and after a failed attempt.
+ * - NEVER: never run a separate read-only analysis subtask.
+ */
+export type AnalysisPolicy = 'EVERY_TASK' | 'ON_DEMAND' | 'NEVER';
+export const DEFAULT_ANALYSIS_POLICY: AnalysisPolicy = 'ON_DEMAND';
+const ANALYSIS_RE = /^(?:i̇nceleme|inceleme|İnceleme|INCELEME|analysis\s*policy)\s*[:=]\s*(.+?)\s*\.?$/i;
+
+/** Parses an analysis-policy value; undefined when unrecognized. */
+export function parseAnalysisPolicy(raw: string): AnalysisPolicy | undefined {
+  const v = raw
+    .toLocaleLowerCase('tr-TR')
+    .replace(/[ıi̇]/g, 'i')
+    .replace(/ö/g, 'o')
+    .replace(/ü/g, 'u')
+    .replace(/ğ/g, 'g')
+    .replace(/ş/g, 's')
+    .replace(/ç/g, 'c')
+    .replace(/[\s_]+/g, '-')
+    .trim();
+  if (/^(her-gorev|her-gorevde|always|every-task|every)$/.test(v)) return 'EVERY_TASK';
+  if (/^(gerektiginde|gerekirse|on-demand|auto|varsayilan|default)$/.test(v)) return 'ON_DEMAND';
+  if (/^(hic|hicbir-zaman|yok|kapali|never|off|none)$/.test(v)) return 'NEVER';
+  return undefined;
+}
+
 export interface SpecIngestionOptions {
   /** Canonical project identifier (normally derived from the project root). */
   readonly projectId: string;
@@ -97,6 +125,8 @@ export interface SpecIngestionResult {
   readonly globalAcceptanceCriteria: readonly string[];
   /** Human text of `## Karar Politikası` / `## Decision Policy` (what the Director must ask the PO about). */
   readonly decisionPolicy?: string;
+  /** `İnceleme:` line (default ON_DEMAND). */
+  readonly analysisPolicy: AnalysisPolicy;
 }
 
 export class SpecIngestionError extends Error {
@@ -349,9 +379,24 @@ export class SpecIngestor {
       isSystemVerified: false,
     };
 
-    const { title, preamble, sections } = splitSections(markdown);
     const assumptions: string[] = [];
     const warnings: string[] = [];
+    // Run-wide `İnceleme:` line: consumed here so it never becomes a criterion or requirement.
+    let analysisPolicy: AnalysisPolicy = DEFAULT_ANALYSIS_POLICY;
+    const keptLines: string[] = [];
+    for (const l of markdown.replace(/\r\n?/g, '\n').split('\n')) {
+      const m = ANALYSIS_RE.exec(stripMarkdown(l.replace(/^\s*[-*+]\s+/, '')).trim());
+      if (m) {
+        const p = parseAnalysisPolicy(m[1]);
+        if (p) {
+          analysisPolicy = p;
+          continue;
+        }
+        warnings.push(`Unrecognized analysis policy '${m[1]}' (use: her görev | gerektiğinde | hiç); line kept as text, default used.`);
+      }
+      keptLines.push(l);
+    }
+    const { title, preamble, sections } = splitSections(keptLines.join('\n'));
 
     const projectName = title ?? options.projectId;
     if (!title) assumptions.push(`Spec has no H1 title; project name assumed to be '${options.projectId}'.`);
@@ -594,6 +639,7 @@ export class SpecIngestor {
           }
         : {}),
       verificationCommands,
+      analysisPolicy,
     });
   }
 }

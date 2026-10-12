@@ -35,6 +35,31 @@
 - `filesChanged`, başarısız denemelerde de bağımsız kanıttaki (izlenmeyen yeni dosyalar dahil)
   değişiklikleri içerir.
 
+## 2a. Salt-okunur inceleme (analiz) adımı — hız
+
+Director bir görevden önce `ANALYZE_PROJECT` (ya da `DISCOVER_PROJECT` / `REVIEW_EVIDENCE`) isterse AGY'ye
+ayrı bir salt-okunur alt görev (`TASK-00N-A1`) gider; bu görev başına birkaç dakika sürer. Varsayılan
+(`gerektiğinde`) bu adım yalnızca:
+
+- çalışmanın (ya da devam ettirilen bölümün) **ilk** görevinde ve
+- bir görevin **başarısız denemesinden sonra** (onarım döngüsü)
+
+çalışır. Diğer görevlerde Director'a istem içinde analiz istememesi, doğrudan `IMPLEMENT_TASK` vermesi
+söylenir. Yine de isterse AGY çalıştırılmaz; Director'a "şu an ayrı analiz yok, IMPLEMENT_TASK ver"
+denir (deneme sayılmaz). Aynı görevde ikinci kez isterse bu normal kurallarla işlenir (deneme sayılır),
+yani döngüye giremez. Analiz alt görevi yine görev başına en çok 2'dir.
+
+Spec'in herhangi bir yerinde tek satırla değiştirilebilir (madde işaretli ya da değil; kabul kriteri sayılmaz):
+
+```markdown
+- İnceleme: her görev     # her görevden önce analiz serbest (eski davranış)
+- İnceleme: gerektiğinde  # varsayılan
+- İnceleme: hiç           # ayrı analiz adımı hiç çalışmaz
+```
+
+Kabul edilen yazımlar: `her görev` / `her-gorev`, `gerektiğinde` / `gerektiginde`, `hiç` / `hic`
+(İngilizce: `Analysis policy: every-task | on-demand | never`). Tanınmayan değer uyarı verir ve varsayılan kullanılır.
+
 ## 3. Deneme hakkı bittiğinde sistem kararı
 
 Kararı Director değil **runner** açar (Director cevaplayamaz, kendine hak veremez):
@@ -130,3 +155,10 @@ bir Node sürecinde (`dist/autonomous/worker-main.js`) çalıştırır (`detache
 `runs[].liveness`: `ALIVE` / `INTERRUPTED` / `FINISHED`). Karar cevabı tokenları
 (`aidm_autonomous_resume { decisionId, token }`) worker'a disk üzerinden iletilir ve yine doğrulanır.
 `AIDM_MCP_DETACHED_RUNS=off` eski (süreç içi) davranışa döner.
+
+## Windows: konsol penceresi açılmaz
+
+AIDM'in başlattığı her alt süreç (git, AGY, doğrulama komutları, DPAPI PowerShell, taskkill/tasklist,
+bağımsız worker) `windowsHide: true` ile başlatılır; çalışma sırasında konsol pencereleri açılıp kapanmaz.
+Worker `cmd` üzerinden değil doğrudan `node` (process.execPath) ile, `detached` ve çıktısı log dosyasına
+yönlendirilmiş olarak başlar. `tests/windows-hide-spawn.test.ts` kaynak koddaki tüm çağrıları denetler.
