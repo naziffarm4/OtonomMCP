@@ -464,8 +464,13 @@ describe('external IdP approval, decisions and Director capabilities', { concurr
       return undefined;
     };
     agy.stdoutFor = (req) => (/read-only/i.test(String(req.instruction?.objective)) ? 'FINDINGS: src is empty; use ESM exports.' : undefined);
-    const rep = await cliRunner({}).run();
+    const events: Array<{ type: string; message: string }> = [];
+    const rep = await cliRunner({ onEvent: (e: { type: string; message: string }) => events.push(e) }).run();
     assert.equal(rep.status, 'COMPLETED', rep.stopReason);
+    // The gate's BLOCKED_ON_APPROVAL for analysis actions is a reroute, not a failure: say so.
+    const cr = events.filter((e) => e.type === 'CYCLE_RESULT').map((e) => e.message);
+    assert.ok(cr.some((m) => /^ANALYZE_PROJECT: .*analiz alt görevi/.test(m)), cr.join('\n'));
+    assert.ok(!cr.some((m) => /governance\/lifecycle/.test(m)), 'no misleading governance message');
     const analysis = rep.tasks.find((t: any) => t.kind === 'ANALYSIS');
     assert.ok(analysis, 'analysis subtask created');
     assert.equal(analysis.filesChanged.length, 0);

@@ -25,7 +25,7 @@ import { createTrustedIdentityProvider } from '../authorization/trusted-identity
 import { NonceStore } from '../authorization/nonce-store.js';
 import type { ITrustedIdentityProvider, TrustedApprovalBinding } from '../authorization/trusted-identity-types.js';
 import { IdpClient, IdpClientError, canonicalJson, sha256Hex, verifyIdpToken } from './idp-client.js';
-import { AutonomousSpecRunner, type AutonomousRunOptions, type AutonomousRunReport } from './autonomous-runner.js';
+import { AutonomousSpecRunner, foreignUncommittedChanges, uncommittedChangesMessage, type AutonomousRunOptions, type AutonomousRunReport } from './autonomous-runner.js';
 import { listDecisionRecords } from './decision-requests.js';
 import { preflightLlmProvider } from './llm-provider-config.js';
 import { RunMonitor, runMonitorUrl, type RunMonitorStatus } from './run-monitor.js';
@@ -259,6 +259,18 @@ export async function startExternalApproval(o: StartExternalApprovalOptions): Pr
             `(CLI: aidm run --spec <spec> --resume ${last.runId}), or start fresh with abandonInterrupted: true (CLI: --abandon-interrupted). No approval was requested.`,
         };
       }
+    }
+  }
+  if (!resumeCp) {
+    // A resume stashes the interrupted attempt itself; a fresh run needs a clean tree (else it would
+    // fail right after the passkey was consumed).
+    const { foreign } = await foreignUncommittedChanges(projectRoot, specPath);
+    if (foreign.length > 0) {
+      return {
+        success: false,
+        code: 'UNCOMMITTED_CHANGES',
+        message: `${uncommittedChangesMessage(foreign)} No approval was requested.`,
+      };
     }
   }
   const maxUsd = nanoUsdToUsd(MAX_PERIOD_BUDGET_NANO_USD);

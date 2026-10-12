@@ -268,10 +268,42 @@ describe('resume after interruption + detached workers', { concurrency: 1 }, () 
       assert.equal(live.code, 'ALREADY_RUNNING', JSON.stringify(live));
       assert.equal(idp.approvals.size, before);
       fs.rmSync(lockFile);
-      // abandonInterrupted => the approval is requested (and the run will start fresh).
+      // abandonInterrupted with the killed attempt's files still in the tree => uncommitted-changes preflight.
+      const dirtyAb = parse(await createAutonomousStartHandler(deps as never)({ specPath: 'proje.md', workspaceRoot: dir, budgetUsd: 1, abandonInterrupted: true }, {} as never));
+      assert.equal(dirtyAb.code, 'UNCOMMITTED_CHANGES', JSON.stringify(dirtyAb));
+      assert.equal(idp.approvals.size, before);
+      git(dir, 'stash', '-u');
+      // abandonInterrupted on a clean tree => the approval is requested (and the run will start fresh).
       const ab = parse(await createAutonomousStartHandler(deps as never)({ specPath: 'proje.md', workspaceRoot: dir, budgetUsd: 1, abandonInterrupted: true }, {} as never));
       assert.equal(ab.code, 'PENDING_EXTERNAL_APPROVAL', JSON.stringify(ab));
       assert.equal(idp.approvals.size, before + 1);
+    });
+
+    it('preflight: foreign uncommitted changes are reported BEFORE any passkey request (MCP + CLI --approval idp); bootstrap files are fine', async () => {
+      const env = idp.env();
+      const deps = { llmProvider: llm, allowMockProvider: true, identityManager: new InMemoryIdentityManager({ baseDir: dir }), registerBudgetTerms: pricing, executorPort: agy, env, foregroundResume: true };
+      fs.writeFileSync(path.join(dir, 'notlar.txt'), 'wip', 'utf8');
+      fs.mkdirSync(path.join(dir, 'src'));
+      fs.writeFileSync(path.join(dir, 'src', 'eski.js'), 'x', 'utf8');
+      const before = idp.approvals.size;
+      const r = parse(await createAutonomousStartHandler(deps as never)({ specPath: 'proje.md', workspaceRoot: dir, budgetUsd: 1 }, {} as never));
+      assert.equal(r.code, 'UNCOMMITTED_CHANGES', JSON.stringify(r));
+      assert.match(r.message, /notlar\.txt/);
+      assert.match(r.message, /src\/eski\.js/);
+      assert.match(r.message, /No approval was requested/);
+      assert.equal(idp.approvals.size, before);
+      const c = await executeCli(['run', '--spec', 'proje.md', '-C', dir, '--budget-usd', '1', '--approval', 'idp', '--json'], {
+        cwd: dir, env, stdout: (t) => out.push(t), stderr: (t) => out.push(t), executorPort: agy,
+        autonomous: { llmProvider: llm, allowMockProvider: true, identityManager: new InMemoryIdentityManager({ baseDir: dir }), registerBudgetTerms: pricing },
+      });
+      assert.match(String(c.error), /UNCOMMITTED_CHANGES.*notlar\.txt/);
+      assert.equal(idp.approvals.size, before);
+      // Only AIDM bootstrap changes (untracked spec, modified .gitignore) => approval is requested.
+      fs.rmSync(path.join(dir, 'notlar.txt'));
+      fs.rmSync(path.join(dir, 'src'), { recursive: true });
+      fs.writeFileSync(path.join(dir, '.gitignore'), 'node_modules/\n', 'utf8');
+      const ok = parse(await createAutonomousStartHandler(deps as never)({ specPath: 'proje.md', workspaceRoot: dir, budgetUsd: 1 }, {} as never));
+      assert.equal(ok.code, 'PENDING_EXTERNAL_APPROVAL', JSON.stringify(ok));
     });
 
     it('detached worker: survives its parent (MCP server stand-in) being killed, waits for the passkey, completes; status from disk', async () => {

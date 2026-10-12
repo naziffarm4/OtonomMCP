@@ -1324,7 +1324,20 @@ export class AutonomousSpecRunner {
               at: new Date().toISOString(),
             };
           }
-          this.emit('CYCLE_RESULT', `${result.status}: ${result.summary}`, task.task_id);
+          {
+            const at = String((result.directorAction as unknown as { actionType?: string } | undefined)?.actionType ?? '');
+            // Analysis actions are not dispatched by the governed gate; the runner turns them into a
+            // read-only analysis subtask below (not a failure, the attempt is not counted).
+            const analysisReroute =
+              !isAnalysis && result.status === 'BLOCKED_ON_APPROVAL' && (at === 'ANALYZE_PROJECT' || at === 'DISCOVER_PROJECT' || at === 'REVIEW_EVIDENCE');
+            this.emit(
+              'CYCLE_RESULT',
+              analysisReroute
+                ? `${at}: Director salt-okunur analiz istedi → analiz alt görevi olarak çalıştırılıyor (deneme sayılmaz).`
+                : `${result.status}: ${result.summary}`,
+              task.task_id
+            );
+          }
 
           const action = (result.directorAction ?? {}) as unknown as Record<string, unknown>;
           const actionType = result.directorAction?.actionType as string | undefined;
@@ -2102,26 +2115,43 @@ async function ensureGitRepository(projectRoot: string): Promise<void> {
  * files (.gitignore entry, the spec itself) are committed automatically; any other
  * uncommitted user change fails closed instead of being swept into an autonomous commit.
  */
+/**
+ * Uncommitted changes that are NOT AIDM bootstrap files (.gitignore entry, the spec itself, .ai-manager/).
+ * Side-effect free; used by the git baseline AND by the pre-approval preflight. Not a git repo => none.
+ */
+export async function foreignUncommittedChanges(
+  projectRoot: string,
+  specPath: string
+): Promise<{ dirty: string[]; foreign: string[] }> {
+  let status: string;
+  try {
+    // NUL-separated porcelain output: never trimmed (a leading ' M' status column must survive,
+    // otherwise ' M .gitignore' was parsed as 'gitignore') and never C-quoted (non-ASCII paths).
+    ({ stdout: status } = await execFileAsync(
+      'git',
+      ['-c', 'core.quotepath=false', 'status', '--porcelain=v1', '-z', '--untracked-files=all'],
+      { cwd: projectRoot, maxBuffer: 16 * 1024 * 1024 }
+    ));
+  } catch {
+    return { dirty: [], foreign: [] };
+  }
+  const dirty = parsePorcelainZ(status).filter((p) => !p.startsWith('.ai-manager/'));
+  const relSpec = path.relative(projectRoot, specPath).replace(/\\/g, '/');
+  const bootstrap = new Set(['.gitignore', relSpec]);
+  return { dirty, foreign: dirty.filter((p) => !bootstrap.has(p)) };
+}
+
+export function uncommittedChangesMessage(foreign: readonly string[]): string {
+  return `Working tree has uncommitted changes (${foreign.slice(0, 10).join(', ')}${foreign.length > 10 ? `, … +${foreign.length - 10}` : ''}). Commit or stash them before an autonomous run.`;
+}
+
 async function createGitBaseline(
   projectRoot: string,
   specPath: string
 ): Promise<{ ok: true; commit?: string } | { ok: false; reason: string }> {
-  // NUL-separated porcelain output: never trimmed (a leading ' M' status column must survive,
-  // otherwise ' M .gitignore' was parsed as 'gitignore') and never C-quoted (non-ASCII paths).
-  const { stdout: status } = await execFileAsync(
-    'git',
-    ['-c', 'core.quotepath=false', 'status', '--porcelain=v1', '-z', '--untracked-files=all'],
-    { cwd: projectRoot, maxBuffer: 16 * 1024 * 1024 }
-  );
-  const dirty = parsePorcelainZ(status).filter((p) => !p.startsWith('.ai-manager/'));
-  const relSpec = path.relative(projectRoot, specPath).replace(/\\/g, '/');
-  const bootstrap = new Set(['.gitignore', relSpec]);
-  const foreign = dirty.filter((p) => !bootstrap.has(p));
+  const { dirty, foreign } = await foreignUncommittedChanges(projectRoot, specPath);
   if (foreign.length > 0) {
-    return {
-      ok: false,
-      reason: `Working tree has uncommitted changes (${foreign.slice(0, 10).join(', ')}). Commit or stash them before an autonomous run.`,
-    };
+    return { ok: false, reason: uncommittedChangesMessage(foreign) };
   }
   let hasHead = true;
   try {
