@@ -232,13 +232,71 @@ export function createConfiguredLlmProvider(
 }
 
 /** Secret-free description for reports/logs. */
-export function describeLlmProviderConfig(config: ResolvedLlmProviderConfig): Record<string, unknown> {
+export type LlmPricingSource = 'OPERATOR_ENV' | 'BUILT_IN_VERIFIED' | 'MISSING' | 'NOT_CHECKED';
+
+/**
+ * Where the budget rate for the configured model comes from.
+ * OPERATOR_ENV: AIDM_LLM_*_USD_PER_MTOK. BUILT_IN_VERIFIED: the budget pricing registry
+ * already has a verified rate (e.g. OpenAI gpt-4o). MISSING: no rate; a live run fails closed.
+ * NOT_CHECKED: no budget manager consulted yet (e.g. dry-run).
+ */
+export function resolveLlmPricingSource(
+  config: ResolvedLlmProviderConfig,
+  budgetManager?: Pick<BudgetManager, 'getPricingRate'> | null
+): LlmPricingSource {
+  if (config.pricing) return 'OPERATOR_ENV';
+  if (!budgetManager) return 'NOT_CHECKED';
+  return budgetManager.getPricingRate(config.billingProviderId, config.model) ? 'BUILT_IN_VERIFIED' : 'MISSING';
+}
+
+export function describeLlmProviderConfig(
+  config: ResolvedLlmProviderConfig,
+  budgetManager?: Pick<BudgetManager, 'getPricingRate'> | null
+): Record<string, unknown> {
+  const pricingSource = resolveLlmPricingSource(config, budgetManager);
   return {
     kind: config.kind,
     endpoint: config.endpoint,
     model: config.model,
     apiKeyEnvVar: config.apiKeyEnvVar,
     hasApiKey: config.hasApiKey,
-    pricingConfigured: config.pricing !== null,
+    /** True when a verified budget rate is available (operator env or built-in registry). */
+    pricingConfigured: pricingSource === 'OPERATOR_ENV' || pricingSource === 'BUILT_IN_VERIFIED',
+    pricingSource,
   };
+}
+
+export interface DirectorOutputSettings {
+  readonly responseFormatMode: 'json_schema_strict' | 'json_schema' | 'json_object';
+  readonly autoFallbackToJsonObject: boolean;
+  readonly maxRepairAttempts: number;
+}
+
+/**
+ * AIDM_LLM_RESPONSE_FORMAT: auto (default: strict json_schema, falls back to json_object if the
+ * provider rejects json_schema) | json_schema (strict, no fallback) | json_schema_loose | json_object.
+ * AIDM_LLM_REPAIR_ATTEMPTS: 0..3 (default 1) validation-repair retries per Director reasoning call.
+ */
+export function resolveDirectorOutputSettings(env: Env = process.env): DirectorOutputSettings {
+  const fmt = (nonEmpty(env.AIDM_LLM_RESPONSE_FORMAT) ?? 'auto').toLowerCase();
+  const map: Record<string, DirectorOutputSettings['responseFormatMode']> = {
+    auto: 'json_schema_strict',
+    json_schema: 'json_schema_strict',
+    json_schema_strict: 'json_schema_strict',
+    json_schema_loose: 'json_schema',
+    json_object: 'json_object',
+  };
+  const mode = map[fmt];
+  if (!mode) {
+    throw new LlmProviderConfigError(
+      `AIDM_LLM_RESPONSE_FORMAT must be one of auto, json_schema, json_schema_loose, json_object (got '${fmt}').`,
+      'LLM_CONFIG_INVALID'
+    );
+  }
+  const rawRepair = nonEmpty(env.AIDM_LLM_REPAIR_ATTEMPTS);
+  const repair = rawRepair === undefined ? 1 : Number(rawRepair);
+  if (!Number.isInteger(repair) || repair < 0 || repair > 3) {
+    throw new LlmProviderConfigError('AIDM_LLM_REPAIR_ATTEMPTS must be an integer between 0 and 3.', 'LLM_CONFIG_INVALID');
+  }
+  return { responseFormatMode: mode, autoFallbackToJsonObject: fmt === 'auto', maxRepairAttempts: repair };
 }

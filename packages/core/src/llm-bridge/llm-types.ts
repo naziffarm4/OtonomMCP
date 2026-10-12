@@ -468,7 +468,11 @@ export function validateStructuredOutput<T = unknown>(
       const parsedObj = parsed as Record<string, unknown>;
       const missing: string[] = [];
       for (const field of requiredFields) {
-        if (typeof field === 'string' && (parsedObj[field] === undefined || parsedObj[field] === null)) {
+        if (typeof field !== 'string') continue;
+        const value = parsedObj[field];
+        const propType = ((schema.schema as { properties?: Record<string, { type?: unknown }> }).properties?.[field])?.type;
+        const nullAllowed = propType === 'null' || (Array.isArray(propType) && propType.includes('null'));
+        if (value === undefined || (value === null && !nullAllowed)) {
           missing.push(field);
         }
       }

@@ -41,6 +41,8 @@ import {
   createConfiguredLlmProvider,
   registerProviderBudgetTerms,
   describeLlmProviderConfig,
+  resolveDirectorOutputSettings,
+  type DirectorOutputSettings,
   type ResolvedLlmProviderConfig,
 } from './llm-provider-config.js';
 import type { ProjectMandate } from '../authorization/authorization-policy-types.js';
@@ -445,6 +447,7 @@ export class AutonomousSpecRunner {
       } else {
         try {
           registerProviderBudgetTerms(providerConfig!, budgetManager);
+          report.provider = describeLlmProviderConfig(providerConfig!, budgetManager);
           baseProvider = createConfiguredLlmProvider(providerConfig!, this.env);
         } catch (err) {
           return this.finish(report, 'CONFIGURATION_ERROR', err instanceof Error ? err.message : String(err), true, budgetManager);
@@ -472,7 +475,14 @@ export class AutonomousSpecRunner {
         );
       }
 
+      let outputSettings: DirectorOutputSettings;
+      try {
+        outputSettings = resolveDirectorOutputSettings(this.env);
+      } catch (err) {
+        return this.finish(report, 'CONFIGURATION_ERROR', err instanceof Error ? err.message : String(err), true, budgetManager);
+      }
       const directorRuntime = new DirectorRuntime({
+        decisionOutput: outputSettings,
         sessionStore,
         sessionEngine,
         historyManager,
@@ -741,7 +751,8 @@ export class AutonomousSpecRunner {
       const jsonPath = path.join(dir, `autonomous-${report.runId}.json`);
       report.reportPath = jsonPath;
       await fs.promises.writeFile(jsonPath, JSON.stringify(report, null, 2), 'utf8');
-      await fs.promises.writeFile(jsonPath.replace(/\.json$/, '.md'), renderAutonomousReportMarkdown(report), 'utf8');
+      // UTF-8 with BOM so Windows tools (PowerShell 5 Get-Content, Notepad) detect UTF-8 reliably.
+      await fs.promises.writeFile(jsonPath.replace(/\.json$/, '.md'), `\uFEFF${renderAutonomousReportMarkdown(report)}`, 'utf8');
     }
     this.emit('RUN_FINISHED', `${status}${reason ? `: ${reason}` : ''}`);
     return report;

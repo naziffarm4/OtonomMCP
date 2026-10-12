@@ -33,6 +33,7 @@ import {
   DIRECTOR_ACTION_SCHEMA_VERSION,
 } from './director-action-types.js';
 import { DirectorActionZodSchema } from './director-action-schema.js';
+import { runDecisionReasoning, type DirectorDecisionOutputSettings } from './director-decision-reasoner.js';
 import {
   DirectorPromptBuilder,
   type DirectorReasoningInput,
@@ -94,6 +95,8 @@ export interface DirectorRuntimeDependencies {
   readonly defaultModel?: string;
   readonly defaultTemperature?: number;
   readonly defaultMaxTokens?: number;
+  /** Opt-in decision-only output path (system-bound envelope, strict json_schema, repair retries). */
+  readonly decisionOutput?: DirectorDecisionOutputSettings;
 }
 
 // ============================================================================
@@ -113,6 +116,7 @@ export class DirectorRuntime {
   private readonly defaultModel?: string;
   private readonly defaultTemperature?: number;
   private readonly defaultMaxTokens?: number;
+  private readonly decisionOutput?: DirectorDecisionOutputSettings;
 
   constructor(deps: DirectorRuntimeDependencies = {}) {
     this.llmProvider = deps.llmProvider ?? null;
@@ -132,6 +136,7 @@ export class DirectorRuntime {
     this.defaultModel = deps.defaultModel;
     this.defaultTemperature = deps.defaultTemperature;
     this.defaultMaxTokens = deps.defaultMaxTokens;
+    this.decisionOutput = deps.decisionOutput;
   }
 
   /**
@@ -157,6 +162,19 @@ export class DirectorRuntime {
     // Step 4: Verify LLM provider readiness & production safety
     // ------------------------------------------------------------------------
     const provider = await this.resolveAndValidateProvider();
+    if (this.decisionOutput) {
+      return runDecisionReasoning({
+        provider,
+        promptBuild: this.promptBuilder.buildPrompt(snapshot, input),
+        input,
+        snapshot,
+        settings: this.decisionOutput,
+        historyManager: this.historyManager,
+        model: this.defaultModel ?? provider.defaultModel ?? null,
+        temperature: this.defaultTemperature ?? 0.1,
+        maxTokens: this.defaultMaxTokens ?? 4000,
+      });
+    }
 
     // ------------------------------------------------------------------------
     // Step 5: Build deterministic, bounded, secret-safe prompt
