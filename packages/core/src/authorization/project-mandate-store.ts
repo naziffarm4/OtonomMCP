@@ -1,3 +1,4 @@
+import type { ITrustedIdentityProvider } from './trusted-identity-types.js';
 import * as path from 'node:path';
 import * as fs from 'node:fs';
 import { ProjectMandate, ProjectMandateZodSchema } from './authorization-policy-types.js';
@@ -9,13 +10,21 @@ export class ProjectMandateStore {
   readonly filePath: string;
   readonly baseDir: string;
   private readonly identityManagerOverride?: IdentityManager;
+  private readonly identityProviderOverride?: ITrustedIdentityProvider;
 
   /**
    * @param options.identityManager Optional injected identity keystore (DI seam for
    *   non-Windows hosts and tests). Validation rules are unchanged; only key storage differs.
    */
-  constructor(options?: { baseDir?: string; filePath?: string; identityManager?: IdentityManager }) {
+  constructor(options?: {
+    baseDir?: string;
+    filePath?: string;
+    identityManager?: IdentityManager;
+    /** External IdP adapter (default: env-configured factory inside AuthContextValidator). */
+    identityProvider?: ITrustedIdentityProvider;
+  }) {
     this.identityManagerOverride = options?.identityManager;
+    this.identityProviderOverride = options?.identityProvider;
     if (options?.filePath) {
       this.filePath = options.filePath;
       this.baseDir = path.dirname(path.dirname(path.dirname(options.filePath)));
@@ -57,7 +66,8 @@ export class ProjectMandateStore {
     
     const validator = new AuthContextValidator(
       this.identityManagerOverride ?? new IdentityManager({ baseDir: this.baseDir }),
-      new NonceStore({ baseDir: this.baseDir })
+      new NonceStore({ baseDir: this.baseDir }),
+      this.identityProviderOverride
     );
     const result = await validator.validate(authContext, mandate.projectId);
 

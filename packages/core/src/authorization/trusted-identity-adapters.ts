@@ -584,6 +584,26 @@ export async function fetchSecureJwks(
 /**
  * Maps standard JWT alg string to Node.js crypto algorithm name.
  */
+/**
+ * JWS (RFC 7518 §3.4) ECDSA signatures are raw R||S (IEEE-P1363), not DER. Node's crypto.verify
+ * defaults to DER, so standards-compliant ES256/384/512 tokens were rejected. Raw-length signatures
+ * are verified as P1363; anything else keeps the previous DER behavior.
+ */
+function verifyWithJwsEncoding(
+  alg: string,
+  cryptoAlg: string | null,
+  data: Buffer,
+  key: crypto.KeyLike,
+  sig: Buffer
+): boolean {
+  const rawLen: Record<string, number> = { ES256: 64, ES384: 96, ES512: 132 };
+  if (rawLen[alg] && sig.length === rawLen[alg]) {
+    const keyObj = typeof key === 'string' || Buffer.isBuffer(key) ? crypto.createPublicKey(key) : key;
+    return crypto.verify(cryptoAlg, data, { key: keyObj as crypto.KeyObject, dsaEncoding: 'ieee-p1363' }, sig);
+  }
+  return crypto.verify(cryptoAlg, data, key, sig);
+}
+
 function getCryptoAlgorithm(alg: string): string | null {
   switch (alg) {
     case 'RS256':
@@ -835,7 +855,7 @@ export class OidcIdentityProviderAdapter implements ITrustedIdentityProvider {
     } else if (this.publicKeyPem) {
       try {
         const cryptoAlg = getCryptoAlgorithm(header.alg);
-        isSignatureValid = crypto.verify(cryptoAlg, dataToVerify, this.publicKeyPem, signatureBuffer);
+        isSignatureValid = verifyWithJwsEncoding(header.alg, cryptoAlg, dataToVerify, this.publicKeyPem, signatureBuffer);
       } catch (err: unknown) {
         return {
           isValid: false,
@@ -989,7 +1009,7 @@ export class OidcIdentityProviderAdapter implements ITrustedIdentityProvider {
       try {
         const publicKey = crypto.createPublicKey({ key: matchedJwk as any, format: 'jwk' });
         const cryptoAlg = getCryptoAlgorithm(header.alg);
-        isSignatureValid = crypto.verify(cryptoAlg, dataToVerify, publicKey, signatureBuffer);
+        isSignatureValid = verifyWithJwsEncoding(header.alg, cryptoAlg, dataToVerify, publicKey, signatureBuffer);
       } catch (err: unknown) {
         return {
           isValid: false,

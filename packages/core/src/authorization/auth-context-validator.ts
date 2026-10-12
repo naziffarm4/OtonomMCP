@@ -6,7 +6,7 @@ import {
   type IdentityVerificationResult,
   type TrustedIdentityClaim,
 } from './trusted-identity-types.js';
-import { UnconfiguredIdentityProviderAdapter } from './trusted-identity-adapters.js';
+import { createTrustedIdentityProvider } from './trusted-identity-config.js';
 
 export interface ValidatedAuthContext {
   identityId?: string;
@@ -79,7 +79,9 @@ export class AuthContextValidator {
   ) {
     this.identityManager = identityManager;
     this.nonceStore = nonceStore;
-    this.identityProvider = identityProvider ?? new UnconfiguredIdentityProviderAdapter();
+    // Default: the env-configured external IdP (ADR-13). Without AIDM_IDP_* config this is the
+    // UnconfiguredIdentityProviderAdapter, i.e. exactly the previous fail-closed behavior.
+    this.identityProvider = identityProvider ?? createTrustedIdentityProvider({ nonceStore });
   }
 
   getIdentityProvider(): ITrustedIdentityProvider {

@@ -7,3 +7,4 @@ export * from './auth-context-validator.js';
 export * from './trusted-identity-types.js';
 export * from './trusted-identity-adapters.js';
 export * from './trusted-identity-sanitizer.js';
+export * from './trusted-identity-config.js';
