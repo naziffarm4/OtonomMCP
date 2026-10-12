@@ -65,6 +65,7 @@ export function classifyMcpTool(toolName: string): McpToolPolicyClassification {
   if (
     norm.includes('director.act') ||
     norm.includes('autonomous.start') ||
+    norm.includes('autonomous.resume') ||
     norm.includes('executecycle') ||
     norm.includes('execute_cycle') ||
     norm.includes('runautoloop') ||
