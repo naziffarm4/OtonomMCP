@@ -218,8 +218,30 @@ function validateAnswer(rec: DecisionRecord, selectedOptionId: unknown, freeText
 
 // Tokens supplied out-of-band via aidm_autonomous_resume { decisionId, token }.
 const injectedDecisionTokens = new Map<string, string>();
-export function supplyDecisionToken(decisionId: string, token: string): void {
+export function supplyDecisionToken(decisionId: string, token: string, projectRoot?: string): void {
   injectedDecisionTokens.set(decisionId, token);
+  // Detached workers run in another process: hand the (still unverified) token over on disk too.
+  if (projectRoot && /^[0-9a-f-]{36}$/i.test(decisionId)) {
+    try {
+      const p = path.join(projectRoot, DECISIONS_DIR, `${decisionId}.token`);
+      fs.mkdirSync(path.dirname(p), { recursive: true });
+      fs.writeFileSync(p, token.slice(0, 16_384), { encoding: 'utf8', mode: 0o600 });
+    } catch {
+      /* the in-memory path still works for in-process runs */
+    }
+  }
+}
+
+function takeDiskDecisionToken(rec: { projectRoot: string; decisionId: string }): string | undefined {
+  if (!/^[0-9a-f-]{36}$/i.test(rec.decisionId)) return undefined;
+  const p = path.join(rec.projectRoot, DECISIONS_DIR, `${rec.decisionId}.token`);
+  try {
+    const t = fs.readFileSync(p, 'utf8').trim();
+    fs.rmSync(p, { force: true });
+    return t || undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 export class IdpDecisionResolver implements DecisionResolver {
@@ -264,7 +286,7 @@ export class IdpDecisionResolver implements DecisionResolver {
     const interval = this.opts.pollIntervalMs ?? 3000;
     let consecutiveErrors = 0;
     while (Date.now() < Date.parse(rec.expiresAt)) {
-      let token = injectedDecisionTokens.get(rec.decisionId);
+      let token = injectedDecisionTokens.get(rec.decisionId) ?? takeDiskDecisionToken(rec);
       if (!token) {
         try {
           const st = await client.getDecisionRequest(rec.decisionId);

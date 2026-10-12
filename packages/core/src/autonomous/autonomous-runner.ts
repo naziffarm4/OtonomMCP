@@ -85,6 +85,18 @@ import { RunMonitor, runMonitorUrl, monitorText, type RunMonitorEventType, type 
 import { InstructionChannel, computeInstructionChannelFingerprint, type VerifiedInstruction } from './instruction-channel.js';
 import { exec as execCb } from 'node:child_process';
 import {
+  HEARTBEAT_MS,
+  loadCheckpoint,
+  listInterruptedRuns,
+  lockLiveness,
+  readRunLock,
+  runLiveness,
+  saveCheckpoint,
+  stashInterruptedChanges,
+  writeRunLock,
+  type RunCheckpoint,
+} from './run-checkpoint.js';
+import {
   IdpDecisionResolver,
   buildDecisionRecord,
   decisionPolicyInstruction,
@@ -172,6 +184,17 @@ export interface AutonomousRunOptions {
   readonly idpFetchFn?: typeof fetch;
   /** Called once with the monitor URL when the live run monitor is enabled. */
   readonly onMonitorUrl?: (url: string) => void;
+  /**
+   * Resume an INTERRUPTED run (process killed / reboot) under the same runId. Requires a fresh
+   * authorization (authContext / operator invocation); the old sealed mandate is never reused.
+   * Accepted tasks are skipped, the interrupted attempt's uncommitted changes are stashed, the
+   * budget ledger of the run carries over against the same cap, the spec fingerprint must match.
+   */
+  readonly resumeRunId?: string;
+  /** Start fresh even though an interrupted run exists: marks it ABANDONED (its stale lock is removed). */
+  readonly abandonInterrupted?: boolean;
+  /** Log file of a detached worker (recorded in the checkpoint for status). */
+  readonly logPath?: string;
 }
 
 export interface AutonomousRunEvent {
@@ -287,6 +310,20 @@ export class AutonomousSpecRunner {
   private maxAttemptsOf: (taskId: string) => number | undefined = () => undefined;
   private instructionChannel: InstructionChannel | null = null;
   private stopInstruction: VerifiedInstruction | null = null;
+  private checkpoint: RunCheckpoint | null = null;
+
+  /** Persists the crash-safe checkpoint (never throws). */
+  private writeCheckpoint(): void {
+    const cp = this.checkpoint;
+    const rep = this.currentReport;
+    if (!cp || !rep) return;
+    cp.currentTaskId = this.currentTaskId;
+    cp.tasks = rep.tasks.map((t) => ({ taskId: t.taskId, status: t.status, cycles: t.cycles }));
+    cp.commits = [...rep.commits];
+    cp.monitorSeq = this.monitor?.currentSeq ?? cp.monitorSeq;
+    if (rep.monitorUrl) cp.monitorUrl = rep.monitorUrl;
+    saveCheckpoint(cp);
+  }
 
   private static readonly MONITOR_TYPES: Record<string, RunMonitorEventType> = {
     CYCLE_START: 'CYCLE_START',
@@ -309,6 +346,11 @@ export class AutonomousSpecRunner {
   };
 
   private emit(type: string, message: string, taskId?: string, level: 'info' | 'warn' | 'error' = 'info'): void {
+    if (this.checkpoint && this.checkpoint.state === 'RUNNING') {
+      if (type === 'CYCLE_START') this.checkpoint.inCycle = true;
+      else if (type === 'CYCLE_RESULT' || type === 'TASK_ACCEPTED' || type === 'TASK_BLOCKED') this.checkpoint.inCycle = false;
+      this.writeCheckpoint();
+    }
     try {
       this.options.onEvent?.({ type, message, taskId, at: new Date().toISOString() });
     } catch {
@@ -367,8 +409,13 @@ export class AutonomousSpecRunner {
     const specPath = path.resolve(this.options.specPath);
     const entryPoint = this.options.entryPoint ?? 'aidm run --spec';
     const dryRun = Boolean(this.options.dryRun);
-    const runId =
-      this.options.runId && /^[A-Za-z0-9._:-]{1,128}$/.test(this.options.runId)
+    const resumeRunId = this.options.resumeRunId;
+    if (resumeRunId !== undefined && !/^[A-Za-z0-9._:-]{1,128}$/.test(resumeRunId)) {
+      throw new AutonomousRunError(`Invalid resume runId '${resumeRunId}'`, 'INVALID_RUN_ID');
+    }
+    const runId = resumeRunId
+      ? resumeRunId
+      : this.options.runId && /^[A-Za-z0-9._:-]{1,128}$/.test(this.options.runId)
         ? this.options.runId
         : `run-${new Date().toISOString().replace(/[:.]/g, '-')}-${crypto.randomBytes(3).toString('hex')}`;
 
@@ -443,8 +490,34 @@ export class AutonomousSpecRunner {
       instructions: [],
     };
     this.currentReport = report;
+    // ------------------------------------------------------------------ resume pre-checks
+    let resumeFrom: RunCheckpoint | null = null;
+    if (resumeRunId && !dryRun) {
+      resumeFrom = loadCheckpoint(projectRoot, resumeRunId);
+      const refuse = (why: string) => this.finish(report, 'CONFIGURATION_ERROR', `Cannot resume ${resumeRunId}: ${why}`, false);
+      if (!resumeFrom) return refuse('no checkpoint for this run in this project.');
+      const live = runLiveness(projectRoot, resumeFrom);
+      if (live === 'FINISHED') return refuse(`the run already finished (${resumeFrom.status ?? 'FINISHED'}); start a new run instead.`);
+      if (live === 'ALIVE') return refuse(`the run is still active (pid ${readRunLock(projectRoot)?.pid}); it is not interrupted.`);
+      if (resumeFrom.specFingerprint !== ingestion.specFingerprint) {
+        return refuse('the spec file changed since the run started (fingerprint mismatch); start a new run.');
+      }
+      if (this.options.budgetUsd !== undefined && this.options.budgetUsd !== resumeFrom.budgetUsd) {
+        return refuse(`the budget cap is fixed at $${resumeFrom.budgetUsd} for this run (got $${this.options.budgetUsd}).`);
+      }
+      if (resumeFrom.approval === 'idp' && this.options.authContext?.authSource !== 'EXTERNAL_IDP') {
+        return this.finish(report, 'BLOCKED_ON_AUTH_CONTEXT', `Run ${resumeRunId} was approved with an IdP passkey; resuming requires a NEW IdP passkey approval (--approval idp).`, false);
+      }
+      report.commits.push(...resumeFrom.commits);
+    }
     if (!dryRun) {
-      this.monitor = RunMonitor.create({ env: this.env, runId, fetchFn: this.options.idpFetchFn });
+      this.monitor = RunMonitor.create({
+        env: this.env,
+        runId,
+        fetchFn: this.options.idpFetchFn,
+        // Resumed segment: continue strictly above every seq the IdP may have seen.
+        ...(resumeFrom ? { startSeq: Math.max(resumeFrom.monitorSeq + 1, (resumeFrom.segment + 1) * 1_000_000) } : {}),
+      });
       if (this.monitor) {
         const url = runMonitorUrl(this.env, runId);
         if (url) {
@@ -455,7 +528,12 @@ export class AutonomousSpecRunner {
             /* ignore */
           }
         }
-        this.emit('RUN_STARTED', `Otonom çalışma başladı: ${ingestion.projectName}`);
+        this.emit(
+          'RUN_STARTED',
+          resumeFrom
+            ? `Kesilen çalışma devam ediyor (bölüm ${resumeFrom.segment + 1}): ${ingestion.projectName}`
+            : `Otonom çalışma başladı: ${ingestion.projectName}`
+        );
         this.pushSnapshot(true);
       }
     }
@@ -491,7 +569,7 @@ export class AutonomousSpecRunner {
     }
 
     // ---------------------------------------------------------------- budget gate
-    const budgetUsd = this.options.budgetUsd ?? parseBudget(this.env.AIDM_BUDGET_USD);
+    const budgetUsd = resumeFrom ? resumeFrom.budgetUsd : this.options.budgetUsd ?? parseBudget(this.env.AIDM_BUDGET_USD);
     if (budgetUsd === undefined || !(budgetUsd > 0)) {
       return this.finish(
         report,
@@ -545,6 +623,39 @@ export class AutonomousSpecRunner {
     if (this.options.preboundApproval && this.options.preboundApproval.revision !== 1) {
       return this.finish(report, 'BLOCKED_ON_AUTH_CONTEXT', 'Pre-bound approval revision must be 1 (new package).');
     }
+    // ---------------------------------------------------------------- lock / interrupted runs
+    {
+      const lock = readRunLock(projectRoot);
+      const live = lockLiveness(lock);
+      if (live === 'ALIVE') {
+        return this.finish(
+          report,
+          'BLOCKED_ON_AUTH_CONTEXT',
+          `BLOCKED_ON_AUTH_CONTEXT: an autonomous run is already active for this project (${lockPath}, run ${lock?.runId || '?'}, pid ${lock?.pid}). ` +
+            'Nested mandate sealing from inside a run is refused.',
+          false
+        );
+      }
+      const interrupted = listInterruptedRuns(projectRoot).filter((c) => c.runId !== runId);
+      if (!resumeFrom && interrupted.length > 0 && !this.options.abandonInterrupted) {
+        const last = interrupted[interrupted.length - 1];
+        return this.finish(
+          report,
+          'CONFIGURATION_ERROR',
+          `An interrupted run exists for this project: ${last.runId} (started ${last.startedAt}). ` +
+            `Resume it with \`aidm run --spec <spec> --resume ${last.runId}\` (MCP: aidm_autonomous_start { resumeRunId }), ` +
+            'or start fresh with --abandon-interrupted (MCP: abandonInterrupted: true).',
+          false
+        );
+      }
+      for (const c of interrupted) {
+        c.state = 'FINISHED';
+        c.status = 'ABANDONED';
+        c.stopReason = `Abandoned by a new run ${runId}.`;
+        saveCheckpoint(c);
+      }
+      if (lock && live === 'STALE') await fs.promises.rm(lockPath, { force: true });
+    }
     await this.options.onRunId?.(runId);
     let sealed: { mandate: ProjectMandate; provenance: AutonomousAuthorizationProvenance };
     try {
@@ -553,18 +664,62 @@ export class AutonomousSpecRunner {
         entryPoint,
       });
     } catch (err) {
-      return this.finish(report, 'BLOCKED_ON_AUTH_CONTEXT', err instanceof Error ? err.message : String(err));
+      return this.finish(report, 'BLOCKED_ON_AUTH_CONTEXT', err instanceof Error ? err.message : String(err), !resumeFrom);
     }
     report.authorization = sealed.provenance;
     report.mandate = summarizeMandate(sealed.mandate);
     this.emit('MANDATE_SEALED', `Mandate revision ${sealed.mandate.mandateRevision} sealed by ${sealed.provenance.authSource}.`);
 
-    await fs.promises.mkdir(path.dirname(lockPath), { recursive: true });
-    await fs.promises.writeFile(lockPath, JSON.stringify({ runId, pid: process.pid, startedAt: report.startedAt }), 'utf8');
+    const lockRec = { runId, pid: process.pid, startedAt: report.startedAt, heartbeatAt: new Date().toISOString() };
+    writeRunLock(projectRoot, lockRec);
+    const heartbeat = setInterval(() => {
+      try {
+        lockRec.heartbeatAt = new Date().toISOString();
+        writeRunLock(projectRoot, lockRec);
+      } catch {
+        /* ignore */
+      }
+    }, HEARTBEAT_MS);
+    heartbeat.unref?.();
+    this.checkpoint = {
+      runId,
+      projectRoot,
+      specPath,
+      specFingerprint: ingestion.specFingerprint,
+      entryPoint,
+      approval: sealed.provenance.authSource === 'EXTERNAL_IDP' ? 'idp' : 'cli',
+      budgetUsd,
+      maxCyclesPerTask: this.options.maxCyclesPerTask,
+      mandateHours: this.options.mandateValidityHours,
+      startedAt: resumeFrom?.startedAt ?? report.startedAt,
+      state: 'RUNNING',
+      segment: (resumeFrom?.segment ?? 0) + 1,
+      pid: process.pid,
+      updatedAt: new Date().toISOString(),
+      currentTaskId: null,
+      inCycle: false,
+      tasks: [],
+      commits: [],
+      monitorSeq: resumeFrom?.monitorSeq ?? 0,
+      ...(this.options.logPath ? { logPath: this.options.logPath } : resumeFrom?.logPath ? { logPath: resumeFrom.logPath } : {}),
+    };
+    this.writeCheckpoint();
 
     let budgetManager: BudgetManager | undefined;
     try {
       // ------------------------------------------------------------ git baseline
+      if (resumeFrom) {
+        // The interrupted attempt restarts cleanly from the last AIDM commit (changes stashed, not lost).
+        const st = await stashInterruptedChanges(projectRoot, runId).catch((err: unknown) => {
+          throw new Error(`Cannot reset the interrupted attempt: ${err instanceof Error ? err.message : String(err)}`);
+        });
+        this.emit(
+          'RESUMED',
+          st.stashed
+            ? `Kesilen denemenin commitlenmemiş değişiklikleri git stash'e alındı (${st.files.length} dosya); son AIDM commitinden devam.`
+            : 'Çalışma ağacı temiz; son AIDM commitinden devam.'
+        );
+      }
       await ensureGitRepository(projectRoot);
       const baseline = await createGitBaseline(projectRoot, specPath);
       if (!baseline.ok) {
@@ -648,9 +803,15 @@ export class AutonomousSpecRunner {
         historyManager,
       });
       budgetManager.open();
-      budgetManager.createGlobalAccount(budgetUsd);
-      // Record this invocation as an explicitly operator-authorized ADR-16 budget period.
-      budgetManager.authorizeBudgetPeriod({ limit: budgetUsd, authorizedBy: `operator:${entryPoint}:${runId}` });
+      if (resumeFrom && budgetManager.getGlobalAccount()) {
+        // Same ledger, same cap: spend so far carries over (no new period => committed is NOT reset).
+        // Holds left by the killed process are recovered (prepared -> released, dispatched -> unknown, still counted).
+        budgetManager.recover();
+      } else {
+        budgetManager.createGlobalAccount(budgetUsd);
+        // Record this invocation as an explicitly operator-authorized ADR-16 budget period.
+        budgetManager.authorizeBudgetPeriod({ limit: budgetUsd, authorizedBy: `operator:${entryPoint}:${runId}` });
+      }
       {
         const bm = budgetManager;
         this.liveBudget = () => {
@@ -810,6 +971,15 @@ export class AutonomousSpecRunner {
       // Executor reports from accepted cycles are carried into the next Director call.
       let carryNote = '';
       const queue: AutonomousTaskReport[] = [];
+      if (resumeFrom) {
+        for (const taskReport of report.tasks) {
+          const prev = resumeFrom.tasks.find((t) => t.taskId === taskReport.taskId);
+          if (!prev || accepted.has(taskReport.taskId)) continue;
+          // Completed attempts count; the attempt in flight when the process died does not.
+          const inflight = resumeFrom.inCycle && resumeFrom.currentTaskId === taskReport.taskId ? 1 : 0;
+          taskReport.cycles = Math.max(0, prev.cycles - inflight);
+        }
+      }
       for (const taskReport of report.tasks) {
         if (accepted.has(taskReport.taskId)) {
           taskReport.status = 'SKIPPED';
@@ -1628,7 +1798,9 @@ export class AutonomousSpecRunner {
     } catch (err) {
       return this.finish(report, 'FAILED', err instanceof Error ? err.message : String(err), true, budgetManager);
     } finally {
-      await fs.promises.rm(lockPath, { force: true });
+      clearInterval(heartbeat);
+      const cur = readRunLock(projectRoot);
+      if (!cur || cur.runId === runId) await fs.promises.rm(lockPath, { force: true });
     }
   }
 
@@ -1656,6 +1828,12 @@ export class AutonomousSpecRunner {
     report.status = status;
     if (reason) report.stopReason = reason;
     report.finishedAt = new Date().toISOString();
+    if (this.checkpoint) {
+      this.checkpoint.state = 'FINISHED';
+      this.checkpoint.status = status;
+      this.checkpoint.stopReason = reason;
+      this.checkpoint.inCycle = false;
+    }
     if (budgetManager) {
       const acc = budgetManager.getGlobalAccount();
       if (acc) {
@@ -1685,6 +1863,10 @@ export class AutonomousSpecRunner {
       await fs.promises.writeFile(jsonPath, JSON.stringify(report, null, 2), 'utf8');
       // UTF-8 with BOM so Windows tools (PowerShell 5 Get-Content, Notepad) detect UTF-8 reliably.
       await fs.promises.writeFile(jsonPath.replace(/\.json$/, '.md'), `\uFEFF${renderAutonomousReportMarkdown(report)}`, 'utf8');
+    }
+    if (this.checkpoint) {
+      if (report.reportPath) this.checkpoint.reportPath = report.reportPath;
+      this.writeCheckpoint();
     }
     this.emit('RUN_FINISHED', `${status}${reason ? `: ${reason}` : ''}`, undefined, status === 'COMPLETED' || status === 'DRY_RUN_OK' ? 'info' : 'warn');
     if (this.stopInstruction && this.instructionChannel) {

@@ -77,6 +77,9 @@ Değerleri asla repoya yazmayın; aşağıda yalnızca adlar vardır.
 | `AIDM_IDP_ALLOW_LOOPBACK_JWKS` | `1` ise loopback (127.0.0.1/localhost) JWKS'e açıkça izin verir. |
 | `AIDM_IDP_POLL_INTERVAL_MS` | IdP yoklama aralığı: onay, karar ve canlı talimat kanalı (varsayılan 3000, en az 500). |
 | `AIDM_IDP_RUN_MONITOR` | `off` ise canlı çalışma izleyicisi (IdP `#/runs`) kapatılır. Aksi halde `AIDM_IDP_URL` + `AIDM_IDP_CLIENT_TOKEN` tanımlıysa açıktır. Yalnızca bilgilendirme amaçlıdır; hiçbir zaman çalışmayı engellemez, sır/prompt/dosya içeriği göndermez. |
+| `AIDM_MCP_DETACHED_RUNS` | `off` ise `aidm_autonomous_start`/`resume` canlı çalışmaları MCP sunucusunun içinde (eski davranış) çalıştırır. Varsayılan: ayrık (detached) worker süreci; Antigravity/MCP kapansa da çalışma sürer. |
+| `AIDM_WORKER_LAUNCH` | Yalnızca Windows: `wmi` ise worker `Win32_Process.Create` ile başlatılır (üst sürecin kill-on-close Job nesnesinin dışına çıkar; ortam tek kullanımlık bir env dosyasıyla aktarılır ve worker açılışta siler). Varsayılan `direct` (`detached` + `windowsHide`). |
+| `AIDM_WORKER_TEST_DOUBLES`, `AIDM_WORKER_ALLOW_TEST_DOUBLES` | Yalnızca testler: `ALLOW=1` iken worker sahte LLM/AGY modülünü yükler. Üretimde tanımlamayın. |
 | `AIDM_DECISION_MODE` | `ask` (varsayılan): Director ürün kararlarını sorar. `assume`: önerilen seçenek varsayım olarak kaydedilir. |
 
 Kurallar: tam olarak bir anahtar kaynağı (PEM, PEM dosyası veya JWKS) verilmelidir; geçersiz PEM, çift kaynak

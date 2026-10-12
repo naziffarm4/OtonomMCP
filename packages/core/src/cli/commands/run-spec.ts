@@ -21,6 +21,7 @@ import { SpecIngestionError } from '../../autonomous/spec-ingestor.js';
 import { TtyDecisionResolver } from '../../autonomous/decision-requests.js';
 import { isExternalIdpConfigured } from '../../autonomous/idp-client.js';
 import { resumeExternalApproval, startExternalApproval } from '../../autonomous/external-approval.js';
+import { listInterruptedRuns } from '../../autonomous/run-checkpoint.js';
 
 export interface RunSpecCommandOptions {
   readonly projectRoot: string;
@@ -36,6 +37,9 @@ export interface RunSpecCommandOptions {
   readonly verbose: boolean;
   /** 'cli' (default): the operator's explicit invocation authorizes. 'idp': passkey approval via the external IdP. */
   readonly approval?: 'cli' | 'idp';
+  /** Resume an interrupted run: a runId, or 'latest' for the newest interrupted run of the project. */
+  readonly resume?: string;
+  readonly abandonInterrupted?: boolean;
 }
 
 export type ParseRunSpecResult =
@@ -76,6 +80,10 @@ export function parseRunSpecArgs(
   const str = (k: string) => (typeof flags[k] === 'string' ? (flags[k] as string) : undefined);
   const approval = flags['approval'] === undefined ? 'cli' : str('approval');
   if (approval !== 'cli' && approval !== 'idp') return { ok: false, error: "--approval must be 'cli' or 'idp'" };
+  const resumeFlag = flags['resume'];
+  const resume = resumeFlag === undefined ? undefined : resumeFlag === true ? 'latest' : String(resumeFlag).trim();
+  if (resume !== undefined && !/^[A-Za-z0-9._:-]{1,128}$/.test(resume)) return { ok: false, error: '--resume takes an optional runId' };
+  if (resume !== undefined && flags['abandon-interrupted']) return { ok: false, error: '--resume and --abandon-interrupted are mutually exclusive' };
 
   return {
     ok: true,
@@ -93,6 +101,8 @@ export function parseRunSpecArgs(
       json: ctx.json,
       verbose: ctx.verbose,
       ...(approval === 'idp' ? { approval: 'idp' as const } : {}),
+      ...(resume !== undefined ? { resume } : {}),
+      ...(flags['abandon-interrupted'] ? { abandonInterrupted: true } : {}),
     },
   };
 }
@@ -140,6 +150,23 @@ export async function executeRunSpec(
   const ttyResolver =
     !options.json && !isExternalIdpConfigured(env) && process.stdin.isTTY ? { decisionResolver: new TtyDecisionResolver() } : {};
 
+  let resumeRunId: string | undefined;
+  if (options.resume !== undefined && !options.dryRun) {
+    if (options.resume === 'latest') {
+      const list = listInterruptedRuns(options.projectRoot);
+      if (list.length === 0) {
+        const msg = `No interrupted run to resume in ${options.projectRoot}.`;
+        if (options.json) writer.writeJson({ success: false, error: msg, exitCode: CliExitCode.USAGE_ERROR });
+        else writer.writeError(`Error: ${msg}`);
+        return { exitCode: CliExitCode.USAGE_ERROR, error: msg };
+      }
+      resumeRunId = list[list.length - 1].runId;
+    } else {
+      resumeRunId = options.resume;
+    }
+    if (!options.json) writer.write(`Kesilen çalışma devam ettiriliyor: ${resumeRunId}`);
+  }
+
   let report: AutonomousRunReport;
   if (options.approval === 'idp' && !options.dryRun) {
     if (!isExternalIdpConfigured(env)) {
@@ -156,6 +183,8 @@ export async function executeRunSpec(
       mandateHours: options.mandateValidityHours,
       env,
       providerInjected: Boolean(appOptions?.autonomous?.llmProvider),
+      ...(resumeRunId ? { resumeRunId } : {}),
+      ...(options.abandonInterrupted ? { abandonInterrupted: true } : {}),
     });
     if (!started.success || !started.requestId) {
       const msg = `${started.code}: ${started.message ?? ''}`;
@@ -207,6 +236,8 @@ export async function executeRunSpec(
       mandateValidityHours: options.mandateValidityHours,
       commit: options.commit,
       entryPoint: 'aidm run --spec',
+      ...(resumeRunId ? { resumeRunId } : {}),
+      ...(options.abandonInterrupted ? { abandonInterrupted: true } : {}),
       env,
       executorPort: appOptions?.executorPort,
       ...ttyResolver,

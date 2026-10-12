@@ -29,6 +29,7 @@ import { AutonomousSpecRunner, type AutonomousRunOptions, type AutonomousRunRepo
 import { listDecisionRecords } from './decision-requests.js';
 import { preflightLlmProvider } from './llm-provider-config.js';
 import { RunMonitor, runMonitorUrl, type RunMonitorStatus } from './run-monitor.js';
+import { isPidAlive, listCheckpoints, loadCheckpoint, runLiveness, type RunCheckpoint } from './run-checkpoint.js';
 
 type Env = Readonly<Record<string, string | undefined>>;
 
@@ -63,6 +64,12 @@ export interface ExternalApprovalRecord {
   readonly mandateHours: number;
   readonly allowedPaths: readonly string[];
   readonly taskCount: number;
+  /** Set when this approval authorizes RESUMING an interrupted run (bound into contextFingerprint). */
+  readonly resumeOfRunId?: string;
+  readonly abandonInterrupted?: boolean;
+  /** Detached worker handling this request (pid + log). */
+  workerPid?: number;
+  logPath?: string;
   readonly requestedAt: string;
   readonly expiresAt: string;
   approvalUrl?: string;
@@ -102,6 +109,15 @@ async function saveRecord(rec: ExternalApprovalRecord): Promise<void> {
   await fs.promises.rename(tmp, p);
 }
 
+/** Records which detached worker owns a pending request (status / single-flight hints only). */
+export async function annotateApprovalWorker(projectRoot: string, requestId: string, worker: { pid?: number; logPath: string }): Promise<void> {
+  const rec = await loadExternalApprovalRecord(projectRoot, requestId);
+  if (!rec) return;
+  rec.workerPid = worker.pid;
+  rec.logPath = worker.logPath;
+  await saveRecord(rec);
+}
+
 export async function loadExternalApprovalRecord(projectRoot: string, requestId: string): Promise<ExternalApprovalRecord | null> {
   try {
     return JSON.parse(await fs.promises.readFile(recordPath(projectRoot, requestId), 'utf8')) as ExternalApprovalRecord;
@@ -139,8 +155,11 @@ export function computeApprovalContextFingerprint(fields: {
   allowedPaths: readonly string[];
   mandateHours: number;
   maxCyclesPerTask: number;
+  resumeOfRunId?: string;
 }): string {
-  return sha256Hex(canonicalJson({ ...fields, allowedPaths: [...fields.allowedPaths] }));
+  const { resumeOfRunId, ...rest } = fields;
+  // resumeOfRunId is only part of the canonical form when set (fresh-run fingerprints unchanged).
+  return sha256Hex(canonicalJson({ ...rest, allowedPaths: [...fields.allowedPaths], ...(resumeOfRunId ? { resumeOfRunId } : {}) }));
 }
 
 export function bindingOf(rec: ExternalApprovalRecord): TrustedApprovalBinding {
@@ -163,12 +182,20 @@ export interface StartExternalApprovalOptions {
   readonly fetchFn?: typeof fetch;
   /** True when the caller injects its own LLM provider (tests/embedding): skip env provider preflight. */
   readonly providerInjected?: boolean;
+  /** Ask for a NEW passkey approval to resume this interrupted run (same runId). */
+  readonly resumeRunId?: string;
+  readonly abandonInterrupted?: boolean;
 }
 
 /** One-shot monitor snapshot for the approval phase (fire-and-forget, bounded, never throws). */
 async function approvalMonitor(rec: ExternalApprovalRecord, status: RunMonitorStatus, env: Env, fetchFn?: typeof fetch): Promise<void> {
   if (!rec.runId) return;
-  const m = RunMonitor.create({ env, runId: rec.runId, fetchFn });
+  let startSeq: number | undefined;
+  if (rec.resumeOfRunId) {
+    const cp = loadCheckpoint(rec.projectRoot, rec.resumeOfRunId);
+    if (cp) startSeq = cp.monitorSeq + 1;
+  }
+  const m = RunMonitor.create({ env, runId: rec.runId, fetchFn, ...(startSeq ? { startSeq } : {}) });
   if (!m) return;
   if (status === 'PENDING_APPROVAL') m.event('APPROVAL_REQUESTED', 'Passkey onayı bekleniyor');
   await m.close({
@@ -191,7 +218,24 @@ export async function startExternalApproval(o: StartExternalApprovalOptions): Pr
   const env = o.env ?? process.env;
   const projectRoot = path.resolve(o.projectRoot);
   const specPath = path.resolve(o.specPath);
-  const budgetUsd = o.budgetUsd;
+  let budgetUsd = o.budgetUsd;
+  let resumeCp: RunCheckpoint | null = null;
+  if (o.resumeRunId) {
+    try {
+      resumeCp = loadCheckpoint(projectRoot, o.resumeRunId);
+    } catch {
+      resumeCp = null;
+    }
+    if (!resumeCp) return { success: false, code: 'NOT_FOUND', message: `No checkpoint for run '${o.resumeRunId}' in ${projectRoot}.` };
+    const live = runLiveness(projectRoot, resumeCp);
+    if (live !== 'INTERRUPTED') {
+      return { success: false, code: live === 'ALIVE' ? 'ALREADY_RUNNING' : 'ALREADY_FINISHED', message: `Run ${o.resumeRunId} is ${live}; only interrupted runs can be resumed.` };
+    }
+    if (budgetUsd !== undefined && budgetUsd !== resumeCp.budgetUsd) {
+      return { success: false, code: 'CONFIGURATION_ERROR', message: `The budget cap is fixed at $${resumeCp.budgetUsd} for run ${o.resumeRunId}.` };
+    }
+    budgetUsd = resumeCp.budgetUsd;
+  }
   const maxUsd = nanoUsdToUsd(MAX_PERIOD_BUDGET_NANO_USD);
   if (budgetUsd === undefined || !(budgetUsd > 0)) {
     return { success: false, code: 'CONFIGURATION_ERROR', message: 'A positive budgetUsd is required for live runs.' };
@@ -203,7 +247,7 @@ export async function startExternalApproval(o: StartExternalApprovalOptions): Pr
   if (!(mandateHours > 0 && mandateHours <= 24)) {
     return { success: false, code: 'CONFIGURATION_ERROR', message: 'mandateHours must be in (0, 24].' };
   }
-  const maxCyclesPerTask = Math.max(1, Math.floor(o.maxCyclesPerTask ?? DEFAULT_MAX_CYCLES));
+  const maxCyclesPerTask = Math.max(1, Math.floor(o.maxCyclesPerTask ?? resumeCp?.maxCyclesPerTask ?? DEFAULT_MAX_CYCLES));
   // Never ask the human for a passkey approval that a misconfigured provider would waste.
   if (!o.providerInjected) {
     const pf = preflightLlmProvider(env);
@@ -220,9 +264,12 @@ export async function startExternalApproval(o: StartExternalApprovalOptions): Pr
   const rel = path.relative(projectRoot, specPath);
   const ingestion = new SpecIngestor().ingest(markdown, { projectId, specPath: rel.startsWith('..') ? specPath : rel });
   const taskCount = ingestion.tasks.filter((t) => t.hierarchy_level === 'TASK').length;
+  if (resumeCp && resumeCp.specFingerprint !== ingestion.specFingerprint) {
+    return { success: false, code: 'SPEC_CHANGED', message: `The spec changed since run ${resumeCp.runId} started; resume refused (start a new run).` };
+  }
 
   const requestId = crypto.randomUUID();
-  const packageId = `pkg-autonomous-${ingestion.specFingerprint.slice(0, 12)}-${requestId.slice(0, 8)}`;
+  const packageId = `${resumeCp ? 'pkg-resume' : 'pkg-autonomous'}-${ingestion.specFingerprint.slice(0, 12)}-${requestId.slice(0, 8)}`;
   const revision = 1;
   const contextFingerprint = computeApprovalContextFingerprint({
     operation: AUTONOMOUS_SPEC_RUN_OPERATION,
@@ -234,6 +281,7 @@ export async function startExternalApproval(o: StartExternalApprovalOptions): Pr
     allowedPaths: ingestion.allowedPaths,
     mandateHours,
     maxCyclesPerTask,
+    ...(resumeCp ? { resumeOfRunId: resumeCp.runId } : {}),
   });
   const now = Date.now();
   const rec: ExternalApprovalRecord = {
@@ -253,11 +301,13 @@ export async function startExternalApproval(o: StartExternalApprovalOptions): Pr
     mandateHours,
     allowedPaths: [...ingestion.allowedPaths],
     taskCount,
+    ...(resumeCp ? { resumeOfRunId: resumeCp.runId } : {}),
+    ...(o.abandonInterrupted ? { abandonInterrupted: true } : {}),
     requestedAt: new Date(now).toISOString(),
     expiresAt: new Date(now + APPROVAL_REQUEST_TTL_MS).toISOString(),
     state: 'PENDING',
     updatedAt: new Date(now).toISOString(),
-    runId: `run-${new Date(now).toISOString().replace(/[:.]/g, '-')}-${crypto.randomBytes(3).toString('hex')}`,
+    runId: resumeCp ? resumeCp.runId : `run-${new Date(now).toISOString().replace(/[:.]/g, '-')}-${crypto.randomBytes(3).toString('hex')}`,
   };
 
   let client: IdpClient;
@@ -269,6 +319,7 @@ export async function startExternalApproval(o: StartExternalApprovalOptions): Pr
   // Persist BEFORE the human can see the request: the binding is fixed from here on.
   await saveRecord(rec);
   const summaryText =
+    (resumeCp ? `DEVAM / RESUME of interrupted run ${resumeCp.runId} (segment ${resumeCp.segment + 1}); completed tasks are skipped, budget cap and spend carry over. ` : '') +
     `Project '${rec.projectName}' (${projectId}); spec ${rel}; budget $${budgetUsd}; ${taskCount} task(s); ` +
     `allowed paths: ${rec.allowedPaths.join(', ') || '(project defaults)'}; mandate ${mandateHours}h; ` +
     `Director (LLM) + AGY executor, no-questions routine implementation, product decisions asked via IdP.`;
@@ -291,6 +342,7 @@ export async function startExternalApproval(o: StartExternalApprovalOptions): Pr
         taskCount,
         allowedPaths: rec.allowedPaths,
         mandateHours,
+        ...(resumeCp ? { resumeOfRunId: resumeCp.runId } : {}),
         text: summaryText,
       },
       requestedAt: rec.requestedAt,
@@ -347,6 +399,7 @@ async function checkRecordIntegrity(rec: ExternalApprovalRecord): Promise<string
     allowedPaths: rec.allowedPaths,
     mandateHours: rec.mandateHours,
     maxCyclesPerTask: rec.maxCyclesPerTask,
+    resumeOfRunId: rec.resumeOfRunId,
   });
   if (expected !== rec.contextFingerprint || rec.operation !== AUTONOMOUS_SPEC_RUN_OPERATION || rec.revision !== 1) {
     return 'Persisted approval binding was modified after the request was created.';
@@ -482,6 +535,8 @@ export async function resumeExternalApproval(o: ResumeExternalApprovalOptions): 
     entryPoint: 'aidm_autonomous_start',
     authContext,
     ...(record.runId ? { runId: record.runId } : {}),
+    ...(record.resumeOfRunId ? { resumeRunId: record.resumeOfRunId } : {}),
+    ...(record.abandonInterrupted ? { abandonInterrupted: true } : {}),
     ...(o.fetchFn ? { idpFetchFn: o.fetchFn } : {}),
     preboundApproval: {
       packageId: record.packageId,
@@ -548,6 +603,10 @@ export async function getAutonomousStatus(projectRoot: string, requestId?: strin
       runStatus: r.runStatus,
       reportPath: r.reportPath,
       reason: r.reason,
+      resumeOfRunId: r.resumeOfRunId,
+      workerPid: r.workerPid,
+      workerAlive: r.workerPid ? isPidAlive(r.workerPid) : undefined,
+      logPath: r.logPath,
       inProcessRunActive: backgroundRuns.has(r.requestId),
     }));
   const decisions = (await listDecisionRecords(root)).map((d) => ({
@@ -562,8 +621,30 @@ export async function getAutonomousStatus(projectRoot: string, requestId?: strin
     expiresAt: d.expiresAt,
     answer: d.answer,
   }));
+  const runs = listCheckpoints(root).map((c) => ({
+    runId: c.runId,
+    liveness: runLiveness(root, c),
+    status: c.status ?? (runLiveness(root, c) === 'INTERRUPTED' ? 'INTERRUPTED' : 'RUNNING'),
+    segment: c.segment,
+    pid: c.pid,
+    startedAt: c.startedAt,
+    updatedAt: c.updatedAt,
+    currentTaskId: c.currentTaskId,
+    tasks: c.tasks,
+    budgetUsd: c.budgetUsd,
+    approval: c.approval,
+    monitorUrl: c.monitorUrl,
+    logPath: c.logPath,
+    reportPath: c.reportPath,
+    stopReason: c.stopReason,
+  }));
+  const interrupted = runs.filter((r) => r.liveness === 'INTERRUPTED').map((r) => r.runId);
   return {
     approvals,
+    runs,
+    ...(interrupted.length
+      ? { resumeHint: `Interrupted run(s): ${interrupted.join(', ')}. Resume with aidm_autonomous_start { specPath, resumeRunId } (CLI: aidm run --spec <spec> --resume <runId>).` }
+      : {}),
     pendingDecisions: decisions.filter((d) => d.state === 'PENDING'),
     decisions,
   };

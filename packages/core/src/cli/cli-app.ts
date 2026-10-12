@@ -25,6 +25,8 @@ Commands:
   run --spec <file.md>           Fully autonomous development from a single Markdown spec
                                  [--budget-usd N] [--dry-run] [--max-cycles N] [--mandate-hours H]
                                  [--no-commit] [--llm-endpoint URL] [--llm-model NAME] [--approval cli|idp]
+                                 [--resume [runId]]  continue an interrupted run (new approval)
+                                 [--abandon-interrupted]  start fresh, mark the interrupted run ABANDONED
   driver [run|status|stop]       Manage and run governed Autonomous Driver runtime
   mcp                            Start authoritative AIDM MCP server (alias: server)
   status                         Read current project lifecycle and Git state

@@ -90,3 +90,43 @@ olarak döner ve hiçbir onay isteği/mandate oluşmaz.
 - Spec dosyası, spec onu açıkça yazılabilir yol (`## Dizinler`) ya da hedef dosya olarak
   listelemedikçe AGY tarafından değiştirilemez: her denemeden sonra sha256 kontrol edilir; değişmişse
   orijinali geri yazılır ve çalışma `BLOCKED_ON_HUMAN` durur.
+
+
+## Kesintiden sonra devam (resume)
+
+Çalışma yarıda kesilirse (süreç öldürüldü, Antigravity kapandı, bilgisayar yeniden başladı) aynı
+çalışmaya kaldığı yerden devam edilebilir.
+
+- **Algılama:** canlı çalışma `.ai-manager/state/autonomous-run.lock` dosyasına PID + 10 sn'de bir
+  heartbeat yazar; ilerlemesini `.ai-manager/state/autonomous-runs/<runId>.json` checkpoint'ine
+  kaydeder. PID yaşamıyorsa (veya heartbeat 10 dakikadan eskiyse) kilit *bayat* sayılır ve çalışma
+  `INTERRUPTED` olur. PID'i yaşayan bir çalışma asla ikinci kez başlatılmaz.
+- **Yeni başlatma:** kesilmiş bir çalışma varken yeni `aidm run --spec` `CONFIGURATION_ERROR` ile durur
+  ve devam komutunu söyler. Bilerek sıfırdan başlamak için `--abandon-interrupted`
+  (MCP: `abandonInterrupted: true`) — eski çalışma `ABANDONED` işaretlenir.
+- **Devam:** CLI `aidm run --spec <md> --resume [runId]` (runId verilmezse en son kesilen),
+  MCP `aidm_autonomous_start { specPath, resumeRunId }` veya `aidm_autonomous_resume { runId }`.
+  - Aynı `runId` kullanılır; izleme ekranında aynı çalışma "bölüm N" olarak devam eder (seq kaldığı
+    yerin üstünden sürer).
+  - Kabul edilmiş (commit'lenmiş) görevler atlanır. Yarıda kalan görevin commit'lenmemiş değişiklikleri
+    `git stash` ile kenara alınır (`aidm-resume <runId>: interrupted attempt`, silinmez) ve görev son
+    AIDM commit'inden temiz başlar. Tamamlanmış denemeler sayılır; süreç ölürken yarıda kalan deneme
+    sayılmaz.
+  - Bütçe: aynı bütçe defteri ve aynı tavan; harcanan tutar devreder (yeni dönem açılmaz). Farklı
+    `--budget-usd` reddedilir. Ölen sürecin açık rezervasyonları kurtarılır (hazırlanmış olanlar
+    serbest, gönderilmiş olanlar "bilinmiyor" olarak sayılmaya devam eder).
+  - Spec dosyası değiştiyse (sha256 farklı) devam reddedilir.
+  - **Yetki asla sessizce yeniden kullanılmaz:** her devam yeni bir yetki ister. IdP ile onaylanmış bir
+    çalışma yalnızca yeni bir passkey onayıyla devam eder; onay isteği `pkg-resume-…` paketiyle, özette
+    `resumeOfRunId` ile ve bağlam parmak izine `resumeOfRunId` katılarak o çalışmaya bağlanır.
+
+## Antigravity'den bağımsız çalışma (detached worker)
+
+`aidm_autonomous_start` / `aidm_autonomous_resume` canlı çalışmaları MCP sunucusunun içinde değil, ayrık
+bir Node sürecinde (`dist/autonomous/worker-main.js`) çalıştırır (`detached`, `windowsHide`, `unref`;
+çıktı `.ai-manager/logs/worker-<id>.log`). MCP aracı hemen `runId`, `approvalUrl`, `monitorUrl`,
+`workerPid` ve `logPath` döner. IdP onayı gerekiyorsa worker onayı kendisi bekler (ayrıca `resume`
+çağırmak gerekmez); `aidm_autonomous_status` her şeyi diskten okur (`approvals[].workerAlive`,
+`runs[].liveness`: `ALIVE` / `INTERRUPTED` / `FINISHED`). Karar cevabı tokenları
+(`aidm_autonomous_resume { decisionId, token }`) worker'a disk üzerinden iletilir ve yine doğrulanır.
+`AIDM_MCP_DETACHED_RUNS=off` eski (süreç içi) davranışa döner.

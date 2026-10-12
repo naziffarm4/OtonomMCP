@@ -8,6 +8,7 @@
  * fails closed with BLOCKED_ON_AUTH_CONTEXT. `dryRun: true` is always allowed (read-only).
  */
 
+import * as crypto from 'node:crypto';
 import * as path from 'node:path';
 import type { McpServer } from '../mcp-server.js';
 import type {
@@ -24,6 +25,10 @@ import {
   startExternalApproval,
 } from '../../autonomous/external-approval.js';
 import { supplyDecisionToken } from '../../autonomous/decision-requests.js';
+import { annotateApprovalWorker, loadExternalApprovalRecord } from '../../autonomous/external-approval.js';
+import { detachedRunsEnabled, spawnDetachedWorker } from '../../autonomous/worker.js';
+import { isPidAlive, loadCheckpoint } from '../../autonomous/run-checkpoint.js';
+import { runMonitorUrl } from '../../autonomous/run-monitor.js';
 import type { ITrustedIdentityProvider } from '../../authorization/trusted-identity-types.js';
 
 export const AIDM_AUTONOMOUS_START_TOOL_NAME = 'aidm.autonomous.start';
@@ -35,7 +40,10 @@ export const autonomousStartToolDefinition: McpToolDefinition = Object.freeze({
     'dryRun=true ingests the spec and returns plan + mandate draft without side effects. ' +
     'Live runs require a human-originated authContext; LLM callers cannot self-authorize (BLOCKED_ON_AUTH_CONTEXT). ' +
     'When an external IdP is configured (AIDM_IDP_*), a live run without authContext returns PENDING_EXTERNAL_APPROVAL ' +
-    'with an approvalUrl: the human approves with a passkey, then call aidm_autonomous_resume { requestId }.',
+    'with an approvalUrl and a monitorUrl. Live runs execute in a DETACHED worker process that survives the MCP server / ' +
+    'Antigravity exiting: the worker waits for the passkey approval itself and then runs (no resume call needed). ' +
+    'Interrupted runs (process killed, reboot): pass resumeRunId to continue the same run after a NEW approval; ' +
+    'completed tasks are skipped and the budget carries over. Poll aidm_autonomous_status.',
   inputSchema: {
     type: 'object' as const,
     properties: {
@@ -46,6 +54,9 @@ export const autonomousStartToolDefinition: McpToolDefinition = Object.freeze({
       maxCyclesPerTask: { type: 'number' },
       mandateHours: { type: 'number', description: 'Mandate validity in hours (external approval only, default 8, max 24).' },
       authContext: { type: 'object', description: 'Human-originated, verifiable auth context (P18-04).' },
+      resumeRunId: { type: 'string', description: 'Continue this INTERRUPTED run (same runId; requires a new approval; spec must be unchanged).' },
+      abandonInterrupted: { type: 'boolean', description: 'Start fresh even though an interrupted run exists (it is marked ABANDONED).' },
+      detach: { type: 'boolean', description: 'Run in a detached worker process (default true for live runs).' },
     },
     required: ['specPath'],
   },
@@ -65,7 +76,21 @@ export type AutonomousToolDeps = Partial<
   readonly identityProvider?: ITrustedIdentityProvider;
   /** Tests: run resumed approvals in the foreground. */
   readonly foregroundResume?: boolean;
+  /**
+   * Detached worker processes for live runs. Default: enabled unless test doubles are injected
+   * (llmProvider / executorPort cannot cross a process boundary) or AIDM_MCP_DETACHED_RUNS=off.
+   */
+  readonly detachedWorker?: boolean;
+  /** Extra node flags for spawned workers (tests). */
+  readonly workerExecArgv?: string[];
 };
+
+function useWorker(deps: AutonomousToolDeps, args: Readonly<Record<string, unknown>>, env: Readonly<Record<string, string | undefined>>): boolean {
+  if (args.detach === false) return false;
+  if (deps.detachedWorker !== undefined) return deps.detachedWorker;
+  if (deps.llmProvider || deps.executorPort || deps.foregroundResume) return false;
+  return detachedRunsEnabled(env);
+}
 
 function rootOf(args: Readonly<Record<string, unknown>>, context: McpRequestContext): string {
   return path.resolve(
@@ -76,8 +101,9 @@ function rootOf(args: Readonly<Record<string, unknown>>, context: McpRequestCont
 }
 
 export function createAutonomousStartHandler(deps: AutonomousToolDeps = {}): McpToolHandler {
-  const { fetchFn, identityProvider, foregroundResume: _fg, ...runnerDeps } = deps;
+  const { fetchFn, identityProvider, foregroundResume: _fg, detachedWorker: _dw, workerExecArgv, ...runnerDeps } = deps;
   void _fg;
+  void _dw;
   return async (args: Readonly<Record<string, unknown>>, context: McpRequestContext): Promise<McpToolResult> => {
     if (typeof args.specPath !== 'string' || !/\.(md|markdown)$/i.test(args.specPath)) {
       return textResult({ success: false, code: 'INVALID_ARGUMENT', error: 'specPath must be a .md file' }, true);
@@ -100,6 +126,9 @@ export function createAutonomousStartHandler(deps: AutonomousToolDeps = {}): Mcp
       );
     }
     const env = deps.env ?? process.env;
+    const resumeRunId = typeof args.resumeRunId === 'string' && args.resumeRunId.trim() ? args.resumeRunId.trim() : undefined;
+    const abandonInterrupted = args.abandonInterrupted === true;
+    const detach = args.dryRun !== true && useWorker(deps, args, env);
     if (!authContext && args.dryRun !== true && isExternalIdpConfigured(env)) {
       // Asynchronous human approval: fix the binding, persist it, ask the external IdP.
       const res = await startExternalApproval({
@@ -111,11 +140,66 @@ export function createAutonomousStartHandler(deps: AutonomousToolDeps = {}): Mcp
         env,
         fetchFn,
         providerInjected: Boolean(runnerDeps.llmProvider),
+        ...(resumeRunId ? { resumeRunId } : {}),
+        ...(abandonInterrupted ? { abandonInterrupted } : {}),
       });
+      let worker: { pid?: number; logPath: string } | undefined;
+      if (res.success && res.requestId && detach) {
+        try {
+          worker = await spawnDetachedWorker({ kind: 'approval', projectRoot: root, requestId: res.requestId }, { env, execArgv: workerExecArgv });
+          await annotateApprovalWorker(root, res.requestId, worker);
+        } catch (err) {
+          return textResult({ success: false, code: 'WORKER_SPAWN_FAILED', requestId: res.requestId, approvalUrl: res.approvalUrl, error: err instanceof Error ? err.message : String(err) }, true);
+        }
+      }
       return textResult(
-        { success: res.success, code: res.code, requestId: res.requestId, approvalUrl: res.approvalUrl, monitorUrl: res.monitorUrl, workspaceRoot: root, message: res.message },
+        {
+          success: res.success,
+          code: res.code,
+          requestId: res.requestId,
+          runId: res.record?.runId,
+          ...(resumeRunId ? { resumeOfRunId: resumeRunId } : {}),
+          approvalUrl: res.approvalUrl,
+          monitorUrl: res.monitorUrl,
+          workspaceRoot: root,
+          ...(worker ? { workerPid: worker.pid, logPath: worker.logPath } : {}),
+          message: worker
+            ? 'Approve with your passkey in the IdP (approvalUrl). A detached worker waits for the approval and then runs; it keeps running if Antigravity/MCP exits. Poll aidm_autonomous_status.'
+            : res.message,
+        },
         !res.success
       );
+    }
+    if (detach && authContext) {
+      try {
+        const runId = `run-${new Date().toISOString().replace(/[:.]/g, '-')}-${crypto.randomBytes(3).toString('hex')}`;
+        const w = await spawnDetachedWorker(
+          {
+            kind: 'run',
+            projectRoot: root,
+            specPath: specAbs,
+            budgetUsd,
+            maxCyclesPerTask: typeof args.maxCyclesPerTask === 'number' ? args.maxCyclesPerTask : undefined,
+            authContext,
+            ...(resumeRunId ? { resumeRunId } : { runId }),
+            ...(abandonInterrupted ? { abandonInterrupted } : {}),
+          },
+          { env, execArgv: workerExecArgv }
+        );
+        const rid = resumeRunId ?? runId;
+        return textResult({
+          success: true,
+          code: 'RUN_STARTED',
+          runId: rid,
+          workerPid: w.pid,
+          logPath: w.logPath,
+          monitorUrl: runMonitorUrl(env, rid) ?? undefined,
+          workspaceRoot: root,
+          message: 'Autonomous run started in a detached worker (survives MCP/Antigravity exit). Poll aidm_autonomous_status.',
+        });
+      } catch (err) {
+        return textResult({ success: false, code: 'WORKER_SPAWN_FAILED', error: err instanceof Error ? err.message : String(err) }, true);
+      }
     }
     void identityProvider;
     try {
@@ -127,6 +211,8 @@ export function createAutonomousStartHandler(deps: AutonomousToolDeps = {}): Mcp
         maxCyclesPerTask: typeof args.maxCyclesPerTask === 'number' ? args.maxCyclesPerTask : undefined,
         entryPoint: 'aidm_autonomous_start',
         authContext,
+        ...(resumeRunId ? { resumeRunId } : {}),
+        ...(abandonInterrupted ? { abandonInterrupted } : {}),
         ...runnerDeps,
         ...(identityProvider ? { identityProvider } : {}),
       }).run();
@@ -146,13 +232,16 @@ export const autonomousResumeToolDefinition: McpToolDefinition = Object.freeze({
   description:
     'Resume after a human acted in the external IdP. With requestId: verify the passkey-signed approval token ' +
     '(polled from the IdP, or the given token), seal the mandate (authSource EXTERNAL_IDP) and start the run in the background. ' +
-    'With decisionId + token: hand a signed Product-Owner decision answer to the waiting run. Unverified tokens fail closed.',
+    'With decisionId + token: hand a signed Product-Owner decision answer to the waiting run. Unverified tokens fail closed. ' +
+    'With runId (+ optional budgetUsd): resume an INTERRUPTED run — asks for a NEW passkey approval bound to that run, ' +
+    'then a detached worker continues it (completed tasks skipped, budget carried over).',
   inputSchema: {
     type: 'object' as const,
     properties: {
       requestId: { type: 'string', description: 'Approval request id returned by aidm_autonomous_start.' },
       decisionId: { type: 'string', description: 'Pending decision id (from aidm_autonomous_status).' },
       token: { type: 'string', description: 'Optional IdP-signed JWS (otherwise fetched from the IdP).' },
+      runId: { type: 'string', description: 'Interrupted run to resume (see aidm_autonomous_status runs[].liveness == INTERRUPTED).' },
       workspaceRoot: { type: 'string' },
     },
   },
@@ -168,9 +257,30 @@ export const autonomousStatusToolDefinition: McpToolDefinition = Object.freeze({
 });
 
 export function createAutonomousResumeHandler(deps: AutonomousToolDeps = {}): McpToolHandler {
-  const { fetchFn, identityProvider, foregroundResume, ...runnerDeps } = deps;
+  const { fetchFn, identityProvider, foregroundResume, detachedWorker: _dw, workerExecArgv, ...runnerDeps } = deps;
+  void _dw;
+  const startHandler = createAutonomousStartHandler(deps);
   return async (args, context) => {
     const root = rootOf(args, context);
+    if (typeof args.runId === 'string' && args.runId && !args.requestId && !args.decisionId) {
+      let cp;
+      try {
+        cp = loadCheckpoint(root, args.runId);
+      } catch {
+        cp = null;
+      }
+      if (!cp) return textResult({ success: false, code: 'NOT_FOUND', error: `No checkpoint for run '${args.runId}' in ${root}.` }, true);
+      return startHandler(
+        {
+          specPath: cp.specPath,
+          workspaceRoot: root,
+          resumeRunId: cp.runId,
+          ...(typeof args.budgetUsd === 'number' ? { budgetUsd: args.budgetUsd } : {}),
+          ...(args.authContext ? { authContext: args.authContext } : {}),
+        },
+        context
+      );
+    }
     const token = typeof args.token === 'string' && args.token ? args.token : undefined;
     if (typeof args.decisionId === 'string' && args.decisionId) {
       if (!token) return textResult({ success: false, code: 'INVALID_ARGUMENT', error: 'token is required with decisionId' }, true);
@@ -178,11 +288,45 @@ export function createAutonomousResumeHandler(deps: AutonomousToolDeps = {}): Mc
         return textResult({ success: false, code: 'INVALID_ARGUMENT', error: 'decisionId must be a UUID' }, true);
       }
       // The waiting run verifies the token (signature, binding, nonce) before using it.
-      supplyDecisionToken(args.decisionId, token);
+      supplyDecisionToken(args.decisionId, token, root);
       return textResult({ success: true, code: 'DECISION_TOKEN_SUBMITTED', decisionId: args.decisionId });
     }
     if (typeof args.requestId !== 'string' || !args.requestId) {
       return textResult({ success: false, code: 'INVALID_ARGUMENT', error: 'requestId or decisionId is required' }, true);
+    }
+    const env = deps.env ?? process.env;
+    if (useWorker(deps, args, env)) {
+      const rec = await loadExternalApprovalRecord(root, args.requestId).catch(() => null);
+      if (rec && rec.state === 'PENDING' && rec.workerPid && isPidAlive(rec.workerPid)) {
+        return textResult({
+          success: true,
+          code: 'PENDING_EXTERNAL_APPROVAL',
+          requestId: rec.requestId,
+          approvalUrl: rec.approvalUrl,
+          runId: rec.runId,
+          workerPid: rec.workerPid,
+          logPath: rec.logPath,
+          message: 'A detached worker is already waiting for this approval; it starts the run by itself.',
+        });
+      }
+      if (rec && rec.state === 'PENDING') {
+        try {
+          const w = await spawnDetachedWorker({ kind: 'approval', projectRoot: root, requestId: rec.requestId }, { env, execArgv: workerExecArgv });
+          await annotateApprovalWorker(root, rec.requestId, w);
+          return textResult({
+            success: true,
+            code: 'WORKER_STARTED',
+            requestId: rec.requestId,
+            approvalUrl: rec.approvalUrl,
+            runId: rec.runId,
+            workerPid: w.pid,
+            logPath: w.logPath,
+            message: 'Detached worker started: it verifies the passkey approval and runs. Poll aidm_autonomous_status.',
+          });
+        } catch (err) {
+          return textResult({ success: false, code: 'WORKER_SPAWN_FAILED', error: err instanceof Error ? err.message : String(err) }, true);
+        }
+      }
     }
     try {
       const res = await resumeExternalApproval({

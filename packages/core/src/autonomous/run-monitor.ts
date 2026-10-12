@@ -129,6 +129,8 @@ export interface RunMonitorOptions {
   readonly snapshotDebounceMs?: number;
   /** Batch interval for event POSTs (default 500 ms). */
   readonly flushIntervalMs?: number;
+  /** First seq (resumed run segments continue above the previous segment's seq). */
+  readonly startSeq?: number;
 }
 
 export interface RunMonitorStats {
@@ -177,6 +179,12 @@ export class RunMonitor {
     this.fetchFn = options.fetchFn ?? fetch;
     this.debounceMs = options.snapshotDebounceMs ?? 1000;
     this.intervalMs = options.flushIntervalMs ?? 500;
+    if (Number.isSafeInteger(options.startSeq) && (options.startSeq as number) > 0) this.seq = options.startSeq as number;
+  }
+
+  /** Highest seq handed out so far (-1 before the first). */
+  get currentSeq(): number {
+    return this.seq - 1;
   }
 
   private nextSeq(): number {
