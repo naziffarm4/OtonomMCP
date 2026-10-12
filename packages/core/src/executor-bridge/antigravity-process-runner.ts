@@ -376,7 +376,7 @@ export class NodeAntigravityProcessRunner implements AntigravityProcessRunner {
 
         if (process.platform === 'win32') {
           try {
-            child_process.execSync(`taskkill /pid ${child.pid} /T /F`, { stdio: 'ignore' });
+            child_process.execSync(`taskkill /pid ${child.pid} /T /F`, { stdio: 'ignore', windowsHide: true });
           } catch {
             // taskkill may return non-zero if process already terminated
           }
@@ -388,6 +388,7 @@ export class NodeAntigravityProcessRunner implements AntigravityProcessRunner {
               encoding: 'utf8',
               stdio: ['ignore', 'pipe', 'ignore'],
               timeout: 2000,
+              windowsHide: true,
             });
             if (!out.includes(`"${child.pid}"`)) {
               isDead = true;

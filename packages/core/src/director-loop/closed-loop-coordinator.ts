@@ -158,6 +158,7 @@ async function defaultProcessVerifier(
           encoding: 'utf8',
           stdio: ['ignore', 'pipe', 'ignore'],
           timeout: 3000,
+          windowsHide: true,
         });
         if (out.includes(`"${pid}"`)) {
           return { verifiedDead: false, output: `Process PID ${pid} is still active in Windows process table.` };

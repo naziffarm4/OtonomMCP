@@ -677,7 +677,7 @@ export class DriverEngine {
       try {
         child_process.execSync(
           `git add -A && git commit -m "aidm: accepted ${task.task_id}"`,
-          { cwd: workingDir, stdio: 'ignore' }
+          { cwd: workingDir, stdio: 'ignore', windowsHide: true }
         );
       } catch {
         // Proceed if not a git repository or no new commits

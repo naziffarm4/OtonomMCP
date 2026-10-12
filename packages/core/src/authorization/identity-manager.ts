@@ -34,7 +34,7 @@ export class IdentityManager {
     await fs.writeFile(tmpFile, scriptContent, 'utf8');
     
     try {
-      const { stdout } = await execFileAsync('powershell', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', tmpFile]);
+      const { stdout } = await execFileAsync('powershell', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', tmpFile], { windowsHide: true });
       return stdout.trim();
     } finally {
       await fs.unlink(tmpFile).catch(() => {});
@@ -56,7 +56,7 @@ export class IdentityManager {
     await fs.writeFile(tmpFile, scriptContent, 'utf8');
     
     try {
-      const { stdout } = await execFileAsync('powershell', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', tmpFile]);
+      const { stdout } = await execFileAsync('powershell', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', tmpFile], { windowsHide: true });
       return stdout.trim();
     } finally {
       await fs.unlink(tmpFile).catch(() => {});

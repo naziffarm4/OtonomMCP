@@ -185,6 +185,7 @@ export async function stashInterruptedChanges(projectRoot: string, runId: string
   const { stdout } = await execFileAsync('git', ['-c', 'core.quotepath=false', 'status', '--porcelain=v1', '-z', '--untracked-files=all'], {
     cwd: projectRoot,
     maxBuffer: 16 * 1024 * 1024,
+    windowsHide: true,
   });
   const files = stdout
     .split('\0')
@@ -192,6 +193,6 @@ export async function stashInterruptedChanges(projectRoot: string, runId: string
     .map((e) => e.slice(3))
     .filter((p) => !p.startsWith('.ai-manager/'));
   if (files.length === 0) return { stashed: false, files };
-  await execFileAsync('git', ['stash', 'push', '--include-untracked', '-m', `aidm-resume ${runId}: interrupted attempt`], { cwd: projectRoot });
+  await execFileAsync('git', ['stash', 'push', '--include-untracked', '-m', `aidm-resume ${runId}: interrupted attempt`], { cwd: projectRoot, windowsHide: true });
   return { stashed: true, files };
 }
