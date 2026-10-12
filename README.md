@@ -107,6 +107,7 @@ Ortam değişkenleri, öncelik hiyerarşisi ve üretim modu güvenlik sözleşme
 - `aidm checkpoint`: Git kontrol noktalarını yönetir (list, create, rollback).
 - `aidm driver`: Yönetilen Otonom Sürücü çalışma zamanını yürütür (`run`, `status`, `stop`).
 - `aidm run`: Otonom yaşam döngüsü yürütmesini başlatır.
+- `aidm run --spec <dosya.md>`: Tek bir Markdown spesifikasyonundan projeyi soru sormadan uçtan uca geliştirir (aşağıya bakın).
 - `aidm mcp`: Antigravity IDE ile entegrasyonu sağlayan yetkili MCP sunucusunu başlatır.
 
 > [!IMPORTANT]
@@ -137,6 +138,46 @@ Antigravity IDE yapılandırma dosyanıza (`mcp_config.json`) gerçek entegrasyo
 
 > [!NOTE]
 > Proje kök dizinine göre göreli yol yerine tam mutlak yol kullanmak isterseniz `args` alanında `d:/ÇALIŞMALAR-D/OtonomMCP/packages/core/bin/aidm.js` belirtebilirsiniz.
+
+---
+
+## 🤖 Tam Otonom Geliştirme: `aidm run --spec`
+
+API anahtarı + tek bir Markdown dosyası verildiğinde AIDM, kullanıcıya soru sormadan LLM'i Director, AGY'yi uygulayıcı olarak kullanır ve projeyi uçtan uca geliştirir. Örnek spesifikasyon: [docs/examples/ornek-proje-spesifikasyonu.md](docs/examples/ornek-proje-spesifikasyonu.md).
+
+```bash
+# OpenAI
+export AIDM_LLM_API_KEY="sk-..."
+export AIDM_LLM_MODEL="gpt-4o"            # varsayılan; doğrulanmış fiyatı yerleşik
+
+# veya Grok / xAI (OpenAI uyumlu chat completions)
+export XAI_API_KEY="xai-..."              # ya da AIDM_LLM_API_KEY
+export AIDM_LLM_ENDPOINT="https://api.x.ai/v1/chat/completions"
+export AIDM_LLM_MODEL="grok-4"
+export AIDM_LLM_INPUT_USD_PER_MTOK="3"    # 1M token başına USD (xAI ve özel uçlar için ZORUNLU)
+export AIDM_LLM_OUTPUT_USD_PER_MTOK="15"
+
+export AIDM_AGY_PATH="agy"                # Antigravity CLI yolu
+
+# Önce plan (hiçbir dosya yazılmaz, LLM/AGY çağrılmaz)
+node packages/core/bin/aidm.js run --spec ./benim-projem.md -C ./hedef-proje --dry-run
+
+# Gerçek çalışma
+node packages/core/bin/aidm.js run --spec ./benim-projem.md -C ./hedef-proje --budget-usd 5
+```
+
+Ek seçenekler: `--max-cycles N` (görev başına döngü, varsayılan 3), `--mandate-hours H` (mandate geçerliliği, varsayılan 8, en fazla 24), `--no-commit`, `--llm-endpoint URL`, `--llm-model AD`, `--json`, `--verbose`. MCP üzerinden aynı akış `aidm_autonomous_start` aracıyla çalışır.
+
+**Akış:** `SpecIngestor` (MD → `InitialProjectUnderstanding` + `ProposedDevelopmentPlan` + görevler, SHA-256 ile spec'e bağlı) → otomatik Project Mandate (yalnızca `IMPLEMENTATION` sınıfı = `ALLOW`) → ApprovalPackage → her görev için `ClosedLoopCoordinator` (Director/LLM → Policy → ExecutionBridge → Driver → AGY → bağımsız `SystemExecutionEvidence`) → kabul edilen her görev için commit → `.ai-manager/reports/autonomous-<run>.json|.md` özet raporu (değişen dosyalar, kanıtlar, doğrulama komutları, bütçe, commitler, varsayımlar).
+
+**Yetki nereden gelir?** Mandate'i LLM değil, komutu kendi terminalinden çalıştıran **insan operatör** yetkilendirir: CLI, yerel (işletim sistemi kullanıcısına bağlı) Ed25519 kimliğiyle kısa ömürlü, nonce'lu, projeye ve spec hash'ine bağlı bir `OPERATOR_CLI_INVOCATION` bağlamı imzalar; mandate mevcut `ProjectMandateStore.saveMandate` güvenilir kimlik doğrulamasından geçerek mühürlenir. MCP çağıranları (LLM ajanı olabilir) bu yolu kullanamaz; canlı çalışma için doğrulanabilir bir insan `authContext`'i (dış IdP / Trusted IDE) gerekir, yoksa `BLOCKED_ON_AUTH_CONTEXT`.
+
+**Hâlâ insan onayı gerektirenler (fail-closed):** politika/mandate değişikliği, bütçe artırma/aşımı, yeniden planlama (`REPLAN`), `REQUEST_HUMAN_DECISION`, kapsam dışı/güvenlik sınırı dışı eylemler, ağ erişimi, bağımlılık kurulumu. Proje kökü dışı, `.ai-manager`, push/force-push ve yıkıcı işlemler `DENY`. Bütçe olmadan canlı çalışma başlamaz; fiyatı bilinmeyen model için istek gönderilmeden durulur.
+
+**Soru sormama modu:** Director'ın netleştirme talepleri (`REQUEST_CLARIFICATION`) kayıtlı varsayımlara çevrilir ve çalışma devam eder; insan kapısı, politika reddi, bilinmeyen yürütme durumu veya bütçe tükenmesi çalışmayı durdurur (çıkış kodu `4`).
+
+> [!NOTE]
+> Yerel kimlik anahtarı şu an Windows DPAPI ile korunur; diğer işletim sistemlerinde canlı çalışma `BLOCKED_ON_AUTH_CONTEXT` ile güvenli şekilde durur (`--dry-run` her yerde çalışır). Gerçek API anahtarı ve gerçek AGY ile canlı E2E henüz çalıştırılmamıştır.
 
 ---
 
