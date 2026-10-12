@@ -8,7 +8,18 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import * as crypto from 'node:crypto';
-import { execSync } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
+
+// Cross-platform (no shell): works on Windows where /bin/sh does not exist.
+function initTestRepo(cwd: string, addAll = false): void {
+  const git = (...args: string[]) => execFileSync('git', args, { cwd, stdio: 'ignore' });
+  git('init', '-b', 'main');
+  git('config', 'user.name', 't');
+  git('config', 'user.email', 't@e.x');
+  git('config', 'commit.gpgsign', 'false');
+  if (addAll) git('add', '-A');
+  git('commit', '--allow-empty', '-qm', 'init');
+}
 import { executeCli } from '../dist/cli/index.js';
 import { createAutonomousStartHandler, createAutonomousResumeHandler } from '../dist/mcp/index.js';
 import { RUN_MONITOR_EVENT_TYPES, RunMonitor, runMonitorUrl, isRunMonitorEnabled, monitorText, InstructionChannel } from '../dist/autonomous/index.js';
@@ -41,7 +52,7 @@ describe('run monitor + live PO instructions', { concurrency: 1, timeout: 600_00
   after(async () => idp.stop());
   beforeEach(() => {
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 'aidm-mon-'));
-    execSync('git init -b main && git config user.name t && git config user.email t@e.x && git config commit.gpgsign false && git commit --allow-empty -qm init', { cwd: dir, stdio: 'ignore', shell: '/bin/sh' });
+    initTestRepo(dir);
     fs.writeFileSync(path.join(dir, 'proje.md'), SPEC, 'utf8');
     llm = new MockDirectorLlm();
     agy = new MockAgyExecutor(dir);
@@ -119,7 +130,7 @@ describe('run monitor + live PO instructions', { concurrency: 1, timeout: 600_00
   it('failure isolation: IdP down, 500, or slow never blocks or changes the run', async () => {
     const fresh = async (env: Record<string, string>) => {
       const d = fs.mkdtempSync(path.join(os.tmpdir(), 'aidm-mon-iso-'));
-      execSync('git init -b main && git config user.name t && git config user.email t@e.x && git config commit.gpgsign false && git commit --allow-empty -qm init', { cwd: d, stdio: 'ignore', shell: '/bin/sh' });
+      initTestRepo(d);
       fs.writeFileSync(path.join(d, 'proje.md'), SPEC, 'utf8');
       const t0 = Date.now();
       const lines: string[] = [];
@@ -241,7 +252,7 @@ describe('run monitor + live PO instructions', { concurrency: 1, timeout: 600_00
     // Out of mandate: the Director can only escalate → instruction REJECTED, nothing granted.
     fs.rmSync(dir, { recursive: true, force: true });
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 'aidm-mon-'));
-    execSync('git init -b main && git config user.name t && git config user.email t@e.x && git config commit.gpgsign false && git commit --allow-empty -qm init', { cwd: dir, stdio: 'ignore', shell: '/bin/sh' });
+    initTestRepo(dir);
     fs.writeFileSync(path.join(dir, 'proje.md'), SPEC, 'utf8');
     llm = new MockDirectorLlm();
     agy = new MockAgyExecutor(dir);

@@ -9,7 +9,18 @@ import * as assert from 'node:assert/strict';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { execSync } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
+
+// Cross-platform (no shell): works on Windows where /bin/sh does not exist.
+function initTestRepo(cwd: string, addAll = false): void {
+  const git = (...args: string[]) => execFileSync('git', args, { cwd, stdio: 'ignore' });
+  git('init', '-b', 'main');
+  git('config', 'user.name', 't');
+  git('config', 'user.email', 't@e.x');
+  git('config', 'commit.gpgsign', 'false');
+  if (addAll) git('add', '-A');
+  git('commit', '--allow-empty', '-qm', 'init');
+}
 import { executeCli, parseRunSpecArgs } from '../dist/cli/index.js';
 import { createAutonomousStartHandler, createAutonomousResumeHandler } from '../dist/mcp/index.js';
 import { SpecIngestor, IdpDecisionResolver, preflightLlmProvider, DEFAULT_MAX_ATTEMPTS_PER_TASK } from '../dist/autonomous/index.js';
@@ -35,7 +46,7 @@ function gitRepo(prefix: string, files: Record<string, string> = {}): string {
     fs.mkdirSync(path.dirname(path.join(dir, f)), { recursive: true });
     fs.writeFileSync(path.join(dir, f), c, 'utf8');
   }
-  execSync('git init -b main && git config user.name t && git config user.email t@e.x && git config commit.gpgsign false && git add -A && git commit --allow-empty -qm init', { cwd: dir, stdio: 'ignore', shell: '/bin/sh' });
+  initTestRepo(dir, true);
   return dir;
 }
 
@@ -220,7 +231,7 @@ describe('project root defaults to the spec folder', { concurrency: 1, timeout: 
     const outer = fs.mkdtempSync(path.join(os.tmpdir(), 'aidm-root-'));
     const proj = path.join(outer, 'proj');
     fs.mkdirSync(proj);
-    execSync('git init -b main && git config user.name t && git config user.email t@e.x && git config commit.gpgsign false && git commit --allow-empty -qm init', { cwd: proj, stdio: 'ignore', shell: '/bin/sh' });
+    initTestRepo(proj);
     fs.writeFileSync(path.join(proj, 'proje.md'), `# P\n\nx.\n\n## Gereksinimler\n\n### A\n\`src/a.js\`\n`, 'utf8');
     try {
       const r = await executeCli(['run', '--spec', 'proj/proje.md', '--dry-run', '--json'], { cwd: outer, env: {}, stdout: () => {}, stderr: () => {} });
