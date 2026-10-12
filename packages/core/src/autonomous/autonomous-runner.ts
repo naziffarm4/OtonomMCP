@@ -1924,12 +1924,14 @@ async function createGitBaseline(
   projectRoot: string,
   specPath: string
 ): Promise<{ ok: true; commit?: string } | { ok: false; reason: string }> {
-  const status = await git(projectRoot, ['status', '--porcelain', '--untracked-files=all']);
-  const dirty = status
-    .split('\n')
-    .filter(Boolean)
-    .map((l) => l.slice(3).replace(/^"|"$/g, ''))
-    .filter((p) => !p.startsWith('.ai-manager/'));
+  // NUL-separated porcelain output: never trimmed (a leading ' M' status column must survive,
+  // otherwise ' M .gitignore' was parsed as 'gitignore') and never C-quoted (non-ASCII paths).
+  const { stdout: status } = await execFileAsync(
+    'git',
+    ['-c', 'core.quotepath=false', 'status', '--porcelain=v1', '-z', '--untracked-files=all'],
+    { cwd: projectRoot, maxBuffer: 16 * 1024 * 1024 }
+  );
+  const dirty = parsePorcelainZ(status).filter((p) => !p.startsWith('.ai-manager/'));
   const relSpec = path.relative(projectRoot, specPath).replace(/\\/g, '/');
   const bootstrap = new Set(['.gitignore', relSpec]);
   const foreign = dirty.filter((p) => !bootstrap.has(p));
@@ -1949,6 +1951,20 @@ async function createGitBaseline(
   if (dirty.length > 0) await git(projectRoot, ['add', '--', ...dirty]);
   await git(projectRoot, ['commit', '--allow-empty', '-m', 'chore(aidm): baseline for autonomous spec run']);
   return { ok: true, commit: await git(projectRoot, ['rev-parse', 'HEAD']) };
+}
+
+/** Paths from `git status --porcelain=v1 -z` (rename/copy sources are skipped). */
+export function parsePorcelainZ(out: string): string[] {
+  const parts = out.split('\0');
+  const paths: string[] = [];
+  for (let i = 0; i < parts.length; i++) {
+    const entry = parts[i];
+    if (!entry || entry.length < 4) continue;
+    const xy = entry.slice(0, 2);
+    paths.push(entry.slice(3));
+    if (xy.includes('R') || xy.includes('C')) i++; // next field is the original path
+  }
+  return paths;
 }
 
 async function gitHead(cwd: string): Promise<string | null> {

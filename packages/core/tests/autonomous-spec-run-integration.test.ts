@@ -173,6 +173,42 @@ describe('aidm run --spec (integration, mocked LLM + mocked AGY, real closed loo
     assert.equal(agy.calls, 0);
   });
 
+  it('AIDM-owned bootstrap changes (modified tracked .gitignore, untracked non-ASCII spec) do not trip the clean-tree check', async () => {
+    // Real PC regression: a tracked .gitignore without .ai-manager/ is modified by AIDM itself (" M .gitignore"
+    // as the FIRST porcelain line); trimming the output turned it into "gitignore" -> CONFIGURATION_ERROR.
+    fs.writeFileSync(path.join(dir, '.gitignore'), 'node_modules/\n', 'utf8');
+    execSync('git add .gitignore', { cwd: dir, stdio: 'ignore' });
+    execSync('git commit -m gi', { cwd: dir, stdio: 'ignore' });
+    fs.renameSync(path.join(dir, 'proje.md'), path.join(dir, 'limit-çalışma.md'));
+    const r = await executeCli(['run', '--spec', 'limit-çalışma.md', '-C', dir, '--budget-usd', '1'], {
+      cwd: dir,
+      env: {},
+      stdout: (t) => out.push(t),
+      stderr: (t) => out.push(t),
+      executorPort: agy,
+      autonomous: {
+        llmProvider: llm,
+        allowMockProvider: true,
+        identityManager: new InMemoryIdentityManager({ baseDir: dir }),
+        registerBudgetTerms: pricing,
+      },
+    });
+    const rep = report(r);
+    assert.notEqual(rep.status, 'CONFIGURATION_ERROR', `${rep.stopReason}\n${out.join('\n')}`);
+    assert.equal(rep.status, 'COMPLETED', rep.stopReason);
+    const baselineFiles = execSync(`git show --name-only --format= ${rep.commits[0]}`, { cwd: dir, encoding: 'utf8' });
+    assert.match(baselineFiles, /\.gitignore/);
+    assert.match(fs.readFileSync(path.join(dir, '.gitignore'), 'utf8'), /^\.ai-manager\/$/m);
+    // A foreign change next to the bootstrap files still fails closed.
+    fs.writeFileSync(path.join(dir, 'user-notes.txt'), 'wip', 'utf8');
+    const r2 = await executeCli(['run', '--spec', 'limit-çalışma.md', '-C', dir, '--budget-usd', '1'], {
+      cwd: dir, env: {}, stdout: () => {}, stderr: () => {}, executorPort: agy,
+      autonomous: { llmProvider: llm, allowMockProvider: true, identityManager: new InMemoryIdentityManager({ baseDir: dir }), registerBudgetTerms: pricing },
+    });
+    assert.equal(report(r2).status, 'CONFIGURATION_ERROR');
+    assert.match(report(r2).stopReason, /\(user-notes\.txt\)/);
+  });
+
   it('MCP aidm_autonomous_start: dry-run allowed; live run without human authContext is BLOCKED_ON_AUTH_CONTEXT', async () => {
     const handler = createAutonomousStartHandler({
       llmProvider: llm,
