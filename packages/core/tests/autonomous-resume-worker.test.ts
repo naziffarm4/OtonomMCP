@@ -242,6 +242,38 @@ describe('resume after interruption + detached workers', { concurrency: 1 }, () 
       assert.equal(loadCheckpoint(dir, cp.runId)!.approval, 'idp');
     });
 
+    it('preflight: interrupted run / live lock are reported BEFORE any passkey request (MCP + CLI --approval idp)', async () => {
+      crashRun(dir);
+      const cp = listInterruptedRuns(dir)[0];
+      const env = idp.env();
+      const deps = { llmProvider: llm, allowMockProvider: true, identityManager: new InMemoryIdentityManager({ baseDir: dir }), registerBudgetTerms: pricing, executorPort: agy, env, foregroundResume: true };
+      const before = idp.approvals.size;
+      const r = parse(await createAutonomousStartHandler(deps as never)({ specPath: 'proje.md', workspaceRoot: dir, budgetUsd: 1 }, {} as never));
+      assert.equal(r.success, false);
+      assert.equal(r.code, 'INTERRUPTED_RUN_EXISTS', JSON.stringify(r));
+      assert.match(r.message, new RegExp(`resumeRunId: "${cp.runId.replace(/[.]/g, '\\.')}"`));
+      assert.match(r.message, /abandonInterrupted/);
+      assert.equal(idp.approvals.size, before, 'no approval requested');
+      const c = await executeCli(['run', '--spec', 'proje.md', '-C', dir, '--budget-usd', '1', '--approval', 'idp', '--json'], {
+        cwd: dir, env, stdout: (t) => out.push(t), stderr: (t) => out.push(t), executorPort: agy,
+        autonomous: { llmProvider: llm, allowMockProvider: true, identityManager: new InMemoryIdentityManager({ baseDir: dir }), registerBudgetTerms: pricing },
+      });
+      assert.notEqual(c.exitCode, 0);
+      assert.match(String(c.error), /INTERRUPTED_RUN_EXISTS.*--resume/);
+      assert.equal(idp.approvals.size, before, 'CLI: no approval requested');
+      // Live lock => ALREADY_RUNNING, no approval.
+      const lockFile = path.join(dir, '.ai-manager', 'state', 'autonomous-run.lock');
+      fs.writeFileSync(lockFile, JSON.stringify({ runId: cp.runId, pid: process.pid, startedAt: cp.startedAt, heartbeatAt: new Date().toISOString() }));
+      const live = parse(await createAutonomousStartHandler(deps as never)({ specPath: 'proje.md', workspaceRoot: dir, budgetUsd: 1, resumeRunId: cp.runId }, {} as never));
+      assert.equal(live.code, 'ALREADY_RUNNING', JSON.stringify(live));
+      assert.equal(idp.approvals.size, before);
+      fs.rmSync(lockFile);
+      // abandonInterrupted => the approval is requested (and the run will start fresh).
+      const ab = parse(await createAutonomousStartHandler(deps as never)({ specPath: 'proje.md', workspaceRoot: dir, budgetUsd: 1, abandonInterrupted: true }, {} as never));
+      assert.equal(ab.code, 'PENDING_EXTERNAL_APPROVAL', JSON.stringify(ab));
+      assert.equal(idp.approvals.size, before + 1);
+    });
+
     it('detached worker: survives its parent (MCP server stand-in) being killed, waits for the passkey, completes; status from disk', async () => {
       const env = {
         ...process.env,

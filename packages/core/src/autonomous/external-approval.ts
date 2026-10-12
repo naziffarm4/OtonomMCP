@@ -29,7 +29,7 @@ import { AutonomousSpecRunner, type AutonomousRunOptions, type AutonomousRunRepo
 import { listDecisionRecords } from './decision-requests.js';
 import { preflightLlmProvider } from './llm-provider-config.js';
 import { RunMonitor, runMonitorUrl, type RunMonitorStatus } from './run-monitor.js';
-import { isPidAlive, listCheckpoints, loadCheckpoint, runLiveness, type RunCheckpoint } from './run-checkpoint.js';
+import { isPidAlive, listCheckpoints, listInterruptedRuns, loadCheckpoint, lockLiveness, readRunLock, runLiveness, type RunCheckpoint } from './run-checkpoint.js';
 
 type Env = Readonly<Record<string, string | undefined>>;
 
@@ -235,6 +235,31 @@ export async function startExternalApproval(o: StartExternalApprovalOptions): Pr
       return { success: false, code: 'CONFIGURATION_ERROR', message: `The budget cap is fixed at $${resumeCp.budgetUsd} for run ${o.resumeRunId}.` };
     }
     budgetUsd = resumeCp.budgetUsd;
+  }
+  // Preflight BEFORE any passkey request: never ask the human to approve a run that cannot start.
+  {
+    const lock = readRunLock(projectRoot);
+    if (lockLiveness(lock) === 'ALIVE') {
+      return {
+        success: false,
+        code: 'ALREADY_RUNNING',
+        message: `An autonomous run is already active for this project (run ${lock?.runId || '?'}, pid ${lock?.pid}). Wait for it or check aidm_autonomous_status.`,
+      };
+    }
+    if (!resumeCp) {
+      const interrupted = listInterruptedRuns(projectRoot);
+      if (interrupted.length > 0 && !o.abandonInterrupted) {
+        const last = interrupted[interrupted.length - 1];
+        return {
+          success: false,
+          code: 'INTERRUPTED_RUN_EXISTS',
+          message:
+            `An interrupted run exists for this project: ${last.runId} (started ${last.startedAt}). ` +
+            `Resume it with aidm_autonomous_start { specPath, resumeRunId: "${last.runId}" } / aidm_autonomous_resume { runId: "${last.runId}" } ` +
+            `(CLI: aidm run --spec <spec> --resume ${last.runId}), or start fresh with abandonInterrupted: true (CLI: --abandon-interrupted). No approval was requested.`,
+        };
+      }
+    }
   }
   const maxUsd = nanoUsdToUsd(MAX_PERIOD_BUDGET_NANO_USD);
   if (budgetUsd === undefined || !(budgetUsd > 0)) {
