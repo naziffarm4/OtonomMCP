@@ -56,6 +56,7 @@ import {
   MCP_TOOL_NAME_REGEX,
 } from './tool-name-mapper.js';
 import { createHealthTool } from './tools/health-tool.js';
+import { registerAutonomousTools } from './tools/autonomous-start-tool.js';
 import {
   registerDirectorReadTools,
   registerDiscoveryTools,
@@ -263,6 +264,11 @@ export class McpServer {
     // Register Autonomous Driver tools if enabled
     if (config.driverTools) {
       registerDriverTools(this);
+    }
+
+    // Register autonomous spec-run tool if enabled
+    if (config.autonomousTools) {
+      registerAutonomousTools(this);
     }
 
     // Register Phase 22 Director MCP Control Plane tools if enabled
@@ -879,6 +885,7 @@ export interface AuthoritativeMcpServerOptions {
   readonly version?: string;
   readonly instructions?: string;
   readonly directorControlPlaneTools?: boolean;
+  readonly autonomousTools?: boolean;
   readonly authToken?: string;
   readonly authMiddleware?: (rawMessage: unknown) => { allowed: boolean; reason?: string };
 }
@@ -926,6 +933,7 @@ export function createAuthoritativeMcpServer(options: AuthoritativeMcpServerOpti
     directorLoopTools: true,
     driverTools: true,
     directorControlPlaneTools: options.directorControlPlaneTools ?? true,
+    autonomousTools: options.autonomousTools ?? true,
   });
 }
 

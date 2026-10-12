@@ -273,6 +273,8 @@ export interface McpServerConfig {
   readonly directorLoopTools?: boolean;
   readonly driverTools?: boolean;
   readonly directorControlPlaneTools?: boolean;
+  /** Register `aidm.autonomous.start` (spec-driven autonomous run; live runs need human authContext). */
+  readonly autonomousTools?: boolean;
   readonly authToken?: string;
   readonly authMiddleware?: (rawMessage: unknown) => { allowed: boolean; reason?: string };
 }

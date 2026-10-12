@@ -64,6 +64,7 @@ export function classifyMcpTool(toolName: string): McpToolPolicyClassification {
   // 2. Execution-Capable Tools (cycle execution, task execution, driver execution, retry/corrective, director.act)
   if (
     norm.includes('director.act') ||
+    norm.includes('autonomous.start') ||
     norm.includes('executecycle') ||
     norm.includes('execute_cycle') ||
     norm.includes('runautoloop') ||
