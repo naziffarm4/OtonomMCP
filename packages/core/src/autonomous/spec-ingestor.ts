@@ -71,6 +71,8 @@ export interface SpecIngestionResult {
   readonly allowedPaths: readonly string[];
   /** Commands the spec declares for verification (## Test / ## Komutlar). */
   readonly verificationCommands: readonly string[];
+  /** Human text of `## Karar Politikası` / `## Decision Policy` (what the Director must ask the PO about). */
+  readonly decisionPolicy?: string;
 }
 
 export class SpecIngestionError extends Error {
@@ -97,9 +99,11 @@ type SectionKind =
   | 'RISKS'
   | 'PATHS'
   | 'COMMANDS'
+  | 'DECISION_POLICY'
   | 'OTHER';
 
 const SECTION_PATTERNS: ReadonlyArray<readonly [SectionKind, RegExp]> = [
+  ['DECISION_POLICY', /(karar\s*politikas[ıi]|decision\s*policy)/i],
   ['NON_GOALS', /(kapsam\s*d[ıi][şs][ıi]|non[- ]?goals?|out\s*of\s*scope|hedef\s*olmayan)/i],
   ['ACCEPTANCE', /(kabul\s*kriter|acceptance|done\s*criteria|bitti\s*tan[ıi]m)/i],
   ['REQUIREMENTS', /(gereksinim|requirement|[öo]zellik|feature|g[öo]rev|tasks?\b|kapsam\b|scope)/i],
@@ -540,6 +544,15 @@ export class SpecIngestor {
       assumptions,
       warnings,
       allowedPaths,
+      ...(byKind('DECISION_POLICY').length
+        ? {
+            decisionPolicy: byKind('DECISION_POLICY')
+              .map((sec) => sec.lines.join('\n').trim())
+              .filter(Boolean)
+              .join('\n')
+              .slice(0, 2000),
+          }
+        : {}),
       verificationCommands,
     });
   }

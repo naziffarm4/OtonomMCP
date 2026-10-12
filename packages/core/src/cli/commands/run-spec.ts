@@ -18,6 +18,9 @@ import {
   type AutonomousRunStatus,
 } from '../../autonomous/autonomous-runner.js';
 import { SpecIngestionError } from '../../autonomous/spec-ingestor.js';
+import { TtyDecisionResolver } from '../../autonomous/decision-requests.js';
+import { isExternalIdpConfigured } from '../../autonomous/idp-client.js';
+import { resumeExternalApproval, startExternalApproval } from '../../autonomous/external-approval.js';
 
 export interface RunSpecCommandOptions {
   readonly projectRoot: string;
@@ -31,6 +34,8 @@ export interface RunSpecCommandOptions {
   readonly llmModel?: string;
   readonly json: boolean;
   readonly verbose: boolean;
+  /** 'cli' (default): the operator's explicit invocation authorizes. 'idp': passkey approval via the external IdP. */
+  readonly approval?: 'cli' | 'idp';
 }
 
 export type ParseRunSpecResult =
@@ -69,6 +74,8 @@ export function parseRunSpecArgs(
   if (hours !== undefined && hours > 24) return { ok: false, error: '--mandate-hours must be <= 24' };
 
   const str = (k: string) => (typeof flags[k] === 'string' ? (flags[k] as string) : undefined);
+  const approval = flags['approval'] === undefined ? 'cli' : str('approval');
+  if (approval !== 'cli' && approval !== 'idp') return { ok: false, error: "--approval must be 'cli' or 'idp'" };
 
   return {
     ok: true,
@@ -84,6 +91,7 @@ export function parseRunSpecArgs(
       llmModel: str('llm-model'),
       json: ctx.json,
       verbose: ctx.verbose,
+      ...(approval === 'idp' ? { approval: 'idp' as const } : {}),
     },
   };
 }
@@ -118,7 +126,73 @@ export async function executeRunSpec(
     ...(options.llmModel ? { AIDM_LLM_MODEL: options.llmModel } : {}),
   };
 
+  const onEvent = options.json
+    ? undefined
+    : (e: { type: string; taskId?: string; message: string }) => {
+        if (options.verbose || e.type !== 'CYCLE_START') {
+          writer.write(`[AIDM] ${e.type}${e.taskId ? ` [${e.taskId}]` : ''} ${e.message}`);
+        }
+      };
+  // Human decisions: external IdP when configured (runner default); otherwise an interactive
+  // terminal prompt when stdin is a TTY; otherwise none (BLOCKED_ON_HUMAN). AGY never asks.
+  const ttyResolver =
+    !options.json && !isExternalIdpConfigured(env) && process.stdin.isTTY ? { decisionResolver: new TtyDecisionResolver() } : {};
+
   let report: AutonomousRunReport;
+  if (options.approval === 'idp' && !options.dryRun) {
+    if (!isExternalIdpConfigured(env)) {
+      const msg = '--approval idp requires AIDM_IDP_URL/ISSUER/AUDIENCE, a public key (PEM/JWKS) and AIDM_IDP_CLIENT_TOKEN.';
+      if (options.json) writer.writeJson({ success: false, error: msg, exitCode: CliExitCode.USAGE_ERROR });
+      else writer.writeError(`Error: ${msg}`);
+      return { exitCode: CliExitCode.USAGE_ERROR, error: msg };
+    }
+    const started = await startExternalApproval({
+      projectRoot: options.projectRoot,
+      specPath: options.specPath,
+      budgetUsd: options.budgetUsd,
+      maxCyclesPerTask: options.maxCyclesPerTask,
+      mandateHours: options.mandateValidityHours,
+      env,
+    });
+    if (!started.success || !started.requestId) {
+      const msg = `${started.code}: ${started.message ?? ''}`;
+      if (options.json) writer.writeJson({ success: false, error: msg, exitCode: CliExitCode.HUMAN_BLOCKED });
+      else writer.writeError(`Error: ${msg}`);
+      return { exitCode: CliExitCode.HUMAN_BLOCKED, error: msg };
+    }
+    if (!options.json) {
+      writer.write(`Onay bekleniyor (passkey): ${started.approvalUrl ?? '(IdP arayüzü)'}`);
+      writer.write(`  requestId: ${started.requestId}`);
+    }
+    const pollMs = Number((env as Record<string, string | undefined>).AIDM_IDP_POLL_INTERVAL_MS ?? '3000') || 3000;
+    for (;;) {
+      const res = await resumeExternalApproval({
+        projectRoot: options.projectRoot,
+        requestId: started.requestId,
+        env,
+        background: false,
+        runnerDeps: {
+          commit: options.commit,
+          executorPort: appOptions?.executorPort,
+          ...(appOptions?.autonomous ?? {}),
+          onEvent,
+        },
+      });
+      if (res.code === 'PENDING_EXTERNAL_APPROVAL') {
+        await new Promise((r) => setTimeout(r, pollMs));
+        continue;
+      }
+      if (!res.report) {
+        const msg = `${res.code}: ${res.message ?? ''}`;
+        if (options.json) writer.writeJson({ success: false, error: msg, exitCode: CliExitCode.HUMAN_BLOCKED });
+        else writer.writeError(`Error: ${msg}`);
+        return { exitCode: CliExitCode.HUMAN_BLOCKED, error: msg };
+      }
+      report = res.report;
+      break;
+    }
+    return renderReport(report, options, writer);
+  }
   try {
     report = await new AutonomousSpecRunner({
       projectRoot: options.projectRoot,
@@ -131,14 +205,9 @@ export async function executeRunSpec(
       entryPoint: 'aidm run --spec',
       env,
       executorPort: appOptions?.executorPort,
+      ...ttyResolver,
       ...(appOptions?.autonomous ?? {}),
-      onEvent: options.json
-        ? undefined
-        : (e) => {
-            if (options.verbose || e.type !== 'CYCLE_START') {
-              writer.write(`[AIDM] ${e.type}${e.taskId ? ` [${e.taskId}]` : ''} ${e.message}`);
-            }
-          },
+      onEvent,
     }).run();
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -149,6 +218,10 @@ export async function executeRunSpec(
     return { exitCode, error: msg };
   }
 
+  return renderReport(report, options, writer);
+}
+
+function renderReport(report: AutonomousRunReport, options: RunSpecCommandOptions, writer: CliOutputWriter): CliRunResult {
   const exitCode = exitCodeForAutonomousStatus(report.status);
   if (options.json) {
     writer.writeJson({ success: exitCode === CliExitCode.SUCCESS, exitCode, data: report });
@@ -166,6 +239,8 @@ export async function executeRunSpec(
       writer.write(`  Bütçe:     $${report.budget.committedUsd.toFixed(4)} / $${report.budget.limitUsd.toFixed(2)} (rezerve $${report.budget.reservedUsd.toFixed(4)})`);
     }
     if (report.commits.length) writer.write(`  Commitler: ${report.commits.map((c) => c.slice(0, 10)).join(', ')}`);
+    const pending = report.decisions.filter((d) => d.state !== 'ANSWERED');
+    if (report.decisions.length) writer.write(`  Kararlar:  ${report.decisions.length} soruldu, ${pending.length} cevapsız`);
     if (report.assumptions.length) writer.write(`  Varsayım:  ${report.assumptions.length} adet (rapora bakın)`);
     if (report.reportPath) writer.write(`  Rapor:     ${report.reportPath}`);
   }

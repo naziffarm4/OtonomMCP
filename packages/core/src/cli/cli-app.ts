@@ -24,7 +24,7 @@ Commands:
   run                            Start autonomous lifecycle execution
   run --spec <file.md>           Fully autonomous development from a single Markdown spec
                                  [--budget-usd N] [--dry-run] [--max-cycles N] [--mandate-hours H]
-                                 [--no-commit] [--llm-endpoint URL] [--llm-model NAME]
+                                 [--no-commit] [--llm-endpoint URL] [--llm-model NAME] [--approval cli|idp]
   driver [run|status|stop]       Manage and run governed Autonomous Driver runtime
   mcp                            Start authoritative AIDM MCP server (alias: server)
   status                         Read current project lifecycle and Git state

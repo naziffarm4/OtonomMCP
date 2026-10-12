@@ -86,7 +86,8 @@ import {
 } from './human-approval-types.js';
 
 import type { ITrustedIdentityProvider, TrustedIdentityAssertion } from '../authorization/trusted-identity-types.js';
-import { UnconfiguredIdentityProviderAdapter } from '../authorization/trusted-identity-adapters.js';
+import { createTrustedIdentityProvider } from '../authorization/trusted-identity-config.js';
+import { NonceStore } from '../authorization/nonce-store.js';
 import { sanitizeForAudit } from '../authorization/trusted-identity-sanitizer.js';
 
 export interface HumanApprovalEngineOptions {
@@ -119,9 +120,12 @@ export class HumanApprovalEngine {
     this.delegate = options.delegate;
     this.historyManager = options.historyManager ?? options.delegate?.historyManager;
 
+    // Env-configured external IdP (ADR-13); unconfigured => fail-closed adapter as before.
     this.identityProvider =
       options.identityProvider ??
-      new UnconfiguredIdentityProviderAdapter();
+      createTrustedIdentityProvider({
+        nonceStore: this.workspaceRoot ? new NonceStore({ baseDir: this.workspaceRoot }) : undefined,
+      });
 
     this.durableStateManager =
       options.durableStateManager ??

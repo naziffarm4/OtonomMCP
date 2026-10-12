@@ -77,6 +77,23 @@ import { AntigravityAdapter } from '../executor-bridge/antigravity-adapter.js';
 import { NodeAntigravityProcessRunner } from '../executor-bridge/antigravity-process-runner.js';
 import { LifecycleState } from '../lifecycle.js';
 import { Actor } from '../actors.js';
+import type { ITrustedIdentityProvider } from '../authorization/trusted-identity-types.js';
+import { createTrustedIdentityProvider } from '../authorization/trusted-identity-config.js';
+import { NonceStore } from '../authorization/nonce-store.js';
+import { isExternalIdpConfigured } from './idp-client.js';
+import {
+  IdpDecisionResolver,
+  buildDecisionRecord,
+  decisionPolicyInstruction,
+  formatDecisionForDirector,
+  resolveDecisionMode,
+  saveDecisionRecord,
+  type DecisionMode,
+  type DecisionOutcome,
+  type DecisionRecord,
+  type DecisionResolver,
+} from './decision-requests.js';
+import { TaskStatus, type TaskDefinition } from '../task-engine/task-types.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -121,6 +138,30 @@ export interface AutonomousRunOptions {
   /** Registers pricing/contract terms for an injected provider (live config does this itself). */
   readonly registerBudgetTerms?: (budgetManager: BudgetManager) => void;
   readonly onEvent?: (event: AutonomousRunEvent) => void;
+  /**
+   * External-IdP approval binding fixed BEFORE approval (aidm_autonomous_start). The approval
+   * package is created with exactly this id/revision so the signed token binds to it.
+   */
+  readonly preboundApproval?: {
+    readonly packageId: string;
+    readonly revision: number;
+    readonly contextFingerprint: string;
+    readonly approvedBy?: string;
+  };
+  readonly onRunId?: (runId: string) => void | Promise<void>;
+  /** External IdP adapter for mandate sealing (default: env-configured factory). */
+  readonly identityProvider?: ITrustedIdentityProvider;
+  /**
+   * Channel for Director REQUEST_HUMAN_DECISION. undefined => external IdP when configured,
+   * otherwise none (decision stops the run BLOCKED_ON_HUMAN). null => explicitly none.
+   */
+  readonly decisionResolver?: DecisionResolver | null;
+  /** Overrides AIDM_DECISION_MODE (ask | assume). */
+  readonly decisionMode?: DecisionMode;
+  readonly maxDecisionsPerTask?: number;
+  /** Max in-scope refinements (REPLAN splits) and read-only analyses per task. */
+  readonly maxRefinementsPerTask?: number;
+  readonly maxAnalysesPerTask?: number;
 }
 
 export interface AutonomousRunEvent {
@@ -133,7 +174,10 @@ export interface AutonomousRunEvent {
 export interface AutonomousTaskReport {
   readonly taskId: string;
   readonly title: string;
-  status: 'ACCEPTED' | 'FAILED' | 'BLOCKED' | 'SKIPPED' | 'PENDING';
+  status: 'ACCEPTED' | 'FAILED' | 'BLOCKED' | 'SKIPPED' | 'PENDING' | 'SPLIT' | 'WAITING_DECISION';
+  /** Set for subtasks created by in-scope refinement or read-only analysis. */
+  parentTaskId?: string;
+  kind?: 'TASK' | 'SUBTASK' | 'ANALYSIS';
   cycles: number;
   lastCycleStatus?: string;
   lastSummary?: string;
@@ -174,9 +218,22 @@ export interface AutonomousRunReport {
   readonly tasks: AutonomousTaskReport[];
   budget?: { limitUsd: number; committedUsd: number; reservedUsd: number; availableUsd: number };
   commits: string[];
+  decisions: Array<{ decisionId: string; taskId: string; question: string; state: string; channel?: string; answer?: unknown }>;
+  refinements: string[];
+  executorReports: string[];
   stopReason?: string;
   reportPath?: string;
 }
+
+/** Director capabilities in autonomous runs (full director over AGY within the sealed mandate). */
+export const DIRECTOR_CAPABILITIES_INSTRUCTION = [
+  'You direct the executor (AGY). Write rich, multi-step executor instructions in "objective": context, step-by-step plan,',
+  'files to read first, files to change, and how to verify. You may: (a) emit ANALYZE_PROJECT (analysisScope) to have the',
+  'executor read code / run tests or builds read-only and report findings back to you; (b) emit REPLAN with proposedTasks',
+  'to split the target task into 2-5 in-scope subtasks (targetFiles must stay inside the allowed paths) and/or taskOrder',
+  'to reorder remaining tasks. Scope, budget and policy changes are NOT yours: raise REQUEST_HUMAN_DECISION instead.',
+  'Executor output and questions come back to you; the executor never talks to the human. Independent evidence decides.',
+].join(' ');
 
 /** Instruction prepended to every Director reasoning call in no-questions mode. */
 export const NO_QUESTIONS_DIRECTOR_INSTRUCTION = [
@@ -236,6 +293,10 @@ export class AutonomousSpecRunner {
     const mandateStore = new ProjectMandateStore({
       baseDir: projectRoot,
       identityManager: this.options.identityManager,
+      // Same env the run was configured with (MCP/CLI may pass an explicit env, not process.env).
+      identityProvider:
+        this.options.identityProvider ??
+        createTrustedIdentityProvider({ env: this.env, nonceStore: new NonceStore({ baseDir: projectRoot }) }),
     });
     const previousMandate = await mandateStore.loadMandate();
     const mandateDraft = buildAutonomousMandate({
@@ -272,8 +333,17 @@ export class AutonomousSpecRunner {
           filesChanged: [],
         })),
       commits: [],
+      decisions: [],
+      refinements: [],
+      executorReports: [],
     };
     for (const a of ingestion.assumptions) this.emit('ASSUMPTION', a);
+    let decisionMode: DecisionMode;
+    try {
+      decisionMode = this.options.decisionMode ?? resolveDecisionMode(this.env);
+    } catch (err) {
+      return this.finish(report, 'CONFIGURATION_ERROR', err instanceof Error ? err.message : String(err));
+    }
 
     // Provider configuration is described (secret-free) even in dry-run.
     let providerConfig: ResolvedLlmProviderConfig | null = null;
@@ -350,6 +420,10 @@ export class AutonomousSpecRunner {
       }
     }
 
+    if (this.options.preboundApproval && this.options.preboundApproval.revision !== 1) {
+      return this.finish(report, 'BLOCKED_ON_AUTH_CONTEXT', 'Pre-bound approval revision must be 1 (new package).');
+    }
+    await this.options.onRunId?.(runId);
     let sealed: { mandate: ProjectMandate; provenance: AutonomousAuthorizationProvenance };
     try {
       sealed = await sealAutonomousMandate(mandateStore, mandateDraft, authContext, {
@@ -402,8 +476,12 @@ export class AutonomousSpecRunner {
 
       // Approval package: approved by the SAME verified human operator invocation.
       const draft = approvalPackageEngine.buildPackage(ingestion.understanding, ingestion.plan, {
-        packageId: `pkg-autonomous-${ingestion.specFingerprint.slice(0, 12)}-${Date.now()}`,
+        packageId:
+          this.options.preboundApproval?.packageId ?? `pkg-autonomous-${ingestion.specFingerprint.slice(0, 12)}-${Date.now()}`,
       });
+      if (this.options.preboundApproval && draft.revision !== this.options.preboundApproval.revision) {
+        return this.finish(report, 'BLOCKED_ON_AUTH_CONTEXT', 'Approval package revision differs from the externally approved binding.', true);
+      }
       const approved = approvalPackageEngine.approvePackage(draft, {
         packageId: draft.packageId,
         revision: draft.revision,
@@ -534,18 +612,166 @@ export class AutonomousSpecRunner {
       const maxCycles = Math.max(1, this.options.maxCyclesPerTask ?? 3);
       let clarificationBudget = Math.max(0, this.options.maxClarificationAssumptions ?? 3);
       let stop: { status: AutonomousRunStatus; reason: string } | null = null;
+      const maxDecisionsPerTask = Math.max(0, this.options.maxDecisionsPerTask ?? 3);
+      const maxRefinements = Math.max(0, this.options.maxRefinementsPerTask ?? 1);
+      const maxAnalyses = Math.max(0, this.options.maxAnalysesPerTask ?? 2);
+      const originalTaskCount = report.tasks.length;
 
+      // Decision channel: only the Director talks to the human; AGY questions come back to the Director.
+      let decisionResolver: DecisionResolver | null = null;
+      if (decisionMode === 'ask') {
+        if (this.options.decisionResolver !== undefined) decisionResolver = this.options.decisionResolver;
+        else if (isExternalIdpConfigured(this.env)) {
+          decisionResolver = new IdpDecisionResolver({
+            env: this.env,
+            provider:
+              this.options.identityProvider ??
+              createTrustedIdentityProvider({ env: this.env, nonceStore: new NonceStore({ baseDir: projectRoot }) }),
+          });
+        }
+      }
+      const policyText = decisionPolicyInstruction(decisionMode, ingestion.decisionPolicy);
+
+      const taskDefs = new Map<string, TaskDefinition>(ingestion.tasks.map((t) => [t.task_id, t as TaskDefinition]));
+      const guidance = new Map<string, string>();
+      const decisionsAsked = new Map<string, number>();
+      const refinementsDone = new Map<string, number>();
+      const analysesDone = new Map<string, number>();
+      const waiting = new Map<string, { record: DecisionRecord; promise: Promise<{ taskId: string; outcome: DecisionOutcome }> }>();
+      const allowedDirs = (report.mandate?.allowedDirectories ?? []).map((d) => d.replace(/\\/g, '/').replace(/\/+$/, ''));
+
+      // Executor reports from accepted cycles are carried into the next Director call.
+      let carryNote = '';
+      const queue: AutonomousTaskReport[] = [];
       for (const taskReport of report.tasks) {
         if (accepted.has(taskReport.taskId)) {
           taskReport.status = 'SKIPPED';
           taskReport.lastSummary = 'Already ACCEPTED in a previous run.';
           continue;
         }
-        const task = ingestion.tasks.find((t) => t.task_id === taskReport.taskId)!;
-        let extraGuidance = '';
+        taskReport.kind = 'TASK';
+        queue.push(taskReport);
+      }
+
+      const isWithinAllowed = (p: string): boolean => {
+        const n = p.replace(/\\/g, '/').replace(/^\.\//, '');
+        if (!n || n.startsWith('/') || /^[a-zA-Z]:/.test(n) || n.split('/').includes('..')) return false;
+        if (allowedDirs.length === 0 || allowedDirs.includes('.') || allowedDirs.includes('')) return true;
+        return allowedDirs.some((d) => n === d || n.startsWith(`${d}/`));
+      };
+
+      const saveTaskDefs = async (): Promise<void> => {
+        const current = await specStore.loadTasks().catch(() => [] as TaskDefinition[]);
+        const merged = new Map(current.map((t) => [t.task_id, t]));
+        for (const [id, def] of taskDefs) if (!merged.has(id)) merged.set(id, def);
+        await specStore.saveTasks([...merged.values()] as never);
+      };
+
+      const addSubtask = (parent: TaskDefinition, id: string, kind: 'SUBTASK' | 'ANALYSIS', def: { title: string; description: string; acceptance: string[]; targetFiles: string[] }): AutonomousTaskReport => {
+        const sub: TaskDefinition = {
+          ...parent,
+          task_id: id,
+          title: def.title.slice(0, 200),
+          description: def.description.slice(0, 4000),
+          acceptance_criteria: def.acceptance.length ? def.acceptance.map((a) => a.slice(0, 500)).slice(0, 10) : [...parent.acceptance_criteria],
+          traceability_sources: [...(parent.traceability_sources ?? []), `PARENT_TASK:${parent.task_id}`],
+          status: TaskStatus.READY,
+          attempt: 0,
+          hierarchy_level: 'TASK',
+          metadata: { ...(parent.metadata ?? {}), refinedFromTaskId: parent.task_id, refinementKind: kind, targetFiles: def.targetFiles, readOnly: kind === 'ANALYSIS' },
+        };
+        taskDefs.set(id, sub);
+        const tr: AutonomousTaskReport = {
+          taskId: id,
+          title: sub.title,
+          status: 'PENDING',
+          cycles: 0,
+          evidenceIds: [],
+          verificationChecks: [],
+          filesChanged: [],
+          parentTaskId: parent.task_id,
+          kind,
+        };
+        report.tasks.push(tr);
+        return tr;
+      };
+
+      /** Bounded in-scope refinement (split / reorder). Returns guidance text when rejected. */
+      const tryRefine = async (taskReport: AutonomousTaskReport, action: Record<string, unknown>): Promise<{ applied: boolean; note: string }> => {
+        const parent = taskDefs.get(taskReport.taskId)!;
+        const notes: string[] = [];
+        let applied = false;
+        const order = Array.isArray(action.taskOrder) ? action.taskOrder.filter((x): x is string => typeof x === 'string') : [];
+        if (order.length) {
+          const pendingIds = new Set(queue.map((q) => q.taskId));
+          const valid = order.filter((id) => pendingIds.has(id));
+          if (valid.length) {
+            const moved = valid.map((id) => queue.find((q) => q.taskId === id)!);
+            const rest = queue.filter((q) => !valid.includes(q.taskId));
+            queue.length = 0;
+            queue.push(...moved, ...rest);
+            notes.push(`Reordered remaining tasks: ${valid.join(', ')}.`);
+            report.refinements.push(`[${taskReport.taskId}] reorder ${valid.join(' > ')}`);
+            applied = true;
+          }
+        }
+        const proposed = Array.isArray(action.proposedTasks) ? (action.proposedTasks as Array<Record<string, unknown>>) : [];
+        if (proposed.length) {
+          const done = refinementsDone.get(taskReport.taskId) ?? 0;
+          const files = proposed.flatMap((t) => (Array.isArray(t.targetFiles) ? t.targetFiles.map(String) : []));
+          const reason =
+            taskReport.kind !== 'TASK' ? 'only top-level spec tasks can be split'
+            : done >= maxRefinements ? 'refinement limit for this task reached'
+            : proposed.length < 2 || proposed.length > 5 ? 'a split must have 2-5 subtasks'
+            : report.tasks.length + proposed.length > originalTaskCount * 3 ? 'total task budget for this run exceeded'
+            : proposed.some((t) => typeof t.title !== 'string' || !t.title.trim() || typeof t.description !== 'string' || !t.description.trim()) ? 'every subtask needs a title and description'
+            : files.find((f) => !isWithinAllowed(f)) ? `target file '${files.find((f) => !isWithinAllowed(f))}' is outside the sealed mandate scope`
+            : null;
+          if (reason) {
+            notes.push(`Refinement rejected (${reason}). Stay within the spec scope and allowed paths; scope/budget/policy changes require REQUEST_HUMAN_DECISION.`);
+            report.refinements.push(`[${taskReport.taskId}] rejected: ${reason}`);
+          } else {
+            refinementsDone.set(taskReport.taskId, done + 1);
+            const subs = proposed.map((t, i) =>
+              addSubtask(parent, `${taskReport.taskId}-S${done + 1}${String.fromCharCode(97 + i)}`, 'SUBTASK', {
+                title: String(t.title),
+                description: String(t.description),
+                acceptance: Array.isArray(t.acceptanceCriteria) ? t.acceptanceCriteria.map(String) : [],
+                targetFiles: Array.isArray(t.targetFiles) ? t.targetFiles.map(String) : [],
+              })
+            );
+            await saveTaskDefs();
+            taskReport.status = 'SPLIT';
+            queue.unshift(...subs);
+            notes.push(`Task split into ${subs.map((x) => x.taskId).join(', ')}.`);
+            report.refinements.push(`[${taskReport.taskId}] split into ${subs.map((x) => x.taskId).join(', ')}`);
+            this.emit('TASK_REFINED', notes[notes.length - 1], taskReport.taskId);
+            applied = true;
+          }
+        }
+        return { applied, note: notes.join(' ') };
+      };
+
+      const executorQuestions = (result: ClosedLoopCycleResult): string | undefined => {
+        let blob = '';
+        try {
+          blob = JSON.stringify({ s: result.summary, c: result.cycleResult, b: result.bridgeResult });
+        } catch {
+          blob = String(result.summary ?? '');
+        }
+        const hits = [...blob.matchAll(/(QUESTIONS|BLOCKERS|FINDINGS):\s*([^"\\]{1,800})/g)].map((m) => `${m[1]}: ${m[2].trim()}`);
+        return hits.length ? [...new Set(hits)].join(' | ').slice(0, 2000) : undefined;
+      };
+
+      /** Runs cycles for one task; returns 'DONE' | 'DEFERRED' (waiting on a decision / split). */
+      const runTask = async (taskReport: AutonomousTaskReport): Promise<'DONE' | 'DEFERRED'> => {
+        const task = taskDefs.get(taskReport.taskId)!;
+        let extraGuidance = guidance.get(task.task_id) ?? '';
+        guidance.delete(task.task_id);
+        taskReport.status = 'PENDING';
 
         while (taskReport.cycles < maxCycles) {
-          if (isBudgetExhausted(budgetManager)) {
+          if (isBudgetExhausted(budgetManager!)) {
             stop = { status: 'BUDGET_EXHAUSTED', reason: 'Budget exhausted; raising the budget requires human approval.' };
             break;
           }
@@ -568,18 +794,27 @@ export class AutonomousSpecRunner {
             break;
           }
 
+          const isAnalysis = taskReport.kind === 'ANALYSIS';
+          // Ordered by importance: the prompt builder bounds this field (DEFAULT_MAX_FIELD_LENGTH_CHARS),
+          // so task, fresh guidance (PO answers, executor reports) come before the static policy text.
           const instruction = [
-            NO_QUESTIONS_DIRECTOR_INSTRUCTION,
             `Target task: ${task.task_id} — ${task.title}.`,
             `Task description: ${task.description}`,
             `Acceptance criteria: ${task.acceptance_criteria.join(' | ')}`,
-            `Project root is the only allowed workspace; allowed paths: ${(report.mandate?.allowedDirectories ?? []).join(', ')}.`,
-            report.assumptions.length ? `Logged assumptions: ${report.assumptions.join(' | ')}` : '',
+            isAnalysis
+              ? 'This is a READ-ONLY ANALYSIS task: emit IMPLEMENT_TASK whose objective starts with "Read-only analysis without modifying files:" and asks the executor to report results under "FINDINGS:". No file may change.'
+              : '',
             extraGuidance,
+            carryNote,
+            `Project root is the only allowed workspace; allowed paths: ${(report.mandate?.allowedDirectories ?? []).join(', ')}.`,
+            decisionMode === 'assume' ? NO_QUESTIONS_DIRECTOR_INSTRUCTION : policyText,
+            DIRECTOR_CAPABILITIES_INSTRUCTION,
+            report.assumptions.length ? `Logged assumptions: ${report.assumptions.join(' | ')}` : '',
           ]
             .filter(Boolean)
             .join('\n');
 
+          carryNote = '';
           const headBefore = await gitHead(projectRoot);
           let result: ClosedLoopCycleResult;
           try {
@@ -607,15 +842,112 @@ export class AutonomousSpecRunner {
           }
           this.emit('CYCLE_RESULT', `${result.status}: ${result.summary}`, task.task_id);
 
+          const action = (result.directorAction ?? {}) as unknown as Record<string, unknown>;
           const actionType = result.directorAction?.actionType as string | undefined;
+          // Executor (AGY) questions/blockers/findings are routed to the Director, never to the human.
+          const execReport = executorQuestions(result);
+          if (execReport) {
+            report.executorReports.push(`[${task.task_id}] ${execReport}`);
+            this.emit('EXECUTOR_REPORT', execReport, task.task_id);
+          }
+          const execNote = execReport
+            ? `Executor report (the executor cannot ask the human; you decide, or raise REQUEST_HUMAN_DECISION for a genuine product decision): ${execReport}`
+            : '';
+
+          // ---- Director-raised human decision (only the Director talks to the human)
+          if (actionType === 'REQUEST_HUMAN_DECISION') {
+            const asked = decisionsAsked.get(task.task_id) ?? 0;
+            const question = String(action.question ?? extractQuestion(result) ?? 'unspecified decision').slice(0, 1000);
+            if (decisionMode === 'assume') {
+              const rec = typeof action.recommendation === 'string' ? ` (recommended: ${action.recommendation})` : '';
+              const assumption = `[${task.task_id}] Director decision "${question}" assumed${rec} (AIDM_DECISION_MODE=assume).`;
+              report.assumptions.push(assumption);
+              taskReport.cycles--;
+              extraGuidance = `Human decisions are disabled. ${assumption} Proceed with IMPLEMENT_TASK.`;
+              continue;
+            }
+            if (!decisionResolver || asked >= maxDecisionsPerTask) {
+              taskReport.status = 'BLOCKED';
+              stop = {
+                status: 'BLOCKED_ON_HUMAN',
+                reason: `Task ${task.task_id}: Director requests a human decision: "${question}". ${
+                  decisionResolver ? 'Decision limit for this task reached.' : 'No decision channel (configure the external IdP or run in an interactive terminal).'
+                }`,
+              };
+              break;
+            }
+            decisionsAsked.set(task.task_id, asked + 1);
+            const record = buildDecisionRecord({
+              projectRoot,
+              projectId,
+              runId,
+              taskId: task.task_id,
+              packageId: approved.packageId,
+              revision: approved.revision,
+              question,
+              reason: typeof action.reason === 'string' ? action.reason : undefined,
+              options: action.options,
+              recommendation: typeof action.recommendation === 'string' ? action.recommendation : undefined,
+            });
+            await saveDecisionRecord(record);
+            report.decisions.push({ decisionId: record.decisionId, taskId: task.task_id, question: record.question, state: 'PENDING', channel: decisionResolver.channel });
+            this.emit('DECISION_REQUESTED', `${record.decisionId}: ${record.question}`, task.task_id);
+            taskReport.cycles--; // asking does not consume an execution attempt
+            taskReport.status = 'WAITING_DECISION';
+            const resolver = decisionResolver;
+            const promise = resolver
+              .resolve(record)
+              .catch((err): DecisionOutcome => ({ status: 'FAILED', reason: err instanceof Error ? err.message : String(err) }))
+              .then((outcome) => ({ taskId: task.task_id, outcome }));
+            waiting.set(task.task_id, { record, promise });
+            return 'DEFERRED';
+          }
+
+          // ---- In-scope refinement (split / reorder)
+          if (actionType === 'REPLAN' || actionType === 'UPDATE_PLAN' || actionType === 'CREATE_TASK') {
+            const ref = await tryRefine(taskReport, action);
+            if ((taskReport.status as string) === 'SPLIT') return 'DEFERRED';
+            taskReport.cycles--;
+            extraGuidance = `${ref.note || 'No applicable refinement.'} Continue with IMPLEMENT_TASK for ${task.task_id}. ${execNote}`.trim();
+            if (!ref.applied && (refinementsDone.get(task.task_id) ?? 0) >= maxRefinements && taskReport.cycles <= 0) taskReport.cycles++;
+            continue;
+          }
+
+          // ---- Read-only analysis dispatched to AGY through the governed pipeline
+          if (
+            !isAnalysis &&
+            (actionType === 'ANALYZE_PROJECT' || actionType === 'DISCOVER_PROJECT' || actionType === 'REVIEW_EVIDENCE') &&
+            result.status !== 'REJECTED_BY_POLICY'
+          ) {
+            const done = analysesDone.get(task.task_id) ?? 0;
+            if (done < maxAnalyses) {
+              analysesDone.set(task.task_id, done + 1);
+              const scope = String(action.analysisScope ?? action.discoveryScope ?? action.reviewObjective ?? action.rationale ?? 'inspect relevant code').slice(0, 2000);
+              const sub = addSubtask(task, `${task.task_id}-A${done + 1}`, 'ANALYSIS', {
+                title: `Read-only analysis for ${task.task_id}`,
+                description: `Read-only analysis without modifying files: ${scope}. Read the relevant code, run the project's tests/build if useful, and report results under "FINDINGS:".`,
+                acceptance: ['No repository file is modified', 'Findings are reported under FINDINGS:'],
+                targetFiles: [],
+              });
+              await saveTaskDefs();
+              taskReport.cycles--;
+              const outcome = await runTask(sub);
+              void outcome;
+              const findings = report.executorReports.filter((x) => x.startsWith(`[${sub.taskId}]`)).join(' | ');
+              extraGuidance = `Analysis ${sub.taskId} ${sub.status}: ${findings || sub.lastSummary || 'no findings reported'}. Now emit IMPLEMENT_TASK for ${task.task_id}.`;
+              if (stop) break;
+              continue;
+            }
+          }
 
           if (result.status === 'COMPLETED_SUCCESS' && actionType && actionType !== 'IMPLEMENT_TASK' && actionType !== 'RETRY_TASK' && actionType !== 'CORRECT_TASK') {
             // Non-execution action (e.g. review/analysis): not a task completion; continue.
-            extraGuidance = `Previous action ${actionType} did not implement the task. Now emit IMPLEMENT_TASK for ${task.task_id}.`;
+            extraGuidance = `Previous action ${actionType} did not implement the task. Now emit IMPLEMENT_TASK for ${task.task_id}. ${execNote}`.trim();
             continue;
           }
 
           if (result.status === 'COMPLETED_SUCCESS') {
+            if (execNote) carryNote = `(From the previous task ${task.task_id}) ${execNote}`;
             taskReport.status = 'ACCEPTED';
             accepted.add(task.task_id);
             await this.markTaskAccepted(specStore, task.task_id);
@@ -625,7 +957,7 @@ export class AutonomousSpecRunner {
               taskReport.commit = headAfter;
               taskReport.filesChanged = await commitFiles(projectRoot, headBefore, headAfter);
               report.commits.push(...(await commitRange(projectRoot, headBefore, headAfter)));
-            } else if (this.options.commit !== false) {
+            } else if (this.options.commit !== false && !isAnalysis) {
               const commit = await commitTask(projectRoot, task.task_id, task.title, result.systemEvidence?.evidenceId);
               if (commit) {
                 taskReport.commit = commit.sha;
@@ -653,12 +985,12 @@ export class AutonomousSpecRunner {
             report.assumptions.push(assumption);
             this.emit('ASSUMPTION', assumption, task.task_id);
             taskReport.cycles--; // a clarification answered by assumption does not consume an execution attempt
-            extraGuidance = `Clarification is not available. ${assumption} Proceed with IMPLEMENT_TASK.`;
+            extraGuidance = `Clarification is not available for routine details. ${assumption} Proceed with IMPLEMENT_TASK. If this is a genuine product decision, use REQUEST_HUMAN_DECISION instead.`;
             continue;
           }
 
           if (result.status === 'NO_ACTION_REQUIRED') {
-            extraGuidance = `Task ${task.task_id} is not complete yet. Emit IMPLEMENT_TASK for it.`;
+            extraGuidance = `Task ${task.task_id} is not complete yet. Emit IMPLEMENT_TASK for it. ${execNote}`.trim();
             continue;
           }
 
@@ -685,19 +1017,96 @@ export class AutonomousSpecRunner {
           }
 
           // EXECUTION_FAILED / CORRECTIVE_TASK_CREATED / MAX_ATTEMPTS_EXCEEDED: bounded retry
-          extraGuidance = `Previous attempt failed: ${result.summary}. Fix the cause and retry IMPLEMENT_TASK for ${task.task_id}.`;
+          extraGuidance = `Previous attempt failed: ${result.summary}. ${execNote} Fix the cause and retry IMPLEMENT_TASK for ${task.task_id}.`;
           if (result.status === 'MAX_ATTEMPTS_EXCEEDED') break;
         }
 
         if (taskReport.status === 'PENDING') taskReport.status = stop ? 'BLOCKED' : 'FAILED';
-        if (stop) break;
-        if (taskReport.status === 'FAILED') {
+        if (taskReport.status === 'FAILED' && taskReport.kind !== 'ANALYSIS' && !stop) {
           stop = { status: 'PARTIAL', reason: `Task ${task.task_id} did not reach independently verified success within ${maxCycles} cycle(s).` };
-          break;
+        }
+        return 'DONE';
+      };
+
+      const dependsOnUnfinished = (taskReport: AutonomousTaskReport): boolean => {
+        const def = taskDefs.get(taskReport.taskId);
+        const deps = def?.dependencies ?? [];
+        return deps.some((d) => waiting.has(d) || report.tasks.some((t) => t.taskId === d && (t.status === 'WAITING_DECISION' || t.status === 'SPLIT')));
+      };
+
+      const finishSplitParents = async (): Promise<void> => {
+        for (const parent of report.tasks.filter((t) => t.status === 'SPLIT')) {
+          const subs = report.tasks.filter((t) => t.parentTaskId === parent.taskId && t.kind === 'SUBTASK');
+          if (subs.length && subs.every((t) => t.status === 'ACCEPTED')) {
+            parent.status = 'ACCEPTED';
+            parent.evidenceIds.push(...subs.flatMap((t) => t.evidenceIds));
+            parent.filesChanged = [...new Set(subs.flatMap((t) => t.filesChanged))];
+            parent.lastSummary = `Accepted via subtasks ${subs.map((t) => t.taskId).join(', ')} (each independently verified).`;
+            accepted.add(parent.taskId);
+            await this.markTaskAccepted(specStore, parent.taskId);
+          }
+        }
+      };
+
+      while (!stop) {
+        let next: AutonomousTaskReport | undefined;
+        const idx = queue.findIndex((t) => !dependsOnUnfinished(t));
+        if (idx >= 0) next = queue.splice(idx, 1)[0];
+        if (!next) {
+          if (waiting.size === 0) {
+            if (queue.length) {
+              stop = { status: 'BLOCKED_ON_HUMAN', reason: `Tasks ${queue.map((q) => q.taskId).join(', ')} depend on unfinished work.` };
+            }
+            break;
+          }
+          // Only tasks waiting on human decisions remain: wait for the first answer.
+          const { taskId, outcome } = await Promise.race([...waiting.values()].map((w) => w.promise));
+          const w = waiting.get(taskId)!;
+          waiting.delete(taskId);
+          const tr = report.tasks.find((t) => t.taskId === taskId)!;
+          const entry = report.decisions.find((d) => d.decisionId === w.record.decisionId);
+          w.record.state = outcome.status === 'ANSWERED' ? 'ANSWERED' : outcome.status;
+          if (outcome.status === 'ANSWERED') {
+            w.record.answer = outcome.answer;
+            if (entry) {
+              entry.state = 'ANSWERED';
+              entry.answer = outcome.answer;
+            }
+            await saveDecisionRecord(w.record);
+            const statement = formatDecisionForDirector(w.record, outcome.answer);
+            report.assumptions.push(`[${taskId}] PO decision: ${statement.split('\n').slice(1).join(' ')}`);
+            await historyManager.appendEvent({
+              eventType: 'AUTONOMOUS_DECISION_ANSWERED',
+              actor: Actor.USER,
+              taskId,
+              payload: { decisionId: w.record.decisionId, source: outcome.answer.source, answeredBy: outcome.answer.answeredBy, selectedOptionId: outcome.answer.selectedOptionId ?? null },
+            });
+            guidance.set(taskId, statement);
+            tr.status = 'PENDING';
+            queue.unshift(tr);
+            this.emit('DECISION_ANSWERED', w.record.decisionId, taskId);
+          } else {
+            w.record.failure = outcome.reason;
+            if (entry) entry.state = outcome.status;
+            await saveDecisionRecord(w.record);
+            tr.status = 'BLOCKED';
+            stop = { status: 'BLOCKED_ON_HUMAN', reason: `Task ${taskId}: human decision ${w.record.decisionId} ${outcome.status}: ${outcome.reason}` };
+          }
+          continue;
+        }
+        await runTask(next);
+        await finishSplitParents();
+      }
+      if (stop) {
+        for (const w of waiting.values()) {
+          const tr = report.tasks.find((t) => t.taskId === w.record.taskId);
+          if (tr) tr.status = 'BLOCKED';
         }
       }
 
-      const allAccepted = report.tasks.every((t) => t.status === 'ACCEPTED' || t.status === 'SKIPPED');
+      const allAccepted = report.tasks
+        .filter((t) => t.kind !== 'ANALYSIS')
+        .every((t) => t.status === 'ACCEPTED' || t.status === 'SKIPPED');
       await historyManager.appendEvent({
         eventType: allAccepted ? 'AUTONOMOUS_RUN_COMPLETED' : 'AUTONOMOUS_RUN_STOPPED',
         actor: Actor.ORCHESTRATOR,

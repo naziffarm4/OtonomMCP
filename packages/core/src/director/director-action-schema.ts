@@ -125,6 +125,19 @@ export const ReplanActionZodSchema = DirectorActionEnvelopeZodSchema.extend({
   affectedTaskIds: z.array(z.string()),
   planningObjective: z.string().min(1, 'planningObjective cannot be empty'),
   constraints: z.array(z.string()),
+  /** Optional in-scope refinement proposal (validated by the system; never grants scope/budget/policy). */
+  proposedTasks: z
+    .array(
+      z.object({
+        title: z.string().min(1),
+        description: z.string().min(1),
+        targetFiles: z.array(z.string()).default([]),
+        acceptanceCriteria: z.array(z.string()).default([]),
+      })
+    )
+    .max(10)
+    .optional(),
+  taskOrder: z.array(z.string()).optional(),
 });
 
 export const DeferActionZodSchema = DirectorActionEnvelopeZodSchema.extend({

@@ -44,8 +44,8 @@ const PAYLOAD_PROPERTIES: Record<string, unknown> = {
     type: ['array', 'null'],
     items: {
       type: 'object',
-      properties: { id: { type: 'string' }, label: { type: 'string' } },
-      required: ['id', 'label'],
+      properties: { id: { type: 'string' }, label: { type: 'string' }, description: { type: ['string', 'null'] } },
+      required: ['id', 'label', 'description'],
       additionalProperties: false,
     },
   },
@@ -83,6 +83,23 @@ const PAYLOAD_PROPERTIES: Record<string, unknown> = {
   },
   unresolvedRisks: SA,
   remainingTasks: SA,
+  /** In-scope task refinement (REPLAN / UPDATE_PLAN): split/add subtasks within the spec scope. */
+  proposedTasks: {
+    type: ['array', 'null'],
+    items: {
+      type: 'object',
+      properties: {
+        title: { type: 'string' },
+        description: { type: 'string' },
+        targetFiles: { type: 'array', items: { type: 'string' } },
+        acceptanceCriteria: { type: 'array', items: { type: 'string' } },
+      },
+      required: ['title', 'description', 'targetFiles', 'acceptanceCriteria'],
+      additionalProperties: false,
+    },
+  },
+  /** REPLAN: preferred order of remaining (existing) task ids. */
+  taskOrder: SA,
   finalVerificationRequested: B,
   assumptions: SA,
 };
@@ -152,7 +169,10 @@ export const DIRECTOR_DECISION_PROMPT_SPEC = [
   '- CORRECT_TASK: taskId, failureAnalysis, correctionPlan, targetFiles, acceptanceCriteria.',
   '- REQUEST_CLARIFICATION: question, reason, blocking (boolean).',
   '- REQUEST_HUMAN_DECISION: question, reason, blocking=true.',
-  '- REPLAN: reason, affectedTaskIds, planningObjective, constraints.',
+  '- REPLAN: reason, affectedTaskIds, planningObjective, constraints; optional proposedTasks (split the target task into',
+  '  2-5 in-scope subtasks: title, description, targetFiles, acceptanceCriteria) and taskOrder (reorder remaining task ids).',
+  '- ANALYZE_PROJECT: analysisScope (what to read/run read-only; findings come back to you as input).',
+  '- REQUEST_HUMAN_DECISION options: 2-6 {id,label,description}; recommendation = recommended option id.',
   '- REVIEW_EVIDENCE: evidenceIds, reviewObjective. ACCEPT_TASK: taskId, evidenceIds, acceptanceRationale.',
   '- REJECT_TASK: taskId, evidenceIds, rejectionReason.',
   '- DECLARE_PROJECT_COMPLETE: requirementCoverage, finalVerificationRequested=true.',

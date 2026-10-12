@@ -436,6 +436,12 @@ export class AntigravityAdapter implements ExecutorPort, ExecutionRequestExecuto
           ? request.instruction.implementationScope.map((s) => `- ${s}`)
           : ['(None specified — repository modifications are not permitted)']
         : ['(Not specified — existing targetFiles behavior applies)']),
+      '',
+      'NON-INTERACTIVE EXECUTION RULES:',
+      '- You run unattended: never ask the user anything and never wait for input (stdin is closed).',
+      '- If you are blocked or have a question, finish what you safely can and report it in your final output',
+      '  under a line starting with "QUESTIONS:" or "BLOCKERS:". The AIDM Director (not a human) will decide.',
+      '- Your statements are not evidence; AIDM verifies results independently.',
       '=========================================',
     ];
 
