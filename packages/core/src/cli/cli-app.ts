@@ -6,6 +6,7 @@ import { executeInit } from './commands/init.js';
 import { executeStatus } from './commands/status.js';
 import { executeCheckpoint } from './commands/checkpoint.js';
 import { executeRun } from './commands/run.js';
+import { executeRunSpec, parseRunSpecArgs } from './commands/run-spec.js';
 import { executeDriver } from './commands/driver.js';
 import { executeMcp } from './commands/mcp.js';
 
@@ -21,6 +22,9 @@ Usage:
 Commands:
   init                           Initialize an AIDM project/workspace
   run                            Start autonomous lifecycle execution
+  run --spec <file.md>           Fully autonomous development from a single Markdown spec
+                                 [--budget-usd N] [--dry-run] [--max-cycles N] [--mandate-hours H]
+                                 [--no-commit] [--llm-endpoint URL] [--llm-model NAME]
   driver [run|status|stop]       Manage and run governed Autonomous Driver runtime
   mcp                            Start authoritative AIDM MCP server (alias: server)
   status                         Read current project lifecycle and Git state
@@ -178,6 +182,15 @@ export async function executeCli(
       }
 
       case 'run': {
+        if (flags['spec'] !== undefined) {
+          const parsed = parseRunSpecArgs(flags, { projectRoot, cwd, json, verbose });
+          if (!parsed.ok) {
+            if (json) writer.writeJson({ success: false, error: parsed.error, exitCode: CliExitCode.USAGE_ERROR });
+            else writer.writeError(`Usage Error: ${parsed.error}`);
+            return { exitCode: CliExitCode.USAGE_ERROR, error: parsed.error };
+          }
+          return await executeRunSpec(parsed.options, writer, appOptions);
+        }
         const maxRetries = flags['max-retries'] ? parseInt(String(flags['max-retries']), 10) : 3;
         const requirementsPath = flags['requirements'] ? String(flags['requirements']) : undefined;
         const tasksPath = flags['tasks'] ? String(flags['tasks']) : undefined;

@@ -1,6 +1,7 @@
 import { type CliExitCode } from './exit-codes.js';
 import { type ExecutorPort } from '../executor-bridge/executor-port.js';
 import { type UIAdapter } from '../adapters/ui-adapter.js';
+import type { AutonomousRunOptions } from '../autonomous/autonomous-runner.js';
 
 export interface CliGlobalOptions {
   readonly projectRoot: string;
@@ -24,6 +25,11 @@ export interface CliAppOptions {
   readonly env?: Record<string, string | undefined>;
   readonly executorPort?: ExecutorPort;
   readonly uiAdapter?: UIAdapter;
+  /** Dependency injection for `aidm run --spec` (tests / embedding only). */
+  readonly autonomous?: Pick<
+    AutonomousRunOptions,
+    'llmProvider' | 'allowMockProvider' | 'identityManager' | 'registerBudgetTerms'
+  >;
 }
 
 export interface InitCommandOptions {

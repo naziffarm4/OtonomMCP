@@ -7,3 +7,4 @@ export { executeDriver } from './commands/driver.js';
 export { executeMcp } from './commands/mcp.js';
 export { runCli } from './bin.js';
 
+export { executeRunSpec, parseRunSpecArgs, exitCodeForAutonomousStatus, type RunSpecCommandOptions, type ParseRunSpecResult } from './commands/run-spec.js';
