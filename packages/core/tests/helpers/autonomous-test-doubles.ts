@@ -41,6 +41,8 @@ export class MockDirectorLlm implements LLMProvider {
   private clarified = new Set<string>();
 
   mode: MockDirectorMode;
+  /** Optional scripted override: return a partial action payload (merged over base) or undefined for default. */
+  script?: (ctx: { taskId: string; call: number; prompt: string }) => Record<string, unknown> | undefined;
   constructor(mode: MockDirectorMode = 'implement') {
     this.mode = mode;
   }
@@ -63,7 +65,11 @@ export class MockDirectorLlm implements LLMProvider {
       confidence: 0.9,
     };
     let payload: Record<string, unknown>;
-    if (this.mode === 'clarify-once' && !this.clarified.has(taskId)) {
+    const prompt = request.messages.map((m) => String((m as { content?: unknown }).content ?? '')).join('\n');
+    const scripted = this.script?.({ taskId, call: this.requests.length, prompt });
+    if (scripted) {
+      payload = { ...base, ...scripted };
+    } else if (this.mode === 'clarify-once' && !this.clarified.has(taskId)) {
       this.clarified.add(taskId);
       payload = {
         ...base,
@@ -126,6 +132,9 @@ export class MockAgyExecutor implements ExecutorPort, ExecutionRequestExecutorPo
   readonly supportedOperations = ['IMPLEMENT_TASK'] as never[];
   calls = 0;
   claimOnly = false;
+  /** Optional per-request stdout (e.g. "QUESTIONS: ..." / "FINDINGS: ..."). */
+  stdoutFor?: (request: ExecutionRequest) => string | undefined;
+  readonly requestsSeen: ExecutionRequest[] = [];
   private readonly root: string;
   constructor(root: string) {
     this.root = root;
@@ -135,7 +144,9 @@ export class MockAgyExecutor implements ExecutorPort, ExecutionRequestExecutorPo
   }
   async execute(request: ExecutionRequest): Promise<RawExecutorOutcome> {
     this.calls++;
-    const files = request.instruction?.targetFiles?.length ? [...request.instruction.targetFiles] : ['src/index.js'];
+    this.requestsSeen.push(request);
+    const readOnly = /read-only|without modifying/i.test(String(request.instruction?.objective ?? ''));
+    const files = readOnly ? [] : request.instruction?.targetFiles?.length ? [...request.instruction.targetFiles] : ['src/index.js'];
     if (!this.claimOnly) {
       for (const f of files) {
         const full = path.join(this.root, f);
@@ -161,11 +172,12 @@ export class MockAgyExecutor implements ExecutorPort, ExecutionRequestExecutorPo
       timedOut: false,
       cancelled: false,
       signal: null,
-      stdout: 'AGY: all done, trust me',
+      stdout: this.stdoutFor?.(request) ?? 'AGY: all done, trust me',
       stderr: '',
       durationMs: 5,
       unverifiedAgentClaims: ['All tests pass'],
       unverifiedModifiedFiles: this.claimOnly ? [] : files,
+      ...(readOnly ? {} : {}),
       startedAt: now,
       completedAt: now,
     } as RawExecutorOutcome;

@@ -107,7 +107,7 @@ describe('aidm run --spec (integration, mocked LLM + mocked AGY, real closed loo
     assert.ok(rep.budget.committedUsd > 0, 'LLM spend settled through budget hold/settle');
     assert.ok(rep.budget.committedUsd <= rep.budget.limitUsd);
     assert.ok(llm.requests.length >= 2);
-    assert.ok(String(llm.requests[0].messages.map((m: any) => m.content).join('\n')).includes('NO-QUESTIONS'));
+    assert.ok(String(llm.requests[0].messages.map((m: any) => m.content).join('\n')).includes('DECISION POLICY'));
     assert.equal(agy.calls, 2);
     assert.ok(fs.existsSync(rep.reportPath));
     assert.ok(fs.existsSync(rep.reportPath.replace(/\.json$/, '.md')));
