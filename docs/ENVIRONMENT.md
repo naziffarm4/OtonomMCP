@@ -55,3 +55,30 @@
    Resmî `api.openai.com` veya `api.anthropic.com` dışındaki özel/proxy adresler, `PricingEngine` içinde yetkili bir fiyat tarifesi ve açık kullanım sözleşmesi (`usageContract`) bulunmadıkça yetkilendirilmez.
 3. **Sır Maskeleme:**
    Hata nesneleri ve telemetri logları içindeki URL parametreleri, kimlik bilgileri ve API anahtarları `sanitizeSecrets` süzgecinden geçirilir; asla düz metin olarak dışarı sızdırılmaz.
+
+---
+
+## 4. Dış Kimlik Sağlayıcı (External IdP, ADR-13) ve İnsan Kararları
+
+Hiçbiri ayarlı değilse davranış öncekiyle birebir aynıdır (`UnconfiguredIdentityProviderAdapter`, fail-closed).
+Tüm `AuthContextValidator` / `HumanApprovalEngine` / `ProjectMandateStore` kullanımları tek fabrika
+`createTrustedIdentityProvider()` (`packages/core/src/authorization/trusted-identity-config.ts`) üzerinden geçer.
+Değerleri asla repoya yazmayın; aşağıda yalnızca adlar vardır.
+
+| Değişken | Açıklama |
+|---|---|
+| `AIDM_IDP_URL` | IdP API kökü (varsayılan `http://127.0.0.1:7443`; http yalnızca loopback için). |
+| `AIDM_IDP_CLIENT_TOKEN` | IdP `/api/*` çağrıları için Bearer token (IdP veri klasöründeki `client-token.txt`). |
+| `AIDM_IDP_ISSUER` | Beklenen `iss` (varsayılan `otonommcp-external-idp`). |
+| `AIDM_IDP_AUDIENCE` | Beklenen `aud`, virgülle birden çok (varsayılan `otonommcp`). |
+| `AIDM_IDP_PUBLIC_KEY_PEM` | Sabitlenmiş ES256 SPKI PEM (satır içi). |
+| `AIDM_IDP_PUBLIC_KEY_FILE` | Aynı PEM, dosyadan (localhost için önerilen). |
+| `AIDM_IDP_JWKS_URL` | JWKS adresi (https; 443/8443). PEM ile birlikte verilemez. |
+| `AIDM_IDP_ALLOW_LOOPBACK_JWKS` | `1` ise loopback (127.0.0.1/localhost) JWKS'e açıkça izin verir. |
+| `AIDM_IDP_POLL_INTERVAL_MS` | CLI `--approval idp` onay yoklama aralığı (varsayılan 3000). |
+| `AIDM_DECISION_MODE` | `ask` (varsayılan): Director ürün kararlarını sorar. `assume`: önerilen seçenek varsayım olarak kaydedilir. |
+
+Kurallar: tam olarak bir anahtar kaynağı (PEM, PEM dosyası veya JWKS) verilmelidir; geçersiz PEM, çift kaynak
+veya izinsiz loopback JWKS "yanlış yapılandırılmış" sayılır ve tüm IdP doğrulamaları `CONFIG_MISSING` ile
+reddedilir (yerel imzalar asla insan onayına terfi etmez). Onay akışının etkin olması için anahtar kaynağına ek
+olarak `AIDM_IDP_CLIENT_TOKEN` gerekir.
