@@ -15,3 +15,4 @@ export * from './run-monitor.js';
 export * from './instruction-channel.js';
 export * from './run-checkpoint.js';
 export * from './worker.js';
+export * from './spec-clarification.js';

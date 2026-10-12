@@ -51,7 +51,28 @@ export class MockDirectorLlm implements LLMProvider {
     return { available: true, model: this.defaultModel } as never;
   }
 
+  /** Spec-clarification (pre-implementation review) calls, kept apart from the Director action calls. */
+  readonly clarifyRequests: LlmRequest[] = [];
+  /** Optional spec-review payload (default: no questions). */
+  clarify?: (ctx: { call: number; prompt: string }) => Record<string, unknown> | undefined;
+
   async generate<T = unknown>(request: LlmRequest): Promise<LlmResponse<T>> {
+    if (request.correlation?.task_id === 'SPEC-CLARIFY') {
+      this.clarifyRequests.push(request);
+      const prompt = request.messages.map((m) => String((m as { content?: unknown }).content ?? '')).join('\n');
+      const payload = this.clarify?.({ call: this.clarifyRequests.length, prompt }) ?? { summary: 'Plan açık.', questions: [] };
+      return {
+        correlation: { correlation_id: request.correlation?.correlation_id ?? 'c', project_id: String(request.correlation?.project_id) },
+        provider: this.providerName,
+        model: this.defaultModel,
+        content: JSON.stringify(payload),
+        structured_output: payload as T,
+        finish_reason: LlmFinishReason.STOP,
+        raw_metadata: null,
+        error: null,
+        usage: { reported_input_tokens: 100, reported_output_tokens: 50, reported_cached_tokens: 0, estimated_tokens: 150, estimated_cost_usd: null, provider_name: this.providerName, model: this.defaultModel, is_exact_provider_metric: true },
+      } as LlmResponse<T>;
+    }
     this.requests.push(request);
     const meta = (request.metadata ?? {}) as Record<string, unknown>;
     const taskId = String(request.correlation?.task_id ?? 'TASK-001');

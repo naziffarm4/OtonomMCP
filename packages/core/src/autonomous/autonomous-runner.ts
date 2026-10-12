@@ -30,6 +30,25 @@ import { promisify } from 'node:util';
 
 import { SpecIngestor, type SpecIngestionResult, type AnalysisPolicy } from './spec-ingestor.js';
 import {
+  CHECKS_SCRIPT_PATH,
+  CLARIFICATION_SYSTEM_PROMPT,
+  FREE_TEXT_SYSTEM_PROMPT,
+  IdpClarificationResolver,
+  SPEC_CLARIFICATION_TASK_ID,
+  TURKISH_REPAIR_PROMPT,
+  buildClarificationRequest,
+  buildClarificationUserPrompt,
+  loadClarificationState,
+  normalizeCheck,
+  normalizeClarificationProposal,
+  partitionTurkish,
+  renderChecksScript,
+  resolveClarification,
+  saveClarificationState,
+  type ClarificationResolver,
+  type ClarificationState,
+} from './spec-clarification.js';
+import {
   buildAutonomousMandate,
   sealAutonomousMandate,
   signOperatorInvocation,
@@ -72,6 +91,7 @@ import type { ExecutionRequest } from '../executor-bridge/execution-request-type
 import type { RawExecutorOutcome } from '../executor-bridge/raw-executor-outcome.js';
 import { nanoUsdToUsd, MAX_PERIOD_BUDGET_NANO_USD } from '../budget/budget-types.js';
 import type { LLMProvider } from '../llm-bridge/llm-provider.js';
+import { LlmResponseFormat } from '../llm-bridge/llm-types.js';
 import type { ExecutorPort } from '../executor-bridge/executor-port.js';
 import { AntigravityAdapter } from '../executor-bridge/antigravity-adapter.js';
 import { NodeAntigravityProcessRunner } from '../executor-bridge/antigravity-process-runner.js';
@@ -172,6 +192,11 @@ export interface AutonomousRunOptions {
    * otherwise none (decision stops the run BLOCKED_ON_HUMAN). null => explicitly none.
    */
   readonly decisionResolver?: DecisionResolver | null;
+  /**
+   * Spec clarification channel (contract v1.2 SPEC_CLARIFICATION). Default: the external IdP when
+   * configured; null = no human channel (recommended options are applied as logged assumptions).
+   */
+  readonly clarificationResolver?: ClarificationResolver | null;
   /** Overrides AIDM_DECISION_MODE (ask | assume). */
   readonly decisionMode?: DecisionMode;
   readonly maxDecisionsPerTask?: number;
@@ -252,6 +277,17 @@ export interface AutonomousRunReport {
   budget?: { limitUsd: number; committedUsd: number; reservedUsd: number; availableUsd: number };
   commits: string[];
   decisions: Array<{ decisionId: string; taskId: string; question: string; state: string; channel?: string; answer?: unknown }>;
+  /** Pre-implementation spec review ("Netleştirme"). */
+  clarification?: {
+    status: 'DISABLED' | 'NONE' | 'ANSWERED' | 'AUTO_RECOMMENDED' | 'REUSED' | 'EXPIRED' | 'FAILED';
+    decisionId?: string;
+    summary?: string;
+    lines: string[];
+    criteriaAdded: number;
+    checksScript?: string;
+    newTasks: string[];
+    note?: string;
+  };
   refinements: string[];
   executorReports: string[];
   /** Spec commands deferred per task because the files they reference did not exist yet. */
@@ -363,6 +399,221 @@ export class AutonomousSpecRunner {
     FINAL_GATE: 'VERIFICATION',
     INSTRUCTION: 'INFO',
   };
+
+  /**
+   * Pre-implementation spec review. Never talks to AGY; talks to the human only through the IdP
+   * (one SPEC_CLARIFICATION package). Without a channel, the recommended options are applied as
+   * logged assumptions. Answers are persisted per spec fingerprint, so resume never re-asks.
+   */
+  private async runClarificationPhase(ctx: {
+    projectRoot: string;
+    projectId: string;
+    runId: string;
+    packageId: string;
+    revision: number;
+    markdown: string;
+    ingestion: SpecIngestionResult;
+    report: AutonomousRunReport;
+    provider: LLMProvider;
+    model: string;
+    decisionMode: string;
+    isBudgetExhausted: () => boolean;
+  }): Promise<{ stop?: { status: AutonomousRunStatus; reason: string }; apply?: ReturnType<typeof resolveClarification> }> {
+    const { projectRoot, ingestion, report } = ctx;
+    const rep: NonNullable<AutonomousRunReport['clarification']> = { status: 'NONE', lines: [], criteriaAdded: 0, newTasks: [] };
+    report.clarification = rep;
+    if (ingestion.clarification === false) {
+      rep.status = 'DISABLED';
+      this.emit('CLARIFICATION', 'Netleştirme kapalı (spec: Netleştirme: kapalı).');
+      return {};
+    }
+    const fp = ingestion.specFingerprint;
+    let st: ClarificationState | null = loadClarificationState(projectRoot, fp);
+    const finalize = (s: ClarificationState, status: NonNullable<AutonomousRunReport['clarification']>['status']) => {
+      const res = resolveClarification(s);
+      rep.status = status;
+      rep.summary = s.summary;
+      rep.lines = res.lines;
+      if (s.decisionId) rep.decisionId = s.decisionId;
+      for (const l of res.lines) this.emit('CLARIFICATION', l);
+      return { apply: res };
+    };
+    if (st && (st.status === 'ANSWERED' || st.status === 'AUTO_RECOMMENDED')) {
+      this.emit('CLARIFICATION', 'Netleştirme cevapları daha önce verilmiş; yeniden sorulmuyor.');
+      return finalize(st, 'REUSED');
+    }
+    if (st && st.status === 'NONE') {
+      rep.status = 'NONE';
+      return {};
+    }
+
+    const llmJson = async (system: string, user: string, extra: Array<{ role: 'assistant' | 'user'; content: string }> = []): Promise<unknown> => {
+      if (ctx.isBudgetExhausted()) throw new Error('Budget exhausted before the spec review.');
+      const res = await ctx.provider.generate({
+        correlation: { correlation_id: `clarify-${crypto.randomUUID()}`, project_id: ctx.projectId, task_id: SPEC_CLARIFICATION_TASK_ID, attempt: 1 },
+        messages: [{ role: 'system', content: system }, { role: 'user', content: user }, ...extra],
+        director_context: { project_id: ctx.projectId, task_id: SPEC_CLARIFICATION_TASK_ID, objective: 'spec review', acceptance_criteria: null, attempt: 1, max_attempts: 1, relevant_context: null },
+        model: ctx.model,
+        max_tokens: 6000,
+        response_format: LlmResponseFormat.JSON_OBJECT,
+        json_schema: null,
+        metadata: { purpose: 'SPEC_CLARIFICATION', runId: ctx.runId },
+      } as never);
+      if ((res as { error?: { message?: string } }).error) throw new Error(String((res as { error: { message?: string } }).error.message));
+      const so = (res as { structured_output?: unknown }).structured_output;
+      if (so && typeof so === 'object') return so;
+      const text = String((res as { content?: unknown }).content ?? '');
+      const m = /\{[\s\S]*\}/.exec(text);
+      return m ? JSON.parse(m[0]) : {};
+    };
+
+    if (!st || !st.questions.length) {
+      // 1) Director review (budget counted through the wrapped provider).
+      const taskIds = report.tasks.filter((t) => t.kind === 'TASK' || !t.kind).map((t) => t.taskId);
+      const user = buildClarificationUserPrompt({
+        specMarkdown: ctx.markdown,
+        tasks: ingestion.tasks.filter((t) => taskIds.includes(t.task_id)).map((t) => ({ taskId: t.task_id, title: t.title, acceptance: t.acceptance_criteria })),
+        allowedPaths: report.mandate?.allowedDirectories ?? ingestion.allowedPaths,
+        verificationCommands: ingestion.verificationCommands,
+      });
+      let raw: unknown;
+      try {
+        raw = await llmJson(CLARIFICATION_SYSTEM_PROMPT, user);
+      } catch (err) {
+        rep.status = 'FAILED';
+        rep.note = `Spec incelemesi yapılamadı: ${err instanceof Error ? err.message : String(err)}`;
+        this.emit('CLARIFICATION', rep.note, undefined, 'warn');
+        report.assumptions.push(`[${SPEC_CLARIFICATION_TASK_ID}] ${rep.note}`);
+        return {};
+      }
+      let proposal = normalizeClarificationProposal(raw, taskIds);
+      let { ok, bad } = partitionTurkish(proposal);
+      if (bad.length) {
+        // One repair call asking for Turkish; whatever is still not Turkish is dropped.
+        try {
+          const raw2 = await llmJson(CLARIFICATION_SYSTEM_PROMPT, user, [
+            { role: 'assistant', content: JSON.stringify(raw).slice(0, 20_000) },
+            { role: 'user', content: TURKISH_REPAIR_PROMPT },
+          ]);
+          proposal = normalizeClarificationProposal(raw2, taskIds);
+          ({ ok, bad } = partitionTurkish(proposal));
+        } catch {
+          /* keep the first result */
+        }
+        for (const q of bad) report.assumptions.push(`[${SPEC_CLARIFICATION_TASK_ID}] Türkçe olmayan soru atlandı: ${q.question.slice(0, 120)}`);
+      }
+      for (const w of proposal.warnings) report.assumptions.push(`[${SPEC_CLARIFICATION_TASK_ID}] ${w}`);
+      st = {
+        schemaVersion: 1,
+        specFingerprint: fp,
+        projectId: ctx.projectId,
+        status: ok.length ? 'PENDING' : 'NONE',
+        summary: proposal.summary,
+        questions: ok,
+        updatedAt: new Date().toISOString(),
+      };
+      await saveClarificationState(projectRoot, st);
+      if (!ok.length) {
+        rep.status = 'NONE';
+        rep.summary = proposal.summary;
+        this.emit('CLARIFICATION', 'Director spec\'i inceledi: sorulacak açık nokta yok.');
+        return {};
+      }
+    }
+
+    // 2) One IdP interaction with every question (or auto-apply recommendations without a channel).
+    let resolver: ClarificationResolver | null = null;
+    if (ctx.decisionMode === 'ask') {
+      if (this.options.clarificationResolver !== undefined) resolver = this.options.clarificationResolver;
+      else if (isExternalIdpConfigured(this.env)) {
+        resolver = new IdpClarificationResolver({
+          env: this.env,
+          fetchFn: this.options.idpFetchFn,
+          provider: this.options.identityProvider ?? createTrustedIdentityProvider({ env: this.env, nonceStore: new NonceStore({ baseDir: projectRoot }) }),
+        });
+      }
+    }
+    if (!resolver) {
+      st.status = 'AUTO_RECOMMENDED';
+      st.answers = st.questions.map((q) => ({ questionId: q.id, selectedOptionId: q.recommendedOptionId }));
+      await saveClarificationState(projectRoot, st);
+      report.assumptions.push(`[${SPEC_CLARIFICATION_TASK_ID}] Netleştirme kanalı yok (IdP yapılandırılmamış ya da AIDM_DECISION_MODE=assume): önerilen seçenekler uygulandı.`);
+      return finalize(st, 'AUTO_RECOMMENDED');
+    }
+    const req = buildClarificationRequest({
+      projectRoot,
+      projectId: ctx.projectId,
+      runId: ctx.runId,
+      packageId: ctx.packageId,
+      revision: ctx.revision,
+      summary: st.summary,
+      questions: st.questions,
+    });
+    st.status = 'PENDING';
+    st.decisionId = req.decisionId;
+    st.runId = ctx.runId;
+    await saveClarificationState(projectRoot, st);
+    rep.decisionId = req.decisionId;
+    report.decisions.push({ decisionId: req.decisionId, taskId: SPEC_CLARIFICATION_TASK_ID, question: req.title, state: 'PENDING', channel: resolver.channel });
+    this.pendingDecisionIds.add(req.decisionId);
+    this.emit('DECISION_REQUESTED', `${req.decisionId}: ${req.title}`, SPEC_CLARIFICATION_TASK_ID);
+    const outcome = await resolver.resolve(req, async (url) => {
+      st!.decisionUrl = url;
+      await saveClarificationState(projectRoot, st!);
+      if (url) this.emit('CLARIFICATION', `Sorular IdP'de cevap bekliyor: ${url}`, SPEC_CLARIFICATION_TASK_ID);
+    });
+    this.pendingDecisionIds.delete(req.decisionId);
+    const dRep = report.decisions.find((d) => d.decisionId === req.decisionId)!;
+    if (outcome.status !== 'ANSWERED') {
+      st.status = outcome.status === 'EXPIRED' ? 'EXPIRED' : 'FAILED';
+      st.failure = outcome.reason;
+      await saveClarificationState(projectRoot, st);
+      dRep.state = st.status;
+      rep.status = st.status;
+      rep.note = outcome.reason;
+      return {
+        stop: {
+          status: 'BLOCKED_ON_HUMAN',
+          reason:
+            `Spec netleştirme soruları cevaplanmadı (${outcome.status}: ${outcome.reason}). Hiçbir görev başlatılmadı. ` +
+            'Devam etmek için çalışmayı aynı spec ile yeniden başlat (aidm_autonomous_start ya da `aidm run --spec <spec> --approval idp`): ' +
+            'aynı sorular Director yeniden çağrılmadan IdP\'ye tekrar gönderilir. Soru sorulmasın istersen spec\'e `Netleştirme: kapalı` ekle.',
+        },
+      };
+    }
+    st.status = 'ANSWERED';
+    st.answers = outcome.answers;
+    st.answeredBy = outcome.answeredBy;
+    st.answeredAt = outcome.answeredAt;
+    dRep.state = 'ANSWERED';
+    dRep.answer = outcome.answers;
+    this.emit('DECISION_ANSWERED', `${req.decisionId}: ${outcome.answers.length} cevap`, SPEC_CLARIFICATION_TASK_ID);
+    // 3) Free-text-only answers -> measurable criteria by the Director (no human interaction).
+    const freeOnly = outcome.answers.filter((a) => a.freeText && !a.selectedOptionId);
+    if (freeOnly.length) {
+      try {
+        const raw = (await llmJson(
+          FREE_TEXT_SYSTEM_PROMPT,
+          JSON.stringify(
+            freeOnly.map((a) => ({ questionId: a.questionId, question: st!.questions.find((q) => q.id === a.questionId)?.question, answer: a.freeText }))
+          )
+        )) as { items?: unknown[] };
+        st.freeTextCriteria = (Array.isArray(raw.items) ? raw.items : [])
+          .map((i) => (i && typeof i === 'object' ? (i as Record<string, unknown>) : {}))
+          .filter((i) => freeOnly.some((a) => a.questionId === i.questionId))
+          .map((i) => ({
+            questionId: String(i.questionId),
+            criteria: (Array.isArray(i.criteria) ? i.criteria : []).map((c) => String(c).slice(0, 300)).filter(Boolean).slice(0, 8),
+            appliesTo: (Array.isArray(i.appliesTo) ? i.appliesTo : []).map(String).filter((t) => report.tasks.some((x) => x.taskId === t)),
+            checks: (Array.isArray(i.checks) ? i.checks : []).map(normalizeCheck).filter((c): c is NonNullable<ReturnType<typeof normalizeCheck>> => !!c).slice(0, 6),
+          }));
+      } catch (err) {
+        report.assumptions.push(`[${SPEC_CLARIFICATION_TASK_ID}] Serbest cevaplar kritere çevrilemedi (${err instanceof Error ? err.message : String(err)}); Director'a bağlayıcı not olarak iletilecek.`);
+      }
+    }
+    await saveClarificationState(projectRoot, st);
+    return finalize(st, 'ANSWERED');
+  }
 
   private emit(type: string, message: string, taskId?: string, level: 'info' | 'warn' | 'error' = 'info'): void {
     if (this.checkpoint && this.checkpoint.state === 'RUNNING') {
@@ -1279,6 +1530,7 @@ export class AutonomousSpecRunner {
                 ? ''
                 : NO_ANALYSIS_DIRECTOR_INSTRUCTION,
             extraGuidance,
+            clarificationNote,
             carryNote,
             ...poNotes
               .filter((n) => !n.taskId || n.taskId === task.task_id)
@@ -1678,6 +1930,105 @@ export class AutonomousSpecRunner {
         }
       };
 
+      // ---- Spec clarification ("Netleştirme"): BEFORE any implementation the Director reviews the
+      // whole plan and asks the PO (via the IdP only) about open points / proposes improvements.
+      let clarificationNote = '';
+      const extraGateCommands: string[] = [];
+      if (!stop) {
+        const out = await this.runClarificationPhase({
+          projectRoot,
+          projectId,
+          runId,
+          packageId: approved.packageId,
+          revision: approved.revision,
+          markdown,
+          ingestion,
+          report,
+          provider,
+          model: baseProvider.defaultModel,
+          decisionMode,
+          isBudgetExhausted: () => isBudgetExhausted(budgetManager!),
+        });
+        if (out.stop) stop = out.stop;
+        if (!stop && out.apply) {
+          const res = out.apply;
+          // Criteria: per task (or '*' = every top-level task), recorded in the spec store too.
+          const top = report.tasks.filter((t) => t.kind === 'TASK' && !accepted.has(t.taskId));
+          let added = 0;
+          for (const t of top) {
+            const extra = [...(res.criteria.get('*') ?? []), ...(res.criteria.get(t.taskId) ?? [])];
+            const def = taskDefs.get(t.taskId);
+            if (!def || !extra.length) continue;
+            const merged = [...def.acceptance_criteria];
+            for (const c of extra) if (!merged.includes(c)) (merged.push(c), added++);
+            taskDefs.set(t.taskId, { ...def, acceptance_criteria: merged });
+          }
+          // In-scope new tasks (accepted improvements), appended after the spec tasks.
+          const template = taskDefs.get(top[0]?.taskId ?? '') ?? [...taskDefs.values()][0];
+          let n = 0;
+          for (const nt of res.newTasks) {
+            const id = `TASK-C${String(++n).padStart(2, '0')}`;
+            if (accepted.has(id)) continue;
+            const files = nt.targetFiles.filter(isWithinAllowed);
+            if (nt.targetFiles.length && !files.length) {
+              report.assumptions.push(`[${SPEC_CLARIFICATION_TASK_ID}] Yeni görev '${nt.title}' izinli yolların dışında; eklenmedi.`);
+              continue;
+            }
+            if (!template || report.tasks.some((t) => t.taskId === id)) continue;
+            const def: TaskDefinition = {
+              ...template,
+              task_id: id,
+              title: nt.title,
+              description: nt.description,
+              acceptance_criteria: [...nt.criteria, ...(res.criteria.get('*') ?? [])].slice(0, 12),
+              traceability_sources: [...(template.traceability_sources ?? [])],
+              status: TaskStatus.READY,
+              attempt: 0,
+              metadata: { ...(template.metadata ?? {}), targetFiles: files, fromClarification: nt.fromQuestion },
+            } as TaskDefinition;
+            taskDefs.set(id, def);
+            const tr: AutonomousTaskReport = { taskId: id, title: def.title, status: 'PENDING', cycles: 0, evidenceIds: [], verificationChecks: [], filesChanged: [], kind: 'TASK' };
+            report.tasks.push(tr);
+            queue.push(tr);
+            report.clarification!.newTasks.push(`${id}: ${def.title}`);
+          }
+          try {
+            const current = await specStore.loadTasks();
+            const ids = new Set(current.map((t) => t.task_id));
+            // Existing tasks keep their sealed revision (intents are bound to it): the extra criteria
+            // travel in the Director instruction and are enforced by the generated gate checks.
+            const fresh = [...taskDefs.values()].filter((d) => !ids.has(d.task_id));
+            if (fresh.length) await specStore.saveTasks([...current, ...fresh] as never);
+          } catch (err) {
+            report.warnings.push(`Spec store update after clarification failed: ${err instanceof Error ? err.message : String(err)}`);
+          }
+          report.clarification!.criteriaAdded = added;
+          // Objective checks -> generated dependency-free script on the final gate (committed by AIDM).
+          if (res.checks.length) {
+            const abs = path.join(projectRoot, CHECKS_SCRIPT_PATH);
+            const content = renderChecksScript(res.checks);
+            const prev = fs.existsSync(abs) ? fs.readFileSync(abs, 'utf8') : null;
+            if (prev !== content) {
+              fs.mkdirSync(path.dirname(abs), { recursive: true });
+              fs.writeFileSync(abs, content, 'utf8');
+              if (this.options.commit !== false) {
+                try {
+                  await git(projectRoot, ['add', '--', CHECKS_SCRIPT_PATH]);
+                  await git(projectRoot, ['commit', '-m', 'chore(aidm): spec clarification checks', '--', CHECKS_SCRIPT_PATH]);
+                } catch {
+                  /* nothing to commit */
+                }
+              }
+            }
+            extraGateCommands.push(`node ${CHECKS_SCRIPT_PATH}`);
+            report.clarification!.checksScript = CHECKS_SCRIPT_PATH;
+          }
+          if (res.notes.length) {
+            clarificationNote = `BINDING PRODUCT_OWNER SPEC CLARIFICATIONS (verified answers; follow them in every task): ${res.notes.join(' | ')}`.slice(0, 3000);
+          }
+        }
+      }
+
       while (!stop) {
         let next: AutonomousTaskReport | undefined;
         const idx = queue.findIndex((t) => !dependsOnUnfinished(t));
@@ -1804,7 +2155,7 @@ export class AutonomousSpecRunner {
 
       // ---- Final run-level acceptance gate: ALL global commands (+ command-like global
       // criteria) must pass on the finished tree. Missing referenced files = FAIL (fail closed).
-      const gateCommands = finalGateCommands(ingestion.verificationCommands, ingestion.globalAcceptanceCriteria);
+      const gateCommands = [...finalGateCommands(ingestion.verificationCommands, ingestion.globalAcceptanceCriteria), ...extraGateCommands];
       const everyTaskAccepted = (): boolean =>
         report.tasks.filter((t) => t.kind !== 'ANALYSIS').every((t) => t.status === 'ACCEPTED' || t.status === 'SKIPPED');
       report.finalGate = { status: 'NOT_RUN', repairs: 0, checks: [], criteria: [...ingestion.globalAcceptanceCriteria] };
@@ -2297,6 +2648,16 @@ export function renderAutonomousReportMarkdown(r: AutonomousRunReport): string {
     lines.push(
       `- Bütçe: limit $${r.budget.limitUsd.toFixed(4)}, harcanan $${r.budget.committedUsd.toFixed(4)}, rezerve $${r.budget.reservedUsd.toFixed(4)}`
     );
+  }
+  if (r.clarification) {
+    const c = r.clarification;
+    lines.push('', '## Spec netleştirme', '', `- Durum: **${c.status}**${c.decisionId ? ` (karar \`${c.decisionId}\`)` : ''}`);
+    if (c.summary) lines.push(`- Director'un özeti: ${c.summary}`);
+    lines.push(...c.lines.map((l) => `- ${l}`));
+    if (c.criteriaAdded) lines.push(`- Görevlere eklenen kabul kriteri: ${c.criteriaAdded}`);
+    if (c.checksScript) lines.push(`- Son kabul kapısına eklenen kontrol: \`node ${c.checksScript}\``);
+    if (c.newTasks.length) lines.push(`- Eklenen görevler: ${c.newTasks.join(', ')}`);
+    if (c.note) lines.push(`- Not: ${c.note}`);
   }
   lines.push('', '## Görevler', '', '| Görev | Durum | Döngü | Commit | Dosyalar | Kanıt |', '|---|---|---|---|---|---|');
   for (const t of r.tasks) {

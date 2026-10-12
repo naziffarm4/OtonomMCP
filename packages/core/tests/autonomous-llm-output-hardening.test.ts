@@ -27,6 +27,8 @@ import { InMemoryIdentityManager, MockAgyExecutor } from './helpers/autonomous-t
 
 const SPEC = `# Mini Matematik
 
+Netleştirme: kapalı
+
 ## Gereksinimler
 
 ### Toplama

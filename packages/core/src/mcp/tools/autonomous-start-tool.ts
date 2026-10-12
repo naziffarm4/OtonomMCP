@@ -69,7 +69,7 @@ function textResult(payload: unknown, isError = false): McpToolResult {
 export type AutonomousToolDeps = Partial<
   Pick<
     AutonomousRunOptions,
-    'llmProvider' | 'allowMockProvider' | 'executorPort' | 'identityManager' | 'registerBudgetTerms' | 'env' | 'decisionResolver'
+    'llmProvider' | 'allowMockProvider' | 'executorPort' | 'identityManager' | 'registerBudgetTerms' | 'env' | 'decisionResolver' | 'clarificationResolver'
   >
 > & {
   readonly fetchFn?: typeof fetch;

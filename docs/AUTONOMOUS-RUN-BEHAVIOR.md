@@ -162,3 +162,32 @@ AIDM'in başlattığı her alt süreç (git, AGY, doğrulama komutları, DPAPI P
 bağımsız worker) `windowsHide: true` ile başlatılır; çalışma sırasında konsol pencereleri açılıp kapanmaz.
 Worker `cmd` üzerinden değil doğrudan `node` (process.execPath) ile, `detached` ve çıktısı log dosyasına
 yönlendirilmiş olarak başlar. `tests/windows-hide-spawn.test.ts` kaynak koddaki tüm çağrıları denetler.
+
+## Spec netleştirme (uygulamadan önce Director incelemesi)
+
+Çalışma onaylandıktan sonra, **hiçbir görev başlamadan önce** Director spec'i ve görev planını bütün olarak
+inceler (amaç, kapsam, mimari, teknoloji seçimi, ortak parçalar — örn. menünün sayfalara nasıl ekleneceği,
+tek/sayfa başına CSS, klasör yapısı, görev sırası, riskler, nasıl doğrulanacağı) ve:
+
+- **Netleştirilecek noktalar:** spec'in açık bıraktığı, yanlış tahminin yeniden iş çıkaracağı konular;
+- **Önerilen iyileştirmeler:** daha iyi bir yol görürse kabul/ret edebileceğin plan değişiklikleri
+
+hazırlar. Her soru sade **Türkçe**dir, "neden soruyorum" açıklaması ve önerilen seçeneği vardır (Türkçe
+olmayan sorular bir kez düzeltilmeye gönderilir, yine olmazsa atılır). Her seçeneğin altında, seçersen
+görevlere eklenecek **ölçülebilir kabul kriterleri** yazar.
+
+- Tek IdP etkileşimi: tüm sorular tek sayfada (`SPEC_CLARIFICATION`, sözleşme v1.2); önerilenler işaretli
+  gelir, değiştirip **Windows Hello** ile bir kez gönderirsin. AGY'ye ya da IdP dışında sana hiçbir şey sorulmaz.
+- Cevaplar: kriterler ilgili görevlerin Director talimatına bağlayıcı olarak eklenir; nesnel kontroller
+  `scripts/aidm-checks/spec-clarifications.mjs` (bağımlılıksız node betiği; içeriği veri, LLM kodu değil)
+  olarak üretilip commit edilir ve **son kabul kapısına** eklenir; kabul edilen iyileştirmeler izinli yollar
+  içinde yeni görev (`TASK-C01`…) olarak eklenir. Sadece serbest metinle verilen cevaplar Director tarafından
+  bir LLM çağrısıyla kritere çevrilir.
+- Soru yoksa (Director "her şey açık" derse) hiçbir şey sorulmaz. IdP yoksa ya da `AIDM_DECISION_MODE=assume`
+  ise önerilen seçenekler varsayım olarak uygulanır ve raporda yazılır.
+- 15 dk içinde cevap gelmezse çalışma **BLOCKED_ON_HUMAN** biter, hiçbir görev çalışmaz. Aynı spec ile
+  yeniden başlatınca aynı sorular Director yeniden çağrılmadan tekrar gönderilir.
+- Cevaplar `.ai-manager/state/spec-clarification/<spec-sha256>.json` içinde ve raporun "Spec netleştirme"
+  bölümünde durur; devam/yeniden başlatmada tekrar sorulmaz. Spec değişirse (yeni parmak izi) yeniden incelenir.
+- Harcama bütçeden düşer (inceleme 1 çağrı; Türkçe düzeltme ve serbest metin çevirisi gerekirse +1'er).
+- Kapatmak için spec'e: `Netleştirme: kapalı` (ascii `Netlestirme: kapali`); varsayılan `açık`.

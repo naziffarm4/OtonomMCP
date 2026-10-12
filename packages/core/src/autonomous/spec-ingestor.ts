@@ -14,6 +14,7 @@
  *    (mandate sealing / approval) refers to exactly this spec revision.
  */
 
+import { parseClarificationSetting } from './spec-clarification.js';
 import * as crypto from 'node:crypto';
 import type {
   InitialProjectUnderstanding,
@@ -73,6 +74,8 @@ export type AnalysisPolicy = 'EVERY_TASK' | 'ON_DEMAND' | 'NEVER';
 export const DEFAULT_ANALYSIS_POLICY: AnalysisPolicy = 'ON_DEMAND';
 const ANALYSIS_RE = /^(?:i̇nceleme|inceleme|İnceleme|INCELEME|analysis\s*policy)\s*[:=]\s*(.+?)\s*\.?$/i;
 
+const CLARIFICATION_RE = /^(?:netleştirme|netlestirme|Netleştirme|NETLEŞTİRME|spec\s*clarification)\s*[:=]\s*(.+?)\s*\.?$/i;
+
 /** Parses an analysis-policy value; undefined when unrecognized. */
 export function parseAnalysisPolicy(raw: string): AnalysisPolicy | undefined {
   const v = raw
@@ -125,6 +128,8 @@ export interface SpecIngestionResult {
   readonly globalAcceptanceCriteria: readonly string[];
   /** Human text of `## Karar Politikası` / `## Decision Policy` (what the Director must ask the PO about). */
   readonly decisionPolicy?: string;
+  /** `Netleştirme: açık|kapalı` (default true): Director reviews the spec and asks the PO before implementing. */
+  readonly clarification: boolean;
   /** `İnceleme:` line (default ON_DEMAND). */
   readonly analysisPolicy: AnalysisPolicy;
 }
@@ -383,8 +388,18 @@ export class SpecIngestor {
     const warnings: string[] = [];
     // Run-wide `İnceleme:` line: consumed here so it never becomes a criterion or requirement.
     let analysisPolicy: AnalysisPolicy = DEFAULT_ANALYSIS_POLICY;
+    let clarification = true;
     const keptLines: string[] = [];
     for (const l of markdown.replace(/\r\n?/g, '\n').split('\n')) {
+      const cm = CLARIFICATION_RE.exec(stripMarkdown(l.replace(/^\s*[-*+]\s+/, '')).trim());
+      if (cm) {
+        const c = parseClarificationSetting(cm[1]);
+        if (c !== undefined) {
+          clarification = c;
+          continue;
+        }
+        warnings.push(`Unrecognized clarification setting '${cm[1]}' (use: açık | kapalı); line kept as text, default (açık) used.`);
+      }
       const m = ANALYSIS_RE.exec(stripMarkdown(l.replace(/^\s*[-*+]\s+/, '')).trim());
       if (m) {
         const p = parseAnalysisPolicy(m[1]);
@@ -640,6 +655,7 @@ export class SpecIngestor {
         : {}),
       verificationCommands,
       analysisPolicy,
+      clarification,
     });
   }
 }
