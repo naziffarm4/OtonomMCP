@@ -12,6 +12,7 @@
  *        (roots may also come from AIDM_WATCH_ROOTS, separated by ';')
  */
 import * as fs from 'node:fs';
+import * as os from 'node:os';
 import * as path from 'node:path';
 import { IdpClient, type IdpResumeRequest } from '../autonomous/idp-client.js';
 import { resolveCanonicalProjectIdentity } from '../director/project-identity-resolver.js';
@@ -162,6 +163,12 @@ export function registerWatcherRoot(root: string, env: Env): boolean {
   if (!f) return false;
   try {
     const abs = path.resolve(root);
+    // Throwaway projects (tests, scratch runs in the temp folder) are never watched.
+    const t = path.resolve(env.AIDM_WATCH_TMPDIR || os.tmpdir());
+    const realT = (() => { try { return fs.realpathSync.native(t); } catch { return t; } })();
+    const realA = (() => { try { return fs.realpathSync.native(abs); } catch { return abs; } })();
+    const under = (a: string, b: string) => { const rel = path.relative(b, a); return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel)); };
+    if (under(abs, t) || under(realA, realT) || (process.platform === 'win32' && under(abs.toLowerCase(), t.toLowerCase()))) return false;
     const roots = readWatcherRoots(env);
     if (roots.some((r) => sameRoot(path.resolve(r), abs))) return true;
     fs.mkdirSync(path.dirname(f), { recursive: true });
@@ -242,7 +249,7 @@ export async function main(argv = process.argv.slice(2), baseEnv: Env = process.
   const backoff = pollBackoff(interval);
   let lastCount = -1;
   for (;;) {
-    const roots = mergeRoots(argRoots, readWatcherRoots(env));
+    const roots = mergeRoots(argRoots, readWatcherRoots(env)).filter((r) => fs.existsSync(r));
     if (roots.length !== lastCount) {
       log(`watching ${roots.length} project(s), every ${interval}s; settings from MCP config: ${Object.keys(fromCfg).length} key(s)`);
       lastCount = roots.length;

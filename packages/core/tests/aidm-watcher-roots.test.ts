@@ -11,7 +11,7 @@ const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), 'aidm-w-'));
 describe('aidm watcher: auto-registered roots, single instance, quiet backoff', () => {
   it('run starts register their project once; list persists in LOCALAPPDATA/aidm', () => {
     const la = tmp();
-    const env = { LOCALAPPDATA: la };
+    const env = { LOCALAPPDATA: la, AIDM_WATCH_TMPDIR: path.join(la, 'tmp-only') };
     assert.equal(watcherRootsFile(env), path.join(la, 'aidm', 'watcher-roots.json'));
     assert.equal(watcherRootsFile({}), null, 'no LOCALAPPDATA (tests/CI) -> nothing written');
     assert.equal(registerWatcherRoot('/p/LLMTEST-1', env), true);
@@ -19,6 +19,8 @@ describe('aidm watcher: auto-registered roots, single instance, quiet backoff', 
     registerWatcherRoot('/p/other', env);
     assert.deepEqual(readWatcherRoots(env), [path.resolve('/p/LLMTEST-1'), path.resolve('/p/other')]);
     assert.equal(registerWatcherRoot('/x', {}), false);
+    assert.equal(registerWatcherRoot(path.join(os.tmpdir(), 'aidm-resume-x'), { LOCALAPPDATA: la }), false, 'temp-folder projects are never registered');
+    assert.equal(readWatcherRoots(env).length, 2);
   });
 
   it('single instance: a second watcher cannot take a live lock; stale locks are reclaimed', () => {
