@@ -29,7 +29,7 @@ import { AutonomousSpecRunner, foreignUncommittedChanges, uncommittedChangesMess
 import { listDecisionRecords } from './decision-requests.js';
 import { preflightLlmProvider } from './llm-provider-config.js';
 import { RunMonitor, runMonitorUrl, type RunMonitorStatus } from './run-monitor.js';
-import { isPidAlive, listCheckpoints, listInterruptedRuns, loadCheckpoint, lockLiveness, readRunLock, runLiveness, type RunCheckpoint } from './run-checkpoint.js';
+import { isPidAlive, isResumableBlockedRun, listCheckpoints, listInterruptedRuns, loadCheckpoint, lockLiveness, readRunLock, runLiveness, type RunCheckpoint } from './run-checkpoint.js';
 
 type Env = Readonly<Record<string, string | undefined>>;
 
@@ -228,8 +228,8 @@ export async function startExternalApproval(o: StartExternalApprovalOptions): Pr
     }
     if (!resumeCp) return { success: false, code: 'NOT_FOUND', message: `No checkpoint for run '${o.resumeRunId}' in ${projectRoot}.` };
     const live = runLiveness(projectRoot, resumeCp);
-    if (live !== 'INTERRUPTED') {
-      return { success: false, code: live === 'ALIVE' ? 'ALREADY_RUNNING' : 'ALREADY_FINISHED', message: `Run ${o.resumeRunId} is ${live}; only interrupted runs can be resumed.` };
+    if (live !== 'INTERRUPTED' && !(live === 'FINISHED' && isResumableBlockedRun(resumeCp))) {
+      return { success: false, code: live === 'ALIVE' ? 'ALREADY_RUNNING' : 'ALREADY_FINISHED', message: `Run ${o.resumeRunId} is ${live}; only interrupted or BLOCKED_ON_HUMAN runs can be resumed.` };
     }
     if (budgetUsd !== undefined && budgetUsd !== resumeCp.budgetUsd) {
       return { success: false, code: 'CONFIGURATION_ERROR', message: `The budget cap is fixed at $${resumeCp.budgetUsd} for run ${o.resumeRunId}.` };

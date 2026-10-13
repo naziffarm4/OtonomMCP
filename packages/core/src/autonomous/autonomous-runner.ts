@@ -46,6 +46,7 @@ import {
   resolveClarification,
   saveClarificationState,
   type ClarificationResolver,
+  type ClarificationCheck,
   type ClarificationState,
 } from './spec-clarification.js';
 import {
@@ -113,6 +114,7 @@ import {
   runLiveness,
   saveCheckpoint,
   stashInterruptedChanges,
+  isResumableBlockedRun,
   writeRunLock,
   type RunCheckpoint,
 } from './run-checkpoint.js';
@@ -767,7 +769,7 @@ export class AutonomousSpecRunner {
       const refuse = (why: string) => this.finish(report, 'CONFIGURATION_ERROR', `Cannot resume ${resumeRunId}: ${why}`, false);
       if (!resumeFrom) return refuse('no checkpoint for this run in this project.');
       const live = runLiveness(projectRoot, resumeFrom);
-      if (live === 'FINISHED') return refuse(`the run already finished (${resumeFrom.status ?? 'FINISHED'}); start a new run instead.`);
+      if (live === 'FINISHED' && !isResumableBlockedRun(resumeFrom)) return refuse(`the run already finished (${resumeFrom.status ?? 'FINISHED'}); start a new run instead.`);
       if (live === 'ALIVE') return refuse(`the run is still active (pid ${readRunLock(projectRoot)?.pid}); it is not interrupted.`);
       if (resumeFrom.specFingerprint !== ingestion.specFingerprint) {
         return refuse('the spec file changed since the run started (fingerprint mismatch); start a new run.');
@@ -1017,8 +1019,13 @@ export class AutonomousSpecRunner {
       );
       const existingTasks = await specStore.loadTasks().catch(() => []);
       const accepted = new Set(existingTasks.filter((t) => t.status === 'ACCEPTED').map((t) => t.task_id));
+      // The sealed spec is re-written as the authoritative task set (accepted ones stay ACCEPTED).
+      // Non-accepted tasks (e.g. REJECTED by an earlier fail-closed stop) restart READY; runner
+      // additions from an earlier run (criteria/scope from clarification answers) are replaced and
+      // re-applied below, so the same-revision guard of the store does not apply here.
       await specStore.saveTasks(
-        ingestion.tasks.map((t) => (accepted.has(t.task_id) ? { ...t, status: 'ACCEPTED' } : t)) as never
+        ingestion.tasks.map((t) => (accepted.has(t.task_id) ? { ...t, status: 'ACCEPTED' } : t)) as never,
+        { bypassValidation: true }
       );
 
       // Approval package: approved by the SAME verified human operator invocation.
@@ -1237,9 +1244,13 @@ export class AutonomousSpecRunner {
       const analysisPolicy = ingestion.analysisPolicy ?? 'ON_DEMAND';
       let firstSegmentTaskId: string | undefined;
       const analysisRefusals = new Map<string, number>();
+      // Out-of-scope changes (no escape/binding/unsafe paths): per-task strikes + the last file list.
+      const scopeStrikes = new Map<string, number>();
+      const scopeFiles = new Map<string, string[]>();
+      const scopeAttemptFiles = new Map<string, string[]>();
       const waiting = new Map<
         string,
-        { record: DecisionRecord; kind: 'DIRECTOR' | 'ATTEMPTS_EXHAUSTED'; promise: Promise<{ taskId: string; outcome: DecisionOutcome }> }
+        { record: DecisionRecord; kind: 'DIRECTOR' | 'ATTEMPTS_EXHAUSTED' | 'SCOPE_VIOLATION'; promise: Promise<{ taskId: string; outcome: DecisionOutcome }> }
       >();
       const allowedDirs = (report.mandate?.allowedDirectories ?? []).map((d) => d.replace(/\\/g, '/').replace(/\/+$/, ''));
 
@@ -1270,6 +1281,39 @@ export class AutonomousSpecRunner {
         if (!n || n.startsWith('/') || /^[a-zA-Z]:/.test(n) || n.split('/').includes('..')) return false;
         if (allowedDirs.length === 0 || allowedDirs.includes('.') || allowedDirs.includes('')) return true;
         return allowedDirs.some((d) => n === d || n.startsWith(`${d}/`));
+      };
+
+      /** Writes every known task definition to the spec store: new ones are added; existing ones get
+       * the runner's acceptance criteria + metadata while keeping their stored status/attempts. */
+      const persistTaskDefs = async (): Promise<void> => {
+        const current = await specStore.loadTasks().catch(() => [] as TaskDefinition[]);
+        const byId = new Map(current.map((t) => [t.task_id, t]));
+        for (const [id, def] of taskDefs) {
+          const cur = byId.get(id);
+          // Executing or accepted tasks are never rewritten.
+          if (cur && (cur.status === TaskStatus.ACCEPTED || cur.status === TaskStatus.IN_PROGRESS)) continue;
+          byId.set(
+            id,
+            cur
+              ? ({ ...cur, acceptance_criteria: [...def.acceptance_criteria], metadata: { ...(cur.metadata ?? {}), ...(def.metadata ?? {}) } } as TaskDefinition)
+              : def
+          );
+        }
+        // Same revision on purpose (intents bind to it); the runner is the authority for these
+        // fields (sealed spec + passkey-verified PO answers), so the same-revision guard is bypassed.
+        await specStore.saveTasks([...byId.values()] as never, { bypassValidation: true });
+      };
+      let clarificationChecks: readonly ClarificationCheck[] = [];
+      /** A scope-mismatch rejection is repairable: the governed pipeline marked the task REJECTED
+       * (fail-closed); only the runner's verified scope classification puts it back to READY. */
+      const reopenTask = async (taskId: string): Promise<void> => {
+        const tasks = await specStore.loadTasks();
+        if (tasks.some((t) => t.task_id === taskId && t.status !== TaskStatus.ACCEPTED)) {
+          // Runtime status transition on stored (already validated) definitions: the store's re-ingest
+          // heuristic would otherwise keep REJECTED for an unchanged definition.
+          await specStore.saveTasks(tasks.map((t) => (t.task_id === taskId ? { ...t, status: TaskStatus.READY } : t)) as never, { bypassValidation: true });
+        }
+
       };
 
       const saveTaskDefs = async (): Promise<void> => {
@@ -1557,7 +1601,8 @@ export class AutonomousSpecRunner {
               maxRecoveryAttempts: maxCycles,
               // Each attempt is a distinct dispatch: a repair with an identical payload must not be
               // swallowed as an idempotent duplicate of the failed attempt.
-              idempotencyKey: `${runId}:${task.task_id}:attempt-${++dispatchSeq}`,
+              // A resumed segment restarts the counter: the segment keeps its keys distinct.
+              idempotencyKey: `${runId}:${resumeFrom ? `s${resumeFrom.segment + 1}:` : ''}${task.task_id}:attempt-${++dispatchSeq}`,
             });
           } catch (err) {
             result = {
@@ -1814,6 +1859,93 @@ export class AutonomousSpecRunner {
             continue;
           }
 
+          // ---- Scope mismatch only (files changed outside implementationScope, but no workspace escape,
+          // binding/baseline problem or unsafe path): repairable, never a security hard stop.
+          const outOfScope = !isAnalysis ? scopeOnlyViolation(result) : null;
+          if (outOfScope) {
+            const strikes = (scopeStrikes.get(task.task_id) ?? 0) + 1;
+            scopeStrikes.set(task.task_id, strikes);
+            scopeFiles.set(task.task_id, outOfScope);
+            // The whole attempt is set aside before any retry: kept in-scope files would make the next
+            // attempt a no-op that independent verification cannot attribute.
+            const attemptFiles = [
+              ...new Set([...outOfScope, ...(result.systemEvidence?.changedFiles ?? []).map((f) => f.path.split(' -> ').pop()!.trim())]),
+            ];
+            scopeAttemptFiles.set(task.task_id, attemptFiles);
+            const scopeNow = currentScopeOf(taskDefs.get(task.task_id)!);
+            this.emit('VERIFICATION', `${outOfScope.length} dosya görev kapsamı dışında: ${monitorText(outOfScope.join(', '), 300)}`, task.task_id, 'warn');
+            if (strikes === 1 && taskReport.cycles < maxCycles) {
+              // Repair cycle: out-of-scope files are set aside (recoverable, never deleted) so the next
+              // attempt is measured against a clean baseline; the Director decides how to proceed.
+              const q = await quarantineFiles(projectRoot, runId, task.task_id, taskReport.cycles, attemptFiles).catch(() => null);
+              await reopenTask(task.task_id).catch((err: unknown) => report.warnings.push(`reopen ${task.task_id} failed: ${err instanceof Error ? err.message : String(err)}`));
+              extraGuidance = [
+                `Attempt ${taskReport.cycles}/${maxCycles} for ${task.task_id} changed files OUTSIDE this task's implementationScope: ${outOfScope.join(', ')}.`,
+                'This is a scope mismatch, not a security incident.',
+                q
+                  ? `AIDM set this attempt's changes aside (${q}, recoverable): the next attempt starts from the last commit and must recreate the in-scope work.`
+                  : '',
+                `Allowed implementationScope: ${scopeNow.join(', ')}.`,
+                `Re-emit IMPLEMENT_TASK for ${task.task_id} and instruct the executor to change ONLY files inside that scope. ` +
+                  'If files outside it are genuinely required, state exactly which ones and why in the rationale: the Product Owner will be asked to widen the scope.',
+                execNote,
+              ]
+                .filter(Boolean)
+                .join('\n');
+              continue;
+            }
+            if (decisionMode === 'ask' && decisionResolver) {
+              const allInMandate = outOfScope.every(isWithinAllowed);
+              const question = [
+                `Görev ${task.task_id} ('${monitorText(task.title, 120)}') izin verilen dosya kapsamının dışında dosyalar değiştirdi (${strikes}. kez).`,
+                `Kapsam dışı dosyalar: ${monitorText(outOfScope.join(', '), 600)}.`,
+                `Görevin kapsamı: ${monitorText(scopeNow.join(', '), 300)}.`,
+                allInMandate ? '' : 'Not: bu dosyaların bir kısmı onayladığın izinli yolların dışında; bunlar kapsama eklenemez.',
+                'Ne yapılsın?',
+              ]
+                .filter(Boolean)
+                .join(' ');
+              const record = buildDecisionRecord({
+                projectRoot,
+                projectId,
+                runId,
+                taskId: task.task_id,
+                packageId: approved.packageId,
+                revision: approved.revision,
+                question,
+                reason:
+                  'Bağımsız doğrulama, görev kapsamı dışındaki dosya değişikliklerini kabul etmez. Bu bir güvenlik ihlali değil (çalışma alanı dışına çıkış veya bağlama hatası yok); karar senin.',
+                options: [
+                  { id: 'widen', label: 'Kapsamı genişlet ve devam et (bu dosyalar göreve eklenir)' },
+                  { id: 'revert', label: 'Fazla dosyaları at ve tekrar dene' },
+                  { id: 'stop', label: 'Çalışmayı durdur' },
+                ],
+                recommendation: allInMandate ? 'widen' : 'revert',
+                allowFreeText: true,
+              });
+              (record as { kind?: string }).kind = 'SCOPE_VIOLATION';
+              await saveDecisionRecord(record);
+              report.decisions.push({ decisionId: record.decisionId, taskId: task.task_id, question: record.question, state: 'PENDING', channel: decisionResolver.channel });
+              taskReport.status = 'WAITING_DECISION';
+              this.pendingDecisionIds.add(record.decisionId);
+              this.emit('DECISION_REQUESTED', `Kapsam dışı dosyalar: ${task.task_id} (${record.decisionId})`, task.task_id, 'warn');
+              const resolver = decisionResolver;
+              const promise = resolver
+                .resolve(record)
+                .catch((err): DecisionOutcome => ({ status: 'FAILED', reason: err instanceof Error ? err.message : String(err) }))
+                .then((outcome) => ({ taskId: task.task_id, outcome }));
+              waiting.set(task.task_id, { record, kind: 'SCOPE_VIOLATION', promise });
+              return 'DEFERRED';
+            }
+            taskReport.status = 'BLOCKED';
+            stop = {
+              status: 'BLOCKED_ON_HUMAN',
+              reason: `Task ${task.task_id} changed files outside its implementationScope (${monitorText(outOfScope.join(', '), 300)}). No human decision channel to widen the scope.`,
+            };
+            this.emit('TASK_BLOCKED', stop.reason, task.task_id, 'error');
+            break;
+          }
+
           if (
             result.status === 'BLOCKED_ON_APPROVAL' ||
             result.status === 'REJECTED_BY_POLICY' ||
@@ -1992,16 +2124,7 @@ export class AutonomousSpecRunner {
             queue.push(tr);
             report.clarification!.newTasks.push(`${id}: ${def.title}`);
           }
-          try {
-            const current = await specStore.loadTasks();
-            const ids = new Set(current.map((t) => t.task_id));
-            // Existing tasks keep their sealed revision (intents are bound to it): the extra criteria
-            // travel in the Director instruction and are enforced by the generated gate checks.
-            const fresh = [...taskDefs.values()].filter((d) => !ids.has(d.task_id));
-            if (fresh.length) await specStore.saveTasks([...current, ...fresh] as never);
-          } catch (err) {
-            report.warnings.push(`Spec store update after clarification failed: ${err instanceof Error ? err.message : String(err)}`);
-          }
+          clarificationChecks = res.checks;
           report.clarification!.criteriaAdded = added;
           // Objective checks -> generated dependency-free script on the final gate (committed by AIDM).
           if (res.checks.length) {
@@ -2026,6 +2149,29 @@ export class AutonomousSpecRunner {
           if (res.notes.length) {
             clarificationNote = `BINDING PRODUCT_OWNER SPEC CLARIFICATIONS (verified answers; follow them in every task): ${res.notes.join(' | ')}`.slice(0, 3000);
           }
+        }
+      }
+
+      // ---- Task scope + criteria land in the spec store (the driver builds the instruction's
+      // implementationScope and acceptanceCriteria from it). Existing tasks keep their revision and
+      // status; only criteria/metadata change (intents bind to the revision number).
+      if (!stop) {
+        for (const t of report.tasks) {
+          if (accepted.has(t.taskId)) continue;
+          const def = taskDefs.get(t.taskId);
+          if (!def) continue;
+          const meta = (def.metadata ?? {}) as Record<string, unknown>;
+          const tf = Array.isArray(meta.targetFiles) ? (meta.targetFiles as unknown[]).filter((x): x is string => typeof x === 'string') : [];
+          // The shared page-asset scope is a PO-approved rule; other extras must lie inside the mandate.
+          const extra = scopeExtrasForTask(tf, clarificationChecks).filter((e) => SHARED_PAGE_ASSET_SCOPE.includes(e) || isWithinAllowed(e));
+          const prevExtra = Array.isArray(meta.implementationScopeExtra) ? (meta.implementationScopeExtra as string[]) : [];
+          const merged = [...new Set([...prevExtra, ...extra])];
+          if (merged.length) taskDefs.set(t.taskId, { ...def, metadata: { ...meta, implementationScopeExtra: merged } } as TaskDefinition);
+        }
+        try {
+          await persistTaskDefs();
+        } catch (err) {
+          report.warnings.push(`Spec store update (scope/criteria) failed: ${err instanceof Error ? err.message : String(err)}`);
         }
       }
 
@@ -2064,6 +2210,59 @@ export class AutonomousSpecRunner {
               entry.answer = outcome.answer;
             }
             await saveDecisionRecord(w.record);
+            if (w.kind === 'SCOPE_VIOLATION') {
+              const sel = outcome.answer.selectedOptionId;
+              const note = outcome.answer.freeText ? monitorText(outcome.answer.freeText, 2000) : '';
+              const files = scopeFiles.get(taskId) ?? [];
+              this.emit('DECISION_ANSWERED', `${w.record.decisionId}: ${sel ?? 'serbest metin'}`, taskId);
+              await historyManager.appendEvent({
+                eventType: 'AUTONOMOUS_DECISION_ANSWERED',
+                actor: Actor.USER,
+                taskId,
+                payload: { decisionId: w.record.decisionId, kind: 'SCOPE_VIOLATION', selectedOptionId: sel ?? null, files, answeredBy: outcome.answer.answeredBy },
+              });
+              if (sel === 'widen' || sel === 'revert') {
+                const def = taskDefs.get(taskId)!;
+                const meta = (def.metadata ?? {}) as Record<string, unknown>;
+                let widened: string[] = [];
+                let outside: string[] = files;
+                if (sel === 'widen') {
+                  widened = files.filter(isWithinAllowed);
+                  outside = files.filter((f) => !isWithinAllowed(f));
+                  const prev = Array.isArray(meta.implementationScopeExtra) ? (meta.implementationScopeExtra as string[]) : [];
+                  taskDefs.set(taskId, { ...def, metadata: { ...meta, implementationScopeExtra: [...new Set([...prev, ...widened])] } } as TaskDefinition);
+                  await persistTaskDefs().catch(() => undefined);
+                  report.assumptions.push(`[${taskId}] PO widened the task scope with: ${widened.join(', ') || '-'}.`);
+                }
+                // The attempt is set aside (recoverable, never deleted) and redone with the decided scope.
+                const q = await quarantineFiles(projectRoot, runId, taskId, tr.cycles, scopeAttemptFiles.get(taskId) ?? files).catch(() => null);
+                await reopenTask(taskId).catch(() => undefined);
+                const n = attemptsFor(taskId) + 1; // exactly +1 attempt; budget cap untouched
+                allowedAttempts.set(taskId, n);
+                scopeStrikes.set(taskId, 0);
+                guidance.set(
+                  taskId,
+                  [
+                    sel === 'widen'
+                      ? `AUTHORITATIVE PRODUCT_OWNER DECISION: these files are now inside ${taskId}'s implementationScope: ${widened.join(', ')}. The previous attempt was set aside (${q ?? 'n/a'}); redo the task, these files included.`
+                      : `AUTHORITATIVE PRODUCT_OWNER DECISION: do NOT create ${files.join(', ')}. The previous attempt was set aside (${q ?? 'n/a'}). Complete ${taskId} changing ONLY files inside its implementationScope: ${currentScopeOf(taskDefs.get(taskId)!).join(', ')}.`,
+                    sel === 'widen' && outside.length ? `Outside the approved paths (still not allowed): ${outside.join(', ')}.` : '',
+                    note ? `Product Owner guidance: ${note}` : '',
+                  ]
+                    .filter(Boolean)
+                    .join('\n')
+                );
+                tr.status = 'PENDING';
+                queue.unshift(tr);
+              } else if (sel === 'stop') {
+                tr.status = 'BLOCKED';
+                stop = { status: 'STOPPED', reason: `Ürün sahibi kararıyla durduruldu (${w.record.decisionId}).` };
+              } else {
+                tr.status = 'BLOCKED';
+                stop = { status: 'BLOCKED_ON_HUMAN', reason: `Task ${taskId}: answer to ${w.record.decisionId} selected no option; scope unchanged.` };
+              }
+              continue;
+            }
             if (w.kind === 'ATTEMPTS_EXHAUSTED') {
               const sel = outcome.answer.selectedOptionId;
               const note = outcome.answer.freeText ? monitorText(outcome.answer.freeText, 2000) : '';
@@ -2688,4 +2887,84 @@ export function renderAutonomousReportMarkdown(r: AutonomousRunReport): string {
   if (r.warnings.length) lines.push('', '## Uyarılar', '', ...r.warnings.map((w) => `- ${w}`));
   lines.push('', '## Commitler', '', ...(r.commits.length ? r.commits.map((c) => `- ${c}`) : ['- (yok)']), '');
   return lines.join('\n');
+}
+
+/** Shared asset scope granted to page work (HTML pages always come with shared CSS/JS/images). */
+export const SHARED_PAGE_ASSET_SCOPE: readonly string[] = Object.freeze(['assets/**', '*.css']);
+
+/**
+ * Extra implementationScope entries for a task: shared asset paths when the task builds pages, plus
+ * every concrete path the PO's clarification checks require (e.g. `assets/site.js`).
+ */
+export function scopeExtrasForTask(targetFiles: readonly string[], checks: readonly ClarificationCheck[]): string[] {
+  const out = new Set<string>();
+  if (targetFiles.some((f) => /\.html?$/i.test(f))) for (const s of SHARED_PAGE_ASSET_SCOPE) out.add(s);
+  for (const c of checks) {
+    const p = (c as { path?: unknown }).path;
+    if ((c.type === 'file_exists' || c.type === 'file_contains') && typeof p === 'string' && p.trim()) out.add(p.replace(/\\/g, '/').replace(/^\.\//, ''));
+  }
+  return [...out];
+}
+
+/**
+ * Returns the out-of-scope files when the ONLY failing independent check is the implementation-scope
+ * check (no workspace escape, binding, baseline/git, security or unsafe-path failure); else null.
+ */
+export function scopeOnlyViolation(result: ClosedLoopCycleResult): string[] | null {
+  const ev = result.systemEvidence as
+    | { verificationChecks?: ReadonlyArray<{ checkId?: string; type: string; status: unknown; evidence?: string }>; failureCategory?: string }
+    | undefined;
+  if (!ev || !Array.isArray(ev.verificationChecks)) return null;
+  if (ev.failureCategory && ev.failureCategory !== 'SECURITY_FAILURE') return null;
+  const failing = ev.verificationChecks.filter((c) => c.status === 'FAIL' || c.status === 'BLOCK');
+  if (!failing.length || !failing.every((c) => c.type === 'FILE_SCOPE' && c.status === 'FAIL')) return null;
+  const files = new Set<string>();
+  for (const c of failing) {
+    const m = /\[([^\]]*)\]\s*$/.exec(c.evidence ?? '');
+    if (!m) return null;
+    for (const f of m[1]!.split(',').map((x) => x.trim()).filter(Boolean)) files.add(f.replace(/\\/g, '/'));
+  }
+  if (!files.size) return null;
+  // A path that tries to leave the project is a real security issue, never "just scope".
+  for (const f of files) if (f.startsWith('/') || /^[a-zA-Z]:/.test(f) || f.split('/').includes('..')) return null;
+  return [...files];
+}
+
+function currentScopeOf(def: TaskDefinition): string[] {
+  const meta = (def.metadata ?? {}) as Record<string, unknown>;
+  const tf = Array.isArray(meta.targetFiles) ? (meta.targetFiles as unknown[]).filter((x): x is string => typeof x === 'string') : [];
+  const extra = Array.isArray(meta.implementationScopeExtra) ? (meta.implementationScopeExtra as unknown[]).filter((x): x is string => typeof x === 'string') : [];
+  return [...new Set([...tf, ...extra])];
+}
+
+/**
+ * Sets out-of-scope files aside under .ai-manager/scope-quarantine/<run>/<task>-attempt-<n>/ (copies
+ * kept, recoverable): new files are moved there, tracked files are copied there and restored from
+ * HEAD. Only project-relative paths outside .ai-manager are touched. Returns the quarantine dir.
+ */
+export async function quarantineFiles(projectRoot: string, runId: string, taskId: string, attempt: number, files: readonly string[]): Promise<string> {
+  const rel = path.posix.join('.ai-manager', 'scope-quarantine', runId.replace(/[^A-Za-z0-9._-]/g, '_'), `${taskId.replace(/[^A-Za-z0-9._-]/g, '_')}-attempt-${attempt}`);
+  const dir = path.join(projectRoot, rel);
+  const root = path.resolve(projectRoot);
+  for (const f of files) {
+    const n = f.replace(/\\/g, '/');
+    if (!n || n.startsWith('/') || /^[a-zA-Z]:/.test(n) || n.split('/').includes('..') || n === '.ai-manager' || n.startsWith('.ai-manager/') || n.startsWith('.git/')) continue;
+    const abs = path.resolve(root, n);
+    if (!abs.startsWith(root + path.sep)) continue;
+    let tracked = false;
+    try {
+      await git(projectRoot, ['cat-file', '-e', `HEAD:${n}`]);
+      tracked = true;
+    } catch {
+      tracked = false;
+    }
+    const dest = path.join(dir, n);
+    if (fs.existsSync(abs) && fs.statSync(abs).isFile()) {
+      fs.mkdirSync(path.dirname(dest), { recursive: true });
+      fs.copyFileSync(abs, dest);
+      if (!tracked) fs.rmSync(abs, { force: true });
+    }
+    if (tracked) await git(projectRoot, ['checkout', 'HEAD', '--', n]).catch(() => undefined);
+  }
+  return rel;
 }

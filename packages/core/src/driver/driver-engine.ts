@@ -642,7 +642,16 @@ export class DriverEngine {
         approvalPackageRevision: pkg.revision,
         objective: task.description || task.title,
         targetFiles,
-        implementationScope: targetFiles,
+        // Task scope = its target files + runner-granted extras (shared assets for page work, paths
+        // required by the PO's clarification checks, PO-approved scope extensions).
+        implementationScope: [
+          ...new Set([
+            ...targetFiles,
+            ...(Array.isArray(metaAny.implementationScopeExtra)
+              ? (metaAny.implementationScopeExtra as unknown[]).filter((x): x is string => typeof x === 'string' && x.trim().length > 0)
+              : []),
+          ]),
+        ],
         acceptanceCriteria: task.acceptance_criteria as any,
         actor: 'DIRECTOR',
       });

@@ -555,9 +555,29 @@ export class SystemEvidenceCollector {
       // CASE 1 & CASE 2: implementationScope is defined
       const normalizedScopeEntries = implementationScope.map((s) => s.replace(/\\/g, '/').trim());
 
+      // Scope entries are exact files, directory prefixes, or simple globs ('*' = one path segment,
+      // '**' = any depth, e.g. 'assets/**', '*.css').
+      const scopeGlob = (g: string): RegExp => {
+        let r = '';
+        for (let i = 0; i < g.length; i++) {
+          const ch = g[i]!;
+          if (ch === '*') {
+            if (g[i + 1] === '*') {
+              i++;
+              if (g[i + 1] === '/') {
+                i++;
+                r += '(?:.*/)?';
+              } else r += '.*';
+            } else r += '[^/]*';
+          } else if (ch === '?') r += '[^/]';
+          else r += ch.replace(/[.+^${}()|[\]\\]/g, '\\$&');
+        }
+        return new RegExp(`^${r}$`);
+      };
       const isPathInScope = (filePath: string): boolean => {
         return normalizedScopeEntries.some((scope) => {
-          return filePath === scope || filePath.startsWith(scope + '/');
+          if (scope.includes('*') || scope.includes('?')) return scopeGlob(scope).test(filePath);
+          return filePath === scope || filePath.startsWith(scope.replace(/\/+$/, '') + '/');
         });
       };
 

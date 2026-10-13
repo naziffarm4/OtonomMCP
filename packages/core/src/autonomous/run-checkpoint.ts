@@ -172,6 +172,14 @@ export function runLiveness(projectRoot: string, cp: RunCheckpoint): RunLiveness
   return 'INTERRUPTED';
 }
 
+/**
+ * A run that ended BLOCKED_ON_HUMAN (fail-closed stop waiting for the PO) can be resumed with the same
+ * runId, exactly like an interrupted one (fresh passkey approval, same budget, accepted tasks kept).
+ */
+export function isResumableBlockedRun(cp: RunCheckpoint): boolean {
+  return cp.state === 'FINISHED' && cp.status === 'BLOCKED_ON_HUMAN';
+}
+
 export function listInterruptedRuns(projectRoot: string): RunCheckpoint[] {
   return listCheckpoints(projectRoot).filter((c) => runLiveness(projectRoot, c) === 'INTERRUPTED');
 }
