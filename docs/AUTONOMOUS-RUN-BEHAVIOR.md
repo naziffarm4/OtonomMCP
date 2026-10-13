@@ -212,3 +212,16 @@ Spec satırı `Yürütücü: ide | cli | cli-oturum` (yoksa `AIDM_EXECUTOR_MODE`
 - Her çalışma başlangıcı projeyi `%LOCALAPPDATA%\aidm\watcher-roots.json` listesine ekler; watcher listeyi her turda yeniden okur.
 - Tek kopya: `%LOCALAPPDATA%\aidm\aidm-watcher.lock`; ikinci watcher hemen çıkar.
 - IdP erişilemezse yalnızca durum değişince loglanır; bekleme 60 sn'ye kadar katlanarak artar.
+
+## Web projeleri: son kontrol, görsel inceleme, tamamlama raporu
+
+- Projede `.html` sayfa varsa son kontrole (final gate) otomatik iki komut eklenir:
+  `node .ai-manager/checks/web-site-check.cjs` (ortak menü, tek ortak CSS, kırık iç bağlantı, viewport, tasarım tokenları) ve
+  `node .ai-manager/checks/web-browser-check.cjs` (gizli headless Chromium: konsol hataları, telefonda yatay taşma,
+  telefon 390x844 ve masaüstü 1366x900 ekran görüntüleri → `.ai-manager/reports/screenshots/`). Böylece sonuç NO_CHECKS değil PASS/FAIL olur.
+  Playwright yoksa tarayıcı kontrolü SKIPPED der ve geçer (`AIDM_BROWSER_REQUIRED=1` ile zorunlu); `AIDM_BROWSER_CHECK=0` kapatır; `AIDM_WEB_CHECKS=0` tüm web kontrollerini kapatır.
+  Playwright yeri: `AIDM_PLAYWRIGHT_DIR` → `%LOCALAPPDATA%\aidm\browser` → `~/.aidm/browser`.
+- Ekran görüntüleri varsa Director en fazla 6 görüntüyü tasarım kurallarına göre görsel olarak inceler (bütçeden düşer, tavsiye niteliğinde; `AIDM_VISUAL_REVIEW=0` kapatır).
+- Çalışma sonunda `.ai-manager/reports/tamamlama-<runId>.md` (tek sayfa Türkçe özet) yazılır ve IdP çalışma sayfasına ekran görüntüleriyle birlikte gönderilir.
+- Kurulumdan önce: `cd packages/core && npm run smoke` (sahte LLM + simüle IDE ile uçtan uca duman testi).
+- Spec şablonu: `docs/spec-sablonu.md`.

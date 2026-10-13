@@ -16,3 +16,5 @@ export * from './instruction-channel.js';
 export * from './run-checkpoint.js';
 export * from './worker.js';
 export * from './spec-clarification.js';
+export * from './web-checks.js';
+export * from './completion-report.js';

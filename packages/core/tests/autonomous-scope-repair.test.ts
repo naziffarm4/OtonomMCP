@@ -55,7 +55,7 @@ describe('scope repair + PO scope decision + resume blocked run', { concurrency:
   const run = async (args: string[] = [], extra: Record<string, unknown> = {}) =>
     ((await executeCli(['run', '--spec', 'proje.md', '-C', dir, '--budget-usd', '1', '--json', ...args], {
       cwd: dir,
-      env: {},
+      env: { AIDM_WEB_CHECKS: '0' }, // stub pages: web site checks are covered in web-checks-completion.test.ts
       stdout: (t) => out.push(t),
       stderr: (t) => out.push(t),
       executorPort: agy,

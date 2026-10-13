@@ -75,6 +75,8 @@ export interface LlmMessage {
   readonly role: LlmRole;
   readonly content: string;
   readonly name?: string;
+  /** Optional images (data: URLs) for vision-capable models; sent as OpenAI image_url parts. */
+  readonly images?: readonly string[];
 }
 
 export interface LlmRequestCorrelation {
@@ -315,6 +317,9 @@ export function validateLlmRequest(input: unknown): LlmRequest {
         role: m.role,
         content: m.content,
         name: typeof m.name === 'string' ? m.name.trim() : undefined,
+        ...(Array.isArray((m as { images?: unknown }).images)
+          ? { images: Object.freeze(((m as { images: unknown[] }).images).filter((u): u is string => typeof u === 'string').slice(0, 8)) }
+          : {}),
       });
     });
   } else {

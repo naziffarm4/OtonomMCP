@@ -56,7 +56,7 @@ import type { TokenTelemetry } from '../token-budget/budget-types.js';
 
 export interface ReferenceWireMessage {
   readonly role: 'system' | 'user' | 'assistant' | 'tool';
-  readonly content: string;
+  readonly content: string | ReadonlyArray<{ type: 'text'; text: string } | { type: 'image_url'; image_url: { url: string; detail?: 'low' | 'high' | 'auto' } }>;
   readonly name?: string;
 }
 
@@ -355,7 +355,10 @@ export class ReferenceLlmAdapter implements LLMProvider {
     // 1. Map messages preserving order and role
     const wireMessages: ReferenceWireMessage[] = request.messages.map((m) => ({
       role: m.role as 'system' | 'user' | 'assistant' | 'tool',
-      content: m.content,
+      content:
+        m.images && m.images.length
+          ? [{ type: 'text' as const, text: m.content }, ...m.images.filter((u) => /^data:image\/(png|jpeg|webp);base64,/.test(u)).map((url) => ({ type: 'image_url' as const, image_url: { url, detail: 'low' as const } }))]
+          : m.content,
       ...(m.name ? { name: m.name } : {}),
     }));
 

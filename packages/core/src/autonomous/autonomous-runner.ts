@@ -97,6 +97,8 @@ import { LlmResponseFormat } from '../llm-bridge/llm-types.js';
 import type { ExecutorPort } from '../executor-bridge/executor-port.js';
 import { AntigravityAdapter } from '../executor-bridge/antigravity-adapter.js';
 import { registerWatcherRoot } from '../mcp/aidm-watcher.js';
+import { webGateCommands } from './web-checks.js';
+import { collectScreenshots, runVisualReview, renderCompletionReportTr, type VisualReview } from './completion-report.js';
 import { createIdeRequestInvoker, IDE_EXECUTOR_ID, noteIdeEvent, resetIdeMailbox, resolveExecutorMode, type ExecutorMode } from '../executor-bridge/ide-executor.js';
 import { NodeAntigravityProcessRunner } from '../executor-bridge/antigravity-process-runner.js';
 import { LifecycleState } from '../lifecycle.js';
@@ -304,6 +306,10 @@ export interface AutonomousRunReport {
   /** Binding Director-owned design direction (UI projects), stored in .ai-manager/state/design-brief.json. */
   executorMode?: ExecutorMode;
   designBrief?: { name: string; optionId: string; tokens: Record<string, string>; decidedBy: string };
+  /** Director vision review of the headless-browser screenshots (advisory). */
+  visualReview?: VisualReview;
+  /** One-page Turkish completion report (.ai-manager/reports/tamamlama-<runId>.md). */
+  completionReportPath?: string;
   monitorUrl?: string;
   skippedByPo?: string[];
   stopReason?: string;
@@ -2718,7 +2724,9 @@ export class AutonomousSpecRunner {
 
       // ---- Final run-level acceptance gate: ALL global commands (+ command-like global
       // criteria) must pass on the finished tree. Missing referenced files = FAIL (fail closed).
-      const gateCommands = [...finalGateCommands(ingestion.verificationCommands, ingestion.globalAcceptanceCriteria), ...extraGateCommands];
+      // Web projects always get spec-derived site checks (shared nav/CSS, links, tokens, browser).
+      const webGate = !stop && this.env.AIDM_WEB_CHECKS !== '0' && report.tasks.some((t) => t.status === 'ACCEPTED') ? webGateCommands(projectRoot, { browser: this.env.AIDM_BROWSER_CHECK !== '0' }) : [];
+      const gateCommands = [...finalGateCommands(ingestion.verificationCommands, ingestion.globalAcceptanceCriteria), ...extraGateCommands, ...webGate];
       const everyTaskAccepted = (): boolean =>
         report.tasks.filter((t) => t.kind !== 'ANALYSIS').every((t) => t.status === 'ACCEPTED' || t.status === 'SKIPPED');
       report.finalGate = { status: 'NOT_RUN', repairs: 0, checks: [], criteria: [...ingestion.globalAcceptanceCriteria] };
@@ -2753,7 +2761,7 @@ export class AutonomousSpecRunner {
               ...new Set([
                 ...report.tasks.filter((t) => t.status === 'ACCEPTED').flatMap((t) => t.filesChanged),
                 ...ingestion.requirements.flatMap((r) => [...r.targetFiles]),
-                ...failed.flatMap((c) => referencedPaths(c.command).filter((p) => p !== 'package.json')),
+                ...failed.flatMap((c) => referencedPaths(c.command).filter((p) => p !== 'package.json' && !p.startsWith('.ai-manager/'))),
               ]),
             ].slice(0, 50),
           });
@@ -2772,6 +2780,22 @@ export class AutonomousSpecRunner {
       }
       if (pollTimer) clearInterval(pollTimer);
       await Promise.allSettled([...pendingAnswers]);
+      // Visual check: Director reviews the gate's screenshots against the design rules (budgeted, advisory).
+      if (report.finalGate && report.finalGate.status !== 'NOT_RUN' && this.env.AIDM_VISUAL_REVIEW !== '0') {
+        const shots = collectScreenshots(projectRoot);
+        if (shots.length) {
+          report.visualReview = await runVisualReview({
+            provider: provider as never,
+            model: baseProvider.defaultModel,
+            projectId: report.projectId,
+            runId,
+            shots,
+            designBrief: report.designBrief,
+            isBudgetExhausted: () => isBudgetExhausted(budgetManager!),
+          });
+          this.emit('VISUAL_REVIEW', `Görsel inceleme: ${report.visualReview.status}${report.visualReview.notes.length ? ` — ${report.visualReview.notes.slice(0, 2).join(' | ')}` : ''}`, undefined, report.visualReview.status === 'SORUNLU' ? 'warn' : 'info');
+        }
+      }
 
       const allAccepted =
         !stop &&
@@ -2855,6 +2879,20 @@ export class AutonomousSpecRunner {
       await fs.promises.writeFile(jsonPath, JSON.stringify(report, null, 2), 'utf8');
       // UTF-8 with BOM so Windows tools (PowerShell 5 Get-Content, Notepad) detect UTF-8 reliably.
       await fs.promises.writeFile(jsonPath.replace(/\.json$/, '.md'), `\uFEFF${renderAutonomousReportMarkdown(report)}`, 'utf8');
+      try {
+        const shots = collectScreenshots(report.projectRoot);
+        const md = renderCompletionReportTr(report, shots.map((x) => ({ caption: x.caption, file: path.relative(report.projectRoot, x.file).split(path.sep).join('/') })));
+        const cp = path.join(dir, `tamamlama-${report.runId}.md`);
+        await fs.promises.writeFile(cp, `\uFEFF${md}`, 'utf8');
+        report.completionReportPath = cp;
+        await fs.promises.writeFile(jsonPath, JSON.stringify(report, null, 2), 'utf8');
+        if (this.monitor) {
+          const up = await this.monitor.uploadCompletion(md, shots);
+          if (!up.report) this.emit('REPORT', 'Tamamlama raporu izleme paneline gönderilemedi (yerel dosyada duruyor).', undefined, 'warn');
+        }
+      } catch {
+        // The completion report is best effort; the main report is already written.
+      }
     }
     if (this.checkpoint) {
       if (report.reportPath) this.checkpoint.reportPath = report.reportPath;

@@ -175,7 +175,8 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "typecheck:tests": "tsc -p tsconfig.test.json --noEmit",
     "test": "node scripts/run-tests.js",
-    "test:live": "node scripts/run-tests.js --live"
+    "test:live": "node scripts/run-tests.js --live",
+    "smoke": "npm run build && node --experimental-strip-types --no-warnings --test tests/smoke-e2e.test.ts"
   },
   "keywords": [
     "aidm",

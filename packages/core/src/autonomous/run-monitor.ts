@@ -290,10 +290,30 @@ export class RunMonitor {
     if (!ok) this.stats.dropped += batch.length;
   }
 
-  private async request(method: 'PUT' | 'POST', p: string, body: unknown): Promise<boolean> {
+  /**
+   * Completion report (Turkish summary) + screenshots for the IdP run page. Best effort, bounded:
+   * summary <= 20k chars, at most 24 images of <= 400 KB each (jpeg/png/webp data URLs). Never throws.
+   */
+  async uploadCompletion(summary: string, shots: ReadonlyArray<{ name: string; caption: string; dataUrl: string }>): Promise<{ report: boolean; screenshots: number }> {
+    const out = { report: false, screenshots: 0 };
+    try {
+      const base = `/api/runs/${encodeURIComponent(this.runId)}`;
+      out.report = await this.request('PUT', `${base}/report`, { summary: summary.slice(0, 20_000) });
+      for (const s of shots.slice(0, 24)) {
+        if (!/^[A-Za-z0-9._-]{1,80}$/.test(s.name) || !/^data:image\/(jpeg|png|webp);base64,/.test(s.dataUrl)) continue;
+        if (Buffer.byteLength(s.dataUrl) > 400 * 1024 * 1.4) continue;
+        if (await this.request('PUT', `${base}/screenshots/${encodeURIComponent(s.name)}`, { caption: s.caption.slice(0, 200), dataUrl: s.dataUrl }, 600_000)) out.screenshots++;
+      }
+    } catch {
+      /* never throws */
+    }
+    return out;
+  }
+
+  private async request(method: 'PUT' | 'POST', p: string, body: unknown, maxBytes = 60_000): Promise<boolean> {
     try {
       const json = JSON.stringify(body);
-      if (Buffer.byteLength(json) > 60_000) {
+      if (Buffer.byteLength(json) > maxBytes) {
         this.stats.failed++;
         return false;
       }
