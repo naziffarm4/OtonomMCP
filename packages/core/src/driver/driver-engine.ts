@@ -659,6 +659,9 @@ export class DriverEngine {
           ]),
         ],
         acceptanceCriteria: task.acceptance_criteria as any,
+        ...(metaAny.verificationOnly
+          ? { constraints: ['Do not modify any files (verification only): run the checks of this task and report each result under FINDINGS:'] }
+          : {}),
         actor: 'DIRECTOR',
       });
     }

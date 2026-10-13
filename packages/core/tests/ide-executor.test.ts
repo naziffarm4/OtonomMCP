@@ -11,6 +11,7 @@ import {
   noteIdeEvent, readAgySession, writeAgySession, createTimeoutRawOutcome,
 } from '../dist/executor-bridge/index.js';
 import type { BudgetManager } from '../dist/budget/index.js';
+import { isVerificationOnlyTask } from '../dist/autonomous/index.js';
 import { InMemoryIdentityManager, MockDirectorLlm, MockAgyExecutor } from './helpers/autonomous-test-doubles.ts';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -163,5 +164,32 @@ describe('executor modes', { concurrency: 1, timeout: 600_000 }, () => {
       fs.rmSync(dir, { recursive: true, force: true });
       dir = '';
     }
+  });
+
+  it('verification-only task: no file change -> re-run as read-only verification -> accepted; a normal task is not', async () => {
+    const AUDIT = `# Site\n\nKüçük site.\n\nNetleştirme: kapalı\n\n## Gereksinimler\n\n### Denetim\n\`src/a.js\` için Lighthouse ile doğrula, konsolda hata olmasın.\n`;
+    setup(AUDIT);
+    fs.mkdirSync(path.join(dir, 'src')); fs.writeFileSync(path.join(dir, 'src', 'a.js'), 'export const a = 1;\n'); git(dir, 'add', '-A'); git(dir, 'commit', '-qm', 'a');
+    const agy = new MockAgyExecutor(dir);
+    agy.claimOnly = true;
+    agy.stdoutFor = () => 'FINDINGS: Lighthouse 98, konsol hatası yok';
+    const rep = await run(agy);
+    const cons = agy.requestsSeen.map((r: Any) => JSON.stringify(r.instruction?.constraints ?? []));
+    assert.ok(cons.some((c) => /verification only/.test(c)), JSON.stringify(cons) + why(rep));
+    assert.equal(rep.status, 'COMPLETED', why(rep));
+    assert.equal(isVerificationOnlyTask({ title: 'A', description: '`src/a.js` içinde a.' }), false, 'implementation tasks never become read-only');
+  });
+
+  it('spec review: truncated JSON is retried once with a larger token limit', async () => {
+    setup(LIB.replace('Netleştirme: kapalı\n', ''));
+    const llm = new MockDirectorLlm();
+    llm.clarify = ({ call }) => {
+      if (call === 1) throw new Error('[ERR_STRUCTURED_OUTPUT_VALIDATION] Failed to parse structured output as valid JSON: Unexpected end of JSON input');
+      return { summary: 'Plan açık.', questions: [] };
+    };
+    const rep = await run(new MockAgyExecutor(dir), {}, llm);
+    assert.equal(llm.clarifyRequests.length, 2);
+    assert.equal((llm.clarifyRequests[1] as Any).max_tokens, 16000);
+    assert.notEqual(rep.clarification.status, 'FAILED', why(rep));
   });
 });

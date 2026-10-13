@@ -428,6 +428,7 @@ export class AutonomousSpecRunner {
     model: string;
     decisionMode: string;
     isBudgetExhausted: () => boolean;
+    resuming?: boolean;
   }): Promise<{ stop?: { status: AutonomousRunStatus; reason: string }; apply?: ReturnType<typeof resolveClarification> }> {
     const { projectRoot, ingestion, report } = ctx;
     const rep: NonNullable<AutonomousRunReport['clarification']> = { status: 'NONE', lines: [], criteriaAdded: 0, newTasks: [] };
@@ -456,15 +457,31 @@ export class AutonomousSpecRunner {
       rep.status = 'NONE';
       return {};
     }
+    if (ctx.resuming && !st) {
+      // The first segment already ran (or skipped) the review; a resume never repeats it.
+      rep.status = 'NONE';
+      this.emit('CLARIFICATION', 'Devam eden çalışma: spec incelemesi ilk bölümde yapıldı, tekrarlanmıyor.');
+      return {};
+    }
 
     const llmJson = async (system: string, user: string, extra: Array<{ role: 'assistant' | 'user'; content: string }> = []): Promise<unknown> => {
+      try {
+        return await llmJsonOnce(system, user, extra, 8000);
+      } catch (err) {
+        // Truncated / malformed JSON (e.g. the model hit max tokens): one retry with a larger budget.
+        if (!/JSON|STRUCTURED_OUTPUT/i.test(err instanceof Error ? err.message : String(err))) throw err;
+        this.emit('CLARIFICATION', 'Spec incelemesi yanıtı yarım geldi; daha geniş sınırla bir kez yeniden deneniyor.', undefined, 'warn');
+        return llmJsonOnce(system, user, [...extra, { role: 'user', content: 'Önceki yanıt yarım kaldı. Daha kısa yaz: en fazla 6 soru, kısa gerekçeler; yalnızca geçerli JSON döndür.' }], 16000);
+      }
+    };
+    const llmJsonOnce = async (system: string, user: string, extra: Array<{ role: 'assistant' | 'user'; content: string }>, maxTokens: number): Promise<unknown> => {
       if (ctx.isBudgetExhausted()) throw new Error('Budget exhausted before the spec review.');
       const res = await ctx.provider.generate({
         correlation: { correlation_id: `clarify-${crypto.randomUUID()}`, project_id: ctx.projectId, task_id: SPEC_CLARIFICATION_TASK_ID, attempt: 1 },
         messages: [{ role: 'system', content: system }, { role: 'user', content: user }, ...extra],
         director_context: { project_id: ctx.projectId, task_id: SPEC_CLARIFICATION_TASK_ID, objective: 'spec review', acceptance_criteria: null, attempt: 1, max_attempts: 1, relevant_context: null },
         model: ctx.model,
-        max_tokens: 6000,
+        max_tokens: maxTokens,
         response_format: LlmResponseFormat.JSON_OBJECT,
         json_schema: null,
         metadata: { purpose: 'SPEC_CLARIFICATION', runId: ctx.runId },
@@ -1285,6 +1302,8 @@ export class AutonomousSpecRunner {
       const policyStrikes = new Map<string, number>();
       const unknownFiles = new Map<string, string[]>();
       const nearMissFixes = new Map<string, number>();
+      const noChangeTurns = new Map<string, number>();
+      const staleRetries = new Map<string, number>();
       const waiting = new Map<
         string,
         { record: DecisionRecord; kind: 'DIRECTOR' | 'ATTEMPTS_EXHAUSTED' | 'SCOPE_VIOLATION' | 'POLICY_PATH' | 'EXECUTION_UNKNOWN'; promise: Promise<{ taskId: string; outcome: DecisionOutcome }> }
@@ -1763,6 +1782,37 @@ export class AutonomousSpecRunner {
           // attempt is refused as "already in terminal state".
           if (/self-claim rejected|claims cannot substitute/i.test(String(result.summary ?? ''))) {
             await reopenTask(task.task_id, true).catch(() => undefined);
+            // Verification-only / audit work legitimately changes nothing: tell the Director how to
+            // get that independently verified instead of burning attempts on "no changes".
+            const n = (noChangeTurns.get(task.task_id) ?? 0) + 1;
+            noChangeTurns.set(task.task_id, n);
+            if (n <= 1 && !pauseInstruction && isVerificationOnlyTask(taskDefs.get(task.task_id) ?? task)) {
+              // Audit/verification task (Lighthouse, zero console errors, ...): the next attempt runs as
+              // read-only verification; system checks still decide (no file change is the expected result).
+              const tasksNow = await specStore.loadTasks();
+              await specStore
+                .saveTasks(tasksNow.map((t) => (t.task_id === task.task_id ? { ...t, metadata: { ...(t.metadata ?? {}), verificationOnly: true } } : t)) as never, { bypassValidation: true })
+                .catch(() => undefined);
+              taskReport.cycles--; // the executor did nothing wrong; the attempt is not consumed
+              this.emit('VERIFICATION', `${task.task_id}: dosya değişikliği yok; görev yalnızca doğrulama ise salt-okunur doğrulama olarak yeniden isteniyor.`, task.task_id, 'warn');
+              extraGuidance = [
+                `The previous attempt for ${task.task_id} changed no files, so it could not be independently verified.`,
+                'If this task needs real changes, re-emit IMPLEMENT_TASK with concrete targetFiles and edits.',
+                'If it is verification/audit only (e.g. Lighthouse, zero console errors, link checks) and nothing must change, re-emit IMPLEMENT_TASK with targetFiles [] and the constraint "Do not modify any files (verification only)", list exactly what to check, and ask the executor to report each result under "FINDINGS:" (with any command output). Read-only verification with passing system checks is accepted without file changes.',
+              ].join('\n');
+              continue;
+            }
+          }
+          if (/does not match authoritative snapshot|fingerprint mismatch|stale context snapshot/i.test(String(result.summary ?? ''))) {
+            // The Director decided on a snapshot that changed before dispatch (e.g. a reopened task):
+            // a fresh snapshot + a new decision fixes it. Auto-retry, not a human block.
+            const n = (staleRetries.get(task.task_id) ?? 0) + 1;
+            staleRetries.set(task.task_id, n);
+            if (n <= 2) {
+              taskReport.cycles--;
+              this.emit('VERIFICATION', `${task.task_id}: bağlam değişmişti; güncel bağlamla yeniden deneniyor (otomatik, ${n}/2).`, task.task_id, 'warn');
+              continue;
+            }
           }
           const action = (result.directorAction ?? {}) as unknown as Record<string, unknown>;
           const actionType = result.directorAction?.actionType as string | undefined;
@@ -2119,12 +2169,16 @@ export class AutonomousSpecRunner {
 
           // ---- AGY outcome unknown (e.g. timeout): never a silent end. Look at what it left behind and
           // let the PO decide (Turkish, passkey): wait/retry, check+accept the changes, or stop.
-          if (!isAnalysis && result.status === 'EXECUTION_UNKNOWN') {
+          // Unexpected errors that would need a human get the same Turkish decision (retry / stop).
+          const unexpected = result.status === 'EXECUTION_FAILED' && !!result.humanDecisionRequired;
+          if (!isAnalysis && (result.status === 'EXECUTION_UNKNOWN' || unexpected)) {
             const { dirty } = await foreignUncommittedChanges(projectRoot, specPath);
             const left = dirty.filter((f) => f !== relSpecPath);
             unknownFiles.set(task.task_id, left);
             const secs = Math.round(((result as { durationMs?: number }).durationMs ?? 0) / 1000);
-            const why = `${task.task_id} durdu: AGY işi ${secs ? `${Math.max(1, Math.round(secs / 60))} dakikada ` : ''}bitiremedi ya da sonucu belirsiz kaldı; aynı işi iki kez yaptırmamak için durdum (EXECUTION_UNKNOWN).`;
+            const why = unexpected
+              ? `${task.task_id} durdu: beklenmeyen bir hata oluştu, devam etmek için kararın gerekiyor (${result.status}: ${monitorText(result.summary ?? '', 200)}).`
+              : `${task.task_id} durdu: AGY işi ${secs ? `${Math.max(1, Math.round(secs / 60))} dakikada ` : ''}bitiremedi ya da sonucu belirsiz kaldı; aynı işi iki kez yaptırmamak için durdum (EXECUTION_UNKNOWN).`;
             this.emit('TASK_BLOCKED', why, task.task_id, 'warn');
             if (decisionMode === 'ask' && decisionResolver) {
               const record = buildDecisionRecord({
@@ -2139,7 +2193,9 @@ export class AutonomousSpecRunner {
                   left.length ? `Çalışma alanında AGY'nin bıraktığı ${left.length} değişiklik var: ${monitorText(left.join(', '), 400)}.` : 'Çalışma alanında yeni bir değişiklik yok.',
                   'Ne yapılsın?',
                 ].join(' '),
-                reason: 'AGY bitti mi bilmiyoruz; körlemesine tekrar başlatmak aynı işi iki kez yaptırabilir. Karar senin.',
+                reason: unexpected
+                  ? 'Hata otomatik olarak düzeltilemedi. Tekrar denersem görev güncel bağlamla baştan istenir.'
+                  : 'AGY bitti mi bilmiyoruz; körlemesine tekrar başlatmak aynı işi iki kez yaptırabilir. Karar senin.',
                 options: [
                   { id: 'retry', label: 'Bekle ve tekrar dene (bırakılan değişiklikler kenara alınır, görev baştan yapılır)' },
                   ...(left.length ? [{ id: 'verify', label: 'Değişiklikleri kontrol et ve kabul et (AGY bıraktığı yerden tamamlar, bağımsız doğrulama yapılır)' }] : []),
@@ -2301,6 +2357,7 @@ export class AutonomousSpecRunner {
           model: baseProvider.defaultModel,
           decisionMode,
           isBudgetExhausted: () => isBudgetExhausted(budgetManager!),
+          resuming: !!resumeFrom,
         });
         if (out.stop) stop = out.stop;
         if (!stop && out.apply) {
@@ -3450,4 +3507,10 @@ export function ideTimeouts(env: Readonly<Record<string, string | undefined>>): 
   const n = (v: string | undefined, d: number) => (v && Number.isFinite(Number(v)) && Number(v) > 0 ? Number(v) : d);
   const min = n(env.AIDM_IDE_TIMEOUT_MS, 45 * 60_000);
   return { minTimeoutMs: min, maxTimeoutMs: Math.max(min, n(env.AIDM_IDE_MAX_TIMEOUT_MS, 120 * 60_000)) };
+}
+
+/** Audit / verification-only work, where "nothing had to change" is a legitimate result. */
+export function isVerificationOnlyTask(t: { title?: string; description?: string; acceptance_criteria?: readonly unknown[] }): boolean {
+  const text = [t.title, t.description, ...(t.acceptance_criteria ?? []).map(String)].join(' ');
+  return /lighthouse|konsol(da)? hata|console error|doğrula|denetle|denetim|audit|verify|verification|kontrol et|test et|erişilebilirlik testi|performans (ölçümü|testi)|smoke/i.test(text);
 }
