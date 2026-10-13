@@ -112,6 +112,7 @@ export interface CompletionReportInput {
   selfChecks?: Array<{ taskId: string; ok: boolean; doubts: string[] }>;
   promptCache?: { calls: number; inputTokens: number; cachedTokens: number };
   preferencesUsed?: string[];
+  decisionLogPath?: string;
 }
 
 /** One-page Turkish completion summary (plain markdown, no secrets). */
@@ -143,6 +144,7 @@ export function renderCompletionReportTr(r: CompletionReportInput, shots: Readon
     L.push('', '## İlerleme notları');
     for (const n of r.progressNotes) L.push(`- ${n.replace(/\n/g, ' · ')}`);
   }
+  if (r.decisionLogPath) L.push('', `_Tüm kararlar ve gerekçeleri: \`.ai-manager/reports/${r.decisionLogPath.split(/[\\/]/).pop()}\` (IdP çalışma sayfasında "Karar günlüğü")._`);
   if (r.preferencesUsed?.length) L.push('', `_Önceki projelerden ${r.preferencesUsed.length} tercih dikkate alındı (IdP → Tercihlerim)._`);
   L.push('', '## Son kontrol');
   if (r.finalGate) {

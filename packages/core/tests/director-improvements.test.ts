@@ -187,9 +187,44 @@ describe('director improvements (end to end)', { timeout: 300_000 }, () => {
       assert.match(rep.progressNotes[0], /Ne oldu:[\s\S]*Sıradaki:/);
       const md = fs.readFileSync(rep.completionReportPath, 'utf8');
       assert.match(md, /Yaklaşım planı[\s\S]*Director öz kontrolü[\s\S]*İlerleme notları/);
+      // Karar günlüğü: live markdown + JSON sidecar; AIDM templates only (no raw LLM text)
+      assert.match(md, /karar-gunlugu-/);
+      const logMd = fs.readFileSync(rep.decisionLogPath, 'utf8');
+      assert.ok(path.basename(rep.decisionLogPath).startsWith(`karar-gunlugu-${rep.runId}`));
+      for (const re of [/Görev oluşturma: TASK-001/, /Plan: Yaklaşım planı hazırlandı/, /Plan: Yaklaşım planı düzeltmeyle onaylandı/, /açıklama yorumu/, /Öz kontrol: Kabul öncesi öz kontrolde 1 şüphe/, /Düzeltme: TASK-001 düzeltmeye geri gönderildi/, /Görev kabulü: TASK-003 kabul edildi/, /Durma: Çalışma tamamlandı/, /\*\*Zaman:\*\* \d{4}-\d\d-\d\d \d\d:\d\d:\d\d TRT/, /\*\*Görev:\*\* TASK-002/]) assert.match(logMd, re, logMd);
+      assert.doesNotMatch(logMd, /export const a ekle|Önce a, sonra b|Implement TASK/, 'no raw LLM content');
+      const entries = JSON.parse(fs.readFileSync(rep.decisionLogPath.replace(/\.md$/, '.json'), 'utf8'));
+      assert.ok(entries.length >= 10 && entries.every((e: Any, i: number) => e.seq === i + 1 && e.at && e.kind));
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
       fs.rmSync(home, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('karar günlüğü (unit)', () => {
+  it('records, de-duplicates, redacts secrets, translates known templates, writes md + json', async () => {
+    const { DecisionLog, assumptionTr, decisionEventMessage } = await import('../dist/autonomous/decision-log.js');
+    const dir = tmp('aidm-dl-');
+    try {
+      const seen: Any[] = [];
+      const log = new DecisionLog(dir, 'run-x', (e: Any) => seen.push(e));
+      log.record('SCOPE', 'Kapsam genişledi', 'token=abc123secret ve sk-ABCDEFGHIJKLMNOP', 'T1');
+      log.record('SCOPE', 'Kapsam genişledi', 'tekrar', 'T1');
+      log.record('STOP', 'x'.repeat(500));
+      assert.equal(log.entries.length, 2);
+      assert.equal(seen.length, 2);
+      assert.equal(log.entries[1].title.length, 200);
+      const md = fs.readFileSync(path.join(dir, '.ai-manager', 'reports', 'karar-gunlugu-run-x.md'), 'utf8');
+      assert.match(md, /Kapsam: Kapsam genişledi/);
+      assert.doesNotMatch(md, /abc123secret|sk-ABCDEF/);
+      assert.match(decisionEventMessage(log.entries[0]), /^\[Kapsam\] Kapsam genişledi — /);
+      assert.match(assumptionTr('PO widened the task scope with: a.css.'), /Ürün sahibi görev kapsamını genişletti: a\.css/);
+      const again = new DecisionLog(dir, 'run-x', undefined, JSON.parse(fs.readFileSync(path.join(dir, '.ai-manager', 'reports', 'karar-gunlugu-run-x.json'), 'utf8')));
+      again.record('PLAN', 'yeni');
+      assert.equal(again.entries[2].seq, 3, 'resume continues numbering');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
     }
   });
 });

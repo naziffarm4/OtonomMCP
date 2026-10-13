@@ -22,6 +22,7 @@
  *   human-gate/policy/unknown-state outcome stops the run fail-closed (never auto-approved).
  */
 
+import { DecisionLog, assumptionTr, decisionEventMessage, splitAssumption, type DecisionKind, type DecisionEntry } from './decision-log.js';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as crypto from 'node:crypto';
@@ -99,7 +100,7 @@ import { AntigravityAdapter } from '../executor-bridge/antigravity-adapter.js';
 import { registerWatcherRoot } from '../mcp/aidm-watcher.js';
 import { webGateCommands } from './web-checks.js';
 import {
-  PLAN_PROMPT_ADDENDUM, normalizeApproachPlan, planQuestion, renderPlanTr, syncPreferences, learnPreferences, planCorrectionPreference,
+  PLAN_PROMPT_ADDENDUM, normalizeApproachPlan, planQuestion, PLAN_QUESTION_ID, renderPlanTr, syncPreferences, learnPreferences, planCorrectionPreference,
   preferencesPromptBlock, progressEvery, PROGRESS_TASK_ID, PROGRESS_SYSTEM_PROMPT, buildProgressPrompt, renderProgressNote, directorJson,
   SELF_CHECK_TASK_ID, SELF_CHECK_SYSTEM_PROMPT, buildSelfCheckPrompt, parseSelfCheck, readChangedFiles, type UserPreference,
 } from './director-extras.js';
@@ -315,6 +316,8 @@ export interface AutonomousRunReport {
   approachPlan?: string;
   /** Preferences from earlier projects the Director could use (ids only). */
   preferencesUsed?: string[];
+  /** Karar günlüğü markdown path. */
+  decisionLogPath?: string;
   /** Director progress notes posted to the IdP run page. */
   progressNotes?: string[];
   /** Director self-checks before acceptance. */
@@ -387,6 +390,16 @@ export class AutonomousSpecRunner {
   private monitor: RunMonitor | null = null;
   private monitorStatus: RunMonitorStatus = 'RUNNING';
   private currentReport: AutonomousRunReport | null = null;
+  private decisionLog: DecisionLog | null = null;
+
+  /** Karar günlüğü entry (plain-Turkish AIDM template text; never raw prompts/LLM output). */
+  private decide(kind: DecisionKind, title: string, rationale = '', taskId?: string | null): void {
+    try {
+      this.decisionLog?.record(kind, title, rationale, taskId);
+    } catch {
+      /* never affects the run */
+    }
+  }
   private currentTaskId: string | null = null;
   private lastDirectorAction: RunMonitorSnapshotInput['lastDirectorAction'] = null;
   private pendingDecisionIds = new Set<string>();
@@ -430,6 +443,7 @@ export class AutonomousSpecRunner {
     INSTRUCTION: 'INFO',
     DIRECTOR_ANSWER: 'DIRECTOR_ANSWER',
     PROGRESS_NOTE: 'PROGRESS_NOTE',
+    DECISION_LOG: 'DECISION_LOG',
     VISUAL_REVIEW: 'VERIFICATION',
   };
 
@@ -534,7 +548,10 @@ export class AutonomousSpecRunner {
       } catch {
         prefs = [];
       }
-      if (prefs.length) report.preferencesUsed = prefs.map((p) => p.id).slice(0, 40);
+      if (prefs.length) {
+        report.preferencesUsed = prefs.map((p) => p.id).slice(0, 40);
+        this.decide('ASSUMPTION', `Önceki projelerden ${prefs.length} kayıtlı tercih dikkate alındı`, 'Bilinen sorular tekrar sorulmasın, cevaplar önceden doldurulsun diye (Tercihlerim).', SPEC_CLARIFICATION_TASK_ID);
+      }
       const user = userBase + preferencesPromptBlock(prefs);
       const system = planOn ? `${CLARIFICATION_SYSTEM_PROMPT}\n${PLAN_PROMPT_ADDENDUM}` : CLARIFICATION_SYSTEM_PROMPT;
       let raw: unknown;
@@ -576,6 +593,7 @@ export class AutonomousSpecRunner {
         }
         ok.push(planQuestion(plan));
         report.approachPlan = renderPlanTr(plan);
+        this.decide('PLAN', 'Yaklaşım planı hazırlandı, onaya sunuldu', 'Görevlere başlamadan önce yaklaşım, riskler ve sıra ürün sahibine gösterilsin diye.', SPEC_CLARIFICATION_TASK_ID);
         this.emit('CLARIFICATION', `Director yaklaşım planı hazırladı (onayınıza sunuluyor): ${monitorText(plan.approach, 300)}`);
       }
       st = {
@@ -669,6 +687,26 @@ export class AutonomousSpecRunner {
     st.answeredAt = outcome.answeredAt;
     dRep.state = 'ANSWERED';
     dRep.answer = outcome.answers;
+    for (const a of outcome.answers) {
+      const q = st.questions.find((x) => x.id === a.questionId);
+      if (!q) continue;
+      const opt = q.options?.find((o) => o.id === a.selectedOptionId);
+      if (q.id === PLAN_QUESTION_ID) {
+        this.decide(
+          'PLAN',
+          a.selectedOptionId === 'duzelt' || (a.freeText && a.selectedOptionId !== 'onay') ? 'Yaklaşım planı düzeltmeyle onaylandı' : 'Yaklaşım planı onaylandı',
+          a.freeText ? `Ürün sahibinin düzeltmesi plana işlendi: ${a.freeText}` : 'Ürün sahibi planı passkey ile onayladı.',
+          SPEC_CLARIFICATION_TASK_ID
+        );
+        continue;
+      }
+      this.decide(
+        'DESIGN',
+        `${q.question} → ${opt?.label ?? (a.freeText ? 'serbest cevap' : 'seçilmedi')}`,
+        a.freeText ? `Ürün sahibinin cevabı: ${a.freeText}` : 'Ürün sahibinin netleştirme cevabı (bağlayıcı).',
+        SPEC_CLARIFICATION_TASK_ID
+      );
+    }
     this.emit('DECISION_ANSWERED', `${req.decisionId}: ${outcome.answers.length} cevap`, SPEC_CLARIFICATION_TASK_ID);
     // 3) Free-text-only answers -> measurable criteria by the Director (no human interaction).
     const freeOnly = outcome.answers.filter((a) => a.freeText && !a.selectedOptionId);
@@ -847,6 +885,36 @@ export class AutonomousSpecRunner {
       instructions: [],
     };
     this.currentReport = report;
+    {
+      // Karar günlüğü: live markdown under .ai-manager/reports + DECISION_LOG monitor events.
+      const logOn = this.env.AIDM_DECISION_LOG !== '0' && !dryRun;
+      const seed = logOn && !dryRun ? loadDecisionSeed(projectRoot, runId) : [];
+      this.decisionLog = logOn
+        ? new DecisionLog(dryRun ? null : projectRoot, runId, (e) => this.emit('DECISION_LOG', decisionEventMessage(e), e.taskId ?? undefined), seed)
+        : null;
+      if (this.decisionLog) report.decisionLogPath = this.decisionLog.filePath ?? undefined;
+      const arr = report.assumptions;
+      const push = Array.prototype.push;
+      Object.defineProperty(arr, 'push', {
+        enumerable: false,
+        configurable: true,
+        value: (...items: string[]): number => {
+          for (const it of items) {
+            const { taskId, text } = splitAssumption(String(it));
+            const tr = assumptionTr(text);
+            this.decide(/görev kapsamını genişletti/.test(tr) ? 'SCOPE' : 'ASSUMPTION', tr, '', taskId);
+          }
+          return push.apply(arr, items);
+        },
+      });
+      if (!resumeRunId) {
+        for (const a of ingestion.assumptions) {
+          const { taskId, text } = splitAssumption(a);
+          this.decide('ASSUMPTION', assumptionTr(text), 'Spec\'te açıkça belirtilmediği için varsayıldı.', taskId);
+        }
+        for (const t of report.tasks) this.decide('TASK_CREATE', `${t.taskId}: ${t.title}`, 'Spec\'teki görev listesinden oluşturuldu.', t.taskId);
+      }
+    }
     // ------------------------------------------------------------------ resume pre-checks
     let resumeFrom: RunCheckpoint | null = null;
     if (resumeRunId && !dryRun) {
@@ -1545,6 +1613,7 @@ export class AutonomousSpecRunner {
             queue.length = 0;
             queue.push(...moved, ...rest);
             notes.push(`Reordered remaining tasks: ${valid.join(', ')}.`);
+            this.decide('DESIGN', `Kalan görevlerin sırası değişti: ${valid.join(' > ')}`, 'Director bağımlılıklar nedeniyle bu sırayı daha uygun buldu.', taskReport.taskId);
             report.refinements.push(`[${taskReport.taskId}] reorder ${valid.join(' > ')}`);
             applied = true;
           }
@@ -1580,6 +1649,7 @@ export class AutonomousSpecRunner {
             notes.push(`Task split into ${subs.map((x) => x.taskId).join(', ')}.`);
             report.refinements.push(`[${taskReport.taskId}] split into ${subs.map((x) => x.taskId).join(', ')}`);
             this.emit('TASK_REFINED', notes[notes.length - 1], taskReport.taskId);
+            for (const x of subs) this.decide('TASK_CREATE', `${x.taskId}: ${x.title}`, `${taskReport.taskId} daha küçük, izinli yollar içinde kalan alt görevlere bölündü.`, x.taskId);
             applied = true;
           }
         }
@@ -1878,6 +1948,8 @@ export class AutonomousSpecRunner {
             const failing = result.systemEvidence.verificationChecks.filter((c) => c.status === 'FAIL' || c.status === 'BLOCK');
             lastFailure = failing.length ? formatFailingChecks(failing) : '';
             if (failing.length) this.emit('VERIFICATION', `${failing.length} kontrol başarısız: ${failing.map((c) => c.command ?? c.type).join(', ')}`, task.task_id, 'warn');
+            if (failing.length && result.status !== 'COMPLETED_SUCCESS')
+              this.decide('TASK_REPAIR', `${task.task_id} kabul edilmedi, yeniden denenecek`, `Bağımsız kontroller geçmedi (${failing.length}): ${failing.map((c) => c.command ?? c.type).slice(0, 4).join(', ')}.`, task.task_id);
           }
           const deferred = specCollector.takeDeferred(task.task_id);
           if (deferred.length) report.deferredCommands.push({ taskId: task.task_id, commands: deferred });
@@ -2096,8 +2168,11 @@ export class AutonomousSpecRunner {
             const files = [...new Set([...taskReport.filesChanged, ...(result.systemEvidence?.changedFiles ?? []).map((f) => f.path)])];
             const sc = await selfCheck(taskDefs.get(task.task_id) ?? task, files, execNote || result.summary);
             (report.selfChecks ??= []).push({ taskId: task.task_id, ok: sc.ok, doubts: sc.doubts });
+            if (sc.ok) this.decide('SELF_CHECK', 'Kabul öncesi öz kontrol temiz', 'Değişiklikler spec ve kabul kriterleriyle uyumlu görüldü.', task.task_id);
             if (!sc.ok) {
               selfCheckRepairs.set(task.task_id, 1);
+              this.decide('SELF_CHECK', `Kabul öncesi öz kontrolde ${sc.doubts.length} şüphe bulundu`, 'Sonuç spec/kriterlerle tam örtüşmüyor olabilir; kabul ertelendi.', task.task_id);
+              this.decide('TASK_REPAIR', `${task.task_id} düzeltmeye geri gönderildi`, 'Öz kontrolde bulunan eksikler giderilsin diye (görev başına en fazla bir kez).', task.task_id);
               this.emit('VERIFICATION', `Director öz kontrolü: kabulden önce düzeltme istendi — ${monitorText(sc.doubts.join(' | '), 400)}`, task.task_id, 'warn');
               await reopenTask(task.task_id, true).catch(() => undefined);
               extraGuidance = [
@@ -2114,6 +2189,7 @@ export class AutonomousSpecRunner {
             taskReport.status = 'ACCEPTED';
             accepted.add(task.task_id);
             this.emit('TASK_ACCEPTED', `${task.task_id} kabul edildi (bağımsız kanıt)`, task.task_id);
+            this.decide('TASK_ACCEPT', `${task.task_id} kabul edildi`, isAnalysis ? 'Salt-okunur analiz tamamlandı.' : 'Bağımsız doğrulama (testler/kontroller) başarılı oldu.', task.task_id);
             await this.markTaskAccepted(specStore, task.task_id);
             // The closed loop may already checkpoint-commit accepted work; otherwise commit here.
             const headAfter = await gitHead(projectRoot);
@@ -2258,6 +2334,7 @@ export class AutonomousSpecRunner {
               // attempt is measured against a clean baseline; the Director decides how to proceed.
               const q = await quarantineFiles(projectRoot, runId, task.task_id, taskReport.cycles, attemptFiles).catch(() => null);
               await reopenTask(task.task_id).catch((err: unknown) => report.warnings.push(`reopen ${task.task_id} failed: ${err instanceof Error ? err.message : String(err)}`));
+              this.decide('SCOPE', `${task.task_id} kapsam dışı dosyalara dokundu; deneme kenara alındı`, `Kapsam dışı: ${outOfScope.slice(0, 5).join(', ')}. Değişiklikler silinmedi, karantinaya alındı; görev yalnızca kendi kapsamında yeniden denenecek.`, task.task_id);
               extraGuidance = [
                 `Attempt ${taskReport.cycles}/${maxCycles} for ${task.task_id} changed files OUTSIDE this task's implementationScope: ${outOfScope.join(', ')}.`,
                 'This is a scope mismatch, not a security incident.',
@@ -2452,6 +2529,7 @@ export class AutonomousSpecRunner {
             taskReport.status = 'WAITING_DECISION';
             this.pendingDecisionIds.add(record.decisionId);
             this.emit('DECISION_REQUESTED', `Deneme hakkı bitti: ${task.task_id} (${record.decisionId})`, task.task_id, 'warn');
+            this.decide('TASK_REPAIR', `${task.task_id} için deneme hakkı bitti; ürün sahibine soruldu`, 'Görev bağımsız doğrulamayı geçemedi; daha fazla deneme, atlama ya da durdurma kararı ürün sahibinde.', task.task_id);
             const resolver = decisionResolver;
             const promise = resolver
               .resolve(record)
@@ -2558,6 +2636,7 @@ export class AutonomousSpecRunner {
             const tr: AutonomousTaskReport = { taskId: id, title: def.title, status: 'PENDING', cycles: 0, evidenceIds: [], verificationChecks: [], filesChanged: [], kind: 'TASK' };
             report.tasks.push(tr);
             queue.push(tr);
+            this.decide('TASK_CREATE', `${id}: ${def.title}`, 'Netleştirmede kabul edilen iyileştirmeden eklendi.', id);
             report.clarification!.newTasks.push(`${id}: ${def.title}`);
           }
           clarificationChecks = res.checks;
@@ -3014,6 +3093,8 @@ export class AutonomousSpecRunner {
     // Every user-facing stop reason is plain Turkish; technical detail only in parentheses.
     if (reason) reason = turkishStopReason(status, reason);
     if (reason) report.stopReason = reason;
+    if (status !== 'COMPLETED' && status !== 'DRY_RUN_OK') this.decide('STOP', STATUS_TR[status] ?? `Çalışma durdu (${status})`, reason ?? '', this.currentTaskId ?? null);
+    else this.decide('STOP', 'Çalışma tamamlandı', 'Tüm görevler kabul edildi ve son kontroller geçti.', null);
     report.finishedAt = new Date().toISOString();
     if (this.checkpoint) {
       this.checkpoint.state = 'FINISHED';
@@ -3735,3 +3816,15 @@ export function isVerificationOnlyTask(t: { title?: string; description?: string
   const text = [t.title, t.description, ...(t.acceptance_criteria ?? []).map(String)].join(' ');
   return /lighthouse|konsol(da)? hata|console error|doğrula|denetle|denetim|audit|verify|verification|kontrol et|test et|erişilebilirlik testi|performans (ölçümü|testi)|smoke/i.test(text);
 }
+
+/** Previous entries of a resumed run (JSON sidecar of the markdown log). */
+function loadDecisionSeed(projectRoot: string, runId: string): DecisionEntry[] {
+  try {
+    const f = path.join(projectRoot, '.ai-manager', 'reports', `karar-gunlugu-${runId.replace(/[^A-Za-z0-9._-]/g, '_')}.json`);
+    const v = JSON.parse(fs.readFileSync(f, 'utf8')) as unknown;
+    return Array.isArray(v) ? (v as DecisionEntry[]).filter((e) => e && typeof e.title === 'string').slice(0, 1000) : [];
+  } catch {
+    return [];
+  }
+}
+
