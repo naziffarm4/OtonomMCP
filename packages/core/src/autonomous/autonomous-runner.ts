@@ -98,6 +98,11 @@ import type { ExecutorPort } from '../executor-bridge/executor-port.js';
 import { AntigravityAdapter } from '../executor-bridge/antigravity-adapter.js';
 import { registerWatcherRoot } from '../mcp/aidm-watcher.js';
 import { webGateCommands } from './web-checks.js';
+import {
+  PLAN_PROMPT_ADDENDUM, normalizeApproachPlan, planQuestion, renderPlanTr, syncPreferences, learnPreferences, planCorrectionPreference,
+  preferencesPromptBlock, progressEvery, PROGRESS_TASK_ID, PROGRESS_SYSTEM_PROMPT, buildProgressPrompt, renderProgressNote, directorJson,
+  SELF_CHECK_TASK_ID, SELF_CHECK_SYSTEM_PROMPT, buildSelfCheckPrompt, parseSelfCheck, readChangedFiles, type UserPreference,
+} from './director-extras.js';
 import { collectScreenshots, runVisualReview, renderCompletionReportTr, type VisualReview } from './completion-report.js';
 import { createIdeRequestInvoker, IDE_EXECUTOR_ID, noteIdeEvent, resetIdeMailbox, resolveExecutorMode, type ExecutorMode } from '../executor-bridge/ide-executor.js';
 import { NodeAntigravityProcessRunner } from '../executor-bridge/antigravity-process-runner.js';
@@ -306,6 +311,16 @@ export interface AutonomousRunReport {
   /** Binding Director-owned design direction (UI projects), stored in .ai-manager/state/design-brief.json. */
   executorMode?: ExecutorMode;
   designBrief?: { name: string; optionId: string; tokens: Record<string, string>; decidedBy: string };
+  /** Director's approach plan (approved / corrected with the spec review). */
+  approachPlan?: string;
+  /** Preferences from earlier projects the Director could use (ids only). */
+  preferencesUsed?: string[];
+  /** Director progress notes posted to the IdP run page. */
+  progressNotes?: string[];
+  /** Director self-checks before acceptance. */
+  selfChecks?: Array<{ taskId: string; ok: boolean; doubts: string[] }>;
+  /** Prompt-cache statistics (provider-reported cached input tokens). */
+  promptCache?: { calls: number; inputTokens: number; cachedTokens: number };
   /** Director vision review of the headless-browser screenshots (advisory). */
   visualReview?: VisualReview;
   /** One-page Turkish completion report (.ai-manager/reports/tamamlama-<runId>.md). */
@@ -414,6 +429,8 @@ export class AutonomousSpecRunner {
     FINAL_GATE: 'VERIFICATION',
     INSTRUCTION: 'INFO',
     DIRECTOR_ANSWER: 'DIRECTOR_ANSWER',
+    PROGRESS_NOTE: 'PROGRESS_NOTE',
+    VISUAL_REVIEW: 'VERIFICATION',
   };
 
   /**
@@ -503,15 +520,26 @@ export class AutonomousSpecRunner {
     if (!st || !st.questions.length) {
       // 1) Director review (budget counted through the wrapped provider).
       const taskIds = report.tasks.filter((t) => t.kind === 'TASK' || !t.kind).map((t) => t.taskId);
-      const user = buildClarificationUserPrompt({
+      const userBase = buildClarificationUserPrompt({
         specMarkdown: ctx.markdown,
         tasks: ingestion.tasks.filter((t) => taskIds.includes(t.task_id)).map((t) => ({ taskId: t.task_id, title: t.title, acceptance: t.acceptance_criteria })),
         allowedPaths: report.mandate?.allowedDirectories ?? ingestion.allowedPaths,
         verificationCommands: ingestion.verificationCommands,
       });
+      // Cross-project memory: preferences from earlier projects pre-fill / skip known questions.
+      const planOn = this.env.AIDM_APPROACH_PLAN !== '0';
+      let prefs: UserPreference[] = [];
+      try {
+        prefs = (await syncPreferences(this.env, this.options.idpFetchFn ?? fetch)).items;
+      } catch {
+        prefs = [];
+      }
+      if (prefs.length) report.preferencesUsed = prefs.map((p) => p.id).slice(0, 40);
+      const user = userBase + preferencesPromptBlock(prefs);
+      const system = planOn ? `${CLARIFICATION_SYSTEM_PROMPT}\n${PLAN_PROMPT_ADDENDUM}` : CLARIFICATION_SYSTEM_PROMPT;
       let raw: unknown;
       try {
-        raw = await llmJson(CLARIFICATION_SYSTEM_PROMPT, user);
+        raw = await llmJson(system, user);
       } catch (err) {
         rep.status = 'FAILED';
         rep.note = `Spec incelemesi yapılamadı: ${err instanceof Error ? err.message : String(err)}`;
@@ -524,18 +552,32 @@ export class AutonomousSpecRunner {
       if (bad.length) {
         // One repair call asking for Turkish; whatever is still not Turkish is dropped.
         try {
-          const raw2 = await llmJson(CLARIFICATION_SYSTEM_PROMPT, user, [
+          const raw2 = await llmJson(system, user, [
             { role: 'assistant', content: JSON.stringify(raw).slice(0, 20_000) },
             { role: 'user', content: TURKISH_REPAIR_PROMPT },
           ]);
           proposal = normalizeClarificationProposal(raw2, taskIds);
           ({ ok, bad } = partitionTurkish(proposal));
+          if (!(raw2 as { plan?: unknown })?.plan) (raw2 as Record<string, unknown>).plan = (raw as { plan?: unknown })?.plan;
+          raw = raw2;
         } catch {
           /* keep the first result */
         }
         for (const q of bad) report.assumptions.push(`[${SPEC_CLARIFICATION_TASK_ID}] Türkçe olmayan soru atlandı: ${q.question.slice(0, 120)}`);
       }
       for (const w of proposal.warnings) report.assumptions.push(`[${SPEC_CLARIFICATION_TASK_ID}] ${w}`);
+      // The approach plan rides in the same IdP screen as the questions (one passkey round).
+      const plan = planOn ? normalizeApproachPlan((raw as { plan?: unknown } | null)?.plan) : null;
+      if (plan) {
+        // IdP screen holds at most 12 items: an improvement makes room for the plan.
+        while (ok.length >= 12) {
+          const i = ok.map((q) => q.kind).lastIndexOf('IMPROVEMENT');
+          ok.splice(i >= 0 ? i : ok.length - 1, 1);
+        }
+        ok.push(planQuestion(plan));
+        report.approachPlan = renderPlanTr(plan);
+        this.emit('CLARIFICATION', `Director yaklaşım planı hazırladı (onayınıza sunuluyor): ${monitorText(plan.approach, 300)}`);
+      }
       st = {
         schemaVersion: 1,
         specFingerprint: fp,
@@ -616,6 +658,13 @@ export class AutonomousSpecRunner {
     }
     st.status = 'ANSWERED';
     st.answers = outcome.answers;
+    {
+      // Learn reusable preferences from the PO's own answers (local file + IdP "Tercihlerim").
+      const learned = [...learnPreferences(st.questions, outcome.answers, report.projectName)];
+      const pc = planCorrectionPreference(outcome.answers, report.projectName);
+      if (pc) learned.push(pc);
+      if (learned.length) await syncPreferences(this.env, this.options.idpFetchFn ?? fetch, learned).catch(() => undefined);
+    }
     st.answeredBy = outcome.answeredBy;
     st.answeredAt = outcome.answeredAt;
     dRep.state = 'ANSWERED';
@@ -1153,6 +1202,23 @@ export class AutonomousSpecRunner {
         }
       }
       const provider = budgetManager.wrapProvider(baseProvider, { env: this.env });
+      {
+        // Prompt-cache statistics (provider-reported cached input tokens; billed at the cached rate).
+        const pc = (report.promptCache = { calls: 0, inputTokens: 0, cachedTokens: 0 });
+        const gen = provider.generate.bind(provider);
+        (provider as { generate: typeof gen }).generate = (async (req: never) => {
+          const res = await gen(req);
+          try {
+            const u = (res as { usage?: { reported_input_tokens?: number | null; reported_cached_tokens?: number | null } } | null)?.usage;
+            pc.calls++;
+            pc.inputTokens += Number(u?.reported_input_tokens ?? 0) || 0;
+            pc.cachedTokens += Number(u?.reported_cached_tokens ?? 0) || 0;
+          } catch {
+            /* statistics only */
+          }
+          return res;
+        }) as typeof gen;
+      }
 
       // Executor mode: 'ide' (default, the agent open in Antigravity pulls tasks via MCP),
       // 'cli' (spawn agy per task) or 'cli-session' (agy, one conversation reused across tasks).
@@ -1301,6 +1367,56 @@ export class AutonomousSpecRunner {
       const analysisPolicy = ingestion.analysisPolicy ?? 'ON_DEMAND';
       let firstSegmentTaskId: string | undefined;
       const analysisRefusals = new Map<string, number>();
+      // Director self-check before acceptance (max one repair per task) + periodic progress notes.
+      const selfCheckRepairs = new Map<string, number>();
+      const selfCheckOn = this.env.AIDM_SELF_CHECK !== '0';
+      const noteEvery = progressEvery(markdown, this.env);
+      let sinceNote: string[] = [];
+      const postProgressNote = async (): Promise<void> => {
+        if (!noteEvery || sinceNote.length < noteEvery || isBudgetExhausted(budgetManager!)) return;
+        const doneIds = sinceNote;
+        sinceNote = [];
+        const next = report.tasks.filter((t) => t.status === 'PENDING' && t.kind !== 'ANALYSIS');
+        if (!next.length) return; // the completion report covers the end of the run
+        try {
+          const o = await directorJson({
+            provider: provider as never, model: baseProvider.defaultModel, projectId, runId, taskId: PROGRESS_TASK_ID, purpose: 'PROGRESS_NOTE',
+            system: PROGRESS_SYSTEM_PROMPT,
+            user: buildProgressPrompt({
+              done: report.tasks.filter((t) => doneIds.includes(t.taskId)).map((t) => ({ taskId: t.taskId, title: t.title, summary: t.lastSummary, files: t.filesChanged })),
+              next: next.map((t) => ({ taskId: t.taskId, title: t.title })),
+              warnings: report.assumptions,
+              spentUsd: this.liveBudget?.()?.committedUsd,
+            }),
+            maxTokens: 600,
+          });
+          const note = renderProgressNote(o);
+          if (note) {
+            (report.progressNotes ??= []).push(note);
+            this.emit('PROGRESS_NOTE', note);
+          }
+        } catch {
+          /* a progress note is informational; never affects the run */
+        }
+      };
+      const selfCheck = async (t: TaskDefinition, files: readonly string[], summary?: string): Promise<{ ok: boolean; doubts: string[] }> => {
+        try {
+          const o = await directorJson({
+            provider: provider as never, model: baseProvider.defaultModel, projectId, runId, taskId: SELF_CHECK_TASK_ID, purpose: 'SELF_CHECK',
+            system: SELF_CHECK_SYSTEM_PROMPT,
+            user: buildSelfCheckPrompt({
+              specExcerpt: markdown,
+              task: { taskId: t.task_id, title: t.title, description: t.description, criteria: t.acceptance_criteria },
+              files: readChangedFiles(projectRoot, files),
+              executorSummary: summary,
+            }),
+            maxTokens: 800,
+          });
+          return parseSelfCheck(o);
+        } catch {
+          return { ok: true, doubts: [] };
+        }
+      };
       // Out-of-scope changes (no escape/binding/unsafe paths): per-task strikes + the last file list.
       const scopeStrikes = new Map<string, number>();
       const scopeFiles = new Map<string, string[]>();
@@ -1688,19 +1804,25 @@ export class AutonomousSpecRunner {
                 ? ''
                 : NO_ANALYSIS_DIRECTOR_INSTRUCTION,
             extraGuidance,
-            clarificationNote,
             carryNote,
             ...poNotes
               .filter((n) => !n.taskId || n.taskId === task.task_id)
               .slice(-5)
               .map((n) => `BINDING PRODUCT_OWNER INSTRUCTION (passkey-verified ${n.id}): ${n.text}`),
-            `Project root is the only allowed workspace; allowed paths: ${(report.mandate?.allowedDirectories ?? []).join(', ')}.`,
-            decisionMode === 'assume' ? NO_QUESTIONS_DIRECTOR_INSTRUCTION : policyText,
-            DIRECTOR_CAPABILITIES_INSTRUCTION,
-            report.assumptions.length ? `Logged assumptions: ${report.assumptions.join(' | ')}` : '',
+            report.assumptions.length ? `Logged assumptions: ${report.assumptions.slice(-12).join(' | ')}` : '',
           ]
             .filter(Boolean)
             .join('\n');
+          // Run-level context, identical for every Director call of this run: sent first (stable,
+          // cacheable prefix) and no longer squeezed into the per-task objective field.
+          const stableContext = this.env.AIDM_STABLE_PROMPT === '0' ? '' : [
+            clarificationNote,
+            report.approachPlan ? `APPROVED APPROACH PLAN (follow it; PO corrections above override it):\n${report.approachPlan}` : '',
+            `Project root is the only allowed workspace; allowed paths: ${(report.mandate?.allowedDirectories ?? []).join(', ')}.`,
+            decisionMode === 'assume' ? NO_QUESTIONS_DIRECTOR_INSTRUCTION : policyText,
+            DIRECTOR_CAPABILITIES_INSTRUCTION,
+            `SPEC (Product Owner, verbatim excerpt):\n${markdown.slice(0, 12_000)}`,
+          ].filter(Boolean).join('\n');
 
           carryNote = '';
           const headBefore = await gitHead(projectRoot);
@@ -1711,7 +1833,8 @@ export class AutonomousSpecRunner {
               directorSessionId: session.directorSessionId,
               contextSnapshot: snapshot,
               targetTaskId: task.task_id,
-              instruction,
+              instruction: stableContext ? instruction : [instruction, clarificationNote, `Project root is the only allowed workspace; allowed paths: ${(report.mandate?.allowedDirectories ?? []).join(', ')}.`, decisionMode === 'assume' ? NO_QUESTIONS_DIRECTOR_INSTRUCTION : policyText, DIRECTOR_CAPABILITIES_INSTRUCTION].filter(Boolean).join('\n'),
+              ...(stableContext ? { stableContext } : {}),
               maxRecoveryAttempts: maxCycles,
               // Each attempt is a distinct dispatch: a repair with an identical payload must not be
               // swallowed as an idempotent duplicate of the failed attempt.
@@ -1961,6 +2084,31 @@ export class AutonomousSpecRunner {
             continue;
           }
 
+          if (
+            result.status === 'COMPLETED_SUCCESS' &&
+            selfCheckOn &&
+            !isAnalysis &&
+            !(selfCheckRepairs.get(task.task_id) ?? 0) &&
+            taskReport.cycles < maxCycles &&
+            !isBudgetExhausted(budgetManager!)
+          ) {
+            // Second look before accepting: "bu gerçekten spec'in istediği mi?"
+            const files = [...new Set([...taskReport.filesChanged, ...(result.systemEvidence?.changedFiles ?? []).map((f) => f.path)])];
+            const sc = await selfCheck(taskDefs.get(task.task_id) ?? task, files, execNote || result.summary);
+            (report.selfChecks ??= []).push({ taskId: task.task_id, ok: sc.ok, doubts: sc.doubts });
+            if (!sc.ok) {
+              selfCheckRepairs.set(task.task_id, 1);
+              this.emit('VERIFICATION', `Director öz kontrolü: kabulden önce düzeltme istendi — ${monitorText(sc.doubts.join(' | '), 400)}`, task.task_id, 'warn');
+              await reopenTask(task.task_id, true).catch(() => undefined);
+              extraGuidance = [
+                `Director self-check BEFORE acceptance found gaps in ${task.task_id} versus the spec/criteria:`,
+                ...sc.doubts.map((d) => `- ${d}`),
+                `Re-emit IMPLEMENT_TASK for ${task.task_id}: keep the correct work, fix exactly these gaps (inside the task scope).`,
+                execNote,
+              ].filter(Boolean).join('\n');
+              continue;
+            }
+          }
           if (result.status === 'COMPLETED_SUCCESS') {
             if (execNote) carryNote = `(From the previous task ${task.task_id}) ${execNote}`;
             taskReport.status = 'ACCEPTED';
@@ -1983,6 +2131,10 @@ export class AutonomousSpecRunner {
             }
             if (taskReport.filesChanged.length === 0 && result.systemEvidence) {
               taskReport.filesChanged = result.systemEvidence.changedFiles.map((f) => f.path);
+            }
+            if (!isAnalysis) {
+              sinceNote.push(task.task_id);
+              await postProgressNote();
             }
             break;
           }
@@ -2739,10 +2891,36 @@ export class AutonomousSpecRunner {
         report.warnings.push(w);
         this.emit('FINAL_GATE', w, undefined, 'warn');
       }
+      let visualPromise: Promise<VisualReview | null> | null = null;
+      let visualRounds = 0;
+      const startVisualReview = async (): Promise<VisualReview | null> => {
+        if (this.env.AIDM_VISUAL_REVIEW === '0') return null;
+        const shots = collectScreenshots(projectRoot);
+        if (!shots.length) return null;
+        return runVisualReview({
+          provider: provider as never,
+          model: baseProvider.defaultModel,
+          projectId: report.projectId,
+          runId,
+          shots,
+          designBrief: report.designBrief,
+          isBudgetExhausted: () => isBudgetExhausted(budgetManager!),
+        });
+      };
       if (!stop && everyTaskAccepted() && !(report.skippedByPo?.length) && gateCommands.length) {
         const lastTop = [...report.tasks].reverse().find((t) => t.kind === 'TASK' && t.status === 'ACCEPTED');
         for (;;) {
-          const checks = await runGateCommands(projectRoot, gateCommands);
+          const checks = await runGateCommands(projectRoot, gateCommands, {
+            parallel: this.env.AIDM_GATE_PARALLEL !== '0',
+            // The visual review starts as soon as the browser check has its screenshots, while the
+            // remaining checks (e.g. tests) are still running.
+            onDone: (command, code) => {
+              if (code === 0 && /web-browser-check/.test(command) && visualRounds < 2) {
+                visualRounds++;
+                visualPromise = startVisualReview();
+              }
+            },
+          });
           const failed = checks.filter((c) => c.exitCode !== 0);
           report.finalGate.checks = checks;
           report.finalGate.status = failed.length ? 'FAIL' : 'PASS';
@@ -2781,19 +2959,12 @@ export class AutonomousSpecRunner {
       if (pollTimer) clearInterval(pollTimer);
       await Promise.allSettled([...pendingAnswers]);
       // Visual check: Director reviews the gate's screenshots against the design rules (budgeted, advisory).
-      if (report.finalGate && report.finalGate.status !== 'NOT_RUN' && this.env.AIDM_VISUAL_REVIEW !== '0') {
-        const shots = collectScreenshots(projectRoot);
-        if (shots.length) {
-          report.visualReview = await runVisualReview({
-            provider: provider as never,
-            model: baseProvider.defaultModel,
-            projectId: report.projectId,
-            runId,
-            shots,
-            designBrief: report.designBrief,
-            isBudgetExhausted: () => isBudgetExhausted(budgetManager!),
-          });
-          this.emit('VISUAL_REVIEW', `Görsel inceleme: ${report.visualReview.status}${report.visualReview.notes.length ? ` — ${report.visualReview.notes.slice(0, 2).join(' | ')}` : ''}`, undefined, report.visualReview.status === 'SORUNLU' ? 'warn' : 'info');
+      if (!visualPromise && report.finalGate && report.finalGate.status !== 'NOT_RUN') visualPromise = startVisualReview();
+      if (visualPromise) {
+        const vr = await (visualPromise as Promise<VisualReview | null>).catch(() => null);
+        if (vr) {
+          report.visualReview = vr;
+          this.emit('VISUAL_REVIEW', `Görsel inceleme: ${vr.status}${vr.notes.length ? ` — ${vr.notes.slice(0, 2).join(' | ')}` : ''}`, undefined, vr.status === 'SORUNLU' ? 'warn' : 'info');
         }
       }
 
@@ -3032,17 +3203,29 @@ function formatGateFailures(failed: ReadonlyArray<{ command: string; exitCode: n
   return failed.map((f) => `- ${f.command} exit=${f.exitCode}: ${monitorText(f.tail ?? '', 400)}`).join('\n');
 }
 
-async function runGateCommands(cwd: string, commands: readonly string[]): Promise<Array<{ command: string; exitCode: number | null; tail?: string }>> {
-  const out: Array<{ command: string; exitCode: number | null; tail?: string }> = [];
-  for (const command of commands) {
+export async function runGateCommands(
+  cwd: string,
+  commands: readonly string[],
+  opts: { parallel?: boolean; onDone?: (command: string, exitCode: number | null) => void } = {}
+): Promise<Array<{ command: string; exitCode: number | null; tail?: string }>> {
+  const runOne = async (command: string): Promise<{ command: string; exitCode: number | null; tail?: string }> => {
     const res = await new Promise<{ code: number | null; text: string }>((resolve) => {
       execCb(command, { cwd, timeout: 10 * 60_000, maxBuffer: 10 * 1024 * 1024, windowsHide: true }, (err, stdout, stderr) => {
         const code = err ? (typeof (err as { code?: unknown }).code === 'number' ? ((err as { code: number }).code) : 1) : 0;
         resolve({ code, text: `${String(stderr ?? '')}\n${String(stdout ?? '')}` });
       });
     });
-    out.push({ command, exitCode: res.code, ...(res.code !== 0 ? { tail: monitorText(res.text.slice(-1500), 1500) } : {}) });
-  }
+    try {
+      opts.onDone?.(command, res.code);
+    } catch {
+      /* listener errors never affect the gate */
+    }
+    return { command, exitCode: res.code, ...(res.code !== 0 ? { tail: monitorText(res.text.slice(-1500), 1500) } : {}) };
+  };
+  // Independent checks (tests, site check, headless browser) run concurrently; results keep spec order.
+  if (opts.parallel !== false) return Promise.all(commands.map(runOne));
+  const out: Array<{ command: string; exitCode: number | null; tail?: string }> = [];
+  for (const command of commands) out.push(await runOne(command));
   return out;
 }
 

@@ -11,7 +11,7 @@ type Env = Readonly<Record<string, string | undefined>>;
 
 export const RUN_MONITOR_EVENT_TYPES = [
   'RUN_STARTED', 'APPROVAL_REQUESTED', 'MANDATE_SEALED', 'CYCLE_START', 'DIRECTOR_ACTION', 'AGY_DISPATCH',
-  'AGY_RESULT', 'VERIFICATION', 'CYCLE_RESULT', 'REPLAN', 'ANALYSIS', 'DECISION_REQUESTED', 'DECISION_ANSWERED', 'DIRECTOR_ANSWER',
+  'AGY_RESULT', 'VERIFICATION', 'CYCLE_RESULT', 'REPLAN', 'ANALYSIS', 'DECISION_REQUESTED', 'DECISION_ANSWERED', 'DIRECTOR_ANSWER', 'PROGRESS_NOTE',
   'TASK_ACCEPTED', 'TASK_BLOCKED', 'COMMIT', 'BUDGET', 'RUN_FINISHED', 'INFO',
 ] as const;
 export type RunMonitorEventType = (typeof RUN_MONITOR_EVENT_TYPES)[number];
@@ -205,7 +205,7 @@ export class RunMonitor {
   event(type: RunMonitorEventType, message: string, taskId?: string | null, level: RunMonitorEvent['level'] = 'info'): void {
     if (this.closed) return;
     try {
-      const msg = str(message, 500, type);
+      const msg = str(message, type === 'PROGRESS_NOTE' ? 1500 : 500, type);
       this.events.push({
         seq: this.nextSeq(),
         at: new Date().toISOString(),

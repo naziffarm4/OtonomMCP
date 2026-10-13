@@ -70,7 +70,7 @@ export async function runVisualReview(ctx: {
       director_context: { project_id: ctx.projectId, task_id: VISUAL_REVIEW_TASK_ID, objective: 'visual review', acceptance_criteria: null, attempt: 1, max_attempts: 1, relevant_context: null },
       model: ctx.model,
       max_tokens: 2000,
-      response_format: 'json_object',
+      response_format: 'JSON_OBJECT',
       json_schema: null,
       metadata: { purpose: 'VISUAL_REVIEW', runId: ctx.runId },
     } as never)) as { error?: { message?: string }; structured_output?: unknown; content?: unknown };
@@ -107,6 +107,11 @@ export interface CompletionReportInput {
   finalGate?: { status: string; repairs: number; checks: Array<{ command: string; exitCode: number | null }> };
   visualReview?: VisualReview;
   commits: string[];
+  approachPlan?: string;
+  progressNotes?: string[];
+  selfChecks?: Array<{ taskId: string; ok: boolean; doubts: string[] }>;
+  promptCache?: { calls: number; inputTokens: number; cachedTokens: number };
+  preferencesUsed?: string[];
 }
 
 /** One-page Turkish completion summary (plain markdown, no secrets). */
@@ -115,7 +120,10 @@ export function renderCompletionReportTr(r: CompletionReportInput, shots: Readon
   const mins = r.finishedAt ? Math.max(0, Math.round((Date.parse(r.finishedAt) - Date.parse(r.startedAt)) / 60000)) : null;
   L.push(`# Tamamlama raporu — ${r.projectName}`, '');
   L.push(`**Durum:** ${STATUS_TR[r.status] ?? r.status}${r.stopReason ? ` — ${r.stopReason}` : ''}`);
-  L.push(`**Süre:** ${mins === null ? '-' : `${mins} dk`} · **Harcama:** ${r.budget ? `$${r.budget.committedUsd.toFixed(3)} / $${r.budget.limitUsd.toFixed(2)}` : '-'} · **Commit:** ${r.commits.length}`, '');
+  L.push(`**Süre:** ${mins === null ? '-' : `${mins} dk`} · **Harcama:** ${r.budget ? `$${r.budget.committedUsd.toFixed(3)} / $${r.budget.limitUsd.toFixed(2)}` : '-'} · **Commit:** ${r.commits.length}`);
+  if (r.promptCache?.inputTokens) L.push(`**LLM:** ${r.promptCache.calls} çağrı · girdi ${r.promptCache.inputTokens} token, önbellekten ${r.promptCache.cachedTokens} (%${Math.round((100 * r.promptCache.cachedTokens) / r.promptCache.inputTokens)})`);
+  L.push('');
+  if (r.approachPlan) L.push('## Yaklaşım planı', ...r.approachPlan.split('\n').map((x) => `- ${x}`), '');
   const work = r.tasks.filter((t) => t.kind !== 'ANALYSIS');
   L.push('## Yapılanlar');
   for (const t of work) L.push(`- ${t.status === 'ACCEPTED' ? '✅' : '⚠️'} ${t.taskId}: ${t.title} (${TASK_TR[t.status] ?? t.status})`);
@@ -126,6 +134,16 @@ export function renderCompletionReportTr(r: CompletionReportInput, shots: Readon
   for (const l of r.clarification?.lines ?? []) dec.push(l);
   for (const d of r.decisions) dec.push(`${d.question.slice(0, 160)} → ${d.answer === undefined ? d.state : typeof d.answer === 'string' ? d.answer : JSON.stringify(d.answer).slice(0, 120)}`);
   L.push(...(dec.length ? dec.slice(0, 15).map((d) => `- ${d}`) : ['- (karar gerekmedi)']));
+  const sc = (r.selfChecks ?? []).filter((x) => !x.ok);
+  if (sc.length) {
+    L.push('', '## Director öz kontrolü (kabulden önce düzeltilenler)');
+    for (const x of sc) L.push(`- ${x.taskId}: ${x.doubts.join('; ')}`);
+  }
+  if (r.progressNotes?.length) {
+    L.push('', '## İlerleme notları');
+    for (const n of r.progressNotes) L.push(`- ${n.replace(/\n/g, ' · ')}`);
+  }
+  if (r.preferencesUsed?.length) L.push('', `_Önceki projelerden ${r.preferencesUsed.length} tercih dikkate alındı (IdP → Tercihlerim)._`);
   L.push('', '## Son kontrol');
   if (r.finalGate) {
     L.push(`- Sonuç: **${r.finalGate.status === 'PASS' ? 'GEÇTİ' : r.finalGate.status === 'FAIL' ? 'KALDI' : r.finalGate.status === 'NO_CHECKS' ? 'kontrol yok' : 'çalışmadı'}**${r.finalGate.repairs ? ` (${r.finalGate.repairs} onarım)` : ''}`);

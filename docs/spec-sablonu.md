@@ -12,11 +12,13 @@ sistemin bölümleri tanıması içindir.
 - **Yürütücü:** ide
 - **İnceleme:** gerektiğinde
 - **Netleştirme:** açık
+- **İlerleme notu:** 3
 
 <!--
 Yürütücü seçenekleri → ide (varsayılan: işi Antigravity sohbeti yapar) | cli | cli-oturum
 İnceleme seçenekleri → her görev | gerektiğinde | hiç  (kod yazmadan önce ayrı okuma/analiz adımı)
-Netleştirme seçenekleri → açık | kapalı  (başlamadan önce Director size soru sorsun mu)
+Netleştirme seçenekleri → açık | kapalı  (başlamadan önce Director size soru sorsun ve yaklaşım planını onayınıza sunsun mu)
+İlerleme notu seçenekleri → sayı (kaç görevde bir kısa not) | kapalı
 -->
 
 ## Amaç

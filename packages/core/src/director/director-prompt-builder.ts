@@ -49,7 +49,15 @@ export interface DirectorReasoningInput {
   readonly attempt?: number | null;
   readonly trigger: DirectorReasoningTrigger;
   readonly additionalContext?: Readonly<Record<string, unknown>> | null;
+  /**
+   * Run-level context that does not change between calls of one run (PO decisions, plan, policy,
+   * capabilities, spec). Placed FIRST in the user prompt so system + this block form a stable
+   * prefix the provider can cache; never truncated to the per-field limit (bounded separately).
+   */
+  readonly stableContext?: string | null;
 }
+
+export const MAX_STABLE_CONTEXT_CHARS = 24_000;
 
 export interface DirectorPromptBuildResult {
   readonly systemPrompt: string;
@@ -463,7 +471,11 @@ export class DirectorPromptBuilder {
       ? sanitizeSecrets(JSON.stringify(input.additionalContext, Object.keys(input.additionalContext).sort(), 2))
       : 'None';
 
+    const stable = input.stableContext?.trim()
+      ? ['=== RUN CONTEXT (stable for this run; binding Product Owner decisions, plan and policy) ===', this.boundAndSanitize(input.stableContext.trim(), MAX_STABLE_CONTEXT_CHARS), '']
+      : [];
     return [
+      ...stable,
       '=== REASONING INVOCATION ===',
       `projectId: ${input.projectId}`,
       `directorSessionId: ${input.directorSessionId}`,

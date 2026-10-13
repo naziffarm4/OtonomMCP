@@ -53,6 +53,9 @@ export class MockDirectorLlm implements LLMProvider {
 
   /** Spec-clarification (pre-implementation review) calls, kept apart from the Director action calls. */
   readonly clarifyRequests: LlmRequest[] = [];
+  /** Self-check / progress-note / visual-review calls and an optional payload override. */
+  readonly extraRequests: LlmRequest[] = [];
+  extra?: (ctx: { taskId: string; call: number; prompt: string }) => Record<string, unknown> | undefined;
   /** 'Soru sor' (PO question) calls and an optional answer override. */
   readonly questionRequests: LlmRequest[] = [];
   answerQuestion?: (prompt: string) => string;
@@ -74,6 +77,25 @@ export class MockDirectorLlm implements LLMProvider {
         error: null,
         usage: { reported_input_tokens: 80, reported_output_tokens: 40, reported_cached_tokens: 0, estimated_tokens: 120, estimated_cost_usd: null, provider_name: this.providerName, model: this.defaultModel, is_exact_provider_metric: true },
       } as never;
+    }
+    const extraTask = request.correlation?.task_id;
+    if (extraTask === 'SELF-CHECK' || extraTask === 'PROGRESS-NOTE' || extraTask === 'VISUAL-REVIEW') {
+      this.extraRequests.push(request);
+      const prompt = request.messages.map((m) => String((m as { content?: unknown }).content ?? '')).join('\n');
+      const payload =
+        this.extra?.({ taskId: extraTask, call: this.extraRequests.length, prompt }) ??
+        (extraTask === 'SELF-CHECK' ? { ok: true, doubts: [] } : extraTask === 'PROGRESS-NOTE' ? { neOldu: 'Görevler bitti.', dikkat: 'Kapsam korundu.', siradaki: 'Sıradaki görev.' } : { verdict: 'UYGUN', notes: [] });
+      return {
+        correlation: { correlation_id: request.correlation?.correlation_id ?? 'c', project_id: String(request.correlation?.project_id) },
+        provider: this.providerName,
+        model: this.defaultModel,
+        content: JSON.stringify(payload),
+        structured_output: payload as T,
+        finish_reason: LlmFinishReason.STOP,
+        raw_metadata: null,
+        error: null,
+        usage: { reported_input_tokens: 60, reported_output_tokens: 20, reported_cached_tokens: 0, estimated_tokens: 80, estimated_cost_usd: null, provider_name: this.providerName, model: this.defaultModel, is_exact_provider_metric: true },
+      } as LlmResponse<T>;
     }
     if (request.correlation?.task_id === 'SPEC-CLARIFY') {
       this.clarifyRequests.push(request);

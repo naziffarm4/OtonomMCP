@@ -581,6 +581,7 @@ export class ClosedLoopCoordinator {
             directorSessionId: session.directorSessionId,
             snapshot,
             objective: typeof input.instruction === 'string' ? input.instruction : undefined,
+            stableContext: input.stableContext,
             trigger: input.targetTaskId ? 'TASK_READY' : 'PERIODIC_REVIEW',
             taskId: input.targetTaskId,
           } as any);

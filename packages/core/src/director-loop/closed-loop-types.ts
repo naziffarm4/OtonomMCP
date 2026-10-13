@@ -73,6 +73,8 @@ export interface ClosedLoopCycleInput {
   readonly directorSessionId?: string;
   /** Optional custom instruction text or pre-constructed DirectorInstruction */
   readonly instruction?: string | DirectorInstruction;
+  /** Run-level stable Director context (prompt-cache friendly prefix; see DirectorReasoningInput.stableContext). */
+  readonly stableContext?: string;
   /** Optional authoritative Director context snapshot */
   readonly contextSnapshot?: DirectorContextSnapshot;
   /** Target task ID to implement/evaluate */
@@ -104,6 +106,7 @@ export const ClosedLoopCycleInputZodSchema = z.object({
   projectId: z.string().optional(),
   directorSessionId: z.string().optional(),
   instruction: z.union([z.string(), z.record(z.string(), z.unknown())]).optional(),
+  stableContext: z.string().optional(),
   contextSnapshot: z.record(z.string(), z.unknown()).optional(),
   targetTaskId: z.string().optional(),
   timeoutMs: z.number().int().positive().optional(),
