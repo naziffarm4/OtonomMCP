@@ -53,10 +53,28 @@ export class MockDirectorLlm implements LLMProvider {
 
   /** Spec-clarification (pre-implementation review) calls, kept apart from the Director action calls. */
   readonly clarifyRequests: LlmRequest[] = [];
+  /** 'Soru sor' (PO question) calls and an optional answer override. */
+  readonly questionRequests: LlmRequest[] = [];
+  answerQuestion?: (prompt: string) => string;
   /** Optional spec-review payload (default: no questions). */
   clarify?: (ctx: { call: number; prompt: string }) => Record<string, unknown> | undefined;
 
   async generate<T = unknown>(request: LlmRequest): Promise<LlmResponse<T>> {
+    if (request.correlation?.task_id === 'PO-QUESTION') {
+      this.questionRequests.push(request);
+      const text = this.answerQuestion?.(request.messages.map((m) => String((m as { content?: unknown }).content ?? '')).join('\n')) ?? 'TASK-001 üzerinde çalışıyorum.';
+      return {
+        correlation: { correlation_id: request.correlation?.correlation_id ?? 'c', project_id: String(request.correlation?.project_id) },
+        provider: this.providerName,
+        model: this.defaultModel,
+        content: text,
+        structured_output: null as T,
+        finish_reason: LlmFinishReason.STOP,
+        raw_metadata: null,
+        error: null,
+        usage: { reported_input_tokens: 80, reported_output_tokens: 40, reported_cached_tokens: 0, estimated_tokens: 120, estimated_cost_usd: null, provider_name: this.providerName, model: this.defaultModel, is_exact_provider_metric: true },
+      } as never;
+    }
     if (request.correlation?.task_id === 'SPEC-CLARIFY') {
       this.clarifyRequests.push(request);
       const prompt = request.messages.map((m) => String((m as { content?: unknown }).content ?? '')).join('\n');

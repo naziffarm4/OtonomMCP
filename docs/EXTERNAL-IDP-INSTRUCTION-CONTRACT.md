@@ -41,3 +41,12 @@ UI shows each instruction with its state and note in the run detail page and tim
 - Tokens are never returned to the browser.
 - Instructions are shown in their own list on the run detail page (state + note); they are not merged into the event timeline (OtonomMCP's 'Talimat alındı/uygulandı' monitor events appear there).
 - **Interop finding (OtonomMCP side):** `InstructionChannel.verify` passes the token to `verifyIdpToken`, whose adapter treats the `taskId` claim as a task binding -> a targeted instruction (taskId set) is rejected `BINDING_MISMATCH: token bound to task 'TASK-002', expected '<none>'`. Per this contract taskId is the target, not a binding; OtonomMCP should ignore/strip taskId from binding checks for AUTONOMOUS_INSTRUCTION. Untargeted instructions verify fine (contract-check).
+
+## Mode ASK ("Soru sor") — v1.1
+
+`mode: "ASK"` carries a PO question (`text` 1..2000). It never pauses or stops the run and is
+not added to Director instructions. OtonomMCP answers it right after delivery with a short Director
+LLM call (run context: spec, task states, recent decisions, clarification answers, PO notes, budget;
+spend counts against the run budget), then ACKs `APPLIED` with `answer` (plain Turkish, <= 4000
+chars) and emits a `DIRECTOR_ANSWER` monitor event. On failure (budget exhausted, LLM error) it
+ACKs `REJECTED` with a note. `answer` is accepted by the IdP only for ASK + APPLIED.

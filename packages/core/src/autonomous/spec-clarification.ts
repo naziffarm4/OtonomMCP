@@ -38,7 +38,35 @@ export type ClarificationCheck =
   | { type: 'file_exists' | 'file_absent'; path: string; description: string }
   | { type: 'file_contains'; path: string; pattern: string; regex: boolean; description: string }
   | { type: 'glob_count'; glob: string; min?: number; max?: number; description: string }
-  | { type: 'each_file_contains' | 'no_file_contains'; glob: string; pattern: string; regex: boolean; description: string };
+  | { type: 'each_file_contains' | 'no_file_contains'; glob: string; pattern: string; regex: boolean; description: string }
+  /** Some file matching glob defines every CSS custom property (`--name: value`). Design brief tokens. */
+  | { type: 'css_tokens'; glob: string; tokens: Record<string, string>; description: string };
+
+export const DESIGN_QUESTION_ID = 'design-direction';
+export const DESIGN_BRIEF_PATH = path.join('.ai-manager', 'state', 'design-brief.json');
+
+/** Director-owned visual direction (one option of the design-direction question). */
+export interface DesignDirection {
+  name: string;
+  rationale: string;
+  /** CSS custom property name (without --) -> value, e.g. { "renk-ana": "#1f3b2d" }. */
+  palette: Record<string, string>;
+  fonts: { heading: string; body: string };
+  layout: string;
+  imagery: string;
+  tone: string;
+  /** When emoji fit the subject (not banned), e.g. "yalnızca kategori etiketlerinde". */
+  emoji: string;
+}
+
+/** Binding design brief: chosen direction + the tokens the shared CSS must define. */
+export interface DesignBrief extends DesignDirection {
+  questionId: string;
+  optionId: string;
+  tokens: Record<string, string>;
+  cssGlob: string;
+  decidedBy: 'PO' | 'RECOMMENDED';
+}
 
 export interface ClarificationNewTask {
   title: string;
@@ -57,6 +85,8 @@ export interface ClarificationOption {
   appliesTo: string[];
   checks: ClarificationCheck[];
   newTasks: ClarificationNewTask[];
+  /** Only on the design-direction question. */
+  design?: DesignDirection;
 }
 
 export interface SpecClarificationQuestion {
@@ -189,9 +219,61 @@ export function normalizeCheck(raw: unknown): ClarificationCheck | null {
     case 'each_file_contains':
     case 'no_file_contains':
       return safeRel(glob) && pattern ? { type, glob, pattern, regex, description } : null;
+    case 'css_tokens': {
+      const tokens = normalizeTokens(r.tokens);
+      return safeRel(glob) && Object.keys(tokens).length ? { type, glob, tokens, description } : null;
+    }
     default:
       return null;
   }
+}
+
+const TOKEN_NAME_RE = /^[a-z][a-z0-9-]{0,40}$/;
+const TOKEN_VALUE_RE = /^(#[0-9a-fA-F]{3,8}|[A-Za-z0-9 ,.'"%()-]{1,80})$/;
+function normalizeTokens(raw: unknown): Record<string, string> {
+  const out: Record<string, string> = {};
+  if (!raw || typeof raw !== 'object') return out;
+  for (const [k0, v] of Object.entries(raw as Record<string, unknown>).slice(0, 16)) {
+    const k = k0.replace(/^--/, '').toLowerCase();
+    if (TOKEN_NAME_RE.test(k) && typeof v === 'string' && TOKEN_VALUE_RE.test(v.trim())) out[k] = v.trim();
+  }
+  return out;
+}
+
+/** Normalizes an option's design direction; null unless it has >= 3 hex colours and both fonts. */
+export function normalizeDesign(raw: unknown): DesignDirection | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const r = raw as Record<string, unknown>;
+  const palette: Record<string, string> = {};
+  for (const [k, v] of Object.entries(normalizeTokens(r.palette))) if (/^#[0-9a-fA-F]{3,8}$/.test(v)) palette[k] = v.toLowerCase();
+  const f = (r.fonts && typeof r.fonts === 'object' ? r.fonts : {}) as Record<string, unknown>;
+  const heading = str(f.heading, 80);
+  const body = str(f.body, 80);
+  if (Object.keys(palette).length < 3 || !heading || !body) return null;
+  return {
+    name: str(r.name, 120),
+    rationale: str(r.rationale, 600),
+    palette,
+    fonts: { heading, body },
+    layout: str(r.layout, 400),
+    imagery: str(r.imagery, 400),
+    tone: str(r.tone, 300),
+    emoji: str(r.emoji, 200),
+  };
+}
+
+/** Tokens the shared CSS must define for a direction (colours + the two font stacks). */
+export function designTokens(d: DesignDirection): Record<string, string> {
+  return { ...d.palette, 'font-baslik': d.fonts.heading, 'font-govde': d.fonts.body };
+}
+
+function designCriteria(d: DesignDirection): string[] {
+  const vars = Object.entries(designTokens(d)).map(([k, v]) => `--${k}: ${v}`).join('; ');
+  return [
+    `Tasarım yönü "${d.name || 'seçilen'}" bağlayıcıdır: ortak CSS şu değişkenleri :root içinde tanımlar: ${vars}`.slice(0, 300),
+    'Renkler ve yazı tipleri yalnızca bu CSS değişkenleriyle kullanılır; bunların dışında yeni bir palet veya yazı tipi uydurulmaz.',
+    `Yerleşim: ${d.layout || '-'}; görseller: ${d.imagery || '-'}; ton: ${d.tone || '-'}`.slice(0, 300),
+  ];
 }
 
 function normalizeOption(raw: unknown, i: number, knownTaskIds: ReadonlySet<string>): ClarificationOption | null {
@@ -215,8 +297,20 @@ function normalizeOption(raw: unknown, i: number, knownTaskIds: ReadonlySet<stri
     })
     .filter((t): t is ClarificationNewTask => !!t)
     .slice(0, 3);
-  const description = str(r.description, 1000);
-  return { id, label, ...(description ? { description } : {}), criteria: strList(r.criteria, 8, 300), appliesTo: applies, checks, newTasks };
+  let description = str(r.description, 1000);
+  const design = normalizeDesign(r.design);
+  let criteria = strList(r.criteria, 8, 300);
+  if (design) {
+    // The PO sees the concrete tokens; the chosen option carries binding criteria + a token check.
+    const pal = Object.entries(design.palette).map(([k, v]) => `${k} ${v}`).join(', ');
+    description = [description || design.rationale, `Palet: ${pal}`, `Yazı tipleri: ${design.fonts.heading} / ${design.fonts.body}`, design.emoji ? `Emoji: ${design.emoji}` : '']
+      .filter(Boolean)
+      .join(' — ')
+      .slice(0, 1000);
+    criteria = [...designCriteria(design), ...criteria].slice(0, 8);
+    checks.unshift({ type: 'css_tokens', glob: '**/*.css', tokens: designTokens(design), description: 'Ortak CSS tasarım değişkenlerini tanımlıyor' });
+  }
+  return { id, label, ...(description ? { description } : {}), criteria, appliesTo: design ? [] : applies, checks: checks.slice(0, 6), newTasks, ...(design ? { design } : {}) };
 }
 
 /** Normalizes the Director's (untrusted) review into a bounded proposal. */
@@ -300,6 +394,19 @@ export const CLARIFICATION_SYSTEM_PROMPT = [
   '                    { "type": "glob_count", "glob": "**/*.css", "max": 1, "description": "..." },',
   '                    { "type": "each_file_contains"|"no_file_contains", "glob": "*.html", "pattern": "...", "regex": false, "description": "..." } ],',
   '        "newTasks": [ { "title": "<Türkçe>", "description": "<Türkçe>", "targetFiles": ["..."], "criteria": ["<Türkçe>"] } ] } ] } ] }',
+  '',
+  `DESIGN DIRECTION (UI/web projects, i.e. the plan has HTML/CSS pages): YOU, not the coding agent, own the visual design. Include exactly one`,
+  `CLARIFICATION question with id "${DESIGN_QUESTION_ID}" proposing 2-3 genuinely different directions a thoughtful human designer would choose for THIS`,
+  'subject and audience. Each option has a "design" object: { "name", "rationale" (Türkçe, why it fits the subject/audience),',
+  '  "palette": { "renk-ana": "#hex", "renk-vurgu": "#hex", "renk-zemin": "#hex", "renk-metin": "#hex", ... } (3-8 colours, kebab-case names),',
+  '  "fonts": { "heading": "<font stack>", "body": "<font stack>" }, "layout": "<Türkçe>", "imagery": "<Türkçe>", "tone": "<Türkçe>",',
+  '  "emoji": "<Türkçe: where emoji fit, or \'kullanılmaz\'>" }. Set recommendedOptionId to your choice.',
+  'Avoid the generic "AI-made" look (default purple/blue gradients, generic glassmorphism cards, stock hero templates, uniform rounded',
+  'card grids) unless the subject truly justifies it. Emoji are allowed where they genuinely fit the subject and audience.',
+  'Reason from THIS project\'s own subject and audience like a human designer: who visits, what they need, what feeling the brand',
+  'should convey. Let that drive palette restraint, typography, whitespace, motion, readability and imagery. Do not reuse a default',
+  'palette or font pair across projects; every value must be justified in "rationale" by the subject and audience.',
+  '',
   `At most ${MAX_CLARIFICATION_QUESTIONS} CLARIFICATION and ${MAX_IMPROVEMENTS} IMPROVEMENT items, each with 2-4 options. Checks must be objective`,
   'file/content checks on the finished project (project-relative paths, simple globs). newTasks only inside the allowed paths.',
 ].join('\n');
@@ -545,6 +652,8 @@ export interface ClarificationResolution {
   notes: string[];
   /** Human-readable lines for the report. */
   lines: string[];
+  /** Binding design brief when the design-direction question was answered with a design option. */
+  designBrief?: DesignBrief;
 }
 
 export function resolveClarification(st: Pick<ClarificationState, 'questions' | 'answers' | 'freeTextCriteria'>, answers?: ClarificationAnswerItem[]): ClarificationResolution {
@@ -571,6 +680,10 @@ export function resolveClarification(st: Pick<ClarificationState, 'questions' | 
     if (ftc) {
       addCrit(ftc.appliesTo, ftc.criteria);
       res.checks.push(...ftc.checks);
+    }
+    if (opt?.design) {
+      res.designBrief = { ...opt.design, questionId: q.id, optionId: opt.id, tokens: designTokens(opt.design), cssGlob: '**/*.css', decidedBy: answers || st.answers ? 'PO' : 'RECOMMENDED' };
+      res.notes.push(`[design-brief] BINDING visual design "${opt.design.name}": ${designBriefText(res.designBrief)}`);
     }
     const chosen = opt ? opt.label : '(serbest cevap)';
     res.lines.push(`${q.kind === 'IMPROVEMENT' ? 'Öneri' : 'Soru'}: ${q.question} → ${chosen}${a.freeText ? ` — not: ${a.freeText}` : ''}`);
@@ -630,10 +743,41 @@ for (const c of CHECKS) {
   else if (c.type === 'file_contains') { const t = read(c.path); ok = t !== null && has(t, c); why = c.path + " içinde '" + c.pattern + "' yok"; }
   else if (c.type === 'glob_count') { const n = match(c.glob).length; ok = (c.min === undefined || n >= c.min) && (c.max === undefined || n <= c.max); why = c.glob + ': ' + n + ' dosya'; }
   else if (c.type === 'each_file_contains') { const fs_ = match(c.glob); const bad = fs_.filter((f) => !has(read(f) ?? '', c)); ok = fs_.length > 0 && bad.length === 0; why = fs_.length ? 'eksik: ' + bad.join(', ') : c.glob + ' ile eşleşen dosya yok'; }
+  else if (c.type === 'css_tokens') {
+    const squash = (x) => x.split(' ').join('').split('\\n').join('').split('\\t').join('').split('\\r').join('').toLowerCase();
+    const css = squash(match(c.glob).map((f) => read(f) ?? '').join(' '));
+    const missing = Object.entries(c.tokens).filter(([k, v]) => !css.includes(squash('--' + k + ':' + v)));
+    ok = missing.length === 0; why = 'eksik değişkenler: ' + missing.map(([k, v]) => '--' + k + ': ' + v).join('; ');
+  }
   else if (c.type === 'no_file_contains') { const bad = match(c.glob).filter((f) => has(read(f) ?? '', c)); ok = bad.length === 0; why = 'içeriyor: ' + bad.join(', '); }
   console.log((ok ? 'PASS ' : 'FAIL ') + c.description + (ok ? '' : ' — ' + why));
   if (!ok) failed++;
 }
 if (failed) { console.error(failed + ' kontrol başarısız'); process.exit(1); }
 `;
+}
+
+/** Compact brief for Director prompts and AGY instructions. */
+export function designBriefText(b: DesignBrief): string {
+  const vars = Object.entries(b.tokens).map(([k, v]) => `--${k}: ${v}`).join('; ');
+  return [
+    `Define in the shared CSS :root exactly: ${vars}.`,
+    'Use colours and fonts ONLY via these variables; do not invent any other palette or font.',
+    `Layout: ${b.layout}. Imagery: ${b.imagery}. Tone: ${b.tone}. Emoji: ${b.emoji || 'as fits'}.`,
+    'No generic AI look (default purple/blue gradients, glassmorphism cards, stock hero templates, uniform rounded card grids).',
+  ].join(' ');
+}
+
+export async function saveDesignBrief(projectRoot: string, brief: DesignBrief): Promise<void> {
+  const f = path.join(projectRoot, DESIGN_BRIEF_PATH);
+  await fs.promises.mkdir(path.dirname(f), { recursive: true });
+  await fs.promises.writeFile(f, JSON.stringify({ schemaVersion: 1, ...brief, savedAt: new Date().toISOString() }, null, 2), 'utf8');
+}
+
+export function loadDesignBrief(projectRoot: string): DesignBrief | null {
+  try {
+    return JSON.parse(fs.readFileSync(path.join(projectRoot, DESIGN_BRIEF_PATH), 'utf8')) as DesignBrief;
+  } catch {
+    return null;
+  }
 }

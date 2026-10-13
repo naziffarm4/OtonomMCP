@@ -45,6 +45,7 @@ import {
   renderChecksScript,
   resolveClarification,
   saveClarificationState,
+  saveDesignBrief,
   type ClarificationResolver,
   type ClarificationCheck,
   type ClarificationState,
@@ -298,6 +299,8 @@ export interface AutonomousRunReport {
   finalGate?: { status: 'PASS' | 'FAIL' | 'NOT_RUN' | 'NO_CHECKS'; repairs: number; checks: Array<{ command: string; exitCode: number | null; tail?: string }>; criteria: string[] };
   /** Verified live PO instructions (no tokens). */
   instructions: Array<{ instructionId: string; mode: string; taskId: string | null; state: string; note?: string }>;
+  /** Binding Director-owned design direction (UI projects), stored in .ai-manager/state/design-brief.json. */
+  designBrief?: { name: string; optionId: string; tokens: Record<string, string>; decidedBy: string };
   monitorUrl?: string;
   skippedByPo?: string[];
   stopReason?: string;
@@ -400,6 +403,7 @@ export class AutonomousSpecRunner {
     ANALYSIS: 'ANALYSIS',
     FINAL_GATE: 'VERIFICATION',
     INSTRUCTION: 'INFO',
+    DIRECTOR_ANSWER: 'DIRECTOR_ANSWER',
   };
 
   /**
@@ -1462,7 +1466,59 @@ export class AutonomousSpecRunner {
           report.instructions.push({ instructionId: rj.instructionId, mode: 'UNKNOWN', taskId: null, state: 'REJECTED', note: monitorText(rj.reason, 300) });
           this.emit('INSTRUCTION', 'Talimat reddedildi (doğrulanamadı)', undefined, 'warn');
         }
-        instructionInbox.push(...got);
+        // 'Soru sor' never waits for a cycle boundary and never pauses the run.
+        for (const ins of got) {
+          if (ins.mode === 'ASK') {
+            const p = answerQuestion(ins).catch(() => {});
+            pendingAnswers.add(p);
+            void p.finally(() => pendingAnswers.delete(p));
+          } else instructionInbox.push(ins);
+        }
+      };
+      const pendingAnswers = new Set<Promise<void>>();
+      /** Short Director LLM call with the run context; counts against the budget (wrapped provider). */
+      const answerQuestion = async (ins: VerifiedInstruction): Promise<void> => {
+        const entry: AutonomousRunReport['instructions'][number] = { instructionId: ins.instructionId, mode: 'ASK', taskId: ins.taskId, state: 'RECEIVED' };
+        report.instructions.push(entry);
+        this.emit('INSTRUCTION', 'Soru alındı; Director yanıtlıyor (çalışma devam ediyor)', ins.taskId ?? undefined);
+        await historyManager.appendEvent({ eventType: 'AUTONOMOUS_PO_INSTRUCTION', actor: Actor.USER, taskId: ins.taskId, payload: { instructionId: ins.instructionId, mode: 'ASK', sub: ins.sub } });
+        let answer = '';
+        let failure = '';
+        if (isBudgetExhausted(budgetManager!)) failure = 'Bütçe tükendi; soru yanıtlanamadı.';
+        else {
+          try {
+            const res = await provider.generate({
+              correlation: { correlation_id: `ask-${ins.instructionId}`, project_id: projectId, task_id: PO_QUESTION_TASK_ID, attempt: 1 },
+              messages: [
+                { role: 'system', content: PO_QUESTION_SYSTEM_PROMPT },
+                { role: 'user', content: buildPoQuestionPrompt({ question: ins.text, taskId: ins.taskId, markdown, report, currentTaskId: this.currentTaskId ?? null, poNotes, budget: this.liveBudget?.() ?? report.budget }) },
+              ],
+              director_context: { project_id: projectId, task_id: PO_QUESTION_TASK_ID, objective: 'answer product owner question', acceptance_criteria: null, attempt: 1, max_attempts: 1, relevant_context: null },
+              model: baseProvider.defaultModel,
+              max_tokens: 800,
+              response_format: LlmResponseFormat.TEXT,
+              json_schema: null,
+              metadata: { purpose: 'PO_QUESTION', runId },
+            } as never);
+            const err = (res as { error?: { message?: string } | null }).error;
+            if (err) failure = `Yanıt üretilemedi: ${monitorText(String(err.message ?? 'LLM hatası'), 200)}`;
+            else answer = String((res as { content?: unknown }).content ?? '').trim().slice(0, 4000);
+            if (!answer && !failure) failure = 'Director boş yanıt verdi.';
+          } catch (e) {
+            failure = `Yanıt üretilemedi: ${monitorText(e instanceof Error ? e.message : String(e), 200)}`;
+          }
+        }
+        if (answer) {
+          entry.state = 'APPLIED';
+          entry.note = monitorText(answer, 500);
+          await channel?.ack(ins.instructionId, 'APPLIED', 'Director yanıtladı.', answer);
+          this.emit('DIRECTOR_ANSWER', `Soru: ${monitorText(ins.text, 120)} — Yanıt: ${monitorText(answer, 340)}`, ins.taskId ?? undefined);
+        } else {
+          entry.state = 'REJECTED';
+          entry.note = failure;
+          await channel?.ack(ins.instructionId, 'REJECTED', failure);
+          this.emit('INSTRUCTION', failure, ins.taskId ?? undefined, 'warn');
+        }
       };
       const pollTimer = channel?.opened ? setInterval(() => void pollInstructions(true), pollMs) : null;
       pollTimer?.unref?.();
@@ -2215,8 +2271,15 @@ export class AutonomousSpecRunner {
             extraGateCommands.push(`node ${CHECKS_SCRIPT_PATH}`);
             report.clarification!.checksScript = CHECKS_SCRIPT_PATH;
           }
+          if (res.designBrief) {
+            // Director-owned visual direction: binding for every UI task; AGY never invents a palette.
+            await saveDesignBrief(projectRoot, res.designBrief);
+            report.designBrief = { name: res.designBrief.name, optionId: res.designBrief.optionId, tokens: res.designBrief.tokens, decidedBy: res.designBrief.decidedBy };
+            this.emit('CLARIFICATION', `Tasarım yönü bağlayıcı: ${res.designBrief.name || res.designBrief.optionId} (${Object.keys(res.designBrief.tokens).length} CSS değişkeni)`);
+          }
           if (res.notes.length) {
-            clarificationNote = `BINDING PRODUCT_OWNER SPEC CLARIFICATIONS (verified answers; follow them in every task): ${res.notes.join(' | ')}`.slice(0, 3000);
+            const notes = [...res.notes].sort((a, b) => Number(b.startsWith('[design-brief]')) - Number(a.startsWith('[design-brief]')));
+            clarificationNote = `BINDING PRODUCT_OWNER SPEC CLARIFICATIONS (verified answers; follow them in every task): ${notes.join(' | ')}`.slice(0, 3000);
           }
         }
       }
@@ -2517,6 +2580,7 @@ export class AutonomousSpecRunner {
         }
       }
       if (pollTimer) clearInterval(pollTimer);
+      await Promise.allSettled([...pendingAnswers]);
 
       const allAccepted =
         !stop &&
@@ -3108,4 +3172,52 @@ async function saveMandateExtension(projectRoot: string, specFingerprint: string
   j.push({ specFingerprint, path: p, decisionId, approvedAt: new Date().toISOString() });
   await fs.promises.mkdir(path.dirname(f), { recursive: true });
   await fs.promises.writeFile(f, JSON.stringify(j, null, 2), 'utf8');
+}
+
+export const PO_QUESTION_TASK_ID = 'PO-QUESTION';
+export const PO_QUESTION_SYSTEM_PROMPT = [
+  'Sen bu otonom çalıştırmanın Director\'ısın. Ürün sahibi çalışma sürerken sana bir soru soruyor.',
+  'Kısa, sade ve doğru TÜRKÇE ile yanıt ver (en fazla 8 cümle). Yalnızca verilen bağlamı kullan; bilmediğini uydurma, "bilmiyorum" de.',
+  'Bu bir sohbet yanıtıdır: plan değiştirme, eylem önerme formatı, JSON veya kod bloğu kullanma. Çalışma bu sırada durmadan devam ediyor.',
+].join('\n');
+
+/** Run context for a PO question: spec, task states, recent decisions, clarification answers, PO notes, budget. */
+export function buildPoQuestionPrompt(o: {
+  question: string;
+  taskId: string | null;
+  markdown: string;
+  report: AutonomousRunReport;
+  currentTaskId: string | null;
+  poNotes: ReadonlyArray<{ text: string; taskId: string | null }>;
+  budget?: { limitUsd: number; committedUsd: number };
+}): string {
+  const r = o.report;
+  const tasks = r.tasks.map((t) => `- ${t.taskId} ${t.title ?? ''}: ${t.status} (döngü ${t.cycles ?? 0})${t.lastSummary ? ` — ${String(t.lastSummary).slice(0, 160)}` : ''}`).join('\n');
+  const decisions = r.decisions.slice(-6).map((d) => `- ${d.taskId}: ${String(d.question).slice(0, 200)} → ${d.state}${(d as { answer?: string }).answer ? ` (${String((d as { answer?: string }).answer).slice(0, 120)})` : ''}`).join('\n');
+  const clar = (r.clarification?.lines ?? []).slice(0, 20).map((l) => `- ${l}`).join('\n');
+  const notes = o.poNotes.slice(-5).map((n) => `- ${n.taskId ? `[${n.taskId}] ` : ''}${n.text.slice(0, 200)}`).join('\n');
+  const b = o.budget ?? r.budget;
+  return [
+    `SORU${o.taskId ? ` (görev ${o.taskId} hakkında)` : ''}: ${o.question}`,
+    '',
+    `Şu anki görev: ${o.currentTaskId ?? '(yok)'}`,
+    b ? `Bütçe: limit $${b.limitUsd.toFixed(4)}, harcanan $${b.committedUsd.toFixed(4)}` : '',
+    '',
+    'GÖREVLER:',
+    tasks || '(yok)',
+    '',
+    'SON KARARLAR:',
+    decisions || '(yok)',
+    '',
+    'NETLEŞTİRME CEVAPLARI:',
+    clar || '(yok)',
+    '',
+    'ÜRÜN SAHİBİ NOTLARI:',
+    notes || '(yok)',
+    '',
+    'SPEC (kısaltılmış):',
+    o.markdown.slice(0, 12_000),
+  ]
+    .filter((x) => x !== undefined)
+    .join('\n');
 }

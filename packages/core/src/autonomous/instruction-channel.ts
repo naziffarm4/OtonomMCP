@@ -16,7 +16,7 @@ type Env = Readonly<Record<string, string | undefined>>;
 
 export const AUTONOMOUS_INSTRUCTION_OPERATION = 'AUTONOMOUS_INSTRUCTION';
 export const INSTRUCTION_MAX_LIFETIME_SEC = 15 * 60;
-export type InstructionMode = 'NOTE' | 'PAUSE_AND_APPLY' | 'STOP';
+export type InstructionMode = 'NOTE' | 'PAUSE_AND_APPLY' | 'STOP' | 'ASK';
 
 export interface VerifiedInstruction {
   readonly instructionId: string;
@@ -140,11 +140,12 @@ export class InstructionChannel {
     await this.call('DELETE', this.path('/instruction-channel'));
   }
 
-  async ack(instructionId: string, status: 'RECEIVED' | 'APPLIED' | 'REJECTED', note?: string): Promise<boolean> {
+  async ack(instructionId: string, status: 'RECEIVED' | 'APPLIED' | 'REJECTED', note?: string, answer?: string): Promise<boolean> {
     if (!UUID_RE.test(instructionId)) return false;
     const r = await this.call('POST', this.path(`/instructions/${encodeURIComponent(instructionId)}/ack`), {
       status,
       ...(note ? { note: monitorText(note, 1000) } : {}),
+      ...(answer ? { answer: answer.slice(0, 4000) } : {}),
     });
     return Boolean(r && r.status >= 200 && r.status < 300);
   }
@@ -222,7 +223,7 @@ export class InstructionChannel {
     if (!dry.ok || !dry.payload) return { ok: false, reason: `${dry.status}: ${dry.reason ?? 'invalid token'}` };
     const p = dry.payload;
     const mode = p.mode;
-    if (mode !== 'NOTE' && mode !== 'PAUSE_AND_APPLY' && mode !== 'STOP') return { ok: false, reason: 'invalid mode' };
+    if (mode !== 'NOTE' && mode !== 'PAUSE_AND_APPLY' && mode !== 'STOP' && mode !== 'ASK') return { ok: false, reason: 'invalid mode' };
     const text = typeof p.text === 'string' ? p.text : '';
     if (mode !== 'STOP' && (text.length < 1 || text.length > 2000)) return { ok: false, reason: 'text must be 1..2000 chars' };
     if (text.length > 2000) return { ok: false, reason: 'text too long' };

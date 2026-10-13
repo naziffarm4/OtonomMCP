@@ -211,6 +211,24 @@ describe('run monitor + live PO instructions', { concurrency: 1, timeout: 600_00
     assert.equal(ch, null, 'channel closed at run end');
   });
 
+  it("ASK ('Soru sor'): answered in Turkish from run context without pausing; answer acked + monitor event; budget counted", async () => {
+    let id = '';
+    llm.answerQuestion = (p) => (p.includes('SORU: Hangi görevdesin?') && p.includes('GÖREVLER:') && p.includes('TASK-001') ? 'Şu an TASK-001 üzerindeyim.' : 'bağlam yok');
+    const r = await approvedRun((runId) => {
+      id = idp.addInstruction(runId, 'ASK', 'Hangi görevdesin?');
+    });
+    assert.equal(r.code, 'COMPLETED', `${r.report?.stopReason}`);
+    assert.deepEqual(acks(id), ['RECEIVED', 'APPLIED']);
+    const last = idp.instructions.get(id)!.acks.at(-1)!;
+    assert.equal(last.answer, 'Şu an TASK-001 üzerindeyim.');
+    assert.equal(llm.questionRequests.length, 1);
+    assert.ok(!prompts(llm).some((x) => x.includes('Hangi görevdesin?')), 'question is not a Director instruction');
+    assert.ok(idp.monitorEvents.some((e) => e.type === 'DIRECTOR_ANSWER' && String(e.message).includes('TASK-001 üzerindeyim')));
+    assert.equal(r.report.instructions.find((i: Any) => i.instructionId === id).state, 'APPLIED');
+    assert.ok(r.report.budget.committedUsd > 0);
+    assert.equal(agy.calls, 2, 'run not paused/stopped');
+  });
+
   it('STOP (empty text): graceful STOPPED, report written, ack APPLIED, remaining task not executed', async () => {
     let id = '';
     const r = await approvedRun((runId) => {
