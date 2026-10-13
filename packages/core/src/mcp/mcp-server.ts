@@ -57,6 +57,7 @@ import {
 } from './tool-name-mapper.js';
 import { createHealthTool } from './tools/health-tool.js';
 import { registerAutonomousTools } from './tools/autonomous-start-tool.js';
+import { registerIdeExecutorTools } from './tools/ide-executor-tools.js';
 import {
   registerDirectorReadTools,
   registerDiscoveryTools,
@@ -269,6 +270,7 @@ export class McpServer {
     // Register autonomous spec-run tool if enabled
     if (config.autonomousTools) {
       registerAutonomousTools(this);
+      registerIdeExecutorTools(this);
     }
 
     // Register Phase 22 Director MCP Control Plane tools if enabled

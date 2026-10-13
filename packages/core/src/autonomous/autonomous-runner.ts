@@ -96,6 +96,8 @@ import type { LLMProvider } from '../llm-bridge/llm-provider.js';
 import { LlmResponseFormat } from '../llm-bridge/llm-types.js';
 import type { ExecutorPort } from '../executor-bridge/executor-port.js';
 import { AntigravityAdapter } from '../executor-bridge/antigravity-adapter.js';
+import { registerWatcherRoot } from '../mcp/aidm-watcher.js';
+import { createIdeRequestInvoker, IDE_EXECUTOR_ID, noteIdeEvent, resetIdeMailbox, resolveExecutorMode, type ExecutorMode } from '../executor-bridge/ide-executor.js';
 import { NodeAntigravityProcessRunner } from '../executor-bridge/antigravity-process-runner.js';
 import { LifecycleState } from '../lifecycle.js';
 import { Actor } from '../actors.js';
@@ -300,6 +302,7 @@ export interface AutonomousRunReport {
   /** Verified live PO instructions (no tokens). */
   instructions: Array<{ instructionId: string; mode: string; taskId: string | null; state: string; note?: string }>;
   /** Binding Director-owned design direction (UI projects), stored in .ai-manager/state/design-brief.json. */
+  executorMode?: ExecutorMode;
   designBrief?: { name: string; optionId: string; tokens: Record<string, string>; decidedBy: string };
   monitorUrl?: string;
   skippedByPo?: string[];
@@ -371,6 +374,7 @@ export class AutonomousSpecRunner {
   private instructionChannel: InstructionChannel | null = null;
   private stopInstruction: VerifiedInstruction | null = null;
   private checkpoint: RunCheckpoint | null = null;
+  private ideRoot: string | null = null;
 
   /** Persists the crash-safe checkpoint (never throws). */
   private writeCheckpoint(): void {
@@ -632,6 +636,7 @@ export class AutonomousSpecRunner {
     } catch {
       /* listener errors never affect the run */
     }
+    if (this.ideRoot) noteIdeEvent(this.ideRoot, { type, message, taskId: taskId ?? null, level });
     if (this.monitor) {
       this.monitor.event(AutonomousSpecRunner.MONITOR_TYPES[type] ?? 'INFO', message, taskId ?? null, level);
       if (type !== 'CYCLE_START') this.pushSnapshot();
@@ -1126,6 +1131,17 @@ export class AutonomousSpecRunner {
       }
       const provider = budgetManager.wrapProvider(baseProvider, { env: this.env });
 
+      // Executor mode: 'ide' (default, the agent open in Antigravity pulls tasks via MCP),
+      // 'cli' (spawn agy per task) or 'cli-session' (agy, one conversation reused across tasks).
+      // The aidm watcher learns every project a run was started in (resume button works without reinstall).
+      registerWatcherRoot(projectRoot, this.env);
+      const executorMode = resolveExecutorMode(markdown, this.env);
+      report.executorMode = executorMode;
+      const ideExecutor = executorMode === 'ide' && (!this.options.executorPort || this.options.executorPort.executorId === IDE_EXECUTOR_ID);
+      if (ideExecutor) {
+        resetIdeMailbox(projectRoot);
+        this.ideRoot = projectRoot;
+      }
       const executorPort =
         this.options.executorPort ??
         new AntigravityAdapter({
@@ -1133,7 +1149,16 @@ export class AutonomousSpecRunner {
           binaryPath: this.env.AIDM_AGY_PATH ?? 'agy',
           processRunner: new NodeAntigravityProcessRunner(),
           ...agyTimeouts(this.env),
+          ...(executorMode === 'ide'
+            ? { requestInvoker: createIdeRequestInvoker(projectRoot), executorId: IDE_EXECUTOR_ID, ...ideTimeouts(this.env) }
+            : {}),
+          ...(executorMode === 'cli-session'
+            ? { sessionFile: path.join(projectRoot, '.ai-manager', 'state', 'agy-session.json') }
+            : {}),
         });
+      if (ideExecutor) {
+        this.emit('INSTRUCTION', "Yürütücü: IDE modu. Antigravity'deki ajan aidm_next_task ile görevleri alacak, aidm_submit_task ile teslim edecek.");
+      }
       const availability = executorPort.checkAvailability
         ? await executorPort.checkAvailability()
         : { available: true };
@@ -1318,9 +1343,9 @@ export class AutonomousSpecRunner {
       let clarificationChecks: readonly ClarificationCheck[] = [];
       /** A scope-mismatch rejection is repairable: the governed pipeline marked the task REJECTED
        * (fail-closed); only the runner's verified scope classification puts it back to READY. */
-      const reopenTask = async (taskId: string): Promise<void> => {
+      const reopenTask = async (taskId: string, evenIfAccepted = false): Promise<void> => {
         const tasks = await specStore.loadTasks();
-        if (tasks.some((t) => t.task_id === taskId && t.status !== TaskStatus.ACCEPTED)) {
+        if (tasks.some((t) => t.task_id === taskId && (evenIfAccepted || t.status !== TaskStatus.ACCEPTED))) {
           // Runtime status transition on stored (already validated) definitions: the store's re-ingest
           // heuristic would otherwise keep REJECTED for an unchanged definition.
           await specStore.saveTasks(tasks.map((t) => (t.task_id === taskId ? { ...t, status: TaskStatus.READY } : t)) as never, { bypassValidation: true });
@@ -1733,6 +1758,12 @@ export class AutonomousSpecRunner {
             );
           }
 
+          // A rejected self-claim must never leave the stored task ACCEPTED (the governed cycle may
+          // have marked it before the bridge's Zero-Executor-Trust check); otherwise the repair
+          // attempt is refused as "already in terminal state".
+          if (/self-claim rejected|claims cannot substitute/i.test(String(result.summary ?? ''))) {
+            await reopenTask(task.task_id, true).catch(() => undefined);
+          }
           const action = (result.directorAction ?? {}) as unknown as Record<string, unknown>;
           const actionType = result.directorAction?.actionType as string | undefined;
           if (pauseInstruction) {
@@ -3412,4 +3443,11 @@ export function turkishStopReason(status: string, reason: string): string {
   const hit = rules.find(([re]) => re.test(reason));
   const head = hit ? hit[1] : `${STATUS_TR[status] ?? 'Çalışma durdu'}.`;
   return `${head} (${status}: ${reason.slice(0, 600)})`;
+}
+
+/** IDE mode: how long to wait for the IDE agent to submit (AIDM_IDE_TIMEOUT_MS, default 45 min; cap 2 h). */
+export function ideTimeouts(env: Readonly<Record<string, string | undefined>>): { minTimeoutMs: number; maxTimeoutMs: number } {
+  const n = (v: string | undefined, d: number) => (v && Number.isFinite(Number(v)) && Number(v) > 0 ? Number(v) : d);
+  const min = n(env.AIDM_IDE_TIMEOUT_MS, 45 * 60_000);
+  return { minTimeoutMs: min, maxTimeoutMs: Math.max(min, n(env.AIDM_IDE_MAX_TIMEOUT_MS, 120 * 60_000)) };
 }

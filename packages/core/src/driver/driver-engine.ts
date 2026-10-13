@@ -577,7 +577,8 @@ export class DriverEngine {
     // changed context gets a fresh instruction (accepted ones are still detected below).
     let instruction =
       sameTask.find((i) => i.directorDecisionId === decision!.decisionId && i.contextFingerprint === snapshot!.logicalFingerprint);
-    if (!instruction) {
+    const reopened = String((task as { status?: unknown }).status) === 'READY';
+    if (!instruction && !reopened) {
       for (const i of sameTask) {
         const prev = await this.loopStore.getCycleResultByInstructionId(i.instructionId);
         if (prev && prev.terminalStatus === 'ACCEPTED') {
@@ -592,7 +593,9 @@ export class DriverEngine {
       const prevResult = await this.loopStore.getCycleResultByInstructionId(
         instruction.instructionId
       );
-      if (prevResult && prevResult.terminalStatus === 'ACCEPTED') {
+      // Replay only when the task really is ACCEPTED: a cycle the bridge later rejected (e.g. a
+      // verbal self-claim) was reopened and must execute again instead of replaying the claim.
+      if (prevResult && prevResult.terminalStatus === 'ACCEPTED' && !reopened) {
         // Invariant: completed cycles cannot be blindly replayed
         // Evaluate next action to check if already complete or needs next
         const nextAction = await this.directorLoopEngine.evaluateNextAction({

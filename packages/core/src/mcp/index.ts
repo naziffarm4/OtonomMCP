@@ -49,3 +49,4 @@ export * from './director-mcp-client.js';
 export * from './tool-policy-classifier.js';
 
 export * from './tools/autonomous-start-tool.js';
+export * from './tools/ide-executor-tools.js';

@@ -1,4 +1,5 @@
 import * as fs from 'node:fs';
+import * as path from 'node:path';
 import type { ExecutorPort, ExecutionRequestExecutorPort } from './executor-port.js';
 import {
   type ExecutorInstruction,
@@ -123,6 +124,8 @@ export interface AntigravityAdapterConfig {
    * the effective timeout is max(request, this). Env: AIDM_AGY_TIMEOUT_MS (autonomous runner).
    */
   minTimeoutMs?: number;
+  /** cli-session mode: file persisting the agy conversation id, reused across tasks via --conversation. */
+  sessionFile?: string;
   /**
    * Hard cap (ms) for progress-based extension: at the deadline, if AGY produced output or changed
    * workspace files during the last window, the deadline moves by one window, up to this cap.
@@ -301,6 +304,7 @@ export class AntigravityAdapter implements ExecutorPort, ExecutionRequestExecuto
   readonly executorId: string;
   readonly provider = 'antigravity';
   private readonly minTimeoutMs?: number;
+  private readonly sessionFile?: string;
   private readonly maxTimeoutMs?: number;
   readonly supportedOperations: readonly string[];
   readonly binaryPath: string;
@@ -327,6 +331,7 @@ export class AntigravityAdapter implements ExecutorPort, ExecutionRequestExecuto
     this.configuredVersion = config.version;
     this.workspaceRoot = config.workspaceRoot;
     this.minTimeoutMs = config.minTimeoutMs;
+    this.sessionFile = config.sessionFile;
     this.maxTimeoutMs = config.maxTimeoutMs;
     this.contextService = config.contextService;
     this.autoResolveContext = config.autoResolveContext ?? (this.contextService !== undefined);
@@ -398,6 +403,8 @@ export class AntigravityAdapter implements ExecutorPort, ExecutionRequestExecuto
     if (workingDir) {
       args.push('--add-dir', workingDir);
     }
+    const sessionId = readAgySession(this.sessionFile);
+    if (sessionId) args.push('--conversation', sessionId);
 
     // Assemble deterministic structured prompt
     const promptLines: string[] = [
@@ -948,6 +955,8 @@ export class AntigravityAdapter implements ExecutorPort, ExecutionRequestExecuto
           });
         }
 
+        const convId = (parsed.metadata as Record<string, unknown> | undefined)?.conversationId;
+        if (typeof convId === 'string') writeAgySession(this.sessionFile, convId);
         return createSuccessRawOutcome({
           request: validatedRequest,
           executorIdentity: this.executorIdentity,
@@ -1533,4 +1542,23 @@ export function workspaceChangedSince(root: string | undefined, sinceMs: number)
     }
   }
   return false;
+}
+
+const SESSION_ID_RE = /^[A-Za-z0-9._:-]{1,200}$/;
+/** cli-session: the saved agy conversation id (validated; never shell-interpolated). */
+export function readAgySession(file: string | undefined): string | null {
+  if (!file) return null;
+  try {
+    const id = (JSON.parse(fs.readFileSync(file, 'utf8')) as { conversationId?: unknown }).conversationId;
+    return typeof id === 'string' && SESSION_ID_RE.test(id) ? id : null;
+  } catch {
+    return null;
+  }
+}
+export function writeAgySession(file: string | undefined, conversationId: string): void {
+  if (!file || !SESSION_ID_RE.test(conversationId)) return;
+  try {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, JSON.stringify({ conversationId, savedAt: new Date().toISOString() }));
+  } catch { /* best effort */ }
 }

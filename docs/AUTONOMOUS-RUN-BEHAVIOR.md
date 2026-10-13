@@ -191,3 +191,24 @@ görevlere eklenecek **ölçülebilir kabul kriterleri** yazar.
   bölümünde durur; devam/yeniden başlatmada tekrar sorulmaz. Spec değişirse (yeni parmak izi) yeniden incelenir.
 - Harcama bütçeden düşer (inceleme 1 çağrı; Türkçe düzeltme ve serbest metin çevirisi gerekirse +1'er).
 - Kapatmak için spec'e: `Netleştirme: kapalı` (ascii `Netlestirme: kapali`); varsayılan `açık`.
+
+## Yürütücü modları (executor modes)
+
+Spec satırı `Yürütücü: ide | cli | cli-oturum` (yoksa `AIDM_EXECUTOR_MODE`, varsayılan `ide`).
+
+- **ide** (varsayılan): `agy` başlatılmaz. Runner her görevi `.ai-manager/state/ide/task.json` posta kutusuna koyar.
+  Antigravity'de açık ajan döngüsü: `aidm_next_task` → işi IDE'de yap → `aidm_submit_task(seq, summary, changedFiles)`.
+  `aidm_submit_task` en fazla ~45 sn bekler (`AIDM_IDE_SUBMIT_WAIT_MS`) ve şunlardan birini döner:
+  `ACCEPTED` (+sıradaki görev), `REPAIR` (+Türkçe geri bildirim), `WAIT` (IdP kararı), `DONE`, `PENDING` (sonra `aidm_task_result`).
+  IDE'nin iddiası güvenilmez: Director çalışma alanını bağımsız doğrular (SystemExecutionEvidence, kapsam, kontroller).
+  IDE süre içinde teslim etmezse (`AIDM_IDE_TIMEOUT_MS`, varsayılan 45 dk, dosya değişikliği oldukça 2 saate kadar uzar)
+  görev EXECUTION_UNKNOWN olur, IdP'de Türkçe karar açılır ve çalışma kaldığı yerden devam ettirilebilir.
+- **cli**: her görev için `agy` süreci (önceki davranış).
+- **cli-oturum**: `agy`, ilk yanıttaki `conversation_id` `.ai-manager/state/agy-session.json`'a kaydedilir ve sonraki görevlerde
+  `--conversation <id>` ile aynı oturum sürdürülür.
+
+## aidm watcher
+
+- Her çalışma başlangıcı projeyi `%LOCALAPPDATA%\aidm\watcher-roots.json` listesine ekler; watcher listeyi her turda yeniden okur.
+- Tek kopya: `%LOCALAPPDATA%\aidm\aidm-watcher.lock`; ikinci watcher hemen çıkar.
+- IdP erişilemezse yalnızca durum değişince loglanır; bekleme 60 sn'ye kadar katlanarak artar.

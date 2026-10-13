@@ -15,7 +15,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { IdpClient, type IdpResumeRequest } from '../autonomous/idp-client.js';
 import { resolveCanonicalProjectIdentity } from '../director/project-identity-resolver.js';
-import { loadCheckpoint, runLiveness, isResumableBlockedRun } from '../autonomous/run-checkpoint.js';
+import { loadCheckpoint, runLiveness, isResumableBlockedRun, isPidAlive } from '../autonomous/run-checkpoint.js';
 
 type Env = Readonly<Record<string, string | undefined>>;
 export interface WatcherOptions {
@@ -25,6 +25,8 @@ export interface WatcherOptions {
   /** Starts the resume; default: the MCP resume handler (detached worker). Tests inject. */
   readonly startResume?: (root: string, runId: string, resumeId: string) => Promise<{ ok: boolean; note: string }>;
   readonly log?: (line: string) => void;
+  /** IdP poll outcome; when set, poll failures are reported here instead of logged per tick. */
+  readonly onPollState?: (ok: boolean, message?: string) => void;
 }
 
 export interface WatcherTickResult {
@@ -55,7 +57,6 @@ async function defaultStart(root: string, runId: string, resumeId: string, env: 
 export async function watcherTick(o: WatcherOptions): Promise<WatcherTickResult[]> {
   const env = o.env ?? process.env;
   const log = o.log ?? (() => {});
-  const client = new IdpClient({ env, fetchFn: o.fetchFn });
   const byProject = new Map<string, string>();
   for (const r of o.roots) {
     try {
@@ -66,12 +67,17 @@ export async function watcherTick(o: WatcherOptions): Promise<WatcherTickResult[
   }
   const out: WatcherTickResult[] = [];
   let items: IdpResumeRequest[];
+  let client: IdpClient;
   try {
+    client = new IdpClient({ env, fetchFn: o.fetchFn });
     items = await client.listResumeRequests();
   } catch (err) {
-    log(`IdP poll failed: ${err instanceof Error ? err.message : String(err)}`);
+    const m = err instanceof Error ? err.message : String(err);
+    if (o.onPollState) o.onPollState(false, m);
+    else log(`IdP poll failed: ${m}`);
     return out;
   }
+  o.onPollState?.(true);
   for (const it of items) {
     const root = byProject.get(it.projectId);
     if (!root) continue; // another watcher's project
@@ -134,24 +140,116 @@ export function envFromMcpConfig(env: Env): Record<string, string> {
   }
 }
 
+/** Persisted list of projects to watch (every run start registers its project). */
+export function watcherRootsFile(env: Env): string | null {
+  if (env.AIDM_WATCH_ROOTS_FILE) return env.AIDM_WATCH_ROOTS_FILE;
+  return env.LOCALAPPDATA ? path.join(env.LOCALAPPDATA, 'aidm', 'watcher-roots.json') : null;
+}
+const sameRoot = (a: string, b: string) => (process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b);
+export function readWatcherRoots(env: Env): string[] {
+  const f = watcherRootsFile(env);
+  if (!f) return [];
+  try {
+    const j = JSON.parse(fs.readFileSync(f, 'utf8')) as { roots?: unknown };
+    return Array.isArray(j.roots) ? j.roots.filter((r): r is string => typeof r === 'string' && r.length > 0) : [];
+  } catch {
+    return [];
+  }
+}
+/** Adds a project root to the watcher list (idempotent, best effort; never throws). */
+export function registerWatcherRoot(root: string, env: Env): boolean {
+  const f = watcherRootsFile(env);
+  if (!f) return false;
+  try {
+    const abs = path.resolve(root);
+    const roots = readWatcherRoots(env);
+    if (roots.some((r) => sameRoot(path.resolve(r), abs))) return true;
+    fs.mkdirSync(path.dirname(f), { recursive: true });
+    const tmp = `${f}.${process.pid}.tmp`;
+    fs.writeFileSync(tmp, JSON.stringify({ roots: [...roots, abs] }, null, 2));
+    fs.renameSync(tmp, f);
+    return true;
+  } catch {
+    return false;
+  }
+}
+function mergeRoots(a: readonly string[], b: readonly string[]): string[] {
+  const out: string[] = [];
+  for (const r of [...a, ...b]) if (!out.some((x) => sameRoot(path.resolve(x), path.resolve(r)))) out.push(r);
+  return out;
+}
+
+/** Single instance: returns a release function, or null when another live watcher holds the lock. */
+export function acquireWatcherLock(lockFile: string, pid = process.pid): (() => void) | null {
+  fs.mkdirSync(path.dirname(lockFile), { recursive: true });
+  for (let i = 0; i < 2; i++) {
+    try {
+      fs.writeFileSync(lockFile, String(pid), { flag: 'wx' });
+      return () => {
+        try {
+          if (fs.readFileSync(lockFile, 'utf8').trim() === String(pid)) fs.rmSync(lockFile, { force: true });
+        } catch { /* gone */ }
+      };
+    } catch {
+      const other = Number(fs.readFileSync(lockFile, 'utf8').trim());
+      if (other && other !== pid && isPidAlive(other)) return null;
+      fs.rmSync(lockFile, { force: true }); // stale lock
+    }
+  }
+  return null;
+}
+
+/** IdP poll state: logs only on change, backs off up to maxS while the IdP is unreachable. */
+export function pollBackoff(baseS: number, maxS = 60) {
+  let down = false;
+  let delay = baseS;
+  return {
+    update(ok: boolean, message: string | undefined, log: (l: string) => void): void {
+      if (ok) {
+        if (down) log('IdP reachable again');
+        down = false;
+        delay = baseS;
+      } else {
+        if (!down) log(`IdP unreachable: ${message ?? ''} (retrying with backoff up to ${maxS}s; logged once)`);
+        down = true;
+        delay = Math.min(maxS, delay * 2);
+      }
+    },
+    get delayS() {
+      return delay;
+    },
+  };
+}
+
 export async function main(argv = process.argv.slice(2), baseEnv: Env = process.env): Promise<void> {
   const fromCfg = envFromMcpConfig(baseEnv);
   // Workers spawned for a resume inherit this process env.
   for (const [k, v] of Object.entries(fromCfg)) process.env[k] = v;
   const env: Env = { ...baseEnv, ...fromCfg };
-  const { roots, interval, once } = parseArgs(argv, env);
+  const { roots: argRoots, interval, once } = parseArgs(argv, env);
   const logFile = env.AIDM_WATCH_LOG || path.join(env.LOCALAPPDATA || env.HOME || '.', 'aidm', 'aidm-watcher.log');
   fs.mkdirSync(path.dirname(logFile), { recursive: true });
   const log = (l: string) => fs.appendFileSync(logFile, `${new Date().toISOString()} ${l}\n`);
-  if (roots.length === 0) {
-    log('no --root / AIDM_WATCH_ROOTS configured; exiting');
+  const release = once ? () => {} : acquireWatcherLock(path.join(path.dirname(logFile), 'aidm-watcher.lock'));
+  if (!release) {
+    log(`another watcher is already running; pid ${process.pid} exits`);
     return;
   }
-  log(`watching ${roots.length} project(s), every ${interval}s; settings from MCP config: ${Object.keys(fromCfg).length} key(s)`);
+  process.on('exit', release);
+  for (const sig of ['SIGINT', 'SIGTERM', 'SIGBREAK'] as const) process.on(sig, () => process.exit(0));
+  // Command-line roots are registered too, so the list survives without the arguments.
+  for (const r of argRoots) registerWatcherRoot(r, env);
+  const backoff = pollBackoff(interval);
+  let lastCount = -1;
   for (;;) {
-    await watcherTick({ roots, env, log });
+    const roots = mergeRoots(argRoots, readWatcherRoots(env));
+    if (roots.length !== lastCount) {
+      log(`watching ${roots.length} project(s), every ${interval}s; settings from MCP config: ${Object.keys(fromCfg).length} key(s)`);
+      lastCount = roots.length;
+    }
+    if (roots.length) await watcherTick({ roots, env, log, onPollState: (ok, m) => backoff.update(ok, m, log) });
     if (once) return;
-    await new Promise((r) => setTimeout(r, interval * 1000));
+    await new Promise((r) => setTimeout(r, (roots.length ? backoff.delayS : interval) * 1000));
   }
 }
 

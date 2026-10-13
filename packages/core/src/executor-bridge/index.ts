@@ -13,3 +13,4 @@ export * from './executor-context-service.js';
 
 // Explicit re-export to resolve duplicate export ambiguity between instruction-types and raw-executor-outcome
 export type { RawExecutorOutcome } from './raw-executor-outcome.js';
+export * from './ide-executor.js';
