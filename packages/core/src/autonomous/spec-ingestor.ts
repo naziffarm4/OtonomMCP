@@ -211,11 +211,17 @@ export function isSafeProjectRelativePath(p: string): boolean {
   return true;
 }
 
+/** `site.com/projeler.html`, `www.x.org/a.js`: an example URL, not a project file. */
+export function looksLikeUrl(p: string): boolean {
+  const first = p.replace(/\\/g, '/').split('/')[0] ?? '';
+  return p.includes('://') || (p.includes('/') && /^(www\.)?[a-z0-9-]+(\.[a-z0-9-]+)*\.(com|net|org|io|dev|app|tr|co|edu|gov|info|biz|me|site|xyz|ai)$/i.test(first));
+}
+
 function extractCodePaths(text: string): string[] {
   const out: string[] = [];
   for (const m of text.matchAll(CODE_PATH_RE)) {
     const p = m[1].replace(/^\.\//, '');
-    if (isSafeProjectRelativePath(p) && !out.includes(p)) out.push(p);
+    if (isSafeProjectRelativePath(p) && !looksLikeUrl(p) && !out.includes(p)) out.push(p);
   }
   return out;
 }

@@ -628,7 +628,10 @@ export class DriverEngine {
               ? metaAny.targetFiles
               : Array.isArray(metaAny.target_files) && metaAny.target_files.length > 0
                 ? metaAny.target_files
-                : ['src/index.ts'];
+                : Array.isArray(metaAny.implementationScopeExtra) &&
+                    (metaAny.implementationScopeExtra as unknown[]).some((x) => typeof x === 'string' && !/[*?[{]/.test(x))
+                  ? (metaAny.implementationScopeExtra as string[]).filter((x) => typeof x === 'string' && !/[*?[{]/.test(x))
+                  : ['src/index.ts'];
 
       instruction = await this.directorLoopEngine.ingestInstruction({
         workspaceRoot: workingDir,

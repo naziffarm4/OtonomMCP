@@ -454,7 +454,10 @@ export class DirectorActionBuilder {
           taskId,
           expectedTaskRevision,
           executionPlan: a.objective || a.rationale || `Implement task ${taskId}`,
-          targetFiles: Array.isArray(a.targetFiles) ? a.targetFiles : ['src/index.ts'],
+          // Globs are scope patterns, never target files (the policy checks literal paths).
+          targetFiles: Array.isArray(a.targetFiles)
+            ? a.targetFiles.filter((f: unknown) => typeof f === 'string' && !/[*?[\]{}]/.test(f))
+            : ['src/index.ts'],
           acceptanceCriteria: Array.isArray(a.acceptanceCriteria) ? a.acceptanceCriteria : [],
           constraints: Array.isArray(a.constraints) ? a.constraints : [],
           implementationScope: typeof a.implementationScope === 'string' && (a.implementationScope.includes('/') || a.implementationScope.endsWith('*'))

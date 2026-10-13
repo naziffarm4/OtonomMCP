@@ -28,7 +28,7 @@ import * as crypto from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 
-import { SpecIngestor, type SpecIngestionResult, type AnalysisPolicy } from './spec-ingestor.js';
+import { SpecIngestor, looksLikeUrl, isSafeProjectRelativePath, type SpecIngestionResult, type AnalysisPolicy } from './spec-ingestor.js';
 import {
   CHECKS_SCRIPT_PATH,
   CLARIFICATION_SYSTEM_PROMPT,
@@ -721,9 +721,13 @@ export class AutonomousSpecRunner {
         createTrustedIdentityProvider({ env: this.env, nonceStore: new NonceStore({ baseDir: projectRoot }) }),
     });
     const previousMandate = await mandateStore.loadMandate();
+    // The approved spec's own page/target files are inside the mandate (root-level pages such as
+    // hakkimda.html are not default directories), plus paths the PO approved by passkey decision
+    // for this spec (applied when the next segment seals a new mandate).
+    const specTargets = [...new Set(ingestion.requirements.flatMap((r) => [...r.targetFiles]))].filter((f) => !/[*?[{]/.test(f));
     const mandateDraft = buildAutonomousMandate({
       projectId,
-      allowedPaths: ingestion.allowedPaths,
+      allowedPaths: [...new Set([...ingestion.allowedPaths, ...specTargets, ...loadMandateExtensions(projectRoot, ingestion.specFingerprint)])],
       validityHours: this.options.mandateValidityHours,
       previous: previousMandate,
     });
@@ -1248,9 +1252,10 @@ export class AutonomousSpecRunner {
       const scopeStrikes = new Map<string, number>();
       const scopeFiles = new Map<string, string[]>();
       const scopeAttemptFiles = new Map<string, string[]>();
+      const policyStrikes = new Map<string, number>();
       const waiting = new Map<
         string,
-        { record: DecisionRecord; kind: 'DIRECTOR' | 'ATTEMPTS_EXHAUSTED' | 'SCOPE_VIOLATION'; promise: Promise<{ taskId: string; outcome: DecisionOutcome }> }
+        { record: DecisionRecord; kind: 'DIRECTOR' | 'ATTEMPTS_EXHAUSTED' | 'SCOPE_VIOLATION' | 'POLICY_PATH'; promise: Promise<{ taskId: string; outcome: DecisionOutcome }> }
       >();
       const allowedDirs = (report.mandate?.allowedDirectories ?? []).map((d) => d.replace(/\\/g, '/').replace(/\/+$/, ''));
 
@@ -1859,6 +1864,70 @@ export class AutonomousSpecRunner {
             continue;
           }
 
+          // ---- Policy denied a path outside the mandate (e.g. a glob or a URL the Director put in
+          // targetFiles): fixable. First a repair turn, then the PO decides (Turkish, passkey).
+          const deniedPath = !isAnalysis && result.status === 'REJECTED_BY_POLICY' ? policyDeniedPath(result.summary) : null;
+          if (deniedPath !== null) {
+            const strikes = (policyStrikes.get(task.task_id) ?? 0) + 1;
+            policyStrikes.set(task.task_id, strikes);
+            taskReport.cycles--; // no execution happened; the attempt is not consumed
+            const scopeNow = currentScopeOf(taskDefs.get(task.task_id)!);
+            this.emit('VERIFICATION', `Politika reddi: '${deniedPath}' izinli yolların dışında`, task.task_id, 'warn');
+            if (strikes === 1) {
+              extraGuidance = [
+                `The policy engine rejected the previous IMPLEMENT_TASK for ${task.task_id}: target file '${deniedPath}' is outside the allowed paths.`,
+                'targetFiles must be literal project-relative file paths (no globs like *.html, no URLs) inside the allowed paths.',
+                `Use the task's files: ${scopeNow.filter((x) => !/[*?[{]/.test(x)).join(', ') || '(none listed)'}; allowed paths: ${(report.mandate?.allowedDirectories ?? []).join(', ')}.`,
+                `Re-emit IMPLEMENT_TASK for ${task.task_id}.`,
+              ].join('\n');
+              continue;
+            }
+            if (decisionMode === 'ask' && decisionResolver) {
+              const literal = !/[*?[{]/.test(deniedPath) && !looksLikeUrl(deniedPath) && isSafeProjectRelativePath(deniedPath);
+              const record = buildDecisionRecord({
+                projectRoot,
+                projectId,
+                runId,
+                taskId: task.task_id,
+                packageId: approved.packageId,
+                revision: approved.revision,
+                question: [
+                  `Görev ${task.task_id} ('${monitorText(task.title, 120)}') onayladığın izinli yolların dışındaki bir dosyaya yazmak istedi: '${monitorText(deniedPath, 200)}'.`,
+                  literal ? '' : 'Bu bir dosya yolu değil (joker karakter veya adres); kapsama eklenemez.',
+                  `Görevin kapsamı: ${monitorText(scopeNow.join(', '), 300)}. Ne yapılsın?`,
+                ]
+                  .filter(Boolean)
+                  .join(' '),
+                reason: 'Politika motoru (P21) izinli yolların dışındaki hedefleri reddeder. Bu bir güvenlik ihlali değil; karar senin.',
+                options: [
+                  { id: 'widen', label: 'Kapsamı genişlet ve devam et (bu dosyalar göreve eklenir)' },
+                  { id: 'revert', label: 'Fazla dosyaları at ve tekrar dene' },
+                  { id: 'stop', label: 'Çalışmayı durdur' },
+                ],
+                recommendation: literal ? 'widen' : 'revert',
+                allowFreeText: true,
+              });
+              (record as { kind?: string }).kind = 'POLICY_PATH';
+              await saveDecisionRecord(record);
+              report.decisions.push({ decisionId: record.decisionId, taskId: task.task_id, question: record.question, state: 'PENDING', channel: decisionResolver.channel });
+              taskReport.status = 'WAITING_DECISION';
+              this.pendingDecisionIds.add(record.decisionId);
+              this.emit('DECISION_REQUESTED', `İzinli yol dışı hedef: ${task.task_id} (${record.decisionId})`, task.task_id, 'warn');
+              scopeFiles.set(task.task_id, [deniedPath]);
+              const resolver = decisionResolver;
+              const promise = resolver
+                .resolve(record)
+                .catch((err): DecisionOutcome => ({ status: 'FAILED', reason: err instanceof Error ? err.message : String(err) }))
+                .then((outcome) => ({ taskId: task.task_id, outcome }));
+              waiting.set(task.task_id, { record, kind: 'POLICY_PATH', promise });
+              return 'DEFERRED';
+            }
+            taskReport.status = 'BLOCKED';
+            stop = { status: 'BLOCKED_ON_HUMAN', reason: `Task ${task.task_id}: target '${deniedPath}' is outside the allowed paths (policy). No human decision channel.` };
+            this.emit('TASK_BLOCKED', stop.reason, task.task_id, 'error');
+            break;
+          }
+
           // ---- Scope mismatch only (files changed outside implementationScope, but no workspace escape,
           // binding/baseline problem or unsafe path): repairable, never a security hard stop.
           const outOfScope = !isAnalysis ? scopeOnlyViolation(result) : null;
@@ -2163,7 +2232,11 @@ export class AutonomousSpecRunner {
           const meta = (def.metadata ?? {}) as Record<string, unknown>;
           const tf = Array.isArray(meta.targetFiles) ? (meta.targetFiles as unknown[]).filter((x): x is string => typeof x === 'string') : [];
           // The shared page-asset scope is a PO-approved rule; other extras must lie inside the mandate.
-          const extra = scopeExtrasForTask(tf, clarificationChecks).filter((e) => SHARED_PAGE_ASSET_SCOPE.includes(e) || isWithinAllowed(e));
+          // A task without its own files (e.g. "CSS", "Erişilebilirlik") works on the spec's files.
+          const basis = tf.length ? tf : specTargets;
+          const extra = [...(tf.length ? [] : specTargets), ...scopeExtrasForTask(basis, clarificationChecks)].filter(
+            (e) => SHARED_PAGE_ASSET_SCOPE.includes(e) || isWithinAllowed(e)
+          );
           const prevExtra = Array.isArray(meta.implementationScopeExtra) ? (meta.implementationScopeExtra as string[]) : [];
           const merged = [...new Set([...prevExtra, ...extra])];
           if (merged.length) taskDefs.set(t.taskId, { ...def, metadata: { ...meta, implementationScopeExtra: merged } } as TaskDefinition);
@@ -2210,6 +2283,43 @@ export class AutonomousSpecRunner {
               entry.answer = outcome.answer;
             }
             await saveDecisionRecord(w.record);
+            if (w.kind === 'POLICY_PATH') {
+              const sel = outcome.answer.selectedOptionId;
+              const p0 = (scopeFiles.get(taskId) ?? [])[0] ?? '';
+              const literal = !!p0 && !/[*?[{]/.test(p0) && !looksLikeUrl(p0) && isSafeProjectRelativePath(p0);
+              this.emit('DECISION_ANSWERED', `${w.record.decisionId}: ${sel ?? 'serbest metin'}`, taskId);
+              await historyManager.appendEvent({
+                eventType: 'AUTONOMOUS_DECISION_ANSWERED',
+                actor: Actor.USER,
+                taskId,
+                payload: { decisionId: w.record.decisionId, kind: 'POLICY_PATH', selectedOptionId: sel ?? null, path: p0, answeredBy: outcome.answer.answeredBy },
+              });
+              if (sel === 'widen' && literal) {
+                // The sealed mandate cannot change inside a run: the passkey-approved path is recorded
+                // and sealed into the mandate of the next segment (resume = new passkey approval).
+                await saveMandateExtension(projectRoot, ingestion.specFingerprint, p0, w.record.decisionId);
+                tr.status = 'BLOCKED';
+                stop = {
+                  status: 'BLOCKED_ON_HUMAN',
+                  reason: `PO approved '${p0}' for ${taskId} (${w.record.decisionId}); it is added to the mandate when the run is resumed ("Kaldığı yerden devam et").`,
+                };
+              } else if (sel === 'widen' || sel === 'revert') {
+                policyStrikes.set(taskId, 0);
+                guidance.set(
+                  taskId,
+                  `AUTHORITATIVE PRODUCT_OWNER DECISION: do NOT target '${p0}'. Emit IMPLEMENT_TASK for ${taskId} with literal file paths inside its scope only: ${currentScopeOf(taskDefs.get(taskId)!).filter((x) => !/[*?[{]/.test(x)).join(', ')}.`
+                );
+                tr.status = 'PENDING';
+                queue.unshift(tr);
+              } else if (sel === 'stop') {
+                tr.status = 'BLOCKED';
+                stop = { status: 'STOPPED', reason: `Ürün sahibi kararıyla durduruldu (${w.record.decisionId}).` };
+              } else {
+                tr.status = 'BLOCKED';
+                stop = { status: 'BLOCKED_ON_HUMAN', reason: `Task ${taskId}: answer to ${w.record.decisionId} selected no option.` };
+              }
+              continue;
+            }
             if (w.kind === 'SCOPE_VIOLATION') {
               const sel = outcome.answer.selectedOptionId;
               const note = outcome.answer.freeText ? monitorText(outcome.answer.freeText, 2000) : '';
@@ -2967,4 +3077,35 @@ export async function quarantineFiles(projectRoot: string, runId: string, taskId
     if (tracked) await git(projectRoot, ['checkout', 'HEAD', '--', n]).catch(() => undefined);
   }
   return rel;
+}
+
+/** Extracts the denied path from a P21 directory-access rejection; null for other policy rejections. */
+export function policyDeniedPath(summary: string | undefined): string | null {
+  const m = /Target file '([^']*)' is outside allowed directories/.exec(summary ?? '');
+  return m ? m[1]! : null;
+}
+
+const MANDATE_EXT_FILE = path.join('.ai-manager', 'state', 'mandate-extensions.json');
+
+/** Paths the PO approved by passkey decision for this spec fingerprint (sealed on the next segment). */
+export function loadMandateExtensions(projectRoot: string, specFingerprint: string): string[] {
+  try {
+    const j = JSON.parse(fs.readFileSync(path.join(projectRoot, MANDATE_EXT_FILE), 'utf8')) as Array<{ specFingerprint: string; path: string }>;
+    return j.filter((e) => e.specFingerprint === specFingerprint && isSafeProjectRelativePath(e.path) && !/[*?[{]/.test(e.path)).map((e) => e.path);
+  } catch {
+    return [];
+  }
+}
+
+async function saveMandateExtension(projectRoot: string, specFingerprint: string, p: string, decisionId: string): Promise<void> {
+  const f = path.join(projectRoot, MANDATE_EXT_FILE);
+  let j: unknown[] = [];
+  try {
+    j = JSON.parse(fs.readFileSync(f, 'utf8')) as unknown[];
+  } catch {
+    j = [];
+  }
+  j.push({ specFingerprint, path: p, decisionId, approvedAt: new Date().toISOString() });
+  await fs.promises.mkdir(path.dirname(f), { recursive: true });
+  await fs.promises.writeFile(f, JSON.stringify(j, null, 2), 'utf8');
 }

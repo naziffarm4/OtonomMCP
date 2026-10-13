@@ -456,8 +456,12 @@ export class AuthorizationPolicyEngine {
     ) {
       for (const file of payloadObj.targetFiles) {
         if (typeof file === 'string') {
-          const normalized = file.replace(/\\/g, '/');
-          const isAllowed = mandate.allowedDirectories.some((dir) => {
+          const raw = file.replace(/\\/g, '/');
+          // A glob is judged by its literal directory prefix ('assets/**/*.css' -> 'assets'); a
+          // root-level glob ('*.html') has no prefix and is never a valid target.
+          const globAt = raw.search(/[*?[{]/);
+          const normalized = globAt >= 0 ? raw.slice(0, Math.max(0, raw.lastIndexOf('/', globAt))) : raw;
+          const isAllowed = normalized.length > 0 && mandate.allowedDirectories.some((dir) => {
             const normDir = dir.replace(/\\/g, '/').replace(/\/$/, '');
             return normalized.startsWith(normDir + '/') || normalized === normDir;
           });

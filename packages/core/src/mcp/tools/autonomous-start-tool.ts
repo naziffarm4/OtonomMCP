@@ -27,7 +27,7 @@ import {
 import { supplyDecisionToken } from '../../autonomous/decision-requests.js';
 import { annotateApprovalWorker, loadExternalApprovalRecord } from '../../autonomous/external-approval.js';
 import { detachedRunsEnabled, spawnDetachedWorker } from '../../autonomous/worker.js';
-import { isPidAlive, loadCheckpoint } from '../../autonomous/run-checkpoint.js';
+import { isPidAlive, loadCheckpoint, listResumableRuns } from '../../autonomous/run-checkpoint.js';
 import { runMonitorUrl } from '../../autonomous/run-monitor.js';
 import type { ITrustedIdentityProvider } from '../../authorization/trusted-identity-types.js';
 
@@ -128,6 +128,8 @@ export function createAutonomousStartHandler(deps: AutonomousToolDeps = {}): Mcp
     const env = deps.env ?? process.env;
     const resumeRunId = typeof args.resumeRunId === 'string' && args.resumeRunId.trim() ? args.resumeRunId.trim() : undefined;
     const abandonInterrupted = args.abandonInterrupted === true;
+    const resumeRequestId =
+      resumeRunId && typeof args.resumeRequestId === 'string' && /^[0-9a-f-]{36}$/i.test(args.resumeRequestId) ? args.resumeRequestId.toLowerCase() : undefined;
     const detach = args.dryRun !== true && useWorker(deps, args, env);
     if (!authContext && args.dryRun !== true && isExternalIdpConfigured(env)) {
       // Asynchronous human approval: fix the binding, persist it, ask the external IdP.
@@ -137,6 +139,7 @@ export function createAutonomousStartHandler(deps: AutonomousToolDeps = {}): Mcp
         budgetUsd,
         maxCyclesPerTask: typeof args.maxCyclesPerTask === 'number' ? args.maxCyclesPerTask : undefined,
         mandateHours: typeof args.mandateHours === 'number' ? args.mandateHours : undefined,
+        ...(resumeRequestId ? { resumeRequestId } : {}),
         env,
         fetchFn,
         providerInjected: Boolean(runnerDeps.llmProvider),
@@ -241,7 +244,7 @@ export const autonomousResumeToolDefinition: McpToolDefinition = Object.freeze({
       requestId: { type: 'string', description: 'Approval request id returned by aidm_autonomous_start.' },
       decisionId: { type: 'string', description: 'Pending decision id (from aidm_autonomous_status).' },
       token: { type: 'string', description: 'Optional IdP-signed JWS (otherwise fetched from the IdP).' },
-      runId: { type: 'string', description: 'Interrupted run to resume (see aidm_autonomous_status runs[].liveness == INTERRUPTED).' },
+      runId: { type: 'string', description: 'Interrupted or BLOCKED_ON_HUMAN run to resume. Optional: without requestId/decisionId/runId the single resumable run of the project is resumed (several -> AMBIGUOUS_RUN with the list).' },
       workspaceRoot: { type: 'string' },
     },
   },
@@ -262,14 +265,34 @@ export function createAutonomousResumeHandler(deps: AutonomousToolDeps = {}): Mc
   const startHandler = createAutonomousStartHandler(deps);
   return async (args, context) => {
     const root = rootOf(args, context);
-    if (typeof args.runId === 'string' && args.runId && !args.requestId && !args.decisionId) {
+    if (!args.requestId && !args.decisionId && (args.runId === undefined || (typeof args.runId === 'string' && args.runId))) {
       let cp;
-      try {
-        cp = loadCheckpoint(root, args.runId);
-      } catch {
-        cp = null;
+      if (typeof args.runId === 'string') {
+        try {
+          cp = loadCheckpoint(root, args.runId);
+        } catch {
+          cp = null;
+        }
+        if (!cp) return textResult({ success: false, code: 'NOT_FOUND', error: `No checkpoint for run '${args.runId}' in ${root}.` }, true);
+      } else {
+        // No runId: the single resumable run of this project (interrupted or BLOCKED_ON_HUMAN).
+        const resumable = listResumableRuns(root);
+        if (resumable.length === 0) {
+          return textResult({ success: false, code: 'NOT_FOUND', error: `No interrupted or blocked run to resume in ${root}. Pass requestId, decisionId or runId.` }, true);
+        }
+        if (resumable.length > 1) {
+          return textResult(
+            {
+              success: false,
+              code: 'AMBIGUOUS_RUN',
+              error: 'Several runs can be resumed; pass runId.',
+              runs: resumable.map((c) => ({ runId: c.runId, status: c.status ?? 'INTERRUPTED', startedAt: c.startedAt, updatedAt: c.updatedAt, stopReason: c.stopReason })),
+            },
+            true
+          );
+        }
+        cp = resumable[0]!;
       }
-      if (!cp) return textResult({ success: false, code: 'NOT_FOUND', error: `No checkpoint for run '${args.runId}' in ${root}.` }, true);
       return startHandler(
         {
           specPath: cp.specPath,

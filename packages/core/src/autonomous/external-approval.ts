@@ -185,6 +185,11 @@ export interface StartExternalApprovalOptions {
   /** Ask for a NEW passkey approval to resume this interrupted run (same runId). */
   readonly resumeRunId?: string;
   readonly abandonInterrupted?: boolean;
+  /**
+   * Passkey-signed "Kaldığı yerden devam et" request from the IdP UI (claimed by the aidm watcher).
+   * The IdP approves this pkg-resume request with that passkey assertion (no second prompt).
+   */
+  readonly resumeRequestId?: string;
 }
 
 /** One-shot monitor snapshot for the approval phase (fire-and-forget, bounded, never throws). */
@@ -372,6 +377,7 @@ export async function startExternalApproval(o: StartExternalApprovalOptions): Pr
       taskId: null,
       operation: rec.operation,
       nonce: rec.nonce,
+      ...(resumeCp && o.resumeRequestId ? { resumeRequestId: o.resumeRequestId } : {}),
       summary: {
         projectName: rec.projectName,
         specPath: rel,

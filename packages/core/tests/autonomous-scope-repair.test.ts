@@ -70,6 +70,9 @@ describe('scope repair + PO scope decision + resume blocked run', { concurrency:
     },
   });
 
+  const impl = (taskId: string, targetFiles: string[]) => ({
+    actionType: 'IMPLEMENT_TASK', rationale: 'scripted', taskId, objective: `Implement ${taskId}`, targetFiles, implementationScope: 'src/',
+  });
   it('units: shared page asset scope, check paths, scope-only detection (security failures excluded)', () => {
     assert.deepEqual([...SHARED_PAGE_ASSET_SCOPE], ['assets/**', '*.css']);
     assert.deepEqual(scopeExtrasForTask(['index.html'], [{ type: 'file_exists', path: 'assets/site.js', description: 'd' } as Any]), ['assets/**', '*.css', 'assets/site.js']);
@@ -210,5 +213,50 @@ describe('scope repair + PO scope decision + resume blocked run', { concurrency:
     const again = await run(['--resume', r1.runId]);
     assert.equal(again.status, 'CONFIGURATION_ERROR');
     assert.match(again.stopReason, /already finished/);
+  });
+
+  it('Director targets a path outside the mandate -> repair turn first (attempt not consumed), then accepted', async () => {
+    setup(LIB);
+    llm.script = ({ call, taskId }) => (call === 1 ? impl(taskId, ['gizli/x.js']) : undefined);
+    agy.onExecute = () => write('src/a.js', 'a\n');
+    const rep = await run();
+    assert.equal(rep.status, 'COMPLETED', why(rep));
+    assert.ok(prompts(llm).some((p) => p.includes("target file 'gizli/x.js' is outside the allowed paths")), 'Director told');
+    assert.equal(rep.decisions.length, 0);
+  });
+
+  it('repeated policy path rejection -> Turkish 3-option PO decision; revert retries within scope', async () => {
+    setup(LIB);
+    let decided = false;
+    llm.script = ({ taskId }) => (decided ? undefined : impl(taskId, ['gizli/x.js']));
+    agy.onExecute = () => write('src/a.js', 'a\n');
+    const seen: Any[] = [];
+    const rep = await run([], {
+      decisionResolver: { channel: 'OPERATOR_TTY', resolve: async (rec: Any) => ((decided = true), answering('revert', seen).resolve(rec)) },
+    });
+    assert.equal(rep.status, 'COMPLETED', why(rep));
+    assert.equal(seen.length, 1);
+    assert.deepEqual(seen[0].options.map((o: Any) => o.id), ['widen', 'revert', 'stop']);
+    assert.match(seen[0].question, /izinli yolların dışındaki.*gizli\/x\.js/s);
+    assert.equal(seen[0].recommendedOptionId, 'widen');
+  });
+
+  it('policy decision widen -> path recorded for the next segment, run stops resumable (BLOCKED_ON_HUMAN)', async () => {
+    setup(LIB);
+    llm.script = ({ taskId }) => impl(taskId, ['gizli/x.js']);
+    const rep = await run([], { decisionResolver: answering('widen', []) });
+    assert.equal(rep.status, 'BLOCKED_ON_HUMAN', why(rep));
+    assert.match(rep.stopReason, /gizli\/x\.js.*Kaldığı yerden devam et/);
+    const ext = JSON.parse(fs.readFileSync(path.join(dir, '.ai-manager', 'state', 'mandate-extensions.json'), 'utf8'));
+    assert.equal(ext[0].path, 'gizli/x.js');
+  });
+
+  it('root page specs: page files are inside the mandate and glob targets never reach the policy', async () => {
+    setup(PAGES);
+    llm.script = ({ taskId }) => impl(taskId, ['*.html', 'index.html']);
+    agy.onExecute = () => write('index.html', '<html></html>\n');
+    const rep = await run();
+    assert.equal(rep.status, 'COMPLETED', why(rep));
+    assert.ok(rep.mandate.allowedDirectories.includes('hakkimda.html'), JSON.stringify(rep.mandate.allowedDirectories));
   });
 });

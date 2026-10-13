@@ -100,6 +100,24 @@ export class IdpClient {
     return { approvalUrl: typeof r.json.approvalUrl === 'string' ? r.json.approvalUrl : undefined, status: String(r.json.status ?? 'PENDING') };
   }
 
+  /** Passkey-signed resume requests from the IdP UI ("Kaldığı yerden devam et"), oldest first. */
+  async listResumeRequests(): Promise<IdpResumeRequest[]> {
+    const r = await this.call('GET', '/api/resume-requests?status=PENDING');
+    if (r.status !== 200) throw new IdpClientError(`IdP resume request lookup failed (HTTP ${r.status}).`, 'IDP_STATUS_FAILED');
+    const items = Array.isArray(r.json.items) ? (r.json.items as IdpResumeRequest[]) : [];
+    return items.filter((x) => x && typeof x.resumeId === 'string' && typeof x.runId === 'string' && typeof x.projectId === 'string');
+  }
+
+  /** Claims a resume request (exactly one watcher wins). */
+  async claimResumeRequest(resumeId: string): Promise<boolean> {
+    const r = await this.call('POST', `/api/resume-requests/${encodeURIComponent(resumeId)}/claim`, {});
+    return r.status === 200;
+  }
+
+  async reportResumeRequest(resumeId: string, status: 'STARTED' | 'FAILED', note: string): Promise<void> {
+    await this.call('POST', `/api/resume-requests/${encodeURIComponent(resumeId)}/result`, { status, note: note.slice(0, 500) });
+  }
+
   async getApprovalRequest(requestId: string): Promise<IdpStatusResponse> {
     const r = await this.call('GET', `/api/approval-requests/${encodeURIComponent(requestId)}`);
     if (r.status !== 200) throw new IdpClientError(`IdP status lookup failed (HTTP ${r.status}).`, 'IDP_STATUS_FAILED');
@@ -211,4 +229,12 @@ export async function verifyIdpToken(
     return { ok: false, status: 'UNVERIFIED', reason: 'Malformed token payload.' };
   }
   return checkContractClaims(payload, expectedClaims, { maxLifetimeSec: options.maxLifetimeSec });
+}
+
+export interface IdpResumeRequest {
+  resumeId: string;
+  runId: string;
+  projectId: string;
+  createdAt?: string;
+  expiresAt?: string;
 }

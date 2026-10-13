@@ -204,3 +204,14 @@ export async function stashInterruptedChanges(projectRoot: string, runId: string
   await execFileAsync('git', ['stash', 'push', '--include-untracked', '-m', `aidm-resume ${runId}: interrupted attempt`], { cwd: projectRoot, windowsHide: true });
   return { stashed: true, files };
 }
+
+/** Runs that can be resumed with the same runId: interrupted, or finished BLOCKED_ON_HUMAN. Newest last. */
+export function listResumableRuns(projectRoot: string): RunCheckpoint[] {
+  const all = listCheckpoints(projectRoot);
+  const newest = all.reduce<RunCheckpoint | undefined>((a, c) => (!a || String(c.startedAt) > String(a.startedAt) ? c : a), undefined);
+  // A blocked run is only resumable while no newer run superseded it.
+  return all.filter((c) => {
+    const live = runLiveness(projectRoot, c);
+    return live === 'INTERRUPTED' || (live === 'FINISHED' && isResumableBlockedRun(c) && c === newest);
+  });
+}
