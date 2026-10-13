@@ -33,6 +33,8 @@ export interface AntigravityProcessOptions {
   readonly stdinInput?: string | null;
   readonly timeoutMs?: number;
   readonly signal?: AbortSignal;
+  /** Called on every stdout/stderr chunk (progress heartbeat for timeout extension). */
+  readonly onActivity?: () => void;
 }
 
 export interface AntigravityProcessResult {
@@ -455,6 +457,7 @@ export class NodeAntigravityProcessRunner implements AntigravityProcessRunner {
       if (child.stdout) {
         child.stdout.on('data', (chunk) => {
           stdoutChunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+          options.onActivity?.();
         });
       }
 
@@ -462,6 +465,7 @@ export class NodeAntigravityProcessRunner implements AntigravityProcessRunner {
       if (child.stderr) {
         child.stderr.on('data', (chunk) => {
           stderrChunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+          options.onActivity?.();
         });
       }
 

@@ -118,6 +118,16 @@ export interface AntigravityAdapterConfig {
   version?: string | null;
   /** Default workspace root directory */
   workspaceRoot?: string;
+  /**
+   * Minimum AGY step timeout (ms). Page/UI tasks need far more than the 5 min request default;
+   * the effective timeout is max(request, this). Env: AIDM_AGY_TIMEOUT_MS (autonomous runner).
+   */
+  minTimeoutMs?: number;
+  /**
+   * Hard cap (ms) for progress-based extension: at the deadline, if AGY produced output or changed
+   * workspace files during the last window, the deadline moves by one window, up to this cap.
+   */
+  maxTimeoutMs?: number;
   /** Authoritative ExecutorContextService instance */
   contextService?: ExecutorContextService;
   /** Auto-resolve context package if omitted from ExecutionRequest (default: true if contextService provided) */
@@ -290,6 +300,8 @@ export function parseExecutorProcessOutput(
 export class AntigravityAdapter implements ExecutorPort, ExecutionRequestExecutorPort {
   readonly executorId: string;
   readonly provider = 'antigravity';
+  private readonly minTimeoutMs?: number;
+  private readonly maxTimeoutMs?: number;
   readonly supportedOperations: readonly string[];
   readonly binaryPath: string;
   readonly configuredBinaryPath?: string;
@@ -314,6 +326,8 @@ export class AntigravityAdapter implements ExecutorPort, ExecutionRequestExecuto
     this.enforceSafetyBoundary = config.enforceSafetyBoundary ?? true;
     this.configuredVersion = config.version;
     this.workspaceRoot = config.workspaceRoot;
+    this.minTimeoutMs = config.minTimeoutMs;
+    this.maxTimeoutMs = config.maxTimeoutMs;
     this.contextService = config.contextService;
     this.autoResolveContext = config.autoResolveContext ?? (this.contextService !== undefined);
     this.validateContextFreshness = config.validateContextFreshness ?? true;
@@ -657,16 +671,32 @@ export class AntigravityAdapter implements ExecutorPort, ExecutionRequestExecuto
     const payload = this.translateExecutionRequest(validatedRequest);
 
     // 4. Setup timeout and cancellation
-    const timeoutMs = validatedRequest.executionLimits.timeoutMs;
+    const baseTimeoutMs = Math.max(validatedRequest.executionLimits.timeoutMs, this.minTimeoutMs ?? 0);
+    const hardCapMs = Math.max(baseTimeoutMs, this.maxTimeoutMs ?? baseTimeoutMs);
+    let timeoutMs = baseTimeoutMs;
     const abortController = new AbortController();
 
     let timeoutTimer: NodeJS.Timeout | null = null;
     let didTimeout = false;
-
-    timeoutTimer = setTimeout(() => {
+    let lastActivity = Date.now();
+    const startedMs = Date.now();
+    const markActivity = () => {
+      lastActivity = Date.now();
+    };
+    const extendMs = Math.max(60_000, Math.floor(baseTimeoutMs / 2));
+    const onDeadline = () => {
+      const elapsed = Date.now() - startedMs;
+      const progressed = Date.now() - lastActivity < extendMs || workspaceChangedSince(payload.workingDirectory ?? this.workspaceRoot, Date.now() - extendMs);
+      if (progressed && elapsed + extendMs <= hardCapMs) {
+        timeoutMs = elapsed + extendMs; // heartbeat: AGY is still working
+        timeoutTimer = setTimeout(onDeadline, extendMs);
+        timeoutTimer.unref?.();
+        return;
+      }
       didTimeout = true;
-      abortController.abort(new Error(`Execution timed out after ${timeoutMs}ms`));
-    }, timeoutMs);
+      abortController.abort(new Error(`Execution timed out after ${elapsed}ms`));
+    };
+    timeoutTimer = setTimeout(onDeadline, baseTimeoutMs);
 
     const onCallerAbort = () => {
       abortController.abort(new Error('Caller aborted execution'));
@@ -802,8 +832,9 @@ export class AntigravityAdapter implements ExecutorPort, ExecutionRequestExecuto
           args: payload.args,
           cwd: payload.workingDirectory,
           stdinInput,
-          timeoutMs,
+          timeoutMs: hardCapMs,
           signal: abortController.signal,
+          onActivity: markActivity,
         });
 
         if (timeoutTimer) clearTimeout(timeoutTimer);
@@ -1472,4 +1503,34 @@ export class AntigravityAdapter implements ExecutorPort, ExecutionRequestExecuto
     }
     return this.executeInstruction(target as ExecutorInstruction);
   }
+}
+
+/** True when any workspace file (outside .git/node_modules/.ai-manager) was modified after sinceMs. Bounded scan. */
+export function workspaceChangedSince(root: string | undefined, sinceMs: number): boolean {
+  if (!root) return false;
+  let seen = 0;
+  const stack = [root];
+  while (stack.length && seen < 5000) {
+    const dir = stack.pop()!;
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const e of entries) {
+      if (e.name === '.git' || e.name === 'node_modules' || e.name === '.ai-manager') continue;
+      const p = `${dir}/${e.name}`;
+      if (e.isDirectory()) stack.push(p);
+      else {
+        seen++;
+        try {
+          if (fs.statSync(p).mtimeMs > sinceMs) return true;
+        } catch {
+          /* vanished */
+        }
+      }
+    }
+  }
+  return false;
 }

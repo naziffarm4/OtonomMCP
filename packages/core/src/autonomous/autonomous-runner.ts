@@ -1132,6 +1132,7 @@ export class AutonomousSpecRunner {
           workspaceRoot: projectRoot,
           binaryPath: this.env.AIDM_AGY_PATH ?? 'agy',
           processRunner: new NodeAntigravityProcessRunner(),
+          ...agyTimeouts(this.env),
         });
       const availability = executorPort.checkAvailability
         ? await executorPort.checkAvailability()
@@ -1257,9 +1258,11 @@ export class AutonomousSpecRunner {
       const scopeFiles = new Map<string, string[]>();
       const scopeAttemptFiles = new Map<string, string[]>();
       const policyStrikes = new Map<string, number>();
+      const unknownFiles = new Map<string, string[]>();
+      const nearMissFixes = new Map<string, number>();
       const waiting = new Map<
         string,
-        { record: DecisionRecord; kind: 'DIRECTOR' | 'ATTEMPTS_EXHAUSTED' | 'SCOPE_VIOLATION' | 'POLICY_PATH'; promise: Promise<{ taskId: string; outcome: DecisionOutcome }> }
+        { record: DecisionRecord; kind: 'DIRECTOR' | 'ATTEMPTS_EXHAUSTED' | 'SCOPE_VIOLATION' | 'POLICY_PATH' | 'EXECUTION_UNKNOWN'; promise: Promise<{ taskId: string; outcome: DecisionOutcome }> }
       >();
       const allowedDirs = (report.mandate?.allowedDirectories ?? []).map((d) => d.replace(/\\/g, '/').replace(/\/+$/, ''));
 
@@ -1924,10 +1927,22 @@ export class AutonomousSpecRunner {
           // targetFiles): fixable. First a repair turn, then the PO decides (Turkish, passkey).
           const deniedPath = !isAnalysis && result.status === 'REJECTED_BY_POLICY' ? policyDeniedPath(result.summary) : null;
           if (deniedPath !== null) {
+            const scopeNow = currentScopeOf(taskDefs.get(task.task_id)!);
+            taskReport.cycles--; // no execution happened; the attempt is not consumed
+            // Typo of an allowed name (blog.htm -> blog.html): corrected by feedback, no strike.
+            const fix = nearMissPath(deniedPath, [...scopeNow, ...specTargets].filter((x) => !/[*?[{]/.test(x)));
+            const fixes = nearMissFixes.get(task.task_id) ?? 0;
+            if (fix && fixes < 2) {
+              nearMissFixes.set(task.task_id, fixes + 1);
+              this.emit('VERIFICATION', `Hedef dosya adı düzeltildi: '${deniedPath}' → '${fix}'`, task.task_id, 'warn');
+              extraGuidance = [
+                `The policy engine rejected target '${deniedPath}' for ${task.task_id}: it is not an allowed file. You almost certainly meant '${fix}'.`,
+                `Use exactly '${fix}' (never '${deniedPath}') in targetFiles and in the executor instruction. Re-emit IMPLEMENT_TASK for ${task.task_id}.`,
+              ].join('\n');
+              continue;
+            }
             const strikes = (policyStrikes.get(task.task_id) ?? 0) + 1;
             policyStrikes.set(task.task_id, strikes);
-            taskReport.cycles--; // no execution happened; the attempt is not consumed
-            const scopeNow = currentScopeOf(taskDefs.get(task.task_id)!);
             this.emit('VERIFICATION', `Politika reddi: '${deniedPath}' izinli yolların dışında`, task.task_id, 'warn');
             if (strikes === 1) {
               extraGuidance = [
@@ -2071,6 +2086,56 @@ export class AutonomousSpecRunner {
             break;
           }
 
+          // ---- AGY outcome unknown (e.g. timeout): never a silent end. Look at what it left behind and
+          // let the PO decide (Turkish, passkey): wait/retry, check+accept the changes, or stop.
+          if (!isAnalysis && result.status === 'EXECUTION_UNKNOWN') {
+            const { dirty } = await foreignUncommittedChanges(projectRoot, specPath);
+            const left = dirty.filter((f) => f !== relSpecPath);
+            unknownFiles.set(task.task_id, left);
+            const secs = Math.round(((result as { durationMs?: number }).durationMs ?? 0) / 1000);
+            const why = `${task.task_id} durdu: AGY işi ${secs ? `${Math.max(1, Math.round(secs / 60))} dakikada ` : ''}bitiremedi ya da sonucu belirsiz kaldı; aynı işi iki kez yaptırmamak için durdum (EXECUTION_UNKNOWN).`;
+            this.emit('TASK_BLOCKED', why, task.task_id, 'warn');
+            if (decisionMode === 'ask' && decisionResolver) {
+              const record = buildDecisionRecord({
+                projectRoot,
+                projectId,
+                runId,
+                taskId: task.task_id,
+                packageId: approved.packageId,
+                revision: approved.revision,
+                question: [
+                  why,
+                  left.length ? `Çalışma alanında AGY'nin bıraktığı ${left.length} değişiklik var: ${monitorText(left.join(', '), 400)}.` : 'Çalışma alanında yeni bir değişiklik yok.',
+                  'Ne yapılsın?',
+                ].join(' '),
+                reason: 'AGY bitti mi bilmiyoruz; körlemesine tekrar başlatmak aynı işi iki kez yaptırabilir. Karar senin.',
+                options: [
+                  { id: 'retry', label: 'Bekle ve tekrar dene (bırakılan değişiklikler kenara alınır, görev baştan yapılır)' },
+                  ...(left.length ? [{ id: 'verify', label: 'Değişiklikleri kontrol et ve kabul et (AGY bıraktığı yerden tamamlar, bağımsız doğrulama yapılır)' }] : []),
+                  { id: 'stop', label: 'Çalışmayı durdur' },
+                ],
+                recommendation: left.length ? 'verify' : 'retry',
+                allowFreeText: true,
+              });
+              (record as { kind?: string }).kind = 'EXECUTION_UNKNOWN';
+              await saveDecisionRecord(record);
+              report.decisions.push({ decisionId: record.decisionId, taskId: task.task_id, question: record.question, state: 'PENDING', channel: decisionResolver.channel });
+              taskReport.status = 'WAITING_DECISION';
+              this.pendingDecisionIds.add(record.decisionId);
+              this.emit('DECISION_REQUESTED', `Sonucu belirsiz AGY adımı: ${task.task_id} (${record.decisionId})`, task.task_id, 'warn');
+              const resolver = decisionResolver;
+              const promise = resolver
+                .resolve(record)
+                .catch((err): DecisionOutcome => ({ status: 'FAILED', reason: err instanceof Error ? err.message : String(err) }))
+                .then((outcome) => ({ taskId: task.task_id, outcome }));
+              waiting.set(task.task_id, { record, kind: 'EXECUTION_UNKNOWN', promise });
+              return 'DEFERRED';
+            }
+            taskReport.status = 'BLOCKED';
+            stop = { status: 'BLOCKED_ON_HUMAN', reason: `${why} Karar kanalı yok; IdP'de "Kaldığı yerden devam et" ile sürdürebilirsin.` };
+            break;
+          }
+
           if (
             result.status === 'BLOCKED_ON_APPROVAL' ||
             result.status === 'REJECTED_BY_POLICY' ||
@@ -2080,7 +2145,7 @@ export class AutonomousSpecRunner {
             taskReport.status = 'BLOCKED';
             stop = {
               status: 'BLOCKED_ON_HUMAN',
-              reason: `Task ${task.task_id}: ${result.status} — ${result.summary}. Human approval required (fail-closed).`,
+              reason: `${task.task_id} durdu: ${turkishStatus(result.status)} İnsan onayı gerekiyor (${result.status}: ${monitorText(result.summary ?? '', 200)}).`,
             };
             break;
           }
@@ -2346,6 +2411,44 @@ export class AutonomousSpecRunner {
               entry.answer = outcome.answer;
             }
             await saveDecisionRecord(w.record);
+            if (w.kind === 'EXECUTION_UNKNOWN') {
+              const sel = outcome.answer.selectedOptionId;
+              const note = outcome.answer.freeText ? monitorText(outcome.answer.freeText, 2000) : '';
+              const files = unknownFiles.get(taskId) ?? [];
+              this.emit('DECISION_ANSWERED', `${w.record.decisionId}: ${sel ?? 'serbest metin'}`, taskId);
+              await historyManager.appendEvent({
+                eventType: 'AUTONOMOUS_DECISION_ANSWERED',
+                actor: Actor.USER,
+                taskId,
+                payload: { decisionId: w.record.decisionId, kind: 'EXECUTION_UNKNOWN', selectedOptionId: sel ?? null, files, answeredBy: outcome.answer.answeredBy },
+              });
+              if (sel === 'retry' || (sel === 'verify' && files.length)) {
+                let q: string | null = null;
+                if (sel === 'retry' && files.length) q = await quarantineFiles(projectRoot, runId, taskId, tr.cycles, files).catch(() => null);
+                await reopenTask(taskId).catch(() => undefined);
+                allowedAttempts.set(taskId, attemptsFor(taskId) + 1); // exactly +1 attempt; budget cap untouched
+                guidance.set(
+                  taskId,
+                  [
+                    sel === 'verify'
+                      ? `AUTHORITATIVE PRODUCT_OWNER DECISION: the previous AGY step for ${taskId} timed out but left these uncommitted changes: ${files.join(', ')}. Instruct the executor to INSPECT them, finish only what is missing and keep what is correct (do not start over). Independent verification follows.`
+                      : `AUTHORITATIVE PRODUCT_OWNER DECISION: the previous AGY step for ${taskId} timed out; its leftovers were set aside (${q ?? 'none'}). Redo ${taskId} from the last commit, in smaller steps.`,
+                    note ? `Product Owner guidance: ${note}` : '',
+                  ]
+                    .filter(Boolean)
+                    .join('\n')
+                );
+                tr.status = 'PENDING';
+                queue.unshift(tr);
+              } else if (sel === 'stop') {
+                tr.status = 'BLOCKED';
+                stop = { status: 'STOPPED', reason: `Ürün sahibi kararıyla durduruldu (${w.record.decisionId}).` };
+              } else {
+                tr.status = 'BLOCKED';
+                stop = { status: 'BLOCKED_ON_HUMAN', reason: `${taskId}: karar (${w.record.decisionId}) bir seçenek seçmedi; görev beklemede.` };
+              }
+              continue;
+            }
             if (w.kind === 'POLICY_PATH') {
               const sel = outcome.answer.selectedOptionId;
               const p0 = (scopeFiles.get(taskId) ?? [])[0] ?? '';
@@ -2625,6 +2728,8 @@ export class AutonomousSpecRunner {
     budgetManager?: BudgetManager
   ): Promise<AutonomousRunReport> {
     report.status = status;
+    // Every user-facing stop reason is plain Turkish; technical detail only in parentheses.
+    if (reason) reason = turkishStopReason(status, reason);
     if (reason) report.stopReason = reason;
     report.finishedAt = new Date().toISOString();
     if (this.checkpoint) {
@@ -3220,4 +3325,91 @@ export function buildPoQuestionPrompt(o: {
   ]
     .filter((x) => x !== undefined)
     .join('\n');
+}
+
+/** AGY step timeouts: default 20 min, extended on progress up to 60 min. Env: AIDM_AGY_TIMEOUT_MS / AIDM_AGY_MAX_TIMEOUT_MS. */
+export function agyTimeouts(env: Readonly<Record<string, string | undefined>>): { minTimeoutMs: number; maxTimeoutMs: number } {
+  const num = (v: string | undefined, d: number) => {
+    const n = Number(v);
+    return Number.isInteger(n) && n >= 60_000 && n <= 3_600_000 ? n : d;
+  };
+  const minTimeoutMs = num(env.AIDM_AGY_TIMEOUT_MS, 20 * 60_000);
+  return { minTimeoutMs, maxTimeoutMs: Math.max(minTimeoutMs, num(env.AIDM_AGY_MAX_TIMEOUT_MS, 60 * 60_000)) };
+}
+
+/** Plain-Turkish meaning of a task result status (technical code goes in parentheses by the caller). */
+export function turkishStatus(status: string): string {
+  switch (status) {
+    case 'BLOCKED_ON_APPROVAL':
+      return 'bu adım için ayrıca onay gerekiyor.';
+    case 'REJECTED_BY_POLICY':
+      return 'güvenlik kuralları bu adımı reddetti.';
+    case 'EXECUTION_UNKNOWN':
+      return 'AGY işi bitiremedi ya da sonucu belirsiz kaldı; aynı işi iki kez yaptırmamak için durdum.';
+    case 'MAX_ATTEMPTS_EXCEEDED':
+      return 'deneme hakkı bitti.';
+    default:
+      return 'beklenmeyen bir durum oluştu.';
+  }
+}
+
+/** The allowed path a denied target was most likely meant to be (same folder; .htm/.html or <= 2 typos). */
+export function nearMissPath(denied: string, candidates: readonly string[]): string | null {
+  const norm = (x: string) => x.replace(/\\/g, '/').replace(/^\.\//, '').toLowerCase();
+  const d = norm(denied);
+  const dir = (x: string) => (x.includes('/') ? x.slice(0, x.lastIndexOf('/')) : '');
+  const stem = (x: string) => x.replace(/\.html?$/, '.html');
+  const lev = (a: string, b: string): number => {
+    const m = Array.from({ length: a.length + 1 }, (_, i) => [i, ...Array(b.length).fill(0)] as number[]);
+    for (let j = 1; j <= b.length; j++) m[0]![j] = j;
+    for (let i = 1; i <= a.length; i++)
+      for (let j = 1; j <= b.length; j++) m[i]![j] = Math.min(m[i - 1]![j]! + 1, m[i]![j - 1]! + 1, m[i - 1]![j - 1]! + (a[i - 1] === b[j - 1] ? 0 : 1));
+    return m[a.length]![b.length]!;
+  };
+  let best: { c: string; score: number } | null = null;
+  for (const c of new Set(candidates)) {
+    const n = norm(c);
+    if (c === denied || dir(n) !== dir(d)) continue;
+    const score = stem(n) === stem(d) ? 0 : d.length > 4 ? lev(n, d) : 99;
+    if (score <= 2 && (!best || score < best.score)) best = { c, score };
+  }
+  return best ? best.c : null;
+}
+
+const TR_HINT = /[çğıöşüÇĞİÖŞÜ]|\b(durdu|görev|çalışma|karar|onay|bütçe|değil|için|yok|var)\b/i;
+const STATUS_TR: Record<string, string> = {
+  BLOCKED_ON_HUMAN: 'Çalışma senin kararını bekliyor',
+  STOPPED: 'Çalışma durduruldu',
+  PARTIAL: 'Çalışma kısmen tamamlandı',
+  FAILED: 'Çalışma başarısız oldu',
+  BUDGET_EXHAUSTED: 'Bütçe bitti',
+  CONFIGURATION_ERROR: 'Ayar hatası',
+  COMPLETED: 'Çalışma tamamlandı',
+};
+
+/** Plain-Turkish stop reason. Already-Turkish reasons are kept; known English ones are rewritten with the original in parentheses. */
+export function turkishStopReason(status: string, reason: string): string {
+  if (!reason) return reason;
+  const lead = reason.slice(0, 120);
+  if (TR_HINT.test(lead) && !/^Task |^Tasks /.test(reason)) return reason;
+  const task = /^Tasks? ([A-Z0-9,\- ]+?)(?::| did| changed| depend)/.exec(reason)?.[1]?.trim();
+  const t = task ? `${task} ` : '';
+  const rules: Array<[RegExp, string]> = [
+    [/timed out|EXECUTION_UNKNOWN/i, `${t}durdu: AGY işi zamanında bitiremedi ya da sonucu belirsiz kaldı; aynı işi iki kez yaptırmamak için durdum.`],
+    [/outside its implementationScope/i, `${t}durdu: görev, izin verilen dosyaların dışında dosya değiştirdi ve kapsamı genişletecek bir karar kanalı yok.`],
+    [/outside the allowed paths|outside allowed directories/i, `${t}durdu: onayladığın izinli yolların dışındaki bir dosyaya yazmak istedi.`],
+    [/did not pass independent verification|did not reach independently verified success/i, `${t}deneme hakkı içinde bağımsız doğrulamayı geçemedi.`],
+    [/depend on unfinished work/i, `${t}bitmemiş başka işlere bağlı; önce onların tamamlanması gerekiyor.`],
+    [/selected no option/i, `${t}kararında bir seçenek seçilmedi; görev beklemede.`],
+    [/requests a human decision/i, `${t}için Director senden bir karar istiyor.`],
+    [/human decision .* (EXPIRED|FAILED)/i, `${t}için istenen kararın süresi doldu ya da alınamadı.`],
+    [/Abandoned by a new run/i, 'Yeni bir çalışma başlatıldığı için bu çalışma bırakıldı.'],
+    [/budget/i, 'Bütçe sınırına ulaşıldı; bütçeyi artırmak senin onayını gerektirir.'],
+    [/Final acceptance gate failed/i, 'Son kabul kontrolleri başarısız oldu.'],
+    [/uncommitted changes/i, 'Çalışma klasöründe kaydedilmemiş değişiklikler var; önce bunları kaydet veya kenara al.'],
+    [/unavailable|AIDM_AGY_PATH/i, 'AGY (Antigravity) çalıştırılamadı; kurulumunu ve AIDM_AGY_PATH ayarını kontrol et.'],
+  ];
+  const hit = rules.find(([re]) => re.test(reason));
+  const head = hit ? hit[1] : `${STATUS_TR[status] ?? 'Çalışma durdu'}.`;
+  return `${head} (${status}: ${reason.slice(0, 600)})`;
 }
