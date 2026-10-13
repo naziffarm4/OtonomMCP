@@ -1109,7 +1109,7 @@ export class AutonomousSpecRunner {
           return this.finish(report, 'CONFIGURATION_ERROR', err instanceof Error ? err.message : String(err), true, budgetManager);
         }
       }
-      const provider = budgetManager.wrapProvider(baseProvider);
+      const provider = budgetManager.wrapProvider(baseProvider, { env: this.env });
 
       const executorPort =
         this.options.executorPort ??

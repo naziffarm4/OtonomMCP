@@ -12,6 +12,12 @@ export interface BudgetAwareLlmAdapterOptions {
   budgetManager: BudgetManager;
   defaultEstimatedPromptTokens?: number;
   defaultEstimatedCompletionTokens?: number;
+  /**
+   * Environment used for endpoint fallback (AIDM_LLM_ENDPOINT / OPENAI_BASE_URL).
+   * Callers that were configured with an explicit env must pass it so ambient process.env cannot leak in.
+   * Defaults to process.env.
+   */
+  env?: Readonly<Record<string, string | undefined>>;
 }
 
 /**
@@ -32,6 +38,7 @@ export class BudgetAwareLlmAdapter implements LLMProvider {
   readonly budgetManager: BudgetManager;
   private readonly defaultEstimatedPromptTokens: number;
   private readonly defaultEstimatedCompletionTokens: number;
+  private readonly env: Readonly<Record<string, string | undefined>> | undefined;
 
   constructor(inner: LLMProvider, options: BudgetAwareLlmAdapterOptions | BudgetManager) {
     this.inner = inner;
@@ -39,10 +46,12 @@ export class BudgetAwareLlmAdapter implements LLMProvider {
       this.budgetManager = options.budgetManager;
       this.defaultEstimatedPromptTokens = options.defaultEstimatedPromptTokens ?? 1000;
       this.defaultEstimatedCompletionTokens = options.defaultEstimatedCompletionTokens ?? 1000;
+      this.env = options.env;
     } else {
       this.budgetManager = options;
       this.defaultEstimatedPromptTokens = 1000;
       this.defaultEstimatedCompletionTokens = 1000;
+      this.env = undefined;
     }
 
     const innerWithSetter = this.inner as unknown as { setBudgetManager?(bm: BudgetManager): void };
@@ -119,8 +128,8 @@ export class BudgetAwareLlmAdapter implements LLMProvider {
       requestBaseUrl: (request.metadata?.base_url ?? request.metadata?.baseUrl) as string | undefined,
       adapterEndpoint: (this.inner as unknown as { endpoint?: string })?.endpoint,
       transportEndpoint: (this.inner as unknown as { transport?: { endpoint?: string } })?.transport?.endpoint,
-      envLlmEndpoint: process.env.AIDM_LLM_ENDPOINT,
-      envOpenAiBaseUrl: process.env.OPENAI_BASE_URL,
+      envLlmEndpoint: (this.env ?? process.env).AIDM_LLM_ENDPOINT,
+      envOpenAiBaseUrl: (this.env ?? process.env).OPENAI_BASE_URL,
       providerId,
       modelId: model,
       usageContract: (request.metadata?.usage_contract ?? request.metadata?.usageContract) as string | undefined,

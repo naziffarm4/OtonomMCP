@@ -45,6 +45,11 @@ describe('run monitor + live PO instructions', { concurrency: 1, timeout: 600_00
   let llm: MockDirectorLlm;
   let agy: MockAgyExecutor;
   let out: string[];
+  // Ambient developer LLM settings must not influence these mock-provider runs.
+  const AMBIENT_LLM_VARS = ['OPENAI_API_KEY', 'OPENAI_MODEL', 'OPENAI_BASE_URL', 'AIDM_LLM_ENDPOINT', 'AIDM_LLM_MODEL', 'AIDM_LLM_API_KEY', 'XAI_API_KEY'];
+  const savedEnv: Record<string, string | undefined> = {};
+  before(() => { for (const k of AMBIENT_LLM_VARS) { savedEnv[k] = process.env[k]; delete process.env[k]; } });
+  after(() => { for (const k of AMBIENT_LLM_VARS) if (savedEnv[k] !== undefined) process.env[k] = savedEnv[k]; });
   before(async () => {
     idp = new FakeIdp();
     await idp.start();
