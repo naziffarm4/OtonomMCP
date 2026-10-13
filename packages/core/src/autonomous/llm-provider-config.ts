@@ -28,7 +28,7 @@ import {
   type ReferenceWireResponse,
 } from '../llm-bridge/reference-llm-adapter.js';
 import { HttpLlmTransport } from '../llm-bridge/http-llm-transport.js';
-import type { BudgetManager } from '../budget/budget-manager.js';
+import { BudgetManager } from '../budget/budget-manager.js';
 import { PricingEngine } from '../budget/pricing-engine.js';
 import { DEFAULT_OPENAI_DIRECTOR_MODEL, DEFAULT_REASONING_EFFORT } from '../director/openai-director-runtime.js';
 import { STANDARD_OPENAI_HOSTS, registerCustomEndpointContract } from '../budget/endpoint-audit.js';
@@ -42,6 +42,7 @@ export interface LlmPricingUsdPerMTok {
   readonly input: number;
   readonly output: number;
   readonly cachedInput?: number;
+  readonly cacheWrite?: number;
 }
 
 export interface ResolvedLlmProviderConfig {
@@ -144,13 +145,14 @@ export function resolveLlmProviderConfig(
   const input = parseUsd('AIDM_LLM_INPUT_USD_PER_MTOK', env.AIDM_LLM_INPUT_USD_PER_MTOK);
   const output = parseUsd('AIDM_LLM_OUTPUT_USD_PER_MTOK', env.AIDM_LLM_OUTPUT_USD_PER_MTOK);
   const cached = parseUsd('AIDM_LLM_CACHED_INPUT_USD_PER_MTOK', env.AIDM_LLM_CACHED_INPUT_USD_PER_MTOK);
+  const cacheWrite = parseUsd('AIDM_LLM_CACHE_WRITE_USD_PER_MTOK', env.AIDM_LLM_CACHE_WRITE_USD_PER_MTOK);
   if ((input === undefined) !== (output === undefined)) {
     throw new LlmProviderConfigError(
       'Both AIDM_LLM_INPUT_USD_PER_MTOK and AIDM_LLM_OUTPUT_USD_PER_MTOK must be set together.',
       'LLM_PRICING_INVALID'
     );
   }
-  const pricing = input !== undefined && output !== undefined ? { input, output, cachedInput: cached } : null;
+  const pricing = input !== undefined && output !== undefined ? { input, output, cachedInput: cached, cacheWrite: cacheWrite ?? (input * 1.25) } : null;
 
   const rawEffort = (nonEmpty(overrides.reasoningEffort) ?? nonEmpty(env.AIDM_LLM_REASONING_EFFORT))?.toLowerCase();
   if (rawEffort !== undefined && !(OPENAI_REASONING_EFFORTS as readonly string[]).includes(rawEffort)) {
@@ -193,6 +195,7 @@ export function registerProviderBudgetTerms(config: ResolvedLlmProviderConfig, b
     const i = usdPerMTokToRate(config.pricing.input);
     const o = usdPerMTokToRate(config.pricing.output);
     const c = usdPerMTokToRate(config.pricing.cachedInput ?? config.pricing.input);
+    const cw = usdPerMTokToRate(config.pricing.cacheWrite ?? (config.pricing.input * 1.25));
     // Settlement looks the rate up under the adapter's providerName while pre-dispatch uses
     // the host for custom endpoints, so the same operator-declared rate is registered under both.
     const providerIds = new Set([config.billingProviderId, config.kind === 'openai' ? 'openai' : config.kind]);
@@ -206,6 +209,8 @@ export function registerProviderBudgetTerms(config: ResolvedLlmProviderConfig, b
         outputRateDen: o.den,
         cachedInputRateNum: c.num,
         cachedInputRateDen: c.den,
+        cacheWriteRateNum: cw.num,
+        cacheWriteRateDen: cw.den,
       });
     }
   }
@@ -339,7 +344,7 @@ export function preflightLlmProvider(env: Env = process.env): { ok: true; descri
     if (!config.pricing) {
       let rate: unknown;
       try {
-        rate = new PricingEngine().getRate(config.billingProviderId, config.model, 'standard');
+        rate = new BudgetManager().getPricingRate(config.billingProviderId, config.model, 'standard');
       } catch {
         rate = undefined;
       }
