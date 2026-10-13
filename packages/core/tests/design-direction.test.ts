@@ -7,7 +7,7 @@ import * as path from 'node:path';
 import { execFileSync, spawnSync } from 'node:child_process';
 import {
   normalizeClarificationProposal, resolveClarification, renderChecksScript, normalizeDesign, designBriefText,
-  saveDesignBrief, loadDesignBrief, CLARIFICATION_SYSTEM_PROMPT, DESIGN_QUESTION_ID,
+  saveDesignBrief, loadDesignBrief, CLARIFICATION_SYSTEM_PROMPT, DESIGN_QUESTION_ID, DESIGN_RULES_TR, designRuleCriteria,
 } from '../dist/autonomous/index.js';
 
 const KUAFOR = {
@@ -102,6 +102,58 @@ describe('design direction (fixture: "bayan kuaförü sitesi")', () => {
       fs.writeFileSync(css, decl(all.map(([k, v]) => [k, k.startsWith('renk') ? v.toUpperCase() : v])));
       const out = execFileSync('node', ['check.mjs'], { cwd: dir, encoding: 'utf8' });
       assert.match(out, /PASS Ortak CSS tasarım değişkenlerini tanımlıyor/);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('permanent rules: verbatim in the prompt and brief, chunked into <=300-char criteria', () => {
+    assert.equal(DESIGN_RULES_TR.length, 11);
+    for (const r of DESIGN_RULES_TR) assert.ok(CLARIFICATION_SYSTEM_PROMPT.includes(r), r);
+    const chunks = designRuleCriteria();
+    assert.ok(chunks.every((c: string) => c.length <= 300));
+    for (const r of DESIGN_RULES_TR) assert.ok(chunks.join(' ').includes(r), r);
+    const brief = resolveClarification({ questions: normalizeClarificationProposal(KUAFOR, ['TASK-001']).questions }).designBrief!;
+    for (const r of DESIGN_RULES_TR) assert.ok(designBriefText(brief).includes(r));
+  });
+
+  it('design_rules check: literal colours outside tokens, >2 fonts, low contrast and missing viewport fail; clean site passes', () => {
+    const rec = resolveClarification({ questions: normalizeClarificationProposal(KUAFOR, ['TASK-001']).questions });
+    const rules = rec.checks.filter((c: { type: string }) => c.type === 'design_rules');
+    assert.equal(rules.length, 1);
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'aidm-rules-'));
+    const run = () => spawnSync('node', ['check.mjs'], { cwd: dir, encoding: 'utf8' });
+    try {
+      fs.writeFileSync(path.join(dir, 'check.mjs'), renderChecksScript(rules));
+      const tokens = Object.entries(rules[0].tokens as Record<string, string>).map(([k, v]) => `--${k}: ${v};`).join(' ');
+      const vp = '<meta name="viewport" content="width=device-width, initial-scale=1">';
+      fs.writeFileSync(path.join(dir, 'style.css'), `:root { ${tokens} }\nbody { color: var(--${metin[0]}); font-family: var(--font-govde); }\n`);
+      fs.writeFileSync(path.join(dir, 'index.html'), `<html><head>${vp}</head><body>x</body></html>`);
+      let r = run();
+      assert.equal(r.status, 0, r.stdout);
+      fs.writeFileSync(path.join(dir, 'b.html'), '<html><body style="color:#ff00ff">x</body></html>');
+      fs.appendFileSync(path.join(dir, 'style.css'), 'h1 { color: #123456; font-family: Comic Sans MS; } p { font-family: Papyrus; }\n');
+      r = run();
+      assert.equal(r.status, 1);
+      for (const w of ['palet dışı/sabit renk', 'HTML içinde sabit renk', 'yazı tipi sayısı', 'viewport meta eksik: b.html']) assert.ok(r.stdout.includes(w), w + '\n' + r.stdout);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('WCAG AA contrast is computed from the brief tokens (pair taken from the fixture names)', () => {
+    const p = normalizeClarificationProposal(KUAFOR, ['TASK-001']);
+    const d = p.questions[0]!.options[0]!.design!;
+    assert.ok(d.contrastPairs.length >= 1, 'text/background pair inferred');
+    const low = { ...KUAFOR, questions: [{ ...KUAFOR.questions[0]!, options: KUAFOR.questions[0]!.options.map((o) => ({ ...o, design: { ...o.design, palette: Object.fromEntries(Object.keys(o.design.palette).map((k) => [k, '#777777'])) } })) }] };
+    const rules = resolveClarification({ questions: normalizeClarificationProposal(low, ['TASK-001']).questions }).checks.filter((c: { type: string }) => c.type === 'design_rules');
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'aidm-contrast-'));
+    try {
+      fs.writeFileSync(path.join(dir, 'check.mjs'), renderChecksScript(rules));
+      fs.writeFileSync(path.join(dir, 'style.css'), `:root { ${Object.entries(rules[0].tokens as Record<string, string>).map(([k, v]) => `--${k}: ${v};`).join(' ')} }`);
+      const r = spawnSync('node', ['check.mjs'], { cwd: dir, encoding: 'utf8' });
+      assert.equal(r.status, 1);
+      assert.match(r.stdout, /kontrast .* < 4\.5/);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }

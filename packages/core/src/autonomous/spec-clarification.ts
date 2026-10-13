@@ -40,9 +40,41 @@ export type ClarificationCheck =
   | { type: 'glob_count'; glob: string; min?: number; max?: number; description: string }
   | { type: 'each_file_contains' | 'no_file_contains'; glob: string; pattern: string; regex: boolean; description: string }
   /** Some file matching glob defines every CSS custom property (`--name: value`). Design brief tokens. */
-  | { type: 'css_tokens'; glob: string; tokens: Record<string, string>; description: string };
+  | { type: 'css_tokens'; glob: string; tokens: Record<string, string>; description: string }
+  /** Measurable design rules: palette only via tokens, <= maxFonts families, WCAG AA contrast pairs, viewport meta. */
+  | { type: 'design_rules'; cssGlob: string; htmlGlob: string; tokens: Record<string, string>; maxFonts: number; contrastPairs: Array<[string, string]>; description: string };
 
 export const DESIGN_QUESTION_ID = 'design-direction';
+
+/** Permanent Director design rules (PO-approved, verbatim), applied to every UI project. */
+export const DESIGN_RULES_TR: readonly string[] = [
+  '1. Her projede konuya ve hedef kitleye bakıp tasarımı ona göre düşün.',
+  '2. Renk seçimleri gözü yormayan ama projeyle uyumlu olsun.',
+  '3. Karmaşık renkler olmasın.',
+  '4. Her sayfa ya da modül aynı renk paletini kullansın.',
+  '5. Sade ama şık görünsün.',
+  '6. Tasarım kullanıcı dostu olsun, karmaşık olmasın.',
+  '7. Yazılar arka planda rahat okunsun, yeterli kontrast olsun (WCAG AA).',
+  '8. Telefonda da düzgün görünsün ve rahat kullanılsın.',
+  '9. En fazla 2 yazı tipi, tutarlı boşluklar.',
+  '10. Görseller ve ikonlar konuyla ilgili ve aynı tarzda olsun; emoji yalnızca gerçekten uyduğunda.',
+  '11. Animasyonlar yumuşak ve az olsun, dikkat dağıtmasın.',
+];
+
+/** Rules as <=300-char criteria chunks (IdP/AGY criterion limit). */
+export function designRuleCriteria(): string[] {
+  const out: string[] = [];
+  let cur = 'Tasarım kuralları:';
+  for (const r of DESIGN_RULES_TR) {
+    if ((cur + ' ' + r).length > 300) {
+      out.push(cur);
+      cur = 'Tasarım kuralları (devam):';
+    }
+    cur += ' ' + r;
+  }
+  out.push(cur);
+  return out;
+}
 export const DESIGN_BRIEF_PATH = path.join('.ai-manager', 'state', 'design-brief.json');
 
 /** Director-owned visual direction (one option of the design-direction question). */
@@ -57,6 +89,8 @@ export interface DesignDirection {
   tone: string;
   /** When emoji fit the subject (not banned), e.g. "yalnızca kategori etiketlerinde". */
   emoji: string;
+  /** [text token, background token] pairs that must reach WCAG AA (4.5:1). */
+  contrastPairs: Array<[string, string]>;
 }
 
 /** Binding design brief: chosen direction + the tokens the shared CSS must define. */
@@ -219,6 +253,11 @@ export function normalizeCheck(raw: unknown): ClarificationCheck | null {
     case 'each_file_contains':
     case 'no_file_contains':
       return safeRel(glob) && pattern ? { type, glob, pattern, regex, description } : null;
+    case 'design_rules': {
+      const tokens = normalizeTokens(r.tokens);
+      const pairs = (Array.isArray(r.contrastPairs) ? r.contrastPairs : []).filter((x): x is [string, string] => Array.isArray(x) && x.length === 2 && x.every((y) => typeof y === 'string' && y.replace(/^--/, '') in tokens)).map(([a, b]) => [a.replace(/^--/, ''), b.replace(/^--/, '')] as [string, string]).slice(0, 6);
+      return Object.keys(tokens).length ? { type, cssGlob: '**/*.css', htmlGlob: '**/*.html', tokens, maxFonts: 2, contrastPairs: pairs, description } : null;
+    }
     case 'css_tokens': {
       const tokens = normalizeTokens(r.tokens);
       return safeRel(glob) && Object.keys(tokens).length ? { type, glob, tokens, description } : null;
@@ -250,7 +289,18 @@ export function normalizeDesign(raw: unknown): DesignDirection | null {
   const heading = str(f.heading, 80);
   const body = str(f.body, 80);
   if (Object.keys(palette).length < 3 || !heading || !body) return null;
+  const names = Object.keys(palette);
+  let contrastPairs: Array<[string, string]> = (Array.isArray(r.contrastPairs) ? r.contrastPairs : [])
+    .filter((x): x is [string, string] => Array.isArray(x) && x.length === 2 && names.includes(String(x[0]).replace(/^--/, '')) && names.includes(String(x[1]).replace(/^--/, '')))
+    .map(([a, b]) => [String(a).replace(/^--/, ''), String(b).replace(/^--/, '')] as [string, string])
+    .slice(0, 6);
+  if (!contrastPairs.length) {
+    const fg = names.find((n) => /metin|text|yazi|yazı|fg/.test(n));
+    const bg = names.find((n) => /zemin|arka|bg|background|surface/.test(n));
+    if (fg && bg) contrastPairs = [[fg, bg]];
+  }
   return {
+    contrastPairs,
     name: str(r.name, 120),
     rationale: str(r.rationale, 600),
     palette,
@@ -307,8 +357,14 @@ function normalizeOption(raw: unknown, i: number, knownTaskIds: ReadonlySet<stri
       .filter(Boolean)
       .join(' — ')
       .slice(0, 1000);
-    criteria = [...designCriteria(design), ...criteria].slice(0, 8);
-    checks.unshift({ type: 'css_tokens', glob: '**/*.css', tokens: designTokens(design), description: 'Ortak CSS tasarım değişkenlerini tanımlıyor' });
+    criteria = [...designCriteria(design), ...designRuleCriteria(), ...criteria].slice(0, 8);
+    checks.unshift(
+      { type: 'css_tokens', glob: '**/*.css', tokens: designTokens(design), description: 'Ortak CSS tasarım değişkenlerini tanımlıyor' },
+      {
+        type: 'design_rules', cssGlob: '**/*.css', htmlGlob: '**/*.html', tokens: designTokens(design), maxFonts: 2, contrastPairs: design.contrastPairs,
+        description: 'Tasarım kuralları: tek palet (renkler yalnızca değişkenlerle), en fazla 2 yazı tipi, WCAG AA kontrast, mobil viewport',
+      }
+    );
   }
   return { id, label, ...(description ? { description } : {}), criteria, appliesTo: design ? [] : applies, checks: checks.slice(0, 6), newTasks, ...(design ? { design } : {}) };
 }
@@ -403,6 +459,9 @@ export const CLARIFICATION_SYSTEM_PROMPT = [
   '  "emoji": "<Türkçe: where emoji fit, or \'kullanılmaz\'>" }. Set recommendedOptionId to your choice.',
   'Avoid the generic "AI-made" look (default purple/blue gradients, generic glassmorphism cards, stock hero templates, uniform rounded',
   'card grids) unless the subject truly justifies it. Emoji are allowed where they genuinely fit the subject and audience.',
+  'PERMANENT DESIGN RULES (PO-approved; apply to every UI project, cite them in "rationale"; the run enforces them):',
+  ...DESIGN_RULES_TR.map((r) => `  ${r}`),
+  'Each option\'s "design" may add "contrastPairs": [["<text token>", "<background token>"], ...] (each must reach WCAG AA 4.5:1).',
   'Reason from THIS project\'s own subject and audience like a human designer: who visits, what they need, what feeling the brand',
   'should convey. Let that drive palette restraint, typography, whitespace, motion, readability and imagery. Do not reuse a default',
   'palette or font pair across projects; every value must be justified in "rationale" by the subject and audience.',
@@ -735,6 +794,7 @@ const match = (g) => { files ??= walk(ROOT); const re = globRe(g); return files.
 const read = (f) => { try { return fs.readFileSync(path.join(ROOT, f), 'utf8'); } catch { return null; } };
 const has = (text, c) => (c.regex ? new RegExp(c.pattern).test(text) : text.includes(c.pattern));
 
+${DESIGN_RULES_JS}
 let failed = 0;
 for (const c of CHECKS) {
   let ok = false, why = '';
@@ -749,6 +809,7 @@ for (const c of CHECKS) {
     const missing = Object.entries(c.tokens).filter(([k, v]) => !css.includes(squash('--' + k + ':' + v)));
     ok = missing.length === 0; why = 'eksik değişkenler: ' + missing.map(([k, v]) => '--' + k + ': ' + v).join('; ');
   }
+  else if (c.type === 'design_rules') { const r = designRules(c); ok = r.ok; why = r.why; }
   else if (c.type === 'no_file_contains') { const bad = match(c.glob).filter((f) => has(read(f) ?? '', c)); ok = bad.length === 0; why = 'içeriyor: ' + bad.join(', '); }
   console.log((ok ? 'PASS ' : 'FAIL ') + c.description + (ok ? '' : ' — ' + why));
   if (!ok) failed++;
@@ -765,6 +826,7 @@ export function designBriefText(b: DesignBrief): string {
     'Use colours and fonts ONLY via these variables; do not invent any other palette or font.',
     `Layout: ${b.layout}. Imagery: ${b.imagery}. Tone: ${b.tone}. Emoji: ${b.emoji || 'as fits'}.`,
     'No generic AI look (default purple/blue gradients, glassmorphism cards, stock hero templates, uniform rounded card grids).',
+    `Design rules (binding): ${DESIGN_RULES_TR.join(' ')}`,
   ].join(' ');
 }
 
@@ -781,3 +843,43 @@ export function loadDesignBrief(projectRoot: string): DesignBrief | null {
     return null;
   }
 }
+
+/** Checker for design_rules, injected verbatim into the generated script (String.raw keeps regexes intact). */
+const DESIGN_RULES_JS = String.raw`
+function lum(hex) {
+  let h = hex.replace('#', '');
+  if (h.length === 3 || h.length === 4) h = h.split('').map((x) => x + x).join('');
+  const ch = [0, 2, 4].map((i) => parseInt(h.slice(i, i + 2), 16) / 255).map((v) => (v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4)));
+  return 0.2126 * ch[0] + 0.7152 * ch[1] + 0.0722 * ch[2];
+}
+function contrast(a, b) { const x = lum(a), y = lum(b); return (Math.max(x, y) + 0.05) / (Math.min(x, y) + 0.05); }
+function designRules(c) {
+  const problems = [];
+  const cssFiles = match(c.cssGlob);
+  const css = cssFiles.map((f) => read(f) ?? '').join('\n').replace(/\/\*[\s\S]*?\*\//g, '');
+  const outside = css.replace(/:root\s*\{[^}]*\}/g, '');
+  const lit = outside.match(/#[0-9a-fA-F]{3,8}\b|\brgba?\([^)]*\)|\bhsla?\([^)]*\)/g) || [];
+  if (lit.length) problems.push('palet dışı/sabit renk: ' + [...new Set(lit)].slice(0, 5).join(', '));
+  const html = match(c.htmlGlob).map((f) => [f, read(f) ?? '']);
+  const inline = html.filter(([, t]) => /style\s*=\s*["'][^"']*(#[0-9a-fA-F]{3,8}\b|rgba?\()/i.test(t)).map(([f]) => f);
+  if (inline.length) problems.push('HTML içinde sabit renk: ' + inline.join(', '));
+  const fams = new Set();
+  for (const m of css.matchAll(/font-family\s*:\s*([^;}]+)/gi)) {
+    const first = m[1].split(',')[0].trim().replace(/["']/g, '').toLowerCase();
+    if (!first.startsWith('var(') && !['serif', 'sans-serif', 'monospace', 'system-ui', 'inherit', 'initial', 'cursive'].includes(first)) fams.add(first);
+  }
+  for (const [k, v] of Object.entries(c.tokens)) if (k.startsWith('font')) fams.add(v.split(',')[0].trim().replace(/["']/g, '').toLowerCase());
+  if (fams.size > c.maxFonts) problems.push('yazı tipi sayısı ' + fams.size + ' > ' + c.maxFonts + ': ' + [...fams].join(', '));
+  for (const [fg, bg] of c.contrastPairs) {
+    const a = c.tokens[fg], b = c.tokens[bg];
+    if (/^#[0-9a-fA-F]{3,8}$/.test(a || '') && /^#[0-9a-fA-F]{3,8}$/.test(b || '')) {
+      const r = contrast(a, b);
+      if (r < 4.5) problems.push('kontrast --' + fg + '/--' + bg + ' = ' + r.toFixed(2) + ' < 4.5');
+    }
+  }
+  const noVp = html.filter(([, t]) => !/<meta[^>]+name\s*=\s*["']viewport["'][^>]*width\s*=\s*device-width/i.test(t)).map(([f]) => f);
+  if (noVp.length) problems.push('viewport meta eksik: ' + noVp.join(', '));
+  if (!cssFiles.length) problems.push('CSS dosyası yok');
+  return { ok: problems.length === 0, why: problems.join(' | ') };
+}
+`;

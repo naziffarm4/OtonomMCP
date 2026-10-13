@@ -262,20 +262,22 @@ describe('scope repair + PO scope decision + resume blocked run', { concurrency:
 
   it('design direction from the spec review becomes the binding brief: stored, in AGY criteria, CSS tokens gated', async () => {
     setup(PAGES.replace('Netleştirme: kapalı\n', ''));
-    const design = { name: 'Fixture yönü', rationale: 'Konu ve kitleye uygun.', palette: { 'renk-a': '#101010', 'renk-b': '#202020', 'renk-c': '#303030' }, fonts: { heading: 'A, serif', body: 'B, sans-serif' }, layout: 'sade', imagery: 'gerçek', tone: 'sakin', emoji: 'kullanılmaz' };
+    const design = { name: 'Fixture yönü', rationale: 'Konu ve kitleye uygun.', palette: { 'renk-a': '#101010', 'renk-b': '#202020', 'renk-c': '#303030' }, contrastPairs: [], fonts: { heading: 'A, serif', body: 'B, sans-serif' }, layout: 'sade', imagery: 'gerçek', tone: 'sakin', emoji: 'kullanılmaz' };
     llm.clarify = () => ({
       summary: 'Site planı.',
       questions: [{ id: 'design-direction', question: 'Hangi tasarım yönü?', reason: 'Görünüm Director kararıdır.', recommendedOptionId: 'x', allowFreeText: false,
         options: [{ id: 'x', label: 'Fixture yönü', design }, { id: 'y', label: 'Diğer yön', design: { ...design, name: 'Diğer' } }] }],
     });
     const css = `:root { ${Object.entries(design.palette).map(([k, v]) => `--${k}: ${v};`).join(' ')} --font-baslik: ${design.fonts.heading}; --font-govde: ${design.fonts.body}; }\n`;
-    agy.onExecute = () => { write('index.html', '<html></html>\n'); write('style.css', css); };
+    const page = '<html><head><meta name="viewport" content="width=device-width, initial-scale=1"></head><body></body></html>\n';
+    agy.onExecute = () => { write('index.html', page); write('hakkimda.html', page); write('style.css', css); };
     const rep = await run();
     assert.equal(rep.designBrief?.optionId, 'x', why(rep));
     const brief = JSON.parse(fs.readFileSync(path.join(dir, '.ai-manager', 'state', 'design-brief.json'), 'utf8'));
     assert.deepEqual(Object.keys(brief.tokens).sort(), [...Object.keys(design.palette), 'font-baslik', 'font-govde'].sort());
     const crit = (agy.requestsSeen[0].instruction!.acceptanceCriteria as Any[]).map(String).join(' ');
     assert.ok(crit.includes(`--renk-a: ${design.palette['renk-a']}`) && crit.includes('uydurulmaz'), crit);
+    assert.ok(crit.includes('9. En fazla 2 yazı tipi, tutarlı boşluklar.'), 'permanent rules reach AGY verbatim');
     assert.equal(rep.status, 'COMPLETED', why(rep));
   });
 });
