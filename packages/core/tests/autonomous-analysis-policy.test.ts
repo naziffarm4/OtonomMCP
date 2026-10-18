@@ -196,16 +196,24 @@ describe('analysis policy', { concurrency: 1, timeout: 600_000 }, () => {
     }
   });
 
-  const runWith = async (spec: string, alwaysAnalyze: boolean, isGreenfield = false, extraAutonomousOptions?: Record<string, unknown>) => {
+  const runWith = async (
+    spec: string,
+    alwaysAnalyze: boolean,
+    isGreenfield = false,
+    extraAutonomousOptions?: Record<string, unknown>,
+    executorOverride?: MockAgyExecutor
+  ) => {
     dir = gitRepo(spec, isGreenfield);
-    const llm = new MockDirectorLlm();
-    const agy = new MockAgyExecutor(dir);
-    llm.script = ({ taskId, prompt }) => {
-      if (/-A\d+$/.test(taskId)) return undefined;
-      const answered = prompt.includes(`Analysis ${taskId}-A`) || prompt.includes('not available for');
-      if (alwaysAnalyze || !answered) return { actionType: 'ANALYZE_PROJECT', rationale: 'look first', analysisScope: 'layout' };
-      return undefined;
-    };
+    const llm = (extraAutonomousOptions?.llmProvider as MockDirectorLlm | undefined) ?? new MockDirectorLlm();
+    const agy = executorOverride ?? new MockAgyExecutor(dir);
+    if (!extraAutonomousOptions?.llmProvider) {
+      llm.script = ({ taskId, prompt }) => {
+        if (/-A\d+$/.test(taskId)) return undefined;
+        const answered = prompt.includes(`Analysis ${taskId}-A`) || prompt.includes('not available for');
+        if (alwaysAnalyze || !answered) return { actionType: 'ANALYZE_PROJECT', rationale: 'look first', analysisScope: 'layout' };
+        return undefined;
+      };
+    }
     agy.stdoutFor = (req: Any) => (/read-only/i.test(String(req.instruction?.objective)) ? 'FINDINGS: ok' : undefined);
     const out: string[] = [];
     const r = await executeCli(['run', '--spec', 'proje.md', '-C', dir, '--budget-usd', '1', '--json'], {
@@ -436,5 +444,91 @@ describe('analysis policy', { concurrency: 1, timeout: 600_000 }, () => {
     assert.equal(rep.status, 'COMPLETED', rep.stopReason);
     const t1 = rep.tasks.find((t: Any) => t.taskId === 'TASK-001');
     assert.ok(t1?.metadata?.analysisRefusals !== undefined);
+  });
+
+  it('6. hedef dosyasız görevde fallback eyleminin implementationScope mandate yollarından gelir ve targetFiles boş kalır', async () => {
+    let capturedFallbackPayload: Any = null;
+    class ScopeSpyDispatcher extends DirectorActionDispatcher {
+      override async dispatch(input: Any): Promise<Any> {
+        const env = input.validatedResult?.envelope;
+        if (env?.actionType === 'IMPLEMENT_TASK' && String(env?.payload?.rationale).includes('Direct implementation fallback')) {
+          capturedFallbackPayload = env.payload;
+        }
+        return super.dispatch(input);
+      }
+    }
+    const specNoTarget = `# P\n\n## Gereksinimler\n\n### Kurulum\nTemel proje iskeletini ve konfigürasyonunu kur.\n- index çalışmalı\n`;
+    const { rep } = await runWith(specNoTarget, true, false, {
+      actionDispatcher: (deps: Any) => new ScopeSpyDispatcher(deps),
+    });
+    assert.equal(rep.status, 'COMPLETED', rep.stopReason);
+    assert.ok(capturedFallbackPayload, 'Fallback IMPLEMENT_TASK must have been dispatched');
+    assert.deepEqual(capturedFallbackPayload.targetFiles, [], 'targetFiles must be empty when spec defines no target files');
+    assert.ok(capturedFallbackPayload.implementationScope.includes('package.json'), 'implementationScope must include mandate root files');
+    assert.ok(capturedFallbackPayload.implementationScope.includes('src'), 'implementationScope must include mandate directories');
+  });
+
+  it('7. fallback eylemi confidence değerini Director eyleminden miras alır ve [0, 1] aralığında kalır', async () => {
+    let capturedConfidence: number | undefined;
+    class ConfSpyDispatcher extends DirectorActionDispatcher {
+      override async dispatch(input: Any): Promise<Any> {
+        const env = input.validatedResult?.envelope;
+        if (env?.actionType === 'IMPLEMENT_TASK' && String(env?.payload?.rationale).includes('Direct implementation fallback')) {
+          capturedConfidence = env.payload?.confidence;
+        }
+        return super.dispatch(input);
+      }
+    }
+    const llm = new MockDirectorLlm();
+    llm.script = () => ({
+      actionType: 'ANALYZE_PROJECT',
+      confidence: 0.88,
+      rationale: 'persistent code analysis',
+      analysisScope: 'inspect codebase',
+    });
+    const { rep } = await runWith(SPEC(), true, true, {
+      llmProvider: llm,
+      actionDispatcher: (deps: Any) => new ConfSpyDispatcher(deps),
+    });
+    assert.equal(rep.status, 'COMPLETED', rep.stopReason);
+    assert.equal(capturedConfidence, 0.88, 'Fallback must inherit valid confidence from rejected Director action');
+  });
+
+  it('8. REVIEW_EVIDENCE 1. redde yönlendirme alır; 2. redde fallback eylemine ÇEVRİLMEZ ve BLOCKED_ON_HUMAN ile durur (db78416 baz davranışı)', async () => {
+    class ReviewDispatcher extends DirectorActionDispatcher {
+      override async dispatch(input: Any): Promise<Any> {
+        if (input.validatedResult?.envelope?.actionType === 'REVIEW_EVIDENCE') {
+          return {
+            status: ActionDispatchStatus.PENDING_AUTHORIZATION,
+            reason: 'REVIEW_EVIDENCE requires human approval at this gate',
+            actionType: 'REVIEW_EVIDENCE',
+            actionId: input.validatedResult.envelope.actionId,
+            dispatchId: 'disp-test-review',
+            isAuthorized: false,
+            requiresHumanApproval: true,
+            dispatchedAt: new Date().toISOString(),
+          };
+        }
+        return super.dispatch(input);
+      }
+    }
+    const llm = new MockDirectorLlm();
+    llm.script = () => ({
+      actionType: 'REVIEW_EVIDENCE',
+      taskId: 'TASK-001',
+      evidenceIds: ['ev-001'],
+      confidence: 0.9,
+      rationale: 'insisting on reviewing evidence',
+      reviewObjective: 'check test outcomes',
+    });
+    const { rep } = await runWith(SPEC(), true, true, {
+      llmProvider: llm,
+      actionDispatcher: (deps: Any) => new ReviewDispatcher(deps),
+    });
+    assert.equal(rep.status, 'BLOCKED_ON_HUMAN', rep.stopReason);
+    assert.match(rep.stopReason ?? '', /deneme hakkı içinde bağımsız doğrulamayı geçemedi|BLOCKED_ON_HUMAN/);
+    const t1 = rep.tasks.find((t: Any) => t.taskId === 'TASK-001');
+    assert.equal(t1?.metadata?.fallbackSynthesized, undefined, 'REVIEW_EVIDENCE must NOT trigger IMPLEMENT_TASK synthesis');
+    assert.ok((t1?.metadata?.analysisRefusals ?? 0) >= 2, `Refusal counter should be >= 2, got ${t1?.metadata?.analysisRefusals}`);
   });
 });

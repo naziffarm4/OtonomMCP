@@ -2366,13 +2366,17 @@ export class AutonomousSpecRunner {
             continue;
           }
 
-          // ---- Analysis requested where the policy does not allow it: refuse once (not counted),
-          // on 2nd and subsequent requests synthesize an IMPLEMENT_TASK from the spec task definition
-          // and dispatch it through the exact same coordinator / authorization policy path.
+          // ---- Analysis requested where the policy does not allow it: refuse once (not counted)
+          // for all 3 read-only types (ANALYZE_PROJECT, DISCOVER_PROJECT, REVIEW_EVIDENCE).
+          // On 2nd and subsequent requests:
+          // - For ANALYZE_PROJECT / DISCOVER_PROJECT: synthesize an IMPLEMENT_TASK from the spec task definition
+          //   and dispatch it through the exact same coordinator / authorization policy path.
+          // - For REVIEW_EVIDENCE: do NOT synthesize IMPLEMENT_TASK (evidence review is not implementation);
+          //   fall through to normal handling (governed BLOCKED_ON_HUMAN gate, exactly matching baseline db78416).
           if (
             !isAnalysis &&
             !analysisAllowed &&
-            (actionType === 'ANALYZE_PROJECT' || actionType === 'DISCOVER_PROJECT') &&
+            (actionType === 'ANALYZE_PROJECT' || actionType === 'DISCOVER_PROJECT' || actionType === 'REVIEW_EVIDENCE') &&
             result.status !== 'REJECTED_BY_POLICY'
           ) {
             const prevRefused = (taskReport.metadata?.analysisRefusals as number | undefined) ?? analysisRefusals.get(task.task_id) ?? 0;
@@ -2387,7 +2391,10 @@ export class AutonomousSpecRunner {
               continue;
             }
 
-            // 2nd refusal and beyond: Deterministic fallback to IMPLEMENT_TASK synthesized from task definition.
+            // Fallback synthesis is restricted to ANALYZE_PROJECT and DISCOVER_PROJECT.
+            // REVIEW_EVIDENCE falls through to normal governance gate (BLOCKED_ON_HUMAN).
+            if (actionType === 'ANALYZE_PROJECT' || actionType === 'DISCOVER_PROJECT') {
+              // 2nd refusal and beyond: Deterministic fallback to IMPLEMENT_TASK synthesized from task definition.
             const storedTask =
               (await specStore.loadTasks().catch(() => [] as TaskDefinition[])).find((t) => t.task_id === task.task_id) ??
               taskDefs.get(task.task_id) ??
@@ -2450,7 +2457,9 @@ export class AutonomousSpecRunner {
             const fallbackScope =
               targets.length > 0
                 ? targets.join(', ')
-                : (report.mandate?.allowedDirectories ?? DEFAULT_AUTONOMOUS_ALLOWED_PATHS).join(', ');
+                : (report.mandate?.allowedDirectories ?? DEFAULT_AUTONOMOUS_ALLOWED_PATHS)
+                    .map((p) => (p.includes('.') ? p : `${p}/*`))
+                    .join(', ');
 
             const fallbackAction: ImplementTaskAction = {
               protocolVersion: 'AIDM-DIRECTOR-ACTION-1',
@@ -2533,6 +2542,7 @@ export class AutonomousSpecRunner {
               };
             }
             this.emit('CYCLE_RESULT', `${result.status}: ${result.summary}`, task.task_id);
+            }
           }
 
           // ---- Read-only analysis dispatched to AGY through the governed pipeline

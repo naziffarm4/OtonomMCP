@@ -213,6 +213,47 @@ describe('external IdP approval, decisions and Director capabilities', { concurr
     assert.equal(r.code, 'COMPLETED', `${r.report?.stopReason ?? ''} ${r.message ?? ''} ${JSON.stringify(r.report?.decisions ?? r).slice(0, 1500)}`);
   });
 
+  it('fake IdP configured: Director persistently emits ANALYZE_PROJECT => ZERO approval requests to IdP, no persistent approval records in outbox/audit, run finishes COMPLETED', async () => {
+    // Add baseline code file to avoid greenfield detection
+    fs.writeFileSync(path.join(dir, 'index.js'), '// baseline codebase\n', 'utf8');
+    execSync('git add -A && git commit -m "add baseline code"', { cwd: dir, stdio: 'ignore' });
+
+    // Director persistently requests ANALYZE_PROJECT (analysis subtasks themselves execute read-only check)
+    llm.script = ({ taskId }) => {
+      if (/-A\d+$/.test(taskId)) return undefined;
+      return {
+        actionType: 'ANALYZE_PROJECT',
+        rationale: 'persistent code inspection before any implementation',
+        analysisScope: 'math library structure',
+      };
+    };
+
+    const env = idp.env();
+    const requestId = await startApproval(env);
+    idp.approve(requestId);
+
+    const initialIdpApprovals = idp.approvals.size;
+
+    const r = await resume(env, { requestId });
+    assert.equal(r.code, 'COMPLETED', `${r.report?.stopReason ?? ''} ${r.message ?? ''}`);
+
+    // Verify ZERO additional approval requests went to IdP
+    assert.equal(idp.approvals.size, initialIdpApprovals, 'zero external approval requests sent to IdP for analysis');
+
+    // Verify outbox / audit state contains only the initial run approval, no extra approval packages
+    const approvalsDir = path.join(dir, '.ai-manager', 'state', 'external-approvals');
+    if (fs.existsSync(approvalsDir)) {
+      const persistedApprovals = fs.readdirSync(approvalsDir);
+      assert.ok(persistedApprovals.every((f: string) => f.startsWith(requestId)), 'no persistent approval packages created for analysis fallback');
+    }
+
+    // Verify all tasks were accepted through fallback synthesis
+    assert.equal(r.report.status, 'COMPLETED');
+    assert.ok(r.report.tasks.every((t: any) => t.status === 'ACCEPTED'));
+    assert.ok(r.report.tasks.filter((t: any) => t.kind !== 'ANALYSIS').every((t: any) => t.metadata?.fallbackSynthesized === true));
+  });
+
+
   // ------------------------------------------------------------------ negatives (fail closed)
   const negatives: Array<[string, (id: string) => string, RegExp]> = [
     ['wrong signing key', (id) => idp.approvalToken(id, {}, crypto.generateKeyPairSync('ec', { namedCurve: 'P-256' }).privateKey), /SIGNATURE|INVALID|UNVERIFIED/i],
