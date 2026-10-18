@@ -1,1 +1,1 @@
-$(cat /tmp/discovery-engine-patched.ts)
+PLACEHOLDER_WILL_REPLACE
