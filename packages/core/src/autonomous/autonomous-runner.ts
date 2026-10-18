@@ -351,14 +351,77 @@ export const NO_ANALYSIS_DIRECTOR_INSTRUCTION =
   'SPEED RULE: do NOT emit ANALYZE_PROJECT / DISCOVER_PROJECT / REVIEW_EVIDENCE for this task; no separate analysis step is available now. ' +
   'Emit IMPLEMENT_TASK directly and tell the executor in "objective" which files to read first.';
 
-/** Whether a separate read-only analysis subtask may run for the current cycle. */
+export type AnalysisRefusalReason =
+  | 'greenfield'
+  | 'policy_never'
+  | 'policy_on_demand_not_first_or_failed'
+  | 'quota_exhausted'
+  | 'analysis_already_done_no_failed_attempt'
+  | 'is_analysis_task';
+
+export interface AnalysisAllowedResult {
+  readonly allowed: boolean;
+  readonly reason?: AnalysisRefusalReason;
+}
+
+export interface AnalysisAllowedContext {
+  readonly firstTaskOfSegment: boolean;
+  readonly afterFailedAttempt: boolean;
+  readonly isGreenfield?: boolean;
+  readonly analysesDone?: number;
+  readonly maxAnalyses?: number;
+  readonly isAnalysisTask?: boolean;
+}
+
+/**
+ * Evaluates whether a separate read-only analysis subtask may run for the current cycle,
+ * returning both the boolean decision and the exact refusal reason when disallowed.
+ */
+export function evaluateAnalysis(
+  policy: AnalysisPolicy,
+  ctx: AnalysisAllowedContext
+): AnalysisAllowedResult {
+  if (ctx.isAnalysisTask) {
+    return { allowed: false, reason: 'is_analysis_task' };
+  }
+  if (ctx.isGreenfield) {
+    return { allowed: false, reason: 'greenfield' };
+  }
+  if (policy === 'NEVER') {
+    return { allowed: false, reason: 'policy_never' };
+  }
+
+  const done = ctx.analysesDone ?? 0;
+  const max = ctx.maxAnalyses ?? 2;
+  if (done >= max) {
+    return { allowed: false, reason: 'quota_exhausted' };
+  }
+
+  // A task that has already completed an analysis cannot run another analysis unless
+  // an implementation attempt has failed (afterFailedAttempt).
+  // Note: maxAnalyses sets the absolute ceiling per task across failures;
+  // this rule prevents consecutive analyses without an intervening implementation attempt.
+  if (done >= 1 && !ctx.afterFailedAttempt) {
+    return { allowed: false, reason: 'analysis_already_done_no_failed_attempt' };
+  }
+
+  if (policy === 'EVERY_TASK') {
+    return { allowed: true };
+  }
+
+  // ON_DEMAND (default / 'gerektiğinde'):
+  if (ctx.firstTaskOfSegment || ctx.afterFailedAttempt) {
+    return { allowed: true };
+  }
+  return { allowed: false, reason: 'policy_on_demand_not_first_or_failed' };
+}
+
+/** Backward-compatible wrapper returning only boolean decision. */
 export function isAnalysisAllowed(
   policy: AnalysisPolicy,
-  ctx: { readonly firstTaskOfSegment: boolean; readonly afterFailedAttempt: boolean }
+  ctx: AnalysisAllowedContext
 ): boolean {
-  if (policy === 'EVERY_TASK') return true;
-  if (policy === 'NEVER') return false;
-  return ctx.firstTaskOfSegment || ctx.afterFailedAttempt;
+  return evaluateAnalysis(policy, ctx).allowed;
 }
 
 export function analysisPolicyLabel(policy: AnalysisPolicy): string {

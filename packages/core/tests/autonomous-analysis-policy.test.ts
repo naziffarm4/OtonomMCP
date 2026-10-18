@@ -10,7 +10,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { executeCli } from '../dist/cli/index.js';
-import { SpecIngestor, parseAnalysisPolicy, isAnalysisAllowed, NO_ANALYSIS_DIRECTOR_INSTRUCTION } from '../dist/autonomous/index.js';
+import { SpecIngestor, parseAnalysisPolicy, isAnalysisAllowed, evaluateAnalysis, NO_ANALYSIS_DIRECTOR_INSTRUCTION } from '../dist/autonomous/index.js';
 import type { BudgetManager } from '../dist/budget/index.js';
 import { InMemoryIdentityManager, MockDirectorLlm, MockAgyExecutor } from './helpers/autonomous-test-doubles.ts';
 
@@ -64,6 +64,54 @@ describe('analysis policy', { concurrency: 1, timeout: 600_000 }, () => {
     assert.equal(isAnalysisAllowed('ON_DEMAND', c(false, false)), false);
     assert.equal(isAnalysisAllowed('EVERY_TASK', c(false, false)), true);
     assert.equal(isAnalysisAllowed('NEVER', c(true, true)), false);
+  });
+
+  it('evaluateAnalysis parametric table test', () => {
+    // isAnalysisTask: true -> refused
+    assert.deepEqual(
+      evaluateAnalysis('EVERY_TASK', { firstTaskOfSegment: true, afterFailedAttempt: false, isAnalysisTask: true }),
+      { allowed: false, reason: 'is_analysis_task' }
+    );
+    // isGreenfield: true -> refused
+    assert.deepEqual(
+      evaluateAnalysis('EVERY_TASK', { firstTaskOfSegment: true, afterFailedAttempt: false, isGreenfield: true }),
+      { allowed: false, reason: 'greenfield' }
+    );
+    // policy: NEVER -> refused
+    assert.deepEqual(
+      evaluateAnalysis('NEVER', { firstTaskOfSegment: true, afterFailedAttempt: true }),
+      { allowed: false, reason: 'policy_never' }
+    );
+    // quota_exhausted (done >= max)
+    assert.deepEqual(
+      evaluateAnalysis('EVERY_TASK', { firstTaskOfSegment: true, afterFailedAttempt: true, analysesDone: 2, maxAnalyses: 2 }),
+      { allowed: false, reason: 'quota_exhausted' }
+    );
+    // analysis_already_done_no_failed_attempt (done >= 1 && !afterFailedAttempt)
+    assert.deepEqual(
+      evaluateAnalysis('EVERY_TASK', { firstTaskOfSegment: true, afterFailedAttempt: false, analysesDone: 1, maxAnalyses: 2 }),
+      { allowed: false, reason: 'analysis_already_done_no_failed_attempt' }
+    );
+    // allowed after failure when quota not exhausted
+    assert.deepEqual(
+      evaluateAnalysis('EVERY_TASK', { firstTaskOfSegment: true, afterFailedAttempt: true, analysesDone: 1, maxAnalyses: 2 }),
+      { allowed: true }
+    );
+    // ON_DEMAND: first task of segment -> allowed
+    assert.deepEqual(
+      evaluateAnalysis('ON_DEMAND', { firstTaskOfSegment: true, afterFailedAttempt: false, analysesDone: 0 }),
+      { allowed: true }
+    );
+    // ON_DEMAND: not first and not failed -> refused
+    assert.deepEqual(
+      evaluateAnalysis('ON_DEMAND', { firstTaskOfSegment: false, afterFailedAttempt: false, analysesDone: 0 }),
+      { allowed: false, reason: 'policy_on_demand_not_first_or_failed' }
+    );
+    // ON_DEMAND: after failed attempt -> allowed
+    assert.deepEqual(
+      evaluateAnalysis('ON_DEMAND', { firstTaskOfSegment: false, afterFailedAttempt: true, analysesDone: 0 }),
+      { allowed: true }
+    );
   });
 
   const runWith = async (spec: string, alwaysAnalyze: boolean) => {
@@ -120,5 +168,14 @@ describe('analysis policy', { concurrency: 1, timeout: 600_000 }, () => {
     const { rep, analyses } = await runWith(SPEC('\n- İnceleme: hiç\n'), true);
     assert.equal(analyses.length, 0);
     assert.notEqual(rep.status, 'COMPLETED');
+  });
+
+  it('REPRO: persistent ANALYZE_PROJECT on empty repo / exhausted quota must not halt in BLOCKED_ON_APPROVAL', async () => {
+    // Empty repo (greenfield) with a Director that persistently requests ANALYZE_PROJECT
+    const { rep } = await runWith(SPEC(), true);
+    // In current unpatched code, this halts in BLOCKED_ON_HUMAN with stopReason:
+    // "Action type 'ANALYZE_PROJECT' is a governance/lifecycle action and cannot be autonomously dispatched at this gate."
+    // Once Steps 2 & 3 are implemented, the run must complete without blocking on the governance approval gate.
+    assert.equal(rep.status, 'COMPLETED', rep.stopReason);
   });
 });
