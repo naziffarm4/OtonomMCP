@@ -66,6 +66,7 @@ import {
   sealAutonomousMandate,
   signOperatorInvocation,
   AUTONOMOUS_RUN_LOCK_FILE,
+  DEFAULT_AUTONOMOUS_ALLOWED_PATHS,
   type AutonomousAuthorizationProvenance,
 } from './autonomous-mandate.js';
 import {
@@ -507,7 +508,7 @@ export async function isGreenfieldWorkspace(projectRoot: string): Promise<boolea
 }
 
 export function formatAnalysisRefusal(
-  reason: AnalysisRefusalReason | undefined,
+  reason: AnalysisRefusalReason,
   taskPolicyLabel: string
 ): { directorInstruction: string; logMessage: string } {
   switch (reason) {
@@ -546,12 +547,13 @@ export function formatAnalysisRefusal(
         logMessage: 'Analiz alt görevi içinde yeni analiz açılamaz (reason: is_analysis_task) → doğrudan uygulama istenecek.',
       };
     case 'policy_on_demand_not_first_or_failed':
-    default:
       return {
         directorInstruction: NO_ANALYSIS_DIRECTOR_INSTRUCTION,
         logMessage: `Bu görevde ayrı analiz adımı yok (İnceleme: ${taskPolicyLabel}, reason: policy_on_demand_not_first_or_failed) → doğrudan uygulama istenecek.`,
       };
   }
+  const _exhaustive: never = reason;
+  return _exhaustive;
 }
 
 /** Instruction prepended to every Director reasoning call in no-questions mode. */
@@ -2113,7 +2115,9 @@ export class AutonomousSpecRunner {
             isAnalysisTask: isAnalysis,
           });
           const analysisAllowed = analysisEval.allowed;
-          const refusalFormat = formatAnalysisRefusal(analysisEval.reason, analysisPolicyLabel(analysisPolicy));
+          const refusalFormat = analysisEval.reason
+            ? formatAnalysisRefusal(analysisEval.reason, analysisPolicyLabel(analysisPolicy))
+            : undefined;
           // Ordered by importance: the prompt builder bounds this field (DEFAULT_MAX_FIELD_LENGTH_CHARS),
           // so task, fresh guidance (PO answers, executor reports) come before the static policy text.
           const pauseText = pauseInstruction
@@ -2130,7 +2134,7 @@ export class AutonomousSpecRunner {
               ? 'This is a READ-ONLY ANALYSIS task: emit IMPLEMENT_TASK whose objective starts with "Read-only analysis without modifying files:" and asks the executor to report results under "FINDINGS:". No file may change.'
               : analysisAllowed
                 ? ''
-                : refusalFormat.directorInstruction,
+                : (refusalFormat?.directorInstruction ?? ''),
             extraGuidance,
             carryNote,
             ...poNotes
@@ -2231,7 +2235,7 @@ export class AutonomousSpecRunner {
               analysisReroute
                 ? analysisAllowed
                   ? `${at}: Director salt-okunur analiz istedi → analiz alt görevi olarak çalıştırılıyor (deneme sayılmaz).`
-                  : `${at}: ${refusalFormat.logMessage}`
+                  : `${at}: ${refusalFormat?.logMessage ?? ''}`
                 : `${result.status}: ${result.summary}`,
               task.task_id
             );
@@ -2368,7 +2372,7 @@ export class AutonomousSpecRunner {
           if (
             !isAnalysis &&
             !analysisAllowed &&
-            (actionType === 'ANALYZE_PROJECT' || actionType === 'DISCOVER_PROJECT' || actionType === 'REVIEW_EVIDENCE') &&
+            (actionType === 'ANALYZE_PROJECT' || actionType === 'DISCOVER_PROJECT') &&
             result.status !== 'REJECTED_BY_POLICY'
           ) {
             const prevRefused = (taskReport.metadata?.analysisRefusals as number | undefined) ?? analysisRefusals.get(task.task_id) ?? 0;
@@ -2379,7 +2383,7 @@ export class AutonomousSpecRunner {
 
             if (refused === 1) {
               taskReport.cycles--;
-              extraGuidance = `A separate read-only analysis is not available for ${task.task_id} now. ${refusalFormat.directorInstruction} ${execNote}`.trim();
+              extraGuidance = `A separate read-only analysis is not available for ${task.task_id} now. ${refusalFormat?.directorInstruction ?? ''} ${execNote}`.trim();
               continue;
             }
 
@@ -2435,6 +2439,19 @@ export class AutonomousSpecRunner {
               task.task_id
             );
 
+            // Inherit confidence from rejected director action if valid in [0, 1], otherwise default to neutral 0.7
+            const rawConf =
+              typeof (action as { confidence?: unknown })?.confidence === 'number'
+                ? (action as { confidence: number }).confidence
+                : undefined;
+            const fallbackConfidence = typeof rawConf === 'number' && rawConf >= 0 && rawConf <= 1 ? rawConf : 0.7;
+
+            // Derive implementation scope from target files if available, otherwise fallback to mandate allowed directories
+            const fallbackScope =
+              targets.length > 0
+                ? targets.join(', ')
+                : (report.mandate?.allowedDirectories ?? DEFAULT_AUTONOMOUS_ALLOWED_PATHS).join(', ');
+
             const fallbackAction: ImplementTaskAction = {
               protocolVersion: 'AIDM-DIRECTOR-ACTION-1',
               schemaVersion: 1,
@@ -2448,11 +2465,11 @@ export class AutonomousSpecRunner {
                   ? snapshot.sectionMetadata.requirements.revision
                   : 1,
               rationale: `Direct implementation fallback synthesized from task specification after persistent analysis requests for ${task.task_id}.`,
-              confidence: 1.0,
+              confidence: fallbackConfidence,
               taskId: task.task_id,
               objective: description || storedTask.title || `Implement ${task.task_id}`,
               targetFiles: targets,
-              implementationScope: targets.length > 0 ? targets.join(', ') : 'src/*',
+              implementationScope: fallbackScope,
               acceptanceCriteria: acceptance,
               constraints: [],
             };
