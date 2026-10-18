@@ -55,9 +55,15 @@ export interface DirectorReasoningInput {
    * prefix the provider can cache; never truncated to the per-field limit (bounded separately).
    */
   readonly stableContext?: string | null;
+  /**
+   * Task-scoped specification context: the FULL text of the spec sections governing the current
+   * task (large/multi-document specs only). Placed right after the stable block; bounded separately.
+   */
+  readonly taskContext?: string | null;
 }
 
-export const MAX_STABLE_CONTEXT_CHARS = 24_000;
+export const MAX_STABLE_CONTEXT_CHARS = 60_000;
+export const MAX_TASK_CONTEXT_CHARS = 24_000;
 
 export interface DirectorPromptBuildResult {
   readonly systemPrompt: string;
@@ -293,6 +299,12 @@ export class DirectorPromptBuilder {
       '- Do not claim that task-quality enforcement is implemented unless an AIDM policy gate and regression tests actually enforce it.',
       '- Preserve Product Owner approval, budget, scope, security, and execution authorization boundaries. Never invent approvals or bypass policy.',
       '',
+      '=== STRICT SPECIFICATION COMPLIANCE (GROUND TRUTH INVARIANT) ===',
+      '- The Project Specification (and Product Owner statements) provided in the context is the SOLE AND ABSOLUTE GROUND TRUTH.',
+      '- You MUST STRICTLY FOLLOW every business rule, platform distinction, workflow, user role, and constraint declared in the specification.',
+      '- You MUST NOT invent alternative workflows, skip defined steps, ignore business rules (e.g. appointment buffers, approval flows, single cash register, commission tiers, real-time updates), or confuse multi-platform boundaries (Web vs Mobile vs Desktop).',
+      '- Every proposed task, acceptance criterion, and verification check MUST directly trace back to and fulfill the explicit rules and goals in the specification.',
+      '',
       '=== SUPPORTED ACTION TYPES ===',
       `Valid actionTypes: ${DIRECTOR_ACTION_TYPES.join(', ')}`,
     ].join('\n');
@@ -349,6 +361,7 @@ export class DirectorPromptBuilder {
       .map((r) => ({
         id: r.id,
         title: this.boundAndSanitize(r.title, 120),
+        description: r.description ? this.boundAndSanitize(r.description, 400) : undefined,
         status: r.status,
         acceptanceCriteria: (r.acceptanceCriteria ?? []).slice(0, 5).map((ac) => this.boundAndSanitize(ac, 150)),
       }));
@@ -360,6 +373,7 @@ export class DirectorPromptBuilder {
       .map((d) => ({
         id: d.id,
         title: this.boundAndSanitize(d.title, 120),
+        rationale: d.rationale ? this.boundAndSanitize(d.rationale, 300) : (d.description ? this.boundAndSanitize(d.description, 300) : undefined),
         status: d.status,
       }));
 
@@ -368,6 +382,7 @@ export class DirectorPromptBuilder {
       ? {
         taskId: s.currentTask.task.taskId,
         title: this.boundAndSanitize(s.currentTask.task.title, 120),
+        description: s.currentTask.task.description ? this.boundAndSanitize(s.currentTask.task.description, 600) : undefined,
         status: s.currentTask.task.status,
         attempt: s.currentTask.task.attempt,
         maxAttempts: s.currentTask.task.maxAttempts,
@@ -393,7 +408,7 @@ export class DirectorPromptBuilder {
       isDiscovered: s.discovery.isDiscovered,
       projectName: this.boundAndSanitize(s.discovery.projectName, 100),
       apparentPurposeClassification: s.discovery.apparentPurposeClassification,
-      technologyStack: s.discovery.technologyStack.slice(0, 10),
+      technologyStack: s.discovery.technologyStack.slice(0, 35),
       unknownsCount: s.discovery.unknownsCount,
       contradictionsCount: s.discovery.contradictionsCount,
     };
@@ -474,8 +489,12 @@ export class DirectorPromptBuilder {
     const stable = input.stableContext?.trim()
       ? ['=== RUN CONTEXT (stable for this run; binding Product Owner decisions, plan and policy) ===', this.boundAndSanitize(input.stableContext.trim(), MAX_STABLE_CONTEXT_CHARS), '']
       : [];
+    const taskSpec = input.taskContext?.trim()
+      ? ['=== TASK-SCOPED SPECIFICATION (verbatim sections governing the current task; binding ground truth) ===', this.boundAndSanitize(input.taskContext.trim(), MAX_TASK_CONTEXT_CHARS), '']
+      : [];
     return [
       ...stable,
+      ...taskSpec,
       '=== REASONING INVOCATION ===',
       `projectId: ${input.projectId}`,
       `directorSessionId: ${input.directorSessionId}`,

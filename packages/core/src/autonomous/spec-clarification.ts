@@ -478,7 +478,7 @@ export function buildClarificationUserPrompt(input: {
 }): string {
   return [
     'SPEC (verbatim):',
-    input.specMarkdown.slice(0, 20_000),
+    input.specMarkdown.slice(0, 45_000),
     '',
     'CURRENT TASK PLAN (ingested from the spec):',
     ...input.tasks.map((t) => `- ${t.taskId}: ${t.title}${t.acceptance?.length ? ` | kriterler: ${t.acceptance.join('; ')}` : ' | kriter yok'}`),

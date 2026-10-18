@@ -7,7 +7,9 @@
  * authorizes anything.
  */
 
+import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { defaultProjectRootForSpec } from '../../autonomous/spec-bundle.js';
 import { type CliRunResult, type CliAppOptions } from '../cli-types.js';
 import { CliExitCode } from '../exit-codes.js';
 import { type CliOutputWriter } from '../cli-output.js';
@@ -54,6 +56,14 @@ function positiveNumber(name: string, raw: string | boolean | undefined): number
   return n;
 }
 
+function isDirectory(p: string): boolean {
+  try {
+    return fs.statSync(p).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
 /** Pure argument parsing for `aidm run --spec` (unit tested). */
 export function parseRunSpecArgs(
   flags: Readonly<Record<string, string | boolean>>,
@@ -63,8 +73,8 @@ export function parseRunSpecArgs(
   if (typeof spec !== 'string' || spec.trim().length === 0) {
     return { ok: false, error: '--spec requires a path to a Markdown file' };
   }
-  if (!/\.(md|markdown)$/i.test(spec.trim())) {
-    return { ok: false, error: `--spec must point to a Markdown file (.md), got '${spec}'` };
+  if (!/\.(md|markdown)$/i.test(spec.trim()) && !isDirectory(path.resolve(ctx.cwd, spec.trim()))) {
+    return { ok: false, error: `--spec must point to a Markdown file (.md) or a folder of .md files, got '${spec}'` };
   }
   const budget = positiveNumber('budget-usd', flags['budget-usd']);
   if (budget instanceof Error) return { ok: false, error: budget.message };
@@ -88,8 +98,9 @@ export function parseRunSpecArgs(
   return {
     ok: true,
     options: {
-      // -C/--project-root wins; otherwise the folder containing the spec (previously: cwd).
-      projectRoot: ctx.explicitRoot ? ctx.projectRoot : path.dirname(path.resolve(ctx.cwd, spec.trim())),
+      // -C/--project-root wins; otherwise the folder containing the spec (previously: cwd);
+      // a spec folder defaults to its nearest project root.
+      projectRoot: ctx.explicitRoot ? ctx.projectRoot : defaultProjectRootForSpec(path.resolve(ctx.cwd, spec.trim())),
       specPath: path.resolve(ctx.cwd, spec.trim()),
       budgetUsd: budget,
       dryRun: Boolean(flags['dry-run']),

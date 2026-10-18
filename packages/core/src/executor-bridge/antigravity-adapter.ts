@@ -139,6 +139,11 @@ export interface AntigravityAdapterConfig {
   validateContextFreshness?: boolean;
   /** Skip compatibility probe before dispatching (default: false) */
   skipCompatibilityProbe?: boolean;
+  /**
+   * Optional extra prompt text per task (autonomous runner: the spec sections governing the task).
+   * Appended verbatim to the structured prompt; errors are ignored (never blocks a dispatch).
+   */
+  promptAugmenter?: (taskId: string) => string | null | undefined;
 }
 
 export interface ParsedExecutorOutput {
@@ -321,6 +326,7 @@ export class AntigravityAdapter implements ExecutorPort, ExecutionRequestExecuto
   private readonly requestInvoker?: AntigravityRequestInvoker;
   private readonly enforceSafetyBoundary: boolean;
   private readonly configuredVersion?: string | null;
+  private readonly promptAugmenter?: (taskId: string) => string | null | undefined;
 
   constructor(config: AntigravityAdapterConfig = {}) {
     this.executorId = config.executorId ?? 'executor:antigravity';
@@ -339,6 +345,7 @@ export class AntigravityAdapter implements ExecutorPort, ExecutionRequestExecuto
     this.processRunner = config.processRunner ?? new NodeAntigravityProcessRunner();
     this.compatibilityChecker = new AntigravityCompatibilityChecker(this.processRunner);
     this.skipCompatibilityProbe = config.skipCompatibilityProbe ?? false;
+    this.promptAugmenter = config.promptAugmenter;
 
     // Portable executable resolution: resolve explicit path, env, or PATH
     const resolution = resolveAntigravityExecutable({
@@ -355,6 +362,17 @@ export class AntigravityAdapter implements ExecutorPort, ExecutionRequestExecuto
       ExecutorOperationType.INSPECT_WORKSPACE,
       ExecutorOperationType.APPLY_REPAIR,
     ]);
+  }
+
+  /** Extra per-task prompt text from the configured augmenter; never throws. */
+  private augmentFor(taskId: string | undefined): string | null {
+    if (!this.promptAugmenter || !taskId) return null;
+    try {
+      const text = this.promptAugmenter(taskId);
+      return typeof text === 'string' && text.trim() ? text : null;
+    } catch {
+      return null;
+    }
   }
 
   get executorIdentity(): RawExecutorIdentity {
@@ -556,6 +574,8 @@ export class AntigravityAdapter implements ExecutorPort, ExecutionRequestExecuto
       }
     }
 
+    const augment = this.augmentFor(request.taskId);
+    if (augment) promptLines.push(augment);
     const structuredPrompt = promptLines.join('\n');
 
     return Object.freeze({
@@ -1215,6 +1235,8 @@ export class AntigravityAdapter implements ExecutorPort, ExecutionRequestExecuto
         '============================================'
       );
 
+      const augment = this.augmentFor(instruction.task_id);
+      if (augment) promptLines.push(augment);
       const structuredPrompt = promptLines.join('\n');
 
       return Object.freeze({

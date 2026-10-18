@@ -19,7 +19,8 @@ import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { SpecIngestor } from './spec-ingestor.js';
-import { resolveCanonicalProjectIdentity } from '../director/project-identity-resolver.js';
+import { loadSpecBundle, SpecBundleError } from './spec-bundle.js';
+import { pinCanonicalProjectIdentity, resolveCanonicalProjectIdentity } from '../director/project-identity-resolver.js';
 import { MAX_PERIOD_BUDGET_NANO_USD, nanoUsdToUsd } from '../budget/budget-types.js';
 import { createTrustedIdentityProvider } from '../authorization/trusted-identity-config.js';
 import { NonceStore } from '../authorization/nonce-store.js';
@@ -298,11 +299,14 @@ export async function startExternalApproval(o: StartExternalApprovalOptions): Pr
 
   let markdown: string;
   try {
-    markdown = await fs.promises.readFile(specPath, 'utf8');
-  } catch {
+    markdown = (await loadSpecBundle(specPath)).markdown;
+  } catch (err) {
+    if (err instanceof SpecBundleError && err.code !== 'SPEC_UNREADABLE') {
+      return { success: false, code: err.code, message: err.message };
+    }
     return { success: false, code: 'SPEC_UNREADABLE', message: `Cannot read spec file '${specPath}'.` };
   }
-  const projectId = resolveCanonicalProjectIdentity(projectRoot).projectId;
+  const projectId = pinCanonicalProjectIdentity(projectRoot).projectId;
   const rel = path.relative(projectRoot, specPath);
   const ingestion = new SpecIngestor().ingest(markdown, { projectId, specPath: rel.startsWith('..') ? specPath : rel });
   const taskCount = ingestion.tasks.filter((t) => t.hierarchy_level === 'TASK').length;
@@ -452,7 +456,7 @@ async function checkRecordIntegrity(rec: ExternalApprovalRecord): Promise<string
   }
   let markdown: string;
   try {
-    markdown = await fs.promises.readFile(rec.specPath, 'utf8');
+    markdown = (await loadSpecBundle(rec.specPath)).markdown;
   } catch {
     return `Spec file '${rec.specPath}' is no longer readable.`;
   }

@@ -173,8 +173,10 @@ describe('live-run fixes', { concurrency: 1, timeout: 600_000 }, () => {
   it('exhausted → system decision; retry_2 grants exactly +2 attempts with PO free text; budget unchanged', async () => {
     setup(exhaustedSpec, { 'check.cjs': CHECK_A }, { 'TASK-001': ['src/a.js'], 'TASK-002': ['src/b.js'] });
     const seen: Any[] = [];
-    // Attempt 1 fails, retry_2 → attempt 2 still fails, attempt 3 FIXED (after the free text arrived).
-    agy.contentFor = (req, _f, call) => (req.taskId === 'TASK-001' && call >= 3 ? '// FIXED\n' : `// ${req.taskId}\n`);
+    // Attempt 1 fails → decision retry_2 → attempt 2 (first granted extra attempt) is FIXED.
+    // Counted per task: tasks run strictly serially, nothing else runs while the decision is pending.
+    let task1Calls = 0;
+    agy.contentFor = (req) => (req.taskId === 'TASK-001' && ++task1Calls >= 2 ? '// FIXED\n' : `// ${req.taskId}\n`);
     const rep = (await run([], {}, { decisionResolver: answering({ selectedOptionId: 'retry_2', freeText: 'PO_HINT_42 ekle' }, seen) })).data as Any;
     assert.equal(rep.status, 'COMPLETED', why(rep));
     const rec = seen[0];

@@ -725,6 +725,11 @@ export class DirectorContextSynchronizer {
         for (const pm of report.technologyStack.packageManagers ?? []) addTech(pm);
         for (const c of report.technologyStack.containerization ?? []) addTech(c);
         for (const ci of report.technologyStack.ciCd ?? []) addTech(ci);
+        for (const dep of report.technologyStack.dependencies ?? []) {
+          if (!dep.startsWith('@types/') && !dep.startsWith('eslint')) {
+            addTech(dep);
+          }
+        }
       }
       techItems.sort((a, b) => a.name.localeCompare(b.name));
 

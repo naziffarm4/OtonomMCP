@@ -812,7 +812,14 @@ export class ArchitectureTechnologyEngine {
 
     // 11.5 Platform & Interface Decision
     const platDecId = 'ARCH-DEC-005';
-    const platformCandidates = ['Web Application', 'CLI (Command Line Interface)', 'Desktop Application', 'Library / Module'].sort();
+    const platformCandidates = [
+      'Web Application',
+      'CLI (Command Line Interface)',
+      'Desktop Application',
+      'Mobile Application (iOS/Android)',
+      'Multi-Platform (Web + Mobile + Desktop)',
+      'Library / Module',
+    ].sort();
     decisionsMap.set(platDecId, {
       decisionId: platDecId,
       decisionArea: 'PLATFORM',

@@ -98,7 +98,9 @@ export type ArchitecturalAreaCategory =
   | 'tests'
   | 'config'
   | 'deployment'
-  | 'documentation';
+  | 'documentation'
+  | 'mobile'
+  | 'desktop';
 
 export interface ArchitecturalArea {
   readonly area: ArchitecturalAreaCategory;

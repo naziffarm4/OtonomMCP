@@ -175,7 +175,7 @@ export function buildSelfCheckPrompt(input: {
   // Spec first: identical across the run's self-checks (cacheable prefix), task details after it.
   return [
     'SPEC (kısaltılmış):',
-    input.specExcerpt.slice(0, 6000),
+    input.specExcerpt.slice(0, 16_000),
     '',
     `GÖREV ${input.task.taskId}: ${input.task.title}`,
     `Açıklama: ${input.task.description.slice(0, 1500)}`,

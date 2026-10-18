@@ -9,6 +9,7 @@
  */
 
 import * as crypto from 'node:crypto';
+import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { McpServer } from '../mcp-server.js';
 import type {
@@ -18,6 +19,7 @@ import type {
   McpRequestContext,
 } from '../mcp-types.js';
 import { AutonomousSpecRunner, type AutonomousRunOptions } from '../../autonomous/autonomous-runner.js';
+import { defaultProjectRootForSpec } from '../../autonomous/spec-bundle.js';
 import {
   getAutonomousStatus,
   isExternalIdpConfigured,
@@ -37,6 +39,7 @@ export const autonomousStartToolDefinition: McpToolDefinition = Object.freeze({
   name: AIDM_AUTONOMOUS_START_TOOL_NAME,
   description:
     'Fully autonomous project development from a single Markdown spec (same as `aidm run --spec`). ' +
+    'specPath may also be a folder of .md files, or a main spec with an "Ek spec: a.md, b/" include line (multi-document spec). ' +
     'dryRun=true ingests the spec and returns plan + mandate draft without side effects. ' +
     'Live runs require a human-originated authContext; LLM callers cannot self-authorize (BLOCKED_ON_AUTH_CONTEXT). ' +
     'When an external IdP is configured (AIDM_IDP_*), a live run without authContext returns PENDING_EXTERNAL_APPROVAL ' +
@@ -105,8 +108,8 @@ export function createAutonomousStartHandler(deps: AutonomousToolDeps = {}): Mcp
   void _fg;
   void _dw;
   return async (args: Readonly<Record<string, unknown>>, context: McpRequestContext): Promise<McpToolResult> => {
-    if (typeof args.specPath !== 'string' || !/\.(md|markdown)$/i.test(args.specPath)) {
-      return textResult({ success: false, code: 'INVALID_ARGUMENT', error: 'specPath must be a .md file' }, true);
+    if (typeof args.specPath !== 'string' || !args.specPath.trim()) {
+      return textResult({ success: false, code: 'INVALID_ARGUMENT', error: 'specPath must be a .md file or a folder of .md files' }, true);
     }
     // Explicit workspaceRoot wins; otherwise the project root is the folder containing the spec.
     // (Previously: server project root, then process.cwd().) A relative specPath is resolved
@@ -114,7 +117,18 @@ export function createAutonomousStartHandler(deps: AutonomousToolDeps = {}): Mcp
     const explicitRoot = typeof args.workspaceRoot === 'string' && args.workspaceRoot.trim() ? args.workspaceRoot : undefined;
     const base = path.resolve(explicitRoot || (context.delegate as { projectRoot?: string } | undefined)?.projectRoot || process.cwd());
     const specAbs = path.resolve(base, args.specPath);
-    const root = explicitRoot ? base : path.dirname(specAbs);
+    const specIsDir = (() => {
+      try {
+        return fs.statSync(specAbs).isDirectory();
+      } catch {
+        return false;
+      }
+    })();
+    if (!specIsDir && !/\.(md|markdown)$/i.test(args.specPath)) {
+      return textResult({ success: false, code: 'INVALID_ARGUMENT', error: 'specPath must be a .md file or a folder of .md files' }, true);
+    }
+    // A spec folder (multi-document spec) defaults to its nearest project root (.git/.ai-manager/package.json).
+    const root = explicitRoot ? base : defaultProjectRootForSpec(specAbs);
     const budgetUsd = typeof args.budgetUsd === 'number' ? args.budgetUsd : undefined;
     const authContext =
       args.authContext && typeof args.authContext === 'object' ? (args.authContext as Record<string, unknown>) : undefined;

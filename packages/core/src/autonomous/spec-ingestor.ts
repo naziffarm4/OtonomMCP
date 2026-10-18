@@ -147,7 +147,7 @@ export class SpecIngestionError extends Error {
 // 2. MARKDOWN SECTION CLASSIFICATION (Turkish + English headings)
 // ============================================================================
 
-type SectionKind =
+export type SectionKind =
   | 'PURPOSE'
   | 'REQUIREMENTS'
   | 'ACCEPTANCE'
@@ -172,10 +172,10 @@ const SECTION_PATTERNS: ReadonlyArray<readonly [SectionKind, RegExp]> = [
   ['RISKS', /(risk)/i],
   ['PATHS', /(dizin|klas[öo]r|paths?|directories)/i],
   ['COMMANDS', /(komut|commands?|test\s*komut|build|do[ğg]rulama|verification)/i],
-  ['PURPOSE', /(ama[çc]|purpose|overview|[öo]zet|summary|a[çc][ıi]klama|description|hedef|goal)/i],
+  ['PURPOSE', /(ama[çc]|purpose|overview|[öo]zet|summary|a[çc][ıi]klama|description|hedef|goal|genel\s*bak[ıi][şs])/i],
 ];
 
-function classifyHeading(heading: string): SectionKind {
+export function classifyHeading(heading: string): SectionKind {
   for (const [kind, re] of SECTION_PATTERNS) {
     if (re.test(heading)) return kind;
   }
@@ -288,6 +288,38 @@ function listItems(lines: readonly string[]): string[] {
   return out;
 }
 
+function tableRows(lines: readonly string[]): string[] {
+  const out: string[] = [];
+  let inFence = false;
+  for (const l of lines) {
+    if (/^\s*```/.test(l)) {
+      inFence = !inFence;
+      continue;
+    }
+    if (inFence) continue;
+    const trimmed = l.trim();
+    if (trimmed.startsWith('|') && trimmed.endsWith('|')) {
+      if (/^\|[\s\-:|]+\|$/.test(trimmed)) continue;
+      const cells = trimmed
+        .slice(1, -1)
+        .split('|')
+        .map((c) => stripMarkdown(c.trim()))
+        .filter(Boolean);
+      if (cells.length >= 2) {
+        const first = cells[0].toLowerCase();
+        const second = cells[1].toLowerCase();
+        if ((first === 'katman' || first === 'layer' || first === 'alan') && (second === 'teknoloji' || second === 'technology' || second === 'stack')) {
+          continue;
+        }
+        out.push(`${cells[0]}: ${cells.slice(1).join(' / ')}`);
+      } else if (cells.length === 1) {
+        out.push(cells[0]);
+      }
+    }
+  }
+  return out;
+}
+
 function fencedOrListCommands(lines: readonly string[]): string[] {
   const cmds: string[] = [];
   let inFence = false;
@@ -312,20 +344,32 @@ function fencedOrListCommands(lines: readonly string[]): string[] {
  * acceptance bullets) or top-level bullet items (one requirement per bullet,
  * indented sub-bullets become acceptance criteria).
  */
-function parseRequirementBlocks(lines: readonly string[]): Array<{ title: string; body: string; criteria: string[]; attempts?: number }> {
+function parseRequirementBlocks(
+  lines: readonly string[],
+  parentHeading?: string
+): Array<{ title: string; body: string; criteria: string[]; attempts?: number }> {
   const blocks: Array<{ title: string; body: string[]; criteria: string[] }> = [];
   const hasH3 = lines.some((l) => /^###\s+/.test(l));
 
   if (hasH3) {
     let cur: { title: string; body: string[]; criteria: string[] } | null = null;
+    const preambleLines: string[] = [];
+
     for (const l of lines) {
       const h3 = /^###\s+(.+?)\s*#*\s*$/.exec(l);
       if (h3) {
-        cur = { title: stripMarkdown(h3[1]).replace(/^[A-Z]+-\d+[:.)]?\s*/, ''), body: [], criteria: [] };
+        const rawTitle = stripMarkdown(h3[1]).replace(/^[A-Z]+-\d+[:.)]?\s*/, '');
+        const parent = parentHeading ? stripMarkdown(parentHeading).replace(/^[0-9]+[.)]\s*/, '').trim() : '';
+        const genericParent = /^(gereksinim(ler)?|fonksiyonel gereksinim(ler)?|[iİ]şlevsel gereksinim(ler)?|requirements?|functional requirements?|görevler|gorevler|tasks?|özellikler|ozellikler|features?|modüller|moduller|modules?)$/i.test(parent);
+        const fullTitle = parent && !genericParent ? `${parent} - ${rawTitle}` : rawTitle;
+        cur = { title: fullTitle, body: [], criteria: [] };
         blocks.push(cur);
         continue;
       }
-      if (!cur) continue;
+      if (!cur) {
+        preambleLines.push(l);
+        continue;
+      }
       const am = ATTEMPTS_RE.exec(stripMarkdown(l.replace(/^\s*[-*+]\s+/, '')).trim());
       if (am) {
         const n = Number(am[1]);
@@ -335,6 +379,11 @@ function parseRequirementBlocks(lines: readonly string[]): Array<{ title: string
       const m = LIST_ITEM_RE.exec(l);
       if (m) cur.criteria.push(stripMarkdown(m[1]));
       else if (l.trim()) cur.body.push(l.trim());
+    }
+
+    if (preambleLines.length > 0 && blocks.length > 0) {
+      const intro = paragraphs(preambleLines).join(' ');
+      if (intro) blocks[0].body.unshift(intro);
     }
   } else {
     let cur: { title: string; body: string[]; criteria: string[] } | null = null;
@@ -359,6 +408,61 @@ function parseRequirementBlocks(lines: readonly string[]): Array<{ title: string
     criteria: b.criteria,
     ...((b as { attempts?: number }).attempts ? { attempts: (b as { attempts?: number }).attempts } : {}),
   }));
+}
+
+/**
+ * Extracts comprehensive requirement blocks from all relevant Markdown sections.
+ * Ensures that all functional modules (e.g. Randevu, Kasa, Admin, etc.) become first-class
+ * requirements and tasks instead of being omitted.
+ */
+function parseSectionsToRequirementBlocks(
+  sections: readonly RawSection[]
+): Array<{ title: string; body: string; criteria: string[]; attempts?: number }> {
+  // If there is an explicit REQUIREMENTS section, parse its blocks
+  const reqSections = sections.filter((s) => s.kind === 'REQUIREMENTS');
+  if (reqSections.length > 0) {
+    const blocks = reqSections.flatMap((s) => parseRequirementBlocks(s.lines, s.heading));
+    if (blocks.length > 0) return blocks;
+  }
+
+  // Otherwise, treat every functional section (OTHER) as a distinct module/requirement
+  const nonFunctionalKinds = new Set<SectionKind>([
+    'PURPOSE',
+    'TECH',
+    'NON_GOALS',
+    'DECISION_POLICY',
+    'PATHS',
+    'COMMANDS',
+  ]);
+
+  const candidateSections = sections.filter((s) => !nonFunctionalKinds.has(s.kind));
+  const allBlocks: Array<{ title: string; body: string; criteria: string[]; attempts?: number }> = [];
+
+  for (const sec of candidateSections) {
+    const hasH3 = sec.lines.some((l) => /^###\s+/.test(l));
+    if (hasH3) {
+      const h3Blocks = parseRequirementBlocks(sec.lines, sec.heading);
+      if (h3Blocks.length > 0) {
+        allBlocks.push(...h3Blocks);
+        continue;
+      }
+    }
+
+    const bodyParas = paragraphs(sec.lines);
+    const items = listItems(sec.lines);
+    const tbl = tableRows(sec.lines);
+    const allCriteria = [...items, ...tbl];
+
+    const attempts = extractAttempts(allCriteria);
+    allBlocks.push({
+      title: sec.heading.replace(/^[0-9]+[.)]\s*/, '').trim(),
+      body: bodyParas.join('\n\n') || sec.heading,
+      criteria: allCriteria,
+      ...(attempts ? { attempts } : {}),
+    });
+  }
+
+  return allBlocks;
 }
 
 // ============================================================================
@@ -433,15 +537,8 @@ export class SpecIngestor {
       assumptions.push('Spec has no purpose/overview paragraph; purpose derived from the title.');
     }
 
-    // Requirements
-    let reqBlocks = parseRequirementBlocks(linesOf('REQUIREMENTS'));
-    if (reqBlocks.length === 0) {
-      // Fall back to OTHER sections' bullets, then to the purpose itself.
-      reqBlocks = parseRequirementBlocks(linesOf('OTHER'));
-      if (reqBlocks.length > 0) {
-        assumptions.push('No explicit requirements section; bullet items from other sections treated as requirements.');
-      }
-    }
+    // Requirements: comprehensive extraction from REQUIREMENTS and all functional sections
+    let reqBlocks = parseSectionsToRequirementBlocks(sections);
     if (reqBlocks.length === 0) {
       reqBlocks = [{ title: projectName, body: purpose, criteria: [] }];
       assumptions.push('No requirement list found; the whole spec is treated as a single requirement.');
@@ -481,7 +578,11 @@ export class SpecIngestor {
       };
     });
 
-    const techItems = [...listItems(linesOf('TECH')), ...paragraphs(linesOf('TECH'))].map(stripMarkdown);
+    const techItems = [
+      ...listItems(linesOf('TECH')),
+      ...tableRows(linesOf('TECH')),
+      ...paragraphs(linesOf('TECH')),
+    ].map(stripMarkdown);
     if (techItems.length === 0) {
       assumptions.push('No technology stack specified; Director will choose a conventional stack consistent with existing files.');
     }

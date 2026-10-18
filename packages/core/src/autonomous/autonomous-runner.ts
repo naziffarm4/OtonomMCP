@@ -30,6 +30,8 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 
 import { SpecIngestor, looksLikeUrl, isSafeProjectRelativePath, type SpecIngestionResult, type AnalysisPolicy } from './spec-ingestor.js';
+import { loadSpecBundle, loadSpecBundleSync, findModifiedSpecFiles, SpecBundleError, type SpecBundle } from './spec-bundle.js';
+import { SpecContext, resolveSpecInlineChars, type SpecTaskRef } from './spec-context.js';
 import {
   CHECKS_SCRIPT_PATH,
   CLARIFICATION_SYSTEM_PROMPT,
@@ -71,7 +73,7 @@ import type { ProjectMandate } from '../authorization/authorization-policy-types
 import { ProjectMandateStore } from '../authorization/project-mandate-store.js';
 import { IdentityManager } from '../authorization/identity-manager.js';
 import { AuthorizationPolicyEngine } from '../authorization/authorization-policy-engine.js';
-import { resolveCanonicalProjectIdentity } from '../director/project-identity-resolver.js';
+import { pinCanonicalProjectIdentity, PROJECT_IDENTITY_PIN_FILE } from '../director/project-identity-resolver.js';
 import { DirectorSessionStore } from '../director/director-session-store.js';
 import { DirectorSessionEngine } from '../director/director-session-engine.js';
 import { DirectorContextSynchronizer } from '../director/director-context-synchronizer.js';
@@ -814,16 +816,26 @@ export class AutonomousSpecRunner {
       throw new AutonomousRunError(`Project root does not exist: ${projectRoot}`, 'PROJECT_ROOT_MISSING');
     }
     let markdown: string;
+    let specBundle: SpecBundle;
     try {
-      markdown = await fs.promises.readFile(specPath, 'utf8');
+      specBundle = await loadSpecBundle(specPath);
+      markdown = specBundle.markdown;
     } catch (err) {
       throw new AutonomousRunError(
         `Cannot read spec file '${specPath}': ${err instanceof Error ? err.message : String(err)}`,
-        'SPEC_UNREADABLE'
+        err instanceof SpecBundleError ? err.code : 'SPEC_UNREADABLE'
       );
     }
+    // Task-scoped spec delivery: small specs go to the Director verbatim; large / multi-document
+    // specs get a stable global frame + the FULL governing sections per task (never cut mid-text).
+    const specContext = new SpecContext(markdown, {
+      inlineChars: resolveSpecInlineChars(this.env),
+      sourceFiles: specBundle.files.map((f) => f.relPath),
+    });
 
-    const canonical = resolveCanonicalProjectIdentity(projectRoot);
+    // Pinned for the project's lifetime: a task that creates/renames package.json (scaffolding)
+    // must not change the projectId mid-run (every later task would fail as "cross-project").
+    const canonical = pinCanonicalProjectIdentity(projectRoot);
     const projectId = canonical.projectId;
     const ingestion = new SpecIngestor().ingest(markdown, {
       projectId,
@@ -1299,6 +1311,9 @@ export class AutonomousSpecRunner {
         resetIdeMailbox(projectRoot);
         this.ideRoot = projectRoot;
       }
+      // Spec sections governing the task being executed, appended to the executor prompt.
+      // Assigned once task definitions exist (below); until then nothing is appended.
+      const specAugment: { fn: (taskId: string) => string | null } = { fn: () => null };
       const executorPort =
         this.options.executorPort ??
         new AntigravityAdapter({
@@ -1306,6 +1321,7 @@ export class AutonomousSpecRunner {
           binaryPath: this.env.AIDM_AGY_PATH ?? 'agy',
           processRunner: new NodeAntigravityProcessRunner(),
           ...agyTimeouts(this.env),
+          promptAugmenter: (taskId: string) => specAugment.fn(taskId),
           ...(executorMode === 'ide'
             ? { requestInvoker: createIdeRequestInvoker(projectRoot), executorId: IDE_EXECUTOR_ID, ...ideTimeouts(this.env) }
             : {}),
@@ -1426,6 +1442,16 @@ export class AutonomousSpecRunner {
       const policyText = decisionPolicyInstruction(decisionMode, ingestion.decisionPolicy);
 
       const taskDefs = new Map<string, TaskDefinition>(ingestion.tasks.map((t) => [t.task_id, t as TaskDefinition]));
+      const specRef = (t: TaskDefinition | undefined): SpecTaskRef | null =>
+        t ? { taskId: t.task_id, title: t.title, description: t.description, acceptanceCriteria: t.acceptance_criteria } : null;
+      specAugment.fn = (taskId: string) => {
+        const t = taskDefs.get(taskId) ?? (this.currentTaskId ? taskDefs.get(this.currentTaskId) : undefined);
+        if (!t) return null;
+        const body = specContext.excerptForTask(specRef(t), 24_000);
+        return body.trim()
+          ? ['', '=== SPECIFICATION (binding ground truth; the project spec is read-only — never edit it) ===', body].join('\n')
+          : null;
+      };
       const guidance = new Map<string, string>();
       const decisionsAsked = new Map<string, number>();
       const refinementsDone = new Map<string, number>();
@@ -1473,7 +1499,7 @@ export class AutonomousSpecRunner {
             provider: provider as never, model: baseProvider.defaultModel, projectId, runId, taskId: SELF_CHECK_TASK_ID, purpose: 'SELF_CHECK',
             system: SELF_CHECK_SYSTEM_PROMPT,
             user: buildSelfCheckPrompt({
-              specExcerpt: markdown,
+              specExcerpt: specContext.excerptForTask(specRef(t), 14_000),
               task: { taskId: t.task_id, title: t.title, description: t.description, criteria: t.acceptance_criteria },
               files: readChangedFiles(projectRoot, files),
               executorSummary: summary,
@@ -1730,7 +1756,10 @@ export class AutonomousSpecRunner {
               correlation: { correlation_id: `ask-${ins.instructionId}`, project_id: projectId, task_id: PO_QUESTION_TASK_ID, attempt: 1 },
               messages: [
                 { role: 'system', content: PO_QUESTION_SYSTEM_PROMPT },
-                { role: 'user', content: buildPoQuestionPrompt({ question: ins.text, taskId: ins.taskId, markdown, report, currentTaskId: this.currentTaskId ?? null, poNotes, budget: this.liveBudget?.() ?? report.budget }) },
+                { role: 'user', content: buildPoQuestionPrompt({ question: ins.text, taskId: ins.taskId, markdown: (() => {
+                  const qt = taskDefs.get(ins.taskId ?? this.currentTaskId ?? '');
+                  return specContext.excerptForTask({ taskId: qt?.task_id ?? 'PO-QUESTION', title: `${ins.text} ${qt?.title ?? ''}`.trim(), description: qt?.description, acceptanceCriteria: qt?.acceptance_criteria }, 30_000);
+                })(), report, currentTaskId: this.currentTaskId ?? null, poNotes, budget: this.liveBudget?.() ?? report.budget }) },
               ],
               director_context: { project_id: projectId, task_id: PO_QUESTION_TASK_ID, objective: 'answer product owner question', acceptance_criteria: null, attempt: 1, max_attempts: 1, relevant_context: null },
               model: baseProvider.defaultModel,
@@ -1811,9 +1840,15 @@ export class AutonomousSpecRunner {
       /** Runs cycles for one task; returns 'DONE' | 'DEFERRED' (waiting on a decision / split). */
       let dispatchSeq = 0;
       const relSpecPath = path.relative(projectRoot, specPath).replace(/\\/g, '/');
-      const specWritable =
-        !relSpecPath.startsWith('..') &&
-        (ingestion.allowedPaths.includes(relSpecPath) || ingestion.requirements.some((r) => r.targetFiles.includes(relSpecPath)));
+      // Every spec document (main file, includes, folder parts) is read-only for the executor
+      // unless the spec itself lists that exact file as a writable path.
+      const isSpecFileWritable = (absPath: string): boolean => {
+        const rel = path.relative(projectRoot, absPath).replace(/\\/g, '/');
+        return !rel.startsWith('..') && (ingestion.allowedPaths.includes(rel) || ingestion.requirements.some((r) => r.targetFiles.includes(rel)));
+      };
+      const protectedSpecFiles = specBundle.files.filter((f) => !isSpecFileWritable(f.absPath));
+      const specWritable = protectedSpecFiles.length === 0;
+      const specRelPaths = new Set(specBundle.files.map((f) => path.relative(projectRoot, f.absPath).replace(/\\/g, '/')));
       const runTask = async (taskReport: AutonomousTaskReport): Promise<'DONE' | 'DEFERRED'> => {
         const task = taskDefs.get(taskReport.taskId)!;
         let extraGuidance = guidance.get(task.task_id) ?? '';
@@ -1891,7 +1926,8 @@ export class AutonomousSpecRunner {
             `Project root is the only allowed workspace; allowed paths: ${(report.mandate?.allowedDirectories ?? []).join(', ')}.`,
             decisionMode === 'assume' ? NO_QUESTIONS_DIRECTOR_INSTRUCTION : policyText,
             DIRECTOR_CAPABILITIES_INSTRUCTION,
-            `SPEC (Product Owner, verbatim excerpt):\n${markdown.slice(0, 12_000)}`,
+            'MANDATORY GROUND TRUTH DIRECTIVE: The specification below is the authoritative ground truth for this project. You MUST strictly follow every business rule, platform distinction, user role, and constraint declared within it without deviation or hallucination.',
+            specContext.globalContext(),
           ].filter(Boolean).join('\n');
 
           carryNote = '';
@@ -1905,6 +1941,11 @@ export class AutonomousSpecRunner {
               targetTaskId: task.task_id,
               instruction: stableContext ? instruction : [instruction, clarificationNote, `Project root is the only allowed workspace; allowed paths: ${(report.mandate?.allowedDirectories ?? []).join(', ')}.`, decisionMode === 'assume' ? NO_QUESTIONS_DIRECTOR_INSTRUCTION : policyText, DIRECTOR_CAPABILITIES_INSTRUCTION].filter(Boolean).join('\n'),
               ...(stableContext ? { stableContext } : {}),
+              // Full text of the spec sections governing this task ('' when the whole spec is inline).
+              ...(() => {
+                const tc = specContext.taskContext(specRef(task));
+                return tc ? { taskContext: tc } : {};
+              })(),
               maxRecoveryAttempts: maxCycles,
               // Each attempt is a distinct dispatch: a repair with an identical payload must not be
               // swallowed as an idempotent duplicate of the failed attempt.
@@ -1922,16 +1963,11 @@ export class AutonomousSpecRunner {
           // The human spec is the source of authority: the executor must never rewrite it unless the
           // spec itself lists it as a writable path. Restore and fail closed.
           if (!specWritable) {
-            let now = '';
-            try {
-              now = await fs.promises.readFile(specPath, 'utf8');
-            } catch {
-              now = '';
-            }
-            if (crypto.createHash('sha256').update(now, 'utf8').digest('hex') !== ingestion.specFingerprint) {
-              await fs.promises.writeFile(specPath, markdown, 'utf8').catch(() => undefined);
+            const touched = findModifiedSpecFiles({ ...specBundle, files: protectedSpecFiles });
+            if (touched.length) {
+              for (const f of touched) await fs.promises.writeFile(f.absPath, f.content, 'utf8').catch(() => undefined);
               taskReport.status = 'BLOCKED';
-              stop = { status: 'BLOCKED_ON_HUMAN', reason: `Spec file '${path.basename(specPath)}' was modified during task ${task.task_id}; restored. The executor may not edit the spec.` };
+              stop = { status: 'BLOCKED_ON_HUMAN', reason: `Spec file '${touched.map((f) => f.relPath).join(', ')}' was modified during task ${task.task_id}; restored. The executor may not edit the spec.` };
               this.emit('TASK_BLOCKED', stop.reason, task.task_id, 'error');
               break;
             }
@@ -2238,6 +2274,20 @@ export class AutonomousSpecRunner {
             continue;
           }
 
+          // ---- Project identity / binding mismatch is DETERMINISTIC: retrying the task or moving on to
+          // the next ones only reproduces the same rejection (and burns every task's attempts). Stop
+          // the whole run once, with one clear reason, instead of cascading through the task list.
+          if (isProjectIdentityFailure(result.summary)) {
+            taskReport.status = 'BLOCKED';
+            taskReport.cycles = Math.max(0, taskReport.cycles - 1); // nothing was executed
+            stop = {
+              status: 'BLOCKED_ON_HUMAN',
+              reason: `${task.task_id} durdu: proje kimliği uyuşmazlığı (${monitorText(result.summary ?? '', 300)}). Bu hata tekrar denemeyle düzelmez; diğer görevler de aynı nedenle reddedileceği için çalışma durduruldu. Kontrol et: ${PROJECT_IDENTITY_PIN_FILE.replace(/\\/g, '/')}.`,
+            };
+            this.emit('TASK_BLOCKED', stop.reason, task.task_id, 'error');
+            break;
+          }
+
           // ---- Policy denied a path outside the mandate (e.g. a glob or a URL the Director put in
           // targetFiles): fixable. First a repair turn, then the PO decides (Turkish, passkey).
           const deniedPath = !isAnalysis && result.status === 'REJECTED_BY_POLICY' ? policyDeniedPath(result.summary) : null;
@@ -2408,7 +2458,7 @@ export class AutonomousSpecRunner {
           const unexpected = result.status === 'EXECUTION_FAILED' && !!result.humanDecisionRequired;
           if (!isAnalysis && (result.status === 'EXECUTION_UNKNOWN' || unexpected)) {
             const { dirty } = await foreignUncommittedChanges(projectRoot, specPath);
-            const left = dirty.filter((f) => f !== relSpecPath);
+            const left = dirty.filter((f) => f !== relSpecPath && !specRelPaths.has(f));
             unknownFiles.set(task.task_id, left);
             const secs = Math.round(((result as { durationMs?: number }).durationMs ?? 0) / 1000);
             const why = unexpected
@@ -2586,7 +2636,7 @@ export class AutonomousSpecRunner {
           runId,
           packageId: approved.packageId,
           revision: approved.revision,
-          markdown,
+          markdown: specContext.reviewContext(40_000),
           ingestion,
           report,
           provider,
@@ -2703,7 +2753,11 @@ export class AutonomousSpecRunner {
 
       while (!stop) {
         let next: AutonomousTaskReport | undefined;
-        const idx = queue.findIndex((t) => !dependsOnUnfinished(t));
+        // Strictly serial by default: while ANY task waits for a human decision, no other task is
+        // started (a blocked task usually means a shared problem — e.g. a broken scaffold — that would
+        // make every following task fail and burn its attempts). Opt out: AIDM_CONTINUE_WHILE_WAITING=1.
+        const holdForDecision = waiting.size > 0 && this.env.AIDM_CONTINUE_WHILE_WAITING !== '1';
+        const idx = holdForDecision ? -1 : queue.findIndex((t) => !dependsOnUnfinished(t));
         if (idx >= 0) next = queue.splice(idx, 1)[0];
         if (!next) {
           if (waiting.size === 0) {
@@ -3419,7 +3473,22 @@ export async function foreignUncommittedChanges(
   const dirty = parsePorcelainZ(status).filter((p) => !p.startsWith('.ai-manager/'));
   const relSpec = path.relative(projectRoot, specPath).replace(/\\/g, '/');
   const bootstrap = new Set(['.gitignore', relSpec]);
+  // Multi-document specs: every included / folder document is a spec file too.
+  try {
+    for (const f of loadSpecBundleSync(specPath).files) bootstrap.add(path.relative(projectRoot, f.absPath).replace(/\\/g, '/'));
+  } catch {
+    /* unreadable spec: the run itself fails closed on it */
+  }
   return { dirty, foreign: dirty.filter((p) => !bootstrap.has(p)) };
+}
+
+/**
+ * True for project identity / binding rejections (canonical projectId mismatch, cross-project
+ * session reuse). These are deterministic: no retry or next task can pass while the cause persists.
+ */
+export function isProjectIdentityFailure(summary: string | undefined | null): boolean {
+  if (!summary) return false;
+  return /Canonical project identity mismatch|Accidental cross-project|Cross-project session reuse is strictly prohibited/i.test(summary);
 }
 
 export function uncommittedChangesMessage(foreign: readonly string[]): string {
@@ -3711,7 +3780,7 @@ export function buildPoQuestionPrompt(o: {
     notes || '(yok)',
     '',
     'SPEC (kısaltılmış):',
-    o.markdown.slice(0, 12_000),
+    o.markdown.slice(0, 32_000),
   ]
     .filter((x) => x !== undefined)
     .join('\n');

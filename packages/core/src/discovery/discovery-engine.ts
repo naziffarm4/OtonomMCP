@@ -139,7 +139,7 @@ export class ProjectDiscoveryEngine {
     const purpose = this.determinePurpose(docSummary, manifestData);
 
     // 6. Technology Stack Discovery
-    const techStack = this.determineTechnologyStack(fileSet, filePaths, manifestData);
+    const techStack = this.determineTechnologyStack(fileSet, filePaths, manifestData, docSummary);
 
     // 7. Repository Structure Discovery
     const repoStructure = this.determineRepositoryStructure(filePaths, scannedFiles.length);
@@ -436,6 +436,80 @@ export class ProjectDiscoveryEngine {
       }
     }
 
+    // Look for explicit spec or requirements files (e.g. *Gereksinimler*.md, *requirements*.md, *spec*.md)
+    let specDocPath: string | undefined;
+    for (const f of docFiles) {
+      const lower = f.toLowerCase();
+      if (
+        lower.includes('gereksinim') ||
+        lower.includes('requirement') ||
+        lower.includes('project-spec') ||
+        lower.includes('proje-tanim') ||
+        lower.endsWith('spec.md')
+      ) {
+        specDocPath = f;
+        break;
+      }
+    }
+
+    if (specDocPath) {
+      try {
+        const fullSpecPath = path.join(this.workspaceRoot, specDocPath);
+        const specContent = await this.readBoundedFile(fullSpecPath, maxDocBytes);
+        evidence.push({
+          sourceType: 'FILE',
+          sourceIdentifier: specDocPath,
+          path: specDocPath,
+          contextLayer: 'L1',
+        });
+
+        const lines = specContent.split('\n');
+        const specOverviewLines: string[] = [];
+        const specTechLines: string[] = [];
+        let inTechSection = false;
+
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed || trimmed.startsWith('[![') || trimmed.startsWith('![') || trimmed.startsWith('<!--')) {
+            continue;
+          }
+          if (/^##\s+(.+?)$/i.test(trimmed)) {
+            const h2Text = trimmed.replace(/^##\s+/, '');
+            inTechSection = /(teknoloji|tech|stack|mimari|architecture)/i.test(h2Text);
+            continue;
+          }
+          if (inTechSection) {
+            if (/^#+\s/.test(trimmed)) {
+              inTechSection = false;
+              continue;
+            }
+            if (trimmed.startsWith('|') && !/^\|[\s\-:|]+\|$/.test(trimmed)) {
+              specTechLines.push(trimmed.slice(1, -1).split('|').map((s) => s.trim()).filter(Boolean).join(': '));
+            } else if (trimmed.startsWith('-') || trimmed.startsWith('*')) {
+              specTechLines.push(trimmed.replace(/^[-*]\s*/, ''));
+            }
+            if (specTechLines.length >= 10) inTechSection = false;
+          } else if (specOverviewLines.length < 5) {
+            if (trimmed.startsWith('#') || trimmed.startsWith('-') || trimmed.startsWith('*')) {
+              specOverviewLines.push(trimmed.replace(/^#+\s*/, '').replace(/^[-*]\s*/, ''));
+            } else {
+              specOverviewLines.push(trimmed);
+            }
+          }
+        }
+
+        const parts: string[] = [];
+        if (specOverviewLines.length > 0) parts.push(specOverviewLines.join('; '));
+        if (specTechLines.length > 0) parts.push(`Teknoloji: ${specTechLines.join(', ')}`);
+        if (parts.length > 0) {
+          const specExcerpt = parts.join(' | ');
+          summary = summary ? `${summary} | Spec (${specDocPath}): ${specExcerpt}` : `Spec (${specDocPath}): ${specExcerpt}`;
+        }
+      } catch {
+        // Non-fatal
+      }
+    }
+
     return {
       hasReadme,
       readmePath,
@@ -523,7 +597,8 @@ export class ProjectDiscoveryEngine {
   private determineTechnologyStack(
     fileSet: Set<string>,
     filePaths: string[],
-    manifests: ManifestData
+    manifests: ManifestData,
+    docSummary?: DocumentationSummary
   ): TechnologyStackInfo {
     const languages: string[] = [];
     const frameworks: string[] = [];
@@ -577,7 +652,15 @@ export class ProjectDiscoveryEngine {
         '@nestjs/core': 'NestJS',
         react: 'React',
         vue: 'Vue',
+        svelte: 'Svelte',
         next: 'Next.js',
+        'react-native': 'React Native',
+        expo: 'Expo',
+        electron: 'Electron',
+        tauri: 'Tauri',
+        '@supabase/supabase-js': 'Supabase',
+        firebase: 'Firebase',
+        tailwindcss: 'Tailwind CSS',
         zod: 'Zod',
         vitest: 'Vitest',
         jest: 'Jest',
@@ -600,12 +683,121 @@ export class ProjectDiscoveryEngine {
       if (allDepKeys.includes('webpack')) buildTools.push('Webpack');
       if (allDepKeys.includes('esbuild')) buildTools.push('esbuild');
       if (allDepKeys.includes('rollup')) buildTools.push('Rollup');
+      if (allDepKeys.includes('turbo')) buildTools.push('Turborepo');
 
       evidence.push({
         sourceType: 'PACKAGE_MANIFEST',
         sourceIdentifier: 'package.json',
         path: 'package.json',
       });
+    }
+
+    // Python ecosystem details
+    if (manifests.pyprojectToml) {
+      if (!runtimes.includes('Python')) runtimes.push('Python');
+      const lines = manifests.pyprojectToml.split('\n');
+      let inDeps = false;
+      for (const line of lines) {
+        if (/^\[.*dependencies.*\]/i.test(line)) {
+          inDeps = true;
+          continue;
+        }
+        if (/^\[/i.test(line)) {
+          inDeps = false;
+          continue;
+        }
+        if (inDeps) {
+          const match = /^([a-zA-Z0-9_\-]+)\s*=/i.exec(line.trim());
+          if (match && !dependencies.includes(match[1])) {
+            dependencies.push(match[1]);
+          }
+        }
+      }
+    }
+
+    // Rust ecosystem details
+    if (manifests.cargoToml) {
+      if (!runtimes.includes('Rust')) runtimes.push('Rust');
+      const lines = manifests.cargoToml.split('\n');
+      let inDeps = false;
+      for (const line of lines) {
+        if (/^\[.*dependencies.*\]/i.test(line)) {
+          inDeps = true;
+          continue;
+        }
+        if (/^\[/i.test(line)) {
+          inDeps = false;
+          continue;
+        }
+        if (inDeps) {
+          const match = /^([a-zA-Z0-9_\-]+)\s*=/i.exec(line.trim());
+          if (match && !dependencies.includes(match[1])) {
+            dependencies.push(match[1]);
+          }
+        }
+      }
+    }
+
+    // Go ecosystem details
+    if (manifests.goMod) {
+      if (!runtimes.includes('Go')) runtimes.push('Go');
+      const lines = manifests.goMod.split('\n');
+      let inRequire = false;
+      for (const line of lines) {
+        if (/^require\s*\(/i.test(line)) {
+          inRequire = true;
+          continue;
+        }
+        if (inRequire && line.trim() === ')') {
+          inRequire = false;
+          continue;
+        }
+        if (inRequire || /^require\s+([^\s]+)/i.test(line)) {
+          const match = /^\s*([^\s]+)\s+[^\s]+/i.exec(line.trim());
+          if (match && !dependencies.includes(match[1])) {
+            dependencies.push(match[1]);
+          }
+        }
+      }
+    }
+
+    // Spec and Documentation Technology Extraction (especially for fresh or spec-driven projects)
+    if (docSummary?.summary) {
+      const summaryText = docSummary.summary;
+      const docTechMatchers: Array<{ regex: RegExp; label: string; kind: 'framework' | 'buildTool' | 'packageManager' | 'lang' }> = [
+        { regex: /\bnext\.?js\b/i, label: 'Next.js', kind: 'framework' },
+        { regex: /\breact(?!\s*native)\b/i, label: 'React', kind: 'framework' },
+        { regex: /\breact[- ]native\b/i, label: 'React Native', kind: 'framework' },
+        { regex: /\bexpo\b/i, label: 'Expo', kind: 'framework' },
+        { regex: /\belectron\b/i, label: 'Electron', kind: 'framework' },
+        { regex: /\btauri\b/i, label: 'Tauri', kind: 'framework' },
+        { regex: /\bsupabase\b/i, label: 'Supabase', kind: 'framework' },
+        { regex: /\bfirebase\b/i, label: 'Firebase', kind: 'framework' },
+        { regex: /\btailwind(?:\s*css)?\b/i, label: 'Tailwind CSS', kind: 'framework' },
+        { regex: /\bshadcn(?:\/ui)?\b/i, label: 'shadcn/ui', kind: 'framework' },
+        { regex: /\bpostgres(?:ql)?\b/i, label: 'PostgreSQL', kind: 'framework' },
+        { regex: /\bmongodb\b/i, label: 'MongoDB', kind: 'framework' },
+        { regex: /\bprisma\b/i, label: 'Prisma', kind: 'framework' },
+        { regex: /\bdocker\b/i, label: 'Docker', kind: 'framework' },
+        { regex: /\bturbo(?:repo)?\b/i, label: 'Turborepo', kind: 'buildTool' },
+        { regex: /\bpnpm\b/i, label: 'pnpm', kind: 'packageManager' },
+        { regex: /\btypescript\b/i, label: 'TypeScript', kind: 'lang' },
+        { regex: /\bpython\b/i, label: 'Python', kind: 'lang' },
+      ];
+
+      for (const item of docTechMatchers) {
+        if (item.regex.test(summaryText)) {
+          if (item.kind === 'framework' && !frameworks.includes(item.label)) {
+            frameworks.push(item.label);
+          } else if (item.kind === 'buildTool' && !buildTools.includes(item.label)) {
+            buildTools.push(item.label);
+          } else if (item.kind === 'packageManager' && !packageManagers.includes(item.label)) {
+            packageManagers.push(item.label);
+          } else if (item.kind === 'lang' && !languages.includes(item.label)) {
+            languages.push(item.label);
+          }
+        }
+      }
     }
 
     // Package managers
@@ -653,16 +845,16 @@ export class ProjectDiscoveryEngine {
     }
 
     return {
-      primaryLanguages: languages,
-      frameworks,
-      buildTools,
-      packageManagers,
-      runtimes,
-      containerization,
-      ciCd,
+      primaryLanguages: [...new Set(languages)],
+      frameworks: [...new Set(frameworks)],
+      buildTools: [...new Set(buildTools)],
+      packageManagers: [...new Set(packageManagers)],
+      runtimes: [...new Set(runtimes)],
+      containerization: [...new Set(containerization)],
+      ciCd: [...new Set(ciCd)],
       workspaceType,
-      dependencies,
-      devDependencies,
+      dependencies: [...new Set(dependencies)],
+      devDependencies: [...new Set(devDependencies)],
       evidence,
     };
   }
@@ -807,6 +999,16 @@ export class ProjectDiscoveryEngine {
         category: 'documentation',
         matcher: (d) => /(docs|documentation)($|\/)/i.test(d),
         description: 'Project specifications, architecture docs, and guides',
+      },
+      {
+        category: 'mobile',
+        matcher: (d) => /^(mobile|app|apps\/mobile|expo|react-native|android|ios)($|\/)/i.test(d),
+        description: 'Mobile application (iOS/Android/Expo/React Native)',
+      },
+      {
+        category: 'desktop',
+        matcher: (d) => /^(desktop|electron|tauri|apps\/desktop)($|\/)/i.test(d),
+        description: 'Desktop application (Electron/Tauri)',
       },
     ];
 
