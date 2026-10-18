@@ -1,1 +1,1 @@
-$(cat /tmp/discovery-engine.ts)
+PLACEHOLDER_FROM_ZIP
