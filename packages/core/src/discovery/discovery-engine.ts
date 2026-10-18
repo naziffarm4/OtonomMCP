@@ -1,1 +1,1 @@
-$(cat /tmp/discovery-complete.ts)
+PLACEHOLDER
