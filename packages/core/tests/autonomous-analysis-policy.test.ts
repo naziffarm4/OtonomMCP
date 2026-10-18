@@ -288,6 +288,45 @@ describe('analysis policy', { concurrency: 1, timeout: 600_000 }, () => {
     assert.ok(rep.stopReason?.includes('INSUFFICIENT_TASK_SPECIFICATION'), `Expected INSUFFICIENT_TASK_SPECIFICATION, got: ${rep.stopReason}`);
   });
 
+  it('yetersiz-spec kuralı: gerçek spec şablonu yeterli bulunur, yalnızca başlıklı TASK yetersiz bulunur', async () => {
+    // 1. Gerçek spec şablonu (docs/spec-sablonu.md)
+    const sablonPath = path.resolve(import.meta.dirname, '../../../docs/spec-sablonu.md');
+    if (fs.existsSync(sablonPath)) {
+      const sablonMd = fs.readFileSync(sablonPath, 'utf8');
+      const sablonIngested = new SpecIngestor().ingest(sablonMd, { projectId: 'p' });
+      for (const t of sablonIngested.tasks.filter((x) => x.task_id.startsWith('TASK-'))) {
+        const desc = (t.description ?? '').trim();
+        const acc = (t.acceptance_criteria ?? []).filter((c: string) => c.trim().length > 0);
+        const tf = Array.isArray(t.metadata?.targetFiles) ? (t.metadata.targetFiles as string[]) : [];
+        const isSyntheticAC = acc.length === 1 && acc[0] === 'Implementation exists and project verification checks pass';
+        const hasRealDesc = desc.length > 0 && desc !== t.title && desc !== t.task_id;
+        const hasRealAcc = acc.length > 0 && !isSyntheticAC;
+        const hasTf = tf.length > 0;
+        const isInsufficient = (!desc || !hasRealDesc) && (!acc.length || !hasRealAcc) && !hasTf;
+        assert.equal(isInsufficient, false, `Task ${t.task_id} in spec-sablonu must NOT be flagged as insufficient`);
+      }
+    }
+
+    // 2. Yalnızca başlıklı bir TASK örneği
+    const titleOnlySpec = [
+      '# Proje: Sadece Başlık',
+      '## Gereksinimler',
+      '### Sadece Başlık Görevi',
+    ].join('\n');
+    const titleOnlyIngested = new SpecIngestor().ingest(titleOnlySpec, { projectId: 'p' });
+    const emptyTask = titleOnlyIngested.tasks.find((t) => t.task_id.startsWith('TASK-'));
+    assert.ok(emptyTask);
+    const desc = (emptyTask.description ?? '').trim();
+    const acc = (emptyTask.acceptance_criteria ?? []).filter((c: string) => c.trim().length > 0);
+    const tf = Array.isArray(emptyTask.metadata?.targetFiles) ? (emptyTask.metadata.targetFiles as string[]) : [];
+    const isSyntheticAC = acc.length === 1 && acc[0] === 'Implementation exists and project verification checks pass';
+    const hasRealDesc = desc.length > 0 && desc !== emptyTask.title && desc !== emptyTask.task_id;
+    const hasRealAcc = acc.length > 0 && !isSyntheticAC;
+    const hasTf = tf.length > 0;
+    const isInsufficient = (!desc || !hasRealDesc) && (!acc.length || !hasRealAcc) && !hasTf;
+    assert.equal(isInsufficient, true, 'Title-only task must be flagged as insufficient');
+  });
+
   it('3. fallback eyleminin normal dispatch fonksiyonunu çağırdığını doğrulayan spy testi', async () => {
     let fallbackDispatched = false;
     class SpyDispatcher extends DirectorActionDispatcher {

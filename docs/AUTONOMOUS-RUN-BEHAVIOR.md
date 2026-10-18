@@ -45,9 +45,11 @@ ayrı bir salt-okunur alt görev (`TASK-00N-A1`) gider; bu görev başına birka
 - bir görevin **başarısız denemesinden sonra** (onarım döngüsü)
 
 çalışır. Diğer görevlerde Director'a istem içinde analiz istememesi, doğrudan `IMPLEMENT_TASK` vermesi
-söylenir. Yine de isterse AGY çalıştırılmaz; Director'a "şu an ayrı analiz yok, IMPLEMENT_TASK ver"
-denir (deneme sayılmaz). Aynı görevde ikinci kez isterse bu normal kurallarla işlenir (deneme sayılır),
-yani döngüye giremez. Analiz alt görevi yine görev başına en çok 2'dir.
+söylenir. Yine de analiz isterse:
+
+- **1. red:** Director'a red gerekçesiyle yönlendirme verilir ve döngü sürdürülür (deneme hakkı harcanmaz, `cycles--`).
+- **2. red ve sonrası (fallback IMPLEMENT_TASK):** Director izin verilmeyen analiz eyleminde ısrar ederse, sistem sonsuz döngüye veya onay kilitlenmesine girmemek için SpecStore'daki görev tanımından (başlık, açıklama, kabul kriterleri, hedef dosyalar) kod seviyesinde geçerli bir `IMPLEMENT_TASK` eylemi sentezler. Bu eylem normal Director eylemleriyle AYNI doğrulama ve sevk hattından (`DirectorActionValidator`, `DirectorActionDispatcher`, `AuthorizationPolicyEngine`) geçer; yetki veya politika kontrolü atlanmaz. Görev raporuna `fallbackSynthesized: true` işlenir ve `VERIFICATION` izleme olayı üretilir.
+- **Yetersiz spec kontrolü:** Görevin tanımı (`description`), kabul kriteri (`acceptance_criteria`) ve hedef dosyaları (`targetFiles`) üçü de boşsa (SpecIngestor'ın otomatik başlık kopyası ve sentetik varsayılan kabul kriteri haricinde gerçek bilgi yoksa), doğrudan uygulamaya geçilemeyeceğinden çalışma `BLOCKED_ON_HUMAN` durumuna geçer ve `INSUFFICIENT_TASK_SPECIFICATION` sebebiyle durur.
 
 Spec'in herhangi bir yerinde tek satırla değiştirilebilir (madde işaretli ya da değil; kabul kriteri sayılmaz):
 

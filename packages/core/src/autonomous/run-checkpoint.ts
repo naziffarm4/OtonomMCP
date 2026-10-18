@@ -65,7 +65,6 @@ export interface RunCheckpoint {
     metadata?: {
       analysisRefusals?: number;
       fallbackSynthesized?: boolean;
-      [key: string]: unknown;
     };
   }>;
   commits: string[];

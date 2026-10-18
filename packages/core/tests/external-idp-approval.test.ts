@@ -443,6 +443,8 @@ describe('external IdP approval, decisions and Director capabilities', { concurr
 
   // ------------------------------------------------------------------ Director capabilities
   it('read-only analysis is dispatched to AGY and its FINDINGS come back to the Director', async () => {
+    fs.writeFileSync(path.join(dir, 'index.js'), '// baseline codebase\n', 'utf8');
+    execSync('git add index.js && git commit -m "add index.js"', { cwd: dir, stdio: 'ignore' });
     let analysed = false;
     llm.script = ({ taskId, prompt }) => {
       if (/-A\d$/.test(taskId)) {
