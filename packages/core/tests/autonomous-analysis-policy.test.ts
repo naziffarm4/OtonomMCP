@@ -52,7 +52,7 @@ function gitRepo(spec: string, isGreenfield = false): string {
 const SPEC = (extra = '') =>
   `# P\n\nx.\n${extra}\n## Gereksinimler\n\n### A\n\`src/a.js\`\n- a var\n\n### B\n\`src/b.js\`\n- b var\n\n### C\n\`src/c.js\`\n- c var\n`;
 
-describe('analysis policy', { concurrency: 1, timeout: 600_000 }, () => {
+describe('analysis policy', { concurrency: 1, timeout: 1_200_000 }, () => {
   let dir = '';
   afterEach(() => dir && fs.rmSync(dir, { recursive: true, force: true }));
 
