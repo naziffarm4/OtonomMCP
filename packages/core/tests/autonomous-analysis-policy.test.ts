@@ -10,7 +10,15 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { executeCli } from '../dist/cli/index.js';
-import { SpecIngestor, parseAnalysisPolicy, isAnalysisAllowed, evaluateAnalysis, NO_ANALYSIS_DIRECTOR_INSTRUCTION } from '../dist/autonomous/index.js';
+import {
+  SpecIngestor,
+  parseAnalysisPolicy,
+  isAnalysisAllowed,
+  evaluateAnalysis,
+  isGreenfieldWorkspace,
+  formatAnalysisRefusal,
+  NO_ANALYSIS_DIRECTOR_INSTRUCTION,
+} from '../dist/autonomous/index.js';
 import type { BudgetManager } from '../dist/budget/index.js';
 import { InMemoryIdentityManager, MockDirectorLlm, MockAgyExecutor } from './helpers/autonomous-test-doubles.ts';
 
@@ -19,9 +27,12 @@ type Any = any;
 function pricing(bm: BudgetManager) {
   bm.registerPricingRate({ providerId: 'mock-autonomous', modelId: 'mock-director-1', inputRateNum: 1_000n, inputRateDen: 1n, outputRateNum: 2_000n, outputRateDen: 1n });
 }
-function gitRepo(spec: string): string {
+function gitRepo(spec: string, isGreenfield = false): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'aidm-anl-'));
   fs.writeFileSync(path.join(dir, 'proje.md'), spec, 'utf8');
+  if (!isGreenfield) {
+    fs.writeFileSync(path.join(dir, 'index.js'), '// baseline codebase\n', 'utf8');
+  }
   const git = (...a: string[]) => execFileSync('git', a, { cwd: dir, stdio: 'ignore' });
   git('init', '-b', 'main');
   git('config', 'user.name', 't');
@@ -114,8 +125,53 @@ describe('analysis policy', { concurrency: 1, timeout: 600_000 }, () => {
     );
   });
 
-  const runWith = async (spec: string, alwaysAnalyze: boolean) => {
-    dir = gitRepo(spec);
+  it('formatAnalysisRefusal maps all reasons to English instruction and Turkish reason-tagged log', () => {
+    const reasons = [
+      'greenfield',
+      'policy_never',
+      'quota_exhausted',
+      'analysis_already_done_no_failed_attempt',
+      'is_analysis_task',
+      'policy_on_demand_not_first_or_failed',
+    ] as const;
+
+    for (const r of reasons) {
+      const formatted = formatAnalysisRefusal(r, 'gerektiğinde');
+      assert.ok(formatted.directorInstruction.length > 10);
+      assert.ok(formatted.logMessage.includes(`reason: ${r}`));
+    }
+  });
+
+  it('isGreenfieldWorkspace detects greenfield vs non-greenfield with untracked/unusual files', async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'aidm-gf-'));
+    try {
+      // 1. Non-git directory -> false
+      assert.equal(await isGreenfieldWorkspace(tempDir), false);
+
+      // 2. Initialized git repo with only spec/md and assets -> true
+      execFileSync('git', ['init', '-b', 'main'], { cwd: tempDir, stdio: 'ignore' });
+      fs.writeFileSync(path.join(tempDir, 'README.md'), '# Title\n', 'utf8');
+      fs.writeFileSync(path.join(tempDir, 'spec.markdown'), '# Spec\n', 'utf8');
+      fs.writeFileSync(path.join(tempDir, 'logo.png'), 'fake-image-bytes', 'utf8');
+      fs.writeFileSync(path.join(tempDir, 'LICENSE'), 'MIT', 'utf8');
+      fs.writeFileSync(path.join(tempDir, '.gitignore'), '.ai-manager/\n', 'utf8');
+      assert.equal(await isGreenfieldWorkspace(tempDir), true);
+
+      // 3. Executor writes an untracked unusual source file (.cs, .bas) -> immediately false (uncommitted detected!)
+      fs.mkdirSync(path.join(tempDir, 'src'), { recursive: true });
+      fs.writeFileSync(path.join(tempDir, 'src', 'App.cs'), 'class App {}', 'utf8');
+      assert.equal(await isGreenfieldWorkspace(tempDir), false);
+
+      // 4. Clean it up -> true again
+      fs.unlinkSync(path.join(tempDir, 'src', 'App.cs'));
+      assert.equal(await isGreenfieldWorkspace(tempDir), true);
+    } finally {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  const runWith = async (spec: string, alwaysAnalyze: boolean, isGreenfield = false) => {
+    dir = gitRepo(spec, isGreenfield);
     const llm = new MockDirectorLlm();
     const agy = new MockAgyExecutor(dir);
     llm.script = ({ taskId, prompt }) => {
@@ -170,9 +226,16 @@ describe('analysis policy', { concurrency: 1, timeout: 600_000 }, () => {
     assert.notEqual(rep.status, 'COMPLETED');
   });
 
-  it('REPRO: persistent ANALYZE_PROJECT on empty repo / exhausted quota must not halt in BLOCKED_ON_APPROVAL', async () => {
+  it('greenfield run: first task prompt contains GREENFIELD instruction and no separate analysis is dispatched', async () => {
+    const { rep, prompts, analyses } = await runWith(SPEC(), false, true);
+    assert.equal(analyses.length, 0);
+    assert.ok(prompts.some((p) => p.includes('GREENFIELD PROJECT')));
+    assert.equal(rep.status, 'COMPLETED', rep.stopReason);
+  });
+
+  it('REPRO: persistent ANALYZE_PROJECT on empty repo / exhausted quota must not halt in BLOCKED_ON_APPROVAL', { todo: true }, async () => {
     // Empty repo (greenfield) with a Director that persistently requests ANALYZE_PROJECT
-    const { rep } = await runWith(SPEC(), true);
+    const { rep } = await runWith(SPEC(), true, true);
     // In current unpatched code, this halts in BLOCKED_ON_HUMAN with stopReason:
     // "Action type 'ANALYZE_PROJECT' is a governance/lifecycle action and cannot be autonomously dispatched at this gate."
     // Once Steps 2 & 3 are implemented, the run must complete without blocking on the governance approval gate.

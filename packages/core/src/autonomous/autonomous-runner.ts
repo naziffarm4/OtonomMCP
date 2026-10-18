@@ -428,6 +428,117 @@ export function analysisPolicyLabel(policy: AnalysisPolicy): string {
   return policy === 'EVERY_TASK' ? 'her görev' : policy === 'NEVER' ? 'hiç' : 'gerektiğinde';
 }
 
+/**
+ * Detects whether the workspace is greenfield (contains no real code or project manifests yet).
+ * Uses `git ls-files --cached --others --exclude-standard -z` with null-byte separation.
+ * If git fails, times out, or the directory is not a git repo, returns false (fail-open for analysis).
+ * Any file outside the excluded list (.git, node_modules, .ai-manager, *.md, LICENSE, git configs, images/pdf)
+ * means the project is NOT greenfield.
+ */
+export async function isGreenfieldWorkspace(projectRoot: string): Promise<boolean> {
+  try {
+    const { stdout } = await execFileAsync(
+      'git',
+      ['ls-files', '--cached', '--others', '--exclude-standard', '-z'],
+      {
+        cwd: projectRoot,
+        timeout: 5000,
+        maxBuffer: 10 * 1024 * 1024,
+        windowsHide: true,
+      }
+    );
+    if (!stdout || stdout.length === 0) return true;
+    const entries = stdout.split('\0');
+    for (const raw of entries) {
+      if (!raw || raw.trim().length === 0) continue;
+      const normalized = raw.replace(/\\/g, '/');
+      const lower = normalized.toLocaleLowerCase('en-US');
+      const base = path.posix.basename(lower);
+
+      // Exclude metadata/specs/documentation/configs/assets
+      if (
+        lower.startsWith('.git/') ||
+        lower === '.git' ||
+        lower.startsWith('node_modules/') ||
+        lower.startsWith('.ai-manager/') ||
+        base.endsWith('.md') ||
+        base.endsWith('.markdown') ||
+        base.startsWith('license') ||
+        base.startsWith('licence') ||
+        base.startsWith('notice') ||
+        base === '.gitignore' ||
+        base === '.gitattributes' ||
+        base === '.editorconfig' ||
+        base.endsWith('.png') ||
+        base.endsWith('.jpg') ||
+        base.endsWith('.jpeg') ||
+        base.endsWith('.gif') ||
+        base.endsWith('.svg') ||
+        base.endsWith('.ico') ||
+        base.endsWith('.webp') ||
+        base.endsWith('.pdf')
+      ) {
+        continue;
+      }
+
+      // Any file outside the exclusion list means the repo is NOT greenfield
+      return false;
+    }
+    return true;
+  } catch {
+    // Non-git directory, timeout, or buffer overflow -> fail-open: do not disable analysis
+    return false;
+  }
+}
+
+export function formatAnalysisRefusal(
+  reason: AnalysisRefusalReason | undefined,
+  taskPolicyLabel: string
+): { directorInstruction: string; logMessage: string } {
+  switch (reason) {
+    case 'greenfield':
+      return {
+        directorInstruction:
+          'A separate read-only analysis is not available for this task. GREENFIELD PROJECT: The repository contains no existing source files or build manifests yet. ' +
+          'Do NOT emit ANALYZE_PROJECT; there is nothing to analyze. ' +
+          'Directly scaffold the project and implement the initial files with IMPLEMENT_TASK.',
+        logMessage: 'Depo henüz boş (greenfield); incelenecek kod yok (reason: greenfield) → doğrudan uygulama istenecek.',
+      };
+    case 'policy_never':
+      return {
+        directorInstruction:
+          'ANALYSIS DISABLED: Project spec policy is set to "İnceleme: hiç" (NEVER). ' +
+          'Do NOT emit ANALYZE_PROJECT. Emit IMPLEMENT_TASK directly.',
+        logMessage: 'Spec inceleme politikası "hiç" olarak ayarlı (reason: policy_never) → doğrudan uygulama istenecek.',
+      };
+    case 'quota_exhausted':
+      return {
+        directorInstruction:
+          'ANALYSIS QUOTA EXHAUSTED: The maximum number of separate analysis subtasks for this task has been reached. ' +
+          'The executor inspects relevant files while implementing. Emit IMPLEMENT_TASK directly.',
+        logMessage: 'Görev için analiz kotası doldu (reason: quota_exhausted) → doğrudan uygulama istenecek.',
+      };
+    case 'analysis_already_done_no_failed_attempt':
+      return {
+        directorInstruction:
+          'CONSECUTIVE ANALYSIS NOT PERMITTED: A separate read-only analysis was already completed for this task ' +
+          'and no failed implementation attempt has occurred. Emit IMPLEMENT_TASK directly with concrete targetFiles.',
+        logMessage: 'Görev için analiz zaten yapıldı, başarısız deneme yok (reason: analysis_already_done_no_failed_attempt) → doğrudan uygulama istenecek.',
+      };
+    case 'is_analysis_task':
+      return {
+        directorInstruction: 'This is a read-only analysis task: do not nest further analysis requests. Emit IMPLEMENT_TASK.',
+        logMessage: 'Analiz alt görevi içinde yeni analiz açılamaz (reason: is_analysis_task) → doğrudan uygulama istenecek.',
+      };
+    case 'policy_on_demand_not_first_or_failed':
+    default:
+      return {
+        directorInstruction: NO_ANALYSIS_DIRECTOR_INSTRUCTION,
+        logMessage: `Bu görevde ayrı analiz adımı yok (İnceleme: ${taskPolicyLabel}, reason: policy_on_demand_not_first_or_failed) → doğrudan uygulama istenecek.`,
+      };
+  }
+}
+
 /** Instruction prepended to every Director reasoning call in no-questions mode. */
 export const NO_QUESTIONS_DIRECTOR_INSTRUCTION = [
   'AUTONOMOUS NO-QUESTIONS MODE.',
@@ -1950,10 +2061,18 @@ export class AutonomousSpecRunner {
           }
 
           const isAnalysis = taskReport.kind === 'ANALYSIS';
-          const analysisAllowed = !isAnalysis && isAnalysisAllowed(analysisPolicy, {
+          const isGreenfield = await isGreenfieldWorkspace(projectRoot);
+          const doneAnalyses = analysesDone.get(task.task_id) ?? 0;
+          const analysisEval = evaluateAnalysis(analysisPolicy, {
             firstTaskOfSegment: task.task_id === firstSegmentTaskId,
             afterFailedAttempt: taskReport.cycles >= 2 || lastFailure !== '',
+            isGreenfield,
+            analysesDone: doneAnalyses,
+            maxAnalyses,
+            isAnalysisTask: isAnalysis,
           });
+          const analysisAllowed = analysisEval.allowed;
+          const refusalFormat = formatAnalysisRefusal(analysisEval.reason, analysisPolicyLabel(analysisPolicy));
           // Ordered by importance: the prompt builder bounds this field (DEFAULT_MAX_FIELD_LENGTH_CHARS),
           // so task, fresh guidance (PO answers, executor reports) come before the static policy text.
           const pauseText = pauseInstruction
@@ -1970,7 +2089,7 @@ export class AutonomousSpecRunner {
               ? 'This is a READ-ONLY ANALYSIS task: emit IMPLEMENT_TASK whose objective starts with "Read-only analysis without modifying files:" and asks the executor to report results under "FINDINGS:". No file may change.'
               : analysisAllowed
                 ? ''
-                : NO_ANALYSIS_DIRECTOR_INSTRUCTION,
+                : refusalFormat.directorInstruction,
             extraGuidance,
             carryNote,
             ...poNotes
@@ -2071,7 +2190,7 @@ export class AutonomousSpecRunner {
               analysisReroute
                 ? analysisAllowed
                   ? `${at}: Director salt-okunur analiz istedi → analiz alt görevi olarak çalıştırılıyor (deneme sayılmaz).`
-                  : `${at}: Director analiz istedi ama bu görevde ayrı analiz yok (İnceleme: ${analysisPolicyLabel(analysisPolicy)}) → doğrudan uygulama istenecek.`
+                  : `${at}: ${refusalFormat.logMessage}`
                 : `${result.status}: ${result.summary}`,
               task.task_id
             );
@@ -2214,9 +2333,7 @@ export class AutonomousSpecRunner {
             analysisRefusals.set(task.task_id, refused + 1);
             if (refused < 1) {
               taskReport.cycles--;
-              extraGuidance = `A separate read-only analysis is not available for ${task.task_id} now (analysis policy: ${analysisPolicyLabel(
-                analysisPolicy
-              )}). The executor inspects the relevant files while implementing. Emit IMPLEMENT_TASK for ${task.task_id} now. ${execNote}`.trim();
+              extraGuidance = `A separate read-only analysis is not available for ${task.task_id} now. ${refusalFormat.directorInstruction} ${execNote}`.trim();
               continue;
             }
           }
