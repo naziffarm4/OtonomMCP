@@ -86,6 +86,8 @@ import { DurableStateManager } from '../storage/durable-state.js';
 import { SystemExecutionEvidenceStore } from '../storage/evidence-store.js';
 import { ClosedLoopCoordinator } from '../director-loop/closed-loop-coordinator.js';
 import type { ClosedLoopCycleResult } from '../director-loop/closed-loop-types.js';
+import type { DirectorActionDispatcher, DirectorActionDispatcherOptions } from '../director-action/director-action-dispatcher.js';
+import type { ImplementTaskAction } from '../director/director-action-types.js';
 import { BudgetManager } from '../budget/budget-manager.js';
 import {
   SystemEvidenceCollector,
@@ -186,6 +188,7 @@ export interface AutonomousRunOptions {
   readonly allowMockProvider?: boolean;
   readonly executorPort?: ExecutorPort;
   readonly identityManager?: IdentityManager;
+  readonly actionDispatcher?: DirectorActionDispatcher | ((options: DirectorActionDispatcherOptions) => DirectorActionDispatcher);
   /** Registers pricing/contract terms for an injected provider (live config does this itself). */
   readonly registerBudgetTerms?: (budgetManager: BudgetManager) => void;
   readonly onEvent?: (event: AutonomousRunEvent) => void;
@@ -258,6 +261,11 @@ export interface AutonomousTaskReport {
   verificationChecks: Array<{ type: string; status: string; command?: string }>;
   filesChanged: string[];
   commit?: string;
+  metadata?: {
+    analysisRefusals?: number;
+    fallbackSynthesized?: boolean;
+    [key: string]: unknown;
+  };
 }
 
 export interface AutonomousRunReport {
@@ -592,7 +600,12 @@ export class AutonomousSpecRunner {
     const rep = this.currentReport;
     if (!cp || !rep) return;
     cp.currentTaskId = this.currentTaskId;
-    cp.tasks = rep.tasks.map((t) => ({ taskId: t.taskId, status: t.status, cycles: t.cycles }));
+    cp.tasks = rep.tasks.map((t) => ({
+      taskId: t.taskId,
+      status: t.status,
+      cycles: t.cycles,
+      ...(t.metadata ? { metadata: t.metadata } : {}),
+    }));
     cp.commits = [...rep.commits];
     cp.monitorSeq = this.monitor?.currentSeq ?? cp.monitorSeq;
     if (rep.monitorUrl) cp.monitorUrl = rep.monitorUrl;
@@ -1556,6 +1569,21 @@ export class AutonomousSpecRunner {
         directorRuntime,
         executorPort,
         authorizationPolicyEngine: policyEngine,
+        ...(typeof this.options.actionDispatcher === 'function'
+          ? {
+              actionDispatcher: this.options.actionDispatcher({
+                workspaceRoot: projectRoot,
+                historyManager,
+                specStore,
+                evidenceStore,
+                approvalStore,
+                approvalPackageEngine,
+                authorizationPolicyEngine: policyEngine,
+              }),
+            }
+          : this.options.actionDispatcher
+            ? { actionDispatcher: this.options.actionDispatcher }
+            : {}),
       });
       const synchronizer = new DirectorContextSynchronizer({ workspaceRoot: projectRoot, sessionStore, sessionEngine });
 
@@ -1710,6 +1738,12 @@ export class AutonomousSpecRunner {
           // Completed attempts count; the attempt in flight when the process died does not.
           const inflight = resumeFrom.inCycle && resumeFrom.currentTaskId === taskReport.taskId ? 1 : 0;
           taskReport.cycles = Math.max(0, prev.cycles - inflight);
+          if (prev.metadata) {
+            taskReport.metadata = { ...(taskReport.metadata ?? {}), ...prev.metadata };
+            if (typeof prev.metadata.analysisRefusals === 'number') {
+              analysisRefusals.set(taskReport.taskId, prev.metadata.analysisRefusals);
+            }
+          }
         }
       }
       for (const taskReport of report.tasks) {
@@ -2233,8 +2267,8 @@ export class AutonomousSpecRunner {
               continue;
             }
           }
-          const action = (result.directorAction ?? {}) as unknown as Record<string, unknown>;
-          const actionType = result.directorAction?.actionType as string | undefined;
+          let action = (result.directorAction ?? {}) as unknown as Record<string, unknown>;
+          let actionType = result.directorAction?.actionType as string | undefined;
           if (pauseInstruction) {
             if (actionType === 'REPLAN' || actionType === 'UPDATE_PLAN' || actionType === 'CREATE_TASK') {
               const ref = await tryRefine(taskReport, action);
@@ -2322,20 +2356,149 @@ export class AutonomousSpecRunner {
           }
 
           // ---- Analysis requested where the policy does not allow it: refuse once (not counted),
-          // then fall through to the normal (counted) handling so it can never loop.
+          // on 2nd and subsequent requests synthesize an IMPLEMENT_TASK from the spec task definition
+          // and dispatch it through the exact same coordinator / authorization policy path.
           if (
             !isAnalysis &&
             !analysisAllowed &&
             (actionType === 'ANALYZE_PROJECT' || actionType === 'DISCOVER_PROJECT' || actionType === 'REVIEW_EVIDENCE') &&
             result.status !== 'REJECTED_BY_POLICY'
           ) {
-            const refused = analysisRefusals.get(task.task_id) ?? 0;
-            analysisRefusals.set(task.task_id, refused + 1);
-            if (refused < 1) {
+            const prevRefused = (taskReport.metadata?.analysisRefusals as number | undefined) ?? analysisRefusals.get(task.task_id) ?? 0;
+            const refused = prevRefused + 1;
+            analysisRefusals.set(task.task_id, refused);
+            taskReport.metadata = { ...(taskReport.metadata ?? {}), analysisRefusals: refused };
+            this.writeCheckpoint();
+
+            if (refused === 1) {
               taskReport.cycles--;
               extraGuidance = `A separate read-only analysis is not available for ${task.task_id} now. ${refusalFormat.directorInstruction} ${execNote}`.trim();
               continue;
             }
+
+            // 2nd refusal and beyond: Deterministic fallback to IMPLEMENT_TASK synthesized from task definition.
+            const storedTask =
+              (await specStore.loadTasks().catch(() => [] as TaskDefinition[])).find((t) => t.task_id === task.task_id) ??
+              taskDefs.get(task.task_id) ??
+              task;
+
+            const description = (storedTask.description ?? '').trim();
+            const acceptance = (storedTask.acceptance_criteria ?? []).filter((c: string) => c.trim().length > 0);
+            const targets = currentScopeOf(storedTask);
+
+            // Spec sufficiency check:
+            // An empty task has no meaningful description (either empty or identical to title fallback),
+            // no real acceptance criteria (empty or synthetic default placeholder), and no target files.
+            const isSyntheticPlaceholderAC =
+              acceptance.length === 1 && acceptance[0].includes('Implementation exists and project verification checks pass');
+            const hasRealDescription = description.length > 0 && description !== storedTask.title && description !== storedTask.task_id;
+            const hasRealAcceptance = acceptance.length > 0 && !isSyntheticPlaceholderAC;
+
+            if ((!description || !hasRealDescription) && (!acceptance.length || !hasRealAcceptance) && targets.length === 0) {
+              taskReport.status = 'BLOCKED';
+              stop = {
+                status: 'BLOCKED_ON_HUMAN',
+                reason: `INSUFFICIENT_TASK_SPECIFICATION: Görev ${task.task_id} için tanım (description), kabul kriteri (acceptance_criteria) ve hedef dosya (targetFiles) tanımlanmamış; analiz izni verilmediği için doğrudan uygulamaya geçilemiyor.`,
+              };
+              this.emit('TASK_BLOCKED', stop.reason, task.task_id, 'error');
+              break;
+            }
+
+            taskReport.metadata = { ...(taskReport.metadata ?? {}), fallbackSynthesized: true };
+            this.emit(
+              'VERIFICATION',
+              `${task.task_id}: Director analiz isteğinde ısrar etti (${refused}. red); görev tanımından IMPLEMENT_TASK sentezlenerek sevk ediliyor.`,
+              task.task_id,
+              'warn'
+            );
+            this.decide(
+              'PLAN',
+              `${task.task_id} için IMPLEMENT_TASK sentezlendi`,
+              `Director izin verilmeyen analiz eyleminde ısrar etti (${refused}. red) → görev tanımından doğrudan uygulama eylemi oluşturulup sevk ediliyor.`,
+              task.task_id
+            );
+
+            const fallbackAction: ImplementTaskAction = {
+              protocolVersion: 'AIDM-DIRECTOR-ACTION-1',
+              schemaVersion: 1,
+              actionId: `act-fallback-${task.task_id.replace(/[^a-zA-Z0-9_\-\.]/g, '_')}-${Date.now()}`,
+              directorSessionId: session.directorSessionId,
+              projectId,
+              actionType: 'IMPLEMENT_TASK',
+              basedOnContextFingerprint: snapshot.logicalFingerprint,
+              basedOnUnderstandingRevision:
+                typeof snapshot.sectionMetadata?.requirements?.revision === 'number' && snapshot.sectionMetadata.requirements.revision > 0
+                  ? snapshot.sectionMetadata.requirements.revision
+                  : 1,
+              rationale: `Direct implementation fallback synthesized from task specification after persistent analysis requests for ${task.task_id}.`,
+              confidence: 1.0,
+              taskId: task.task_id,
+              objective: description || storedTask.title || `Implement ${task.task_id}`,
+              targetFiles: targets,
+              implementationScope: targets.length > 0 ? targets.join(', ') : 'src/*',
+              acceptanceCriteria: acceptance,
+              constraints: [],
+            };
+
+            try {
+              result = await coordinator.coordinateCycle({
+                projectId,
+                directorSessionId: session.directorSessionId,
+                contextSnapshot: snapshot,
+                targetTaskId: task.task_id,
+                customAction: fallbackAction,
+                instruction: stableContext
+                  ? instruction
+                  : [
+                      instruction,
+                      clarificationNote,
+                      `Project root is the only allowed workspace; allowed paths: ${(report.mandate?.allowedDirectories ?? []).join(', ')}.`,
+                      decisionMode === 'assume' ? NO_QUESTIONS_DIRECTOR_INSTRUCTION : policyText,
+                      DIRECTOR_CAPABILITIES_INSTRUCTION,
+                    ]
+                      .filter(Boolean)
+                      .join('\n'),
+                ...(stableContext ? { stableContext } : {}),
+                maxRecoveryAttempts: maxCycles,
+                idempotencyKey: `${runId}:${resumeFrom ? `s${resumeFrom.segment + 1}:` : ''}${task.task_id}:fallback-${dispatchSeq++}`,
+              });
+            } catch (err) {
+              result = {
+                status: 'EXECUTION_FAILED',
+                summary: err instanceof Error ? err.message : String(err),
+              } as ClosedLoopCycleResult;
+            }
+
+            taskReport.lastCycleStatus = result.status;
+            taskReport.lastSummary = result.summary;
+
+            action = (result.directorAction ?? {}) as unknown as Record<string, unknown>;
+            actionType = result.directorAction?.actionType as string | undefined;
+
+            if (result.systemEvidence) {
+              taskReport.evidenceIds.push(result.systemEvidence.evidenceId);
+              taskReport.verificationChecks.push(
+                ...result.systemEvidence.verificationChecks.map((c) => ({ type: c.type, status: String(c.status), command: c.command }))
+              );
+              taskReport.filesChanged = [
+                ...new Set([...taskReport.filesChanged, ...result.systemEvidence.changedFiles.map((f) => f.path)]),
+              ];
+              const failing = result.systemEvidence.verificationChecks.filter((c) => c.status === 'FAIL' || c.status === 'BLOCK');
+              lastFailure = failing.length ? formatFailingChecks(failing) : '';
+              if (failing.length) this.emit('VERIFICATION', `${failing.length} kontrol başarısız: ${failing.map((c) => c.command ?? c.type).join(', ')}`, task.task_id, 'warn');
+              if (failing.length && result.status !== 'COMPLETED_SUCCESS')
+                this.decide('TASK_REPAIR', `${task.task_id} kabul edilmedi, yeniden denenecek`, `Bağımsız kontroller geçmedi (${failing.length}): ${failing.map((c) => c.command ?? c.type).slice(0, 4).join(', ')}.`, task.task_id);
+            }
+
+            if (result.directorAction) {
+              this.lastDirectorAction = {
+                actionType: String(result.directorAction.actionType),
+                taskId: task.task_id,
+                rationale: monitorText((result.directorAction as unknown as { rationale?: string }).rationale ?? '', 1000),
+                at: new Date().toISOString(),
+              };
+            }
+            this.emit('CYCLE_RESULT', `${result.status}: ${result.summary}`, task.task_id);
           }
 
           // ---- Read-only analysis dispatched to AGY through the governed pipeline
@@ -2688,6 +2851,7 @@ export class AutonomousSpecRunner {
             break;
           }
 
+          // Fail-closed governance gate: preserves authoritative policy boundary when actions cannot be dispatched autonomously.
           if (
             result.status === 'BLOCKED_ON_APPROVAL' ||
             result.status === 'REJECTED_BY_POLICY' ||

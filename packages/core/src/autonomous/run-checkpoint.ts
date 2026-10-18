@@ -58,7 +58,16 @@ export interface RunCheckpoint {
   currentTaskId: string | null;
   /** True between CYCLE_START and CYCLE_RESULT of currentTaskId (in-flight attempt). */
   inCycle: boolean;
-  tasks: Array<{ taskId: string; status: string; cycles: number }>;
+  tasks: Array<{
+    taskId: string;
+    status: string;
+    cycles: number;
+    metadata?: {
+      analysisRefusals?: number;
+      fallbackSynthesized?: boolean;
+      [key: string]: unknown;
+    };
+  }>;
   commits: string[];
   /** Last run-monitor seq used (resumed segments continue above it). */
   monitorSeq: number;

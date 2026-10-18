@@ -8,6 +8,7 @@ import * as assert from 'node:assert/strict';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import * as crypto from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { executeCli } from '../dist/cli/index.js';
 import {
@@ -17,8 +18,11 @@ import {
   evaluateAnalysis,
   isGreenfieldWorkspace,
   formatAnalysisRefusal,
+  saveCheckpoint,
+  type RunCheckpoint,
   NO_ANALYSIS_DIRECTOR_INSTRUCTION,
 } from '../dist/autonomous/index.js';
+import { DirectorActionDispatcher } from '../dist/director-action/director-action-dispatcher.js';
 import type { BudgetManager } from '../dist/budget/index.js';
 import { InMemoryIdentityManager, MockDirectorLlm, MockAgyExecutor } from './helpers/autonomous-test-doubles.ts';
 
@@ -157,12 +161,31 @@ describe('analysis policy', { concurrency: 1, timeout: 600_000 }, () => {
       fs.writeFileSync(path.join(tempDir, '.gitignore'), '.ai-manager/\n', 'utf8');
       assert.equal(await isGreenfieldWorkspace(tempDir), true);
 
-      // 3. Executor writes an untracked unusual source file (.cs, .bas) -> immediately false (uncommitted detected!)
+      // 3a. Single .cs file -> false
+      fs.writeFileSync(path.join(tempDir, 'app.cs'), 'class App {}', 'utf8');
+      assert.equal(await isGreenfieldWorkspace(tempDir), false);
+      fs.unlinkSync(path.join(tempDir, 'app.cs'));
+
+      // 3b. Single .bas file -> false
+      fs.writeFileSync(path.join(tempDir, 'module.bas'), 'Attribute VB_Name = "Module1"', 'utf8');
+      assert.equal(await isGreenfieldWorkspace(tempDir), false);
+      fs.unlinkSync(path.join(tempDir, 'module.bas'));
+
+      // 3c. Turkish character filenames: "çalışma.cs", "Öğrenci.bas" -> false
+      fs.writeFileSync(path.join(tempDir, 'çalışma.cs'), '// dosya', 'utf8');
+      assert.equal(await isGreenfieldWorkspace(tempDir), false);
+      fs.unlinkSync(path.join(tempDir, 'çalışma.cs'));
+
+      fs.writeFileSync(path.join(tempDir, 'Öğrenci.bas'), '// dosya', 'utf8');
+      assert.equal(await isGreenfieldWorkspace(tempDir), false);
+      fs.unlinkSync(path.join(tempDir, 'Öğrenci.bas'));
+
+      // 4. Untracked file inside folder
       fs.mkdirSync(path.join(tempDir, 'src'), { recursive: true });
       fs.writeFileSync(path.join(tempDir, 'src', 'App.cs'), 'class App {}', 'utf8');
       assert.equal(await isGreenfieldWorkspace(tempDir), false);
 
-      // 4. Clean it up -> true again
+      // 5. Clean it up -> true again
       fs.unlinkSync(path.join(tempDir, 'src', 'App.cs'));
       assert.equal(await isGreenfieldWorkspace(tempDir), true);
     } finally {
@@ -170,7 +193,7 @@ describe('analysis policy', { concurrency: 1, timeout: 600_000 }, () => {
     }
   });
 
-  const runWith = async (spec: string, alwaysAnalyze: boolean, isGreenfield = false) => {
+  const runWith = async (spec: string, alwaysAnalyze: boolean, isGreenfield = false, extraAutonomousOptions?: Record<string, unknown>) => {
     dir = gitRepo(spec, isGreenfield);
     const llm = new MockDirectorLlm();
     const agy = new MockAgyExecutor(dir);
@@ -188,7 +211,13 @@ describe('analysis policy', { concurrency: 1, timeout: 600_000 }, () => {
       stdout: (t) => out.push(t),
       stderr: (t) => out.push(t),
       executorPort: agy,
-      autonomous: { llmProvider: llm, allowMockProvider: true, identityManager: new InMemoryIdentityManager({ baseDir: dir }), registerBudgetTerms: pricing },
+      autonomous: {
+        llmProvider: llm,
+        allowMockProvider: true,
+        identityManager: new InMemoryIdentityManager({ baseDir: dir }),
+        registerBudgetTerms: pricing,
+        ...(extraAutonomousOptions ?? {}),
+      },
     } as Any);
     const rep = ((r as Any).data ?? {}) as Any;
     void out;
@@ -220,10 +249,11 @@ describe('analysis policy', { concurrency: 1, timeout: 600_000 }, () => {
     assert.equal(analyses.length, 0);
   });
 
-  it('a Director that keeps asking cannot loop: refused once, then normal (counted) handling', async () => {
+  it('a Director that keeps asking cannot loop: refused once, then fallback IMPLEMENT_TASK synthesizes and completes', async () => {
     const { rep, analyses } = await runWith(SPEC('\n- İnceleme: hiç\n'), true);
     assert.equal(analyses.length, 0);
-    assert.notEqual(rep.status, 'COMPLETED');
+    assert.equal(rep.status, 'COMPLETED', rep.stopReason);
+    assert.ok(rep.tasks.some((t: Any) => t.metadata?.fallbackSynthesized === true));
   });
 
   it('greenfield run: first task prompt contains GREENFIELD instruction and no separate analysis is dispatched', async () => {
@@ -233,12 +263,136 @@ describe('analysis policy', { concurrency: 1, timeout: 600_000 }, () => {
     assert.equal(rep.status, 'COMPLETED', rep.stopReason);
   });
 
-  it('REPRO: persistent ANALYZE_PROJECT on empty repo / exhausted quota must not halt in BLOCKED_ON_APPROVAL', { todo: true }, async () => {
+  it('REPRO: persistent ANALYZE_PROJECT on empty repo / exhausted quota must not halt in BLOCKED_ON_APPROVAL', async () => {
     // Empty repo (greenfield) with a Director that persistently requests ANALYZE_PROJECT
     const { rep } = await runWith(SPEC(), true, true);
-    // In current unpatched code, this halts in BLOCKED_ON_HUMAN with stopReason:
-    // "Action type 'ANALYZE_PROJECT' is a governance/lifecycle action and cannot be autonomously dispatched at this gate."
-    // Once Steps 2 & 3 are implemented, the run must complete without blocking on the governance approval gate.
     assert.equal(rep.status, 'COMPLETED', rep.stopReason);
+    assert.ok(rep.tasks.some((t: Any) => t.metadata?.fallbackSynthesized === true));
+  });
+
+  it('1. kota dolu + Director sürekli ANALYZE_PROJECT: greenfield olmayan depoda da BLOCKED_ON_APPROVAL olmadan IMPLEMENT_TASK ile tamamlanır', async () => {
+    const { rep } = await runWith(SPEC(), true, false);
+    assert.equal(rep.status, 'COMPLETED', rep.stopReason);
+    assert.ok(rep.tasks.some((t: Any) => t.metadata?.fallbackSynthesized === true));
+  });
+
+  it('2. yetersiz spec: tanım, kabul kriteri ve hedef dosya yoksa INSUFFICIENT_TASK_SPECIFICATION ile durur', async () => {
+    const insufficientSpec = [
+      '# Proje: Boş Görev',
+      '- İnceleme: hiç',
+      '## Gereksinimler',
+      '### TASK-EMPTY: ',
+    ].join('\n');
+    const { rep } = await runWith(insufficientSpec, true, false);
+    assert.equal(rep.status, 'BLOCKED_ON_HUMAN');
+    assert.ok(rep.stopReason?.includes('INSUFFICIENT_TASK_SPECIFICATION'), `Expected INSUFFICIENT_TASK_SPECIFICATION, got: ${rep.stopReason}`);
+  });
+
+  it('3. fallback eyleminin normal dispatch fonksiyonunu çağırdığını doğrulayan spy testi', async () => {
+    let fallbackDispatched = false;
+    class SpyDispatcher extends DirectorActionDispatcher {
+      override async dispatch(input: Any): Promise<Any> {
+        const env = input.validatedResult?.envelope;
+        if (
+          env?.idempotencyKey?.includes(':fallback-') ||
+          (env?.actionType === 'IMPLEMENT_TASK' && String(env?.payload?.rationale).includes('Direct implementation fallback'))
+        ) {
+          fallbackDispatched = true;
+        }
+        return super.dispatch(input);
+      }
+    }
+    const { rep } = await runWith(SPEC(), true, true, {
+      actionDispatcher: (deps: Any) => new SpyDispatcher(deps),
+    });
+    assert.equal(rep.status, 'COMPLETED', rep.stopReason);
+    assert.equal(fallbackDispatched, true, 'Fallback action must be dispatched through DirectorActionDispatcher.dispatch');
+  });
+
+  it('4. resume sonrası analysisRefusals korunur', async () => {
+    const spec = SPEC();
+    dir = gitRepo(spec, true);
+    const specFingerprint = crypto.createHash('sha256').update(spec, 'utf8').digest('hex');
+    const cp: RunCheckpoint = {
+      runId: 'run-resume-refusal-1',
+      projectRoot: dir,
+      specPath: path.join(dir, 'proje.md'),
+      specFingerprint,
+      entryPoint: 'aidm run --spec',
+      approval: 'cli',
+      budgetUsd: 1,
+      startedAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      state: 'RUNNING',
+      segment: 1,
+      pid: 999999,
+      currentTaskId: 'TASK-001',
+      inCycle: false,
+      tasks: [{ taskId: 'TASK-001', status: 'PENDING', cycles: 1, metadata: { analysisRefusals: 1 } }],
+      commits: [],
+      monitorSeq: 0,
+    };
+    saveCheckpoint(cp);
+
+    const llm = new MockDirectorLlm();
+    const agy = new MockAgyExecutor(dir);
+    llm.script = () => ({ actionType: 'ANALYZE_PROJECT', rationale: 'look first', analysisScope: 'layout' });
+
+    const r = await executeCli(['run', '--spec', 'proje.md', '-C', dir, '--resume', 'run-resume-refusal-1', '--budget-usd', '1', '--json'], {
+      cwd: dir,
+      env: {},
+      stdout: () => {},
+      stderr: () => {},
+      executorPort: agy,
+      autonomous: { llmProvider: llm, allowMockProvider: true, identityManager: new InMemoryIdentityManager({ baseDir: dir }), registerBudgetTerms: pricing },
+    } as Any);
+    const rep = ((r as Any).data ?? {}) as Any;
+    assert.equal(rep.status, 'COMPLETED', rep.stopReason);
+    const t1 = rep.tasks.find((t: Any) => t.taskId === 'TASK-001');
+    assert.equal(t1?.metadata?.fallbackSynthesized, true);
+    assert.equal(t1?.metadata?.analysisRefusals, 2);
+  });
+
+  it('5. eski formatlı checkpoint ile resume: metadata alanı yoksa 0 kabul edilir ve çökmek yerine sorunsuz çalışır', async () => {
+    const spec = SPEC();
+    dir = gitRepo(spec, true);
+    const specFingerprint = crypto.createHash('sha256').update(spec, 'utf8').digest('hex');
+    const cp: RunCheckpoint = {
+      runId: 'run-resume-legacy-1',
+      projectRoot: dir,
+      specPath: path.join(dir, 'proje.md'),
+      specFingerprint,
+      entryPoint: 'aidm run --spec',
+      approval: 'cli',
+      budgetUsd: 1,
+      startedAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      state: 'RUNNING',
+      segment: 1,
+      pid: 999999,
+      currentTaskId: 'TASK-001',
+      inCycle: false,
+      tasks: [{ taskId: 'TASK-001', status: 'PENDING', cycles: 1 } as Any],
+      commits: [],
+      monitorSeq: 0,
+    };
+    saveCheckpoint(cp);
+
+    const llm = new MockDirectorLlm();
+    const agy = new MockAgyExecutor(dir);
+    llm.script = () => ({ actionType: 'ANALYZE_PROJECT', rationale: 'look first', analysisScope: 'layout' });
+
+    const r = await executeCli(['run', '--spec', 'proje.md', '-C', dir, '--resume', 'run-resume-legacy-1', '--budget-usd', '1', '--json'], {
+      cwd: dir,
+      env: {},
+      stdout: () => {},
+      stderr: () => {},
+      executorPort: agy,
+      autonomous: { llmProvider: llm, allowMockProvider: true, identityManager: new InMemoryIdentityManager({ baseDir: dir }), registerBudgetTerms: pricing },
+    } as Any);
+    const rep = ((r as Any).data ?? {}) as Any;
+    assert.equal(rep.status, 'COMPLETED', rep.stopReason);
+    const t1 = rep.tasks.find((t: Any) => t.taskId === 'TASK-001');
+    assert.ok(t1?.metadata?.analysisRefusals !== undefined);
   });
 });
