@@ -21,6 +21,9 @@ import {
   saveCheckpoint,
   type RunCheckpoint,
   NO_ANALYSIS_DIRECTOR_INSTRUCTION,
+  DEFAULT_SYNTHETIC_ACCEPTANCE_CRITERION,
+  isSyntheticDefaultAcceptanceCriteria,
+  isSyntheticDefaultDescription,
 } from '../dist/autonomous/index.js';
 import { DirectorActionDispatcher } from '../dist/director-action/director-action-dispatcher.js';
 import type { BudgetManager } from '../dist/budget/index.js';
@@ -298,11 +301,11 @@ describe('analysis policy', { concurrency: 1, timeout: 600_000 }, () => {
         const desc = (t.description ?? '').trim();
         const acc = (t.acceptance_criteria ?? []).filter((c: string) => c.trim().length > 0);
         const tf = Array.isArray(t.metadata?.targetFiles) ? (t.metadata.targetFiles as string[]) : [];
-        const isSyntheticAC = acc.length === 1 && acc[0] === 'Implementation exists and project verification checks pass';
-        const hasRealDesc = desc.length > 0 && desc !== t.title && desc !== t.task_id;
+        const isSyntheticAC = isSyntheticDefaultAcceptanceCriteria(acc);
+        const hasRealDesc = !isSyntheticDefaultDescription(desc, t.title, t.task_id);
         const hasRealAcc = acc.length > 0 && !isSyntheticAC;
         const hasTf = tf.length > 0;
-        const isInsufficient = (!desc || !hasRealDesc) && (!acc.length || !hasRealAcc) && !hasTf;
+        const isInsufficient = !hasRealDesc && !hasRealAcc && !hasTf;
         assert.equal(isInsufficient, false, `Task ${t.task_id} in spec-sablonu must NOT be flagged as insufficient`);
       }
     }
@@ -319,11 +322,11 @@ describe('analysis policy', { concurrency: 1, timeout: 600_000 }, () => {
     const desc = (emptyTask.description ?? '').trim();
     const acc = (emptyTask.acceptance_criteria ?? []).filter((c: string) => c.trim().length > 0);
     const tf = Array.isArray(emptyTask.metadata?.targetFiles) ? (emptyTask.metadata.targetFiles as string[]) : [];
-    const isSyntheticAC = acc.length === 1 && acc[0] === 'Implementation exists and project verification checks pass';
-    const hasRealDesc = desc.length > 0 && desc !== emptyTask.title && desc !== emptyTask.task_id;
+    const isSyntheticAC = isSyntheticDefaultAcceptanceCriteria(acc);
+    const hasRealDesc = !isSyntheticDefaultDescription(desc, emptyTask.title, emptyTask.task_id);
     const hasRealAcc = acc.length > 0 && !isSyntheticAC;
     const hasTf = tf.length > 0;
-    const isInsufficient = (!desc || !hasRealDesc) && (!acc.length || !hasRealAcc) && !hasTf;
+    const isInsufficient = !hasRealDesc && !hasRealAcc && !hasTf;
     assert.equal(isInsufficient, true, 'Title-only task must be flagged as insufficient');
   });
 

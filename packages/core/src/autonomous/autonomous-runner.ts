@@ -29,7 +29,15 @@ import * as crypto from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 
-import { SpecIngestor, looksLikeUrl, isSafeProjectRelativePath, type SpecIngestionResult, type AnalysisPolicy } from './spec-ingestor.js';
+import {
+  SpecIngestor,
+  looksLikeUrl,
+  isSafeProjectRelativePath,
+  type SpecIngestionResult,
+  type AnalysisPolicy,
+  isSyntheticDefaultAcceptanceCriteria,
+  isSyntheticDefaultDescription,
+} from './spec-ingestor.js';
 import { loadSpecBundle, loadSpecBundleSync, findModifiedSpecFiles, SpecBundleError, type SpecBundle } from './spec-bundle.js';
 import { SpecContext, resolveSpecInlineChars, type SpecTaskRef } from './spec-context.js';
 import {
@@ -2388,19 +2396,19 @@ export class AutonomousSpecRunner {
             // Yetersiz-spec kuralı (INSUFFICIENT_TASK_SPECIFICATION):
             // Yalnızca description, acceptance_criteria ve targetFiles ÜÇÜ DE boşsa BLOCKED_ON_HUMAN ile durdurulur.
             // SpecIngestor (spec-ingestor.ts), spec dosyasında görev için gövde yazılmadığında description alanını
-            // otomatik olarak `b.title` değerine kopyalar (b.body || b.title).
+            // otomatik olarak `b.title` değerine kopyalar (isSyntheticDefaultDescription).
             // Benzer şekilde kabul kriteri yazılmadığında acceptance_criteria listesine otomatik olarak
-            // ['Implementation exists and project verification checks pass'] varsayılanını ekler.
+            // DEFAULT_SYNTHETIC_ACCEPTANCE_CRITERION varsayılanını ekler (isSyntheticDefaultAcceptanceCriteria).
             // Bu iki durum yalnızca SpecIngestor'ın otomatik ürettiği sentetik varsayılanlar olduğunda "boş" kabul edilir.
             // Kullanıcı tarafından yazılmış gerçek bir tanım, kriter veya hedef dosya varsa eylem sentezlenebilir.
-            const isSyntheticPlaceholderAC =
-              acceptance.length === 1 && acceptance[0] === 'Implementation exists and project verification checks pass';
-            const hasRealDescription = description.length > 0 && description !== storedTask.title && description !== storedTask.task_id;
+            const isSyntheticPlaceholderAC = isSyntheticDefaultAcceptanceCriteria(acceptance);
+            const isSyntheticDesc = isSyntheticDefaultDescription(description, storedTask.title, storedTask.task_id);
+            const hasRealDescription = !isSyntheticDesc;
             const hasRealAcceptance = acceptance.length > 0 && !isSyntheticPlaceholderAC;
             const hasTargetFiles = targets.length > 0;
 
-            const isDescriptionEmpty = !description || !hasRealDescription;
-            const isAcceptanceEmpty = !acceptance.length || !hasRealAcceptance;
+            const isDescriptionEmpty = !hasRealDescription;
+            const isAcceptanceEmpty = !hasRealAcceptance;
             const isTargetFilesEmpty = !hasTargetFiles;
 
             if (isDescriptionEmpty && isAcceptanceEmpty && isTargetFilesEmpty) {
