@@ -486,4 +486,73 @@ it('12a. ExecutionBridge bypass denemesi (Fail closed)', async () => {
   assert.equal(check10?.passed, false);
   assert.equal(check10?.code, 'ERR_POLICY_ENGINE_DENIED');
 });
+
+it('21. SCAFFOLD task class with wildcard targets evaluates to ALLOW', async () => {
+  const specStore = new SpecStore({ baseDir: testDir });
+  await specStore.saveTasks([
+    {
+      task_id: 'TASK-000',
+      title: 'Scaffold Skeleton',
+      description: 'Scaffold project',
+      status: 'READY',
+      metadata: { taskClass: 'SCAFFOLD', revision: 1 },
+    } as any,
+  ], { bypassValidation: true });
+
+  const scaffoldMandate: ProjectMandate = {
+    ...baseMandate,
+    autoExecutableTaskClasses: ['IMPLEMENTATION', 'SCAFFOLD', 'ANALYSIS', 'CONFIGURATION'],
+    allowedDirectories: ['apps', 'packages', 'pnpm-workspace.yaml', 'turbo.json'],
+  };
+  await saveTestMandate(scaffoldMandate);
+
+  const envelope = createMockEnvelope('IMPLEMENT_TASK', {
+    taskId: 'TASK-000',
+    targetFiles: ['*'],
+  });
+  const decision = await engine.evaluateAction(envelope);
+  assert.equal(decision.decisionResult, AuthorizationDecisionResult.ALLOW);
+});
+
+it('22. Monorepo paths (apps/*, packages/*, pnpm-workspace.yaml) evaluate to ALLOW', async () => {
+  const specStore = new SpecStore({ baseDir: testDir });
+  await specStore.saveTasks([
+    {
+      task_id: 'TASK-001',
+      title: 'Web App Feature',
+      description: 'Implement web feature',
+      status: 'READY',
+      metadata: { taskClass: 'IMPLEMENTATION', revision: 1 },
+    } as any,
+  ], { bypassValidation: true });
+
+  const monorepoMandate: ProjectMandate = {
+    ...baseMandate,
+    allowedDirectories: ['apps', 'packages', 'pnpm-workspace.yaml', 'turbo.json'],
+  };
+  await saveTestMandate(monorepoMandate);
+
+  const envelope = createMockEnvelope('IMPLEMENT_TASK', {
+    taskId: 'TASK-001',
+    targetFiles: ['apps/web/package.json', 'packages/ui/button.tsx', 'pnpm-workspace.yaml'],
+  });
+  const decision = await engine.evaluateAction(envelope);
+  assert.equal(decision.decisionResult, AuthorizationDecisionResult.ALLOW);
+});
+
+it('23. Non-scaffold tasks targeting disallowed directories still evaluate to DENY', async () => {
+  const monorepoMandate: ProjectMandate = {
+    ...baseMandate,
+    allowedDirectories: ['apps', 'packages'],
+  };
+  await saveTestMandate(monorepoMandate);
+
+  const envelope = createMockEnvelope('IMPLEMENT_TASK', {
+    taskId: 'task-1',
+    targetFiles: ['secret/config.json'],
+  });
+  const decision = await engine.evaluateAction(envelope);
+  assert.equal(decision.decisionResult, AuthorizationDecisionResult.DENY);
+  expect(decision.appliedRules).toContain('DIRECTORY_ACCESS_FORBIDDEN');
+});
 });

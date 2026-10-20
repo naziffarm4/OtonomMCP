@@ -16,7 +16,7 @@
 
 import { parseClarificationSetting } from './spec-clarification.js';
 import * as crypto from 'node:crypto';
-import { extractTechStackSchema } from './tech-stack-extractor.js';
+import { extractTechStackSchema, type TechnologyStackSchema } from './tech-stack-extractor.js';
 import type {
   InitialProjectUnderstanding,
   ProposedDevelopmentPlan,
@@ -166,6 +166,7 @@ export interface SpecIngestionResult {
   readonly clarification: boolean;
   /** `İnceleme:` line (default ON_DEMAND). */
   readonly analysisPolicy: AnalysisPolicy;
+  readonly techStack: TechnologyStackSchema;
 }
 
 export class SpecIngestionError extends Error {
@@ -729,20 +730,35 @@ export class SpecIngestor {
 
     let scaffoldTask: TaskDefinition | undefined;
     if (isUninitialized) {
+      const scaffoldTitle = techStack.isMonorepo
+        ? 'Universal Monorepo & Multi-Target Workspace Bootstrap'
+        : 'Universal Project Scaffolding & Bootstrap';
+
+      const scaffoldDescription = techStack.isMonorepo
+        ? `Initialize universal monorepo workspace (${techStack.workspaceManager ?? 'pnpm'} workspaces) with declared targets: ${techStack.targets.map((t) => `${t.name} (${t.type}:${t.framework ?? t.language}) in ${t.path}`).join(', ')}.`
+        : techStack.scaffoldCommand
+          ? `Scaffold the project skeleton using official non-interactive CLI: ${techStack.scaffoldCommand}`
+          : 'Initialize the authoritative project skeleton and configuration files in the root directory.';
+
+      const scaffoldAcceptance = techStack.isMonorepo
+        ? [
+            'Root workspace manifests (pnpm-workspace.yaml, package.json) exist',
+            ...techStack.targets.map((t) => `Target workspace ${t.path} skeleton initialized`),
+            'Initial workspace health check passes without syntax or compilation error',
+          ]
+        : [
+            'Project skeleton, manifests, and build configuration files exist',
+            'Initial health check passes without syntax or compilation error',
+          ];
+
       scaffoldTask = {
         task_id: scaffoldTaskId,
         parent_feature_id: 'ROOT',
-        title: 'Universal Project Scaffolding & Bootstrap',
-        description:
-          techStack.scaffoldCommand
-            ? `Scaffold the project skeleton using official non-interactive CLI: ${techStack.scaffoldCommand}`
-            : 'Initialize the authoritative project skeleton and configuration files in the root directory.',
-        traceability_sources: ['ZERO_MONOLITH_LAW: Phase 0 Scaffolding'],
+        title: scaffoldTitle,
+        description: scaffoldDescription,
+        traceability_sources: ['DEC: ZERO_MONOLITH_LAW Phase 0 Scaffolding'],
         dependencies: [],
-        acceptance_criteria: [
-          'Project skeleton, manifests, and build configuration files exist',
-          'Initial health check passes without syntax or compilation error',
-        ],
+        acceptance_criteria: scaffoldAcceptance,
         hierarchy_level: 'TASK',
         status: TaskStatus.READY,
         attempt: 0,
@@ -770,7 +786,6 @@ export class SpecIngestor {
       title: projectName,
       description: purpose,
       traceability_sources: [
-        ...(scaffoldTask ? [`PREREQUISITE: ${scaffoldTaskId}`] : []),
         ...requirements.map((r) => `SYSTEM_REQUIREMENT: ${r.id}`),
       ],
       dependencies: scaffoldTask ? [scaffoldTaskId] : [],
@@ -840,6 +855,7 @@ export class SpecIngestor {
       verificationCommands,
       analysisPolicy,
       clarification,
+      techStack,
     });
   }
 }

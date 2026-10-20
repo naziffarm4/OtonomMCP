@@ -454,17 +454,44 @@ export class AuthorizationPolicyEngine {
       mandate.allowedDirectories &&
       mandate.allowedDirectories.length > 0
     ) {
+      let isScaffold =
+        payloadObj.taskId === 'TASK-000' ||
+        payloadObj.taskClass === 'SCAFFOLD' ||
+        mandate.allowedDirectories.some((dir) => dir === '*' || dir === '.');
+      if (!isScaffold && this.specStore && typeof payloadObj.taskId === 'string') {
+        try {
+          const tasks = await this.specStore.loadTasks();
+          const found = tasks.find((t) => t.task_id === payloadObj.taskId);
+          if (
+            found?.metadata?.taskClass === 'SCAFFOLD' ||
+            (found as unknown as Record<string, unknown>)?.taskClass === 'SCAFFOLD'
+          ) {
+            isScaffold = true;
+          }
+        } catch {
+          // ignore store read error here; step 5 handles store errors
+        }
+      }
+
       for (const file of payloadObj.targetFiles) {
         if (typeof file === 'string') {
           const raw = file.replace(/\\/g, '/');
+
+          // Root/wildcard check for scaffolding
+          if (isScaffold && (raw === '*' || raw === '**/*' || raw === '.' || raw === './*')) {
+            continue;
+          }
+
           // A glob is judged by its literal directory prefix ('assets/**/*.css' -> 'assets'); a
-          // root-level glob ('*.html') has no prefix and is never a valid target.
+          // root-level glob ('*.html') has no prefix and is never a valid target unless scaffold.
           const globAt = raw.search(/[*?[{]/);
           const normalized = globAt >= 0 ? raw.slice(0, Math.max(0, raw.lastIndexOf('/', globAt))) : raw;
-          const isAllowed = normalized.length > 0 && mandate.allowedDirectories.some((dir) => {
-            const normDir = dir.replace(/\\/g, '/').replace(/\/$/, '');
-            return normalized.startsWith(normDir + '/') || normalized === normDir;
-          });
+          const isAllowed =
+            (isScaffold && !raw.startsWith('..') && !raw.includes('/../') && !path.isAbsolute(raw)) ||
+            (normalized.length > 0 && mandate.allowedDirectories.some((dir) => {
+              const normDir = dir.replace(/\\/g, '/').replace(/\/$/, '');
+              return normalized.startsWith(normDir + '/') || normalized === normDir;
+            }));
           if (!isAllowed) {
             return {
               result: AuthorizationDecisionResult.DENY,

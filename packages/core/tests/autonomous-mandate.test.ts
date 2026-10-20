@@ -45,9 +45,12 @@ describe('Autonomous Project Mandate', { concurrency: 1 }, () => {
     ...overrides,
   });
 
-  it('only IMPLEMENTATION is auto-executable; policy/budget changes stay human-gated; escape/push denied', () => {
+  it('IMPLEMENTATION, SCAFFOLD, ANALYSIS, CONFIGURATION are auto-executable; policy/budget changes stay human-gated; escape/push denied', () => {
     const m = buildAutonomousMandate({ projectId: 'proj' });
-    assert.deepEqual(m.autoExecutableTaskClasses, ['IMPLEMENTATION']);
+    assert.deepEqual(m.autoExecutableTaskClasses, ['IMPLEMENTATION', 'SCAFFOLD', 'ANALYSIS', 'CONFIGURATION']);
+    for (const d of ['apps', 'packages', 'services', 'modules', 'pnpm-workspace.yaml', 'turbo.json']) {
+      assert.ok(m.allowedDirectories.includes(d), `Must include ${d} in allowedDirectories`);
+    }
     for (const op of ['REPLAN', 'REQUEST_HUMAN_DECISION', 'UPDATE_SECURITY_POLICY', 'POLICY_CHANGE', 'MANDATE_CHANGE', 'BUDGET_OVERRIDE', 'BUDGET_INCREASE', 'OUT_OF_SCOPE_ACTION']) {
       assert.ok(m.humanApprovalRequiredOperations.includes(op), op);
       assert.ok(!m.allowedOperationTypes.includes(op), op);

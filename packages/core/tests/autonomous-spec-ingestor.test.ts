@@ -14,7 +14,7 @@ import {
   ProposedDevelopmentPlanZodSchema,
   ApprovalPackageEngine,
 } from '../dist/approval/index.js';
-import { TaskDagEngine } from '../dist/task-engine/index.js';
+import { TaskDagEngine, validateTask } from '../dist/task-engine/index.js';
 
 const SPEC = `# Hesap Makinesi CLI
 
@@ -156,5 +156,36 @@ describe('SpecIngestor', () => {
 
     const feature = r.tasks.find((t) => t.task_id === 'FEAT-SPEC');
     assert.deepEqual(feature?.dependencies, ['TASK-000']);
+
+    assert.equal(validateTask(scaffold).valid, true, 'scaffold task must pass validateTask schema');
+    assert.equal(validateTask(feature!).valid, true, 'feature task must pass validateTask schema');
+    for (const t of r.tasks) {
+      const v = validateTask(t);
+      assert.equal(v.valid, true, `Task ${t.task_id} must pass validateTask schema: ${JSON.stringify(v.errors)}`);
+    }
+  });
+
+  it('injects Monorepo TASK-000 with multi-target metadata when spec has multiple platforms', () => {
+    const multiSpec = `# Kuaför Otomasyonu
+
+Kuaför yönetim sistemi.
+
+## Mimari
+- Web Portalı: Next.js 14
+- Mobil Uygulama: Flutter
+- API: NestJS
+- Ortak: Shared types
+`;
+    const r = ingestor.ingest(multiSpec, { projectId: 'kuafor', isInitialized: false });
+    const scaffold = r.tasks.find((t) => t.task_id === 'TASK-000');
+    assert.ok(scaffold, 'TASK-000 must exist');
+    assert.equal(scaffold.title, 'Universal Monorepo & Multi-Target Workspace Bootstrap');
+    assert.equal(scaffold.metadata?.taskClass, 'SCAFFOLD');
+
+    const tech = scaffold.metadata?.techStack as any;
+    assert.equal(tech?.isMonorepo, true);
+    assert.ok(tech?.targets?.length >= 3);
+    assert.ok(scaffold.description.includes('monorepo'));
+    assert.equal(validateTask(scaffold).valid, true);
   });
 });

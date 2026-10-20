@@ -32,6 +32,15 @@ export const ideSubmitTaskToolDefinition: McpToolDefinition = Object.freeze({
       seq: { type: 'number', description: 'seq of the task from aidm_next_task' },
       summary: { type: 'string', description: 'What you did (short, Turkish).' },
       changedFiles: { type: 'array', items: { type: 'string' } },
+      testEvidence: {
+        type: 'object',
+        description: 'Concrete verification evidence (test command, exit code, output) run in the IDE terminal.',
+        properties: {
+          command: { type: 'string' },
+          exitCode: { type: 'number' },
+          output: { type: 'string' },
+        },
+      },
     },
     required: ['seq', 'summary'],
   },
@@ -45,7 +54,21 @@ export const ideTaskResultToolDefinition: McpToolDefinition = Object.freeze({
 export function createIdeNextTaskHandler(): McpToolHandler {
   return async (args, context) => {
     const r = ideNextTask(rootOf(args, context));
-    return textResult(r.state === 'TASK' ? { state: 'TASK', seq: r.task.seq, taskId: r.task.taskId, instruction: r.text } : { state: 'NONE', message: r.text });
+    return textResult(
+      r.state === 'TASK'
+        ? {
+            state: 'TASK',
+            seq: r.task.seq,
+            taskId: r.task.taskId,
+            instruction: r.text,
+            ...(r.architectureIntent ? { architectureIntent: r.architectureIntent } : {}),
+          }
+        : {
+            state: 'NONE',
+            message: r.text,
+            ...(r.architectureIntent ? { architectureIntent: r.architectureIntent } : {}),
+          }
+    );
   };
 }
 export function createIdeSubmitTaskHandler(): McpToolHandler {
@@ -53,7 +76,15 @@ export function createIdeSubmitTaskHandler(): McpToolHandler {
     const dir = rootOf(args, context);
     const seq = Number(args.seq);
     const files = Array.isArray(args.changedFiles) ? args.changedFiles.filter((f): f is string => typeof f === 'string') : [];
-    const s = ideSubmit(dir, seq, typeof args.summary === 'string' ? args.summary : '', files);
+    const rawEvidence = args.testEvidence as Record<string, unknown> | undefined;
+    const testEvidence = rawEvidence && typeof rawEvidence === 'object'
+      ? {
+          command: typeof rawEvidence.command === 'string' ? rawEvidence.command : undefined,
+          exitCode: typeof rawEvidence.exitCode === 'number' ? rawEvidence.exitCode : undefined,
+          output: typeof rawEvidence.output === 'string' ? rawEvidence.output.slice(0, 10_000) : undefined,
+        }
+      : undefined;
+    const s = ideSubmit(dir, seq, typeof args.summary === 'string' ? args.summary : '', files, testEvidence);
     if (!s.ok) return textResult({ verdict: 'ERROR', message: s.text }, true);
     return textResult(await ideAwaitVerdict(dir, seq, waitMs()));
   };

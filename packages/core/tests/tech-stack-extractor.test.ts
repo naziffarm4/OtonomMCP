@@ -151,4 +151,55 @@ IoT node built with PlatformIO for ESP32.
     const markdownSlug = deriveProjectSlug('# Special & Unique Name! (v2)');
     assert.equal(markdownSlug, 'special-unique-name-v2');
   });
+
+  it('detects comprehensive multi-target monorepo architecture (Next.js Web + Flutter Mobile + NestJS API)', () => {
+    const multiSpec = `
+# Yıldız Bayan Kuaförü ERP & Randevu Sistemi
+Kuaför salonu için uçtan uca randevu, kasa ve sadakat yönetim sistemi.
+
+## Mimari ve Platformlar
+- Web Yönetim Paneli: Next.js 14 App Router, Tailwind CSS, Shadcn UI
+- Müşteri Mobil Uygulaması: Flutter & Dart (Android & iOS)
+- Arka Plan API & Mikroservis: NestJS with TypeScript, PostgreSQL
+- Ortak Kütüphane: Shared TypeScript types and components
+- Çalışma Alanı: pnpm workspaces with Turborepo
+`;
+
+    const schema = extractTechStackSchema(multiSpec);
+    assert.equal(schema.isMonorepo, true);
+    assert.equal(schema.workspaceType, 'monorepo');
+    assert.equal(schema.workspaceManager, 'pnpm');
+    assert.ok(schema.targets.length >= 3, `Expected at least 3 targets, got ${schema.targets.length}`);
+
+    const webTarget = schema.targets.find((t) => t.type === 'web');
+    assert.ok(webTarget, 'Must have web target');
+    assert.equal(webTarget.framework, 'nextjs');
+    assert.equal(webTarget.path, 'apps/web');
+
+    const mobileTarget = schema.targets.find((t) => t.type === 'mobile');
+    assert.ok(mobileTarget, 'Must have mobile target');
+    assert.equal(mobileTarget.framework, 'flutter');
+    assert.equal(mobileTarget.path, 'apps/mobile');
+
+    const backendTarget = schema.targets.find((t) => t.type === 'backend');
+    assert.ok(backendTarget, 'Must have backend target');
+    assert.equal(backendTarget.framework, 'nestjs');
+    assert.equal(backendTarget.path, 'apps/api');
+
+    // Must NOT run single destructive root create-next-app in monorepo
+    assert.equal(schema.scaffoldCommand?.includes('create-next-app@latest ./'), false);
+    assert.ok(schema.scaffoldCommand?.includes('pnpm') || schema.scaffoldCommand?.includes('turbo'));
+  });
+
+  it('detects monorepo when explicit workspace keywords are present even with single framework', () => {
+    const workspaceSpec = `
+# Modular Platform
+Monorepo workspace powered by Turborepo and pnpm-workspace.yaml.
+Core web frontend built with Next.js.
+`;
+    const schema = extractTechStackSchema(workspaceSpec);
+    assert.equal(schema.isMonorepo, true);
+    assert.equal(schema.workspaceType, 'monorepo');
+    assert.equal(schema.workspaceManager, 'pnpm');
+  });
 });

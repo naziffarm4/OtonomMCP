@@ -38,6 +38,16 @@ import {
   isSyntheticDefaultAcceptanceCriteria,
   isSyntheticDefaultDescription,
 } from './spec-ingestor.js';
+import {
+  ZERO_UNILATERAL_SIMPLIFICATION_DIRECTIVE,
+  generateArchitectureIntentReport,
+  saveArchitectureIntentReport,
+} from './architecture-intent.js';
+export {
+  ZERO_UNILATERAL_SIMPLIFICATION_DIRECTIVE,
+  generateArchitectureIntentReport,
+  saveArchitectureIntentReport,
+};
 import { detectWorkspaceStatus } from './repo-manifest-scanner.js';
 import { loadSpecBundle, loadSpecBundleSync, findModifiedSpecFiles, SpecBundleError, type SpecBundle } from './spec-bundle.js';
 import { SpecContext, resolveSpecInlineChars, type SpecTaskRef } from './spec-context.js';
@@ -1104,6 +1114,19 @@ export class AutonomousSpecRunner {
         ? new DecisionLog(dryRun ? null : projectRoot, runId, (e) => this.emit('DECISION_LOG', decisionEventMessage(e), e.taskId ?? undefined), seed)
         : null;
       if (this.decisionLog) report.decisionLogPath = this.decisionLog.filePath ?? undefined;
+      if (!dryRun) {
+        try {
+          const archIntent = generateArchitectureIntentReport({
+            projectId,
+            projectName: ingestion.projectName,
+            specFingerprint: ingestion.specFingerprint,
+            techStack: ingestion.techStack,
+          });
+          saveArchitectureIntentReport(projectRoot, archIntent);
+        } catch {
+          /* best-effort persistence */
+        }
+      }
       const arr = report.assumptions;
       const push = Array.prototype.push;
       Object.defineProperty(arr, 'push', {
@@ -2157,6 +2180,7 @@ export class AutonomousSpecRunner {
             decisionMode === 'assume' ? NO_QUESTIONS_DIRECTOR_INSTRUCTION : policyText,
             DIRECTOR_CAPABILITIES_INSTRUCTION,
             'MANDATORY GROUND TRUTH DIRECTIVE: The specification below is the authoritative ground truth for this project. You MUST strictly follow every business rule, platform distinction, user role, and constraint declared within it without deviation or hallucination.',
+            ZERO_UNILATERAL_SIMPLIFICATION_DIRECTIVE,
             specContext.globalContext(),
           ].filter(Boolean).join('\n');
 
@@ -2169,7 +2193,7 @@ export class AutonomousSpecRunner {
               directorSessionId: session.directorSessionId,
               contextSnapshot: snapshot,
               targetTaskId: task.task_id,
-              instruction: stableContext ? instruction : [instruction, clarificationNote, `Project root is the only allowed workspace; allowed paths: ${(report.mandate?.allowedDirectories ?? []).join(', ')}.`, decisionMode === 'assume' ? NO_QUESTIONS_DIRECTOR_INSTRUCTION : policyText, DIRECTOR_CAPABILITIES_INSTRUCTION].filter(Boolean).join('\n'),
+              instruction: stableContext ? instruction : [instruction, clarificationNote, `Project root is the only allowed workspace; allowed paths: ${(report.mandate?.allowedDirectories ?? []).join(', ')}.`, decisionMode === 'assume' ? NO_QUESTIONS_DIRECTOR_INSTRUCTION : policyText, DIRECTOR_CAPABILITIES_INSTRUCTION, ZERO_UNILATERAL_SIMPLIFICATION_DIRECTIVE].filter(Boolean).join('\n'),
               ...(stableContext ? { stableContext } : {}),
               // Full text of the spec sections governing this task ('' when the whole spec is inline).
               ...(() => {

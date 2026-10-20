@@ -11,9 +11,9 @@ import { RISK_LEVELS } from '../risk.js';
 import { TaskGraphValidationError } from '../errors/task-graph-validation-error.js';
 
 // Traceability source regex strictly enforcing DEC-009 categories:
-// REQ, DEC, PARENT_TASK, PARENT_FEATURE, SYSTEM_REQUIREMENT
+// REQ, DEC, PARENT_TASK, PARENT_FEATURE, SYSTEM_REQUIREMENT, PREREQUISITE, ZERO_MONOLITH_LAW
 export const TRACEABILITY_SOURCE_REGEX =
-  /^(REQ|DEC|PARENT_TASK|PARENT_FEATURE|SYSTEM_REQUIREMENT)([-:_ ].*)?$/i;
+  /^(REQ|DEC|PARENT_TASK|PARENT_FEATURE|SYSTEM_REQUIREMENT|PREREQUISITE|ZERO_MONOLITH_LAW)([-:_ ].*)?$/i;
 
 /**
  * Checks whether a single traceability source string conforms to DEC-009 / Section 10.
@@ -122,7 +122,7 @@ export const TaskDefinitionZodSchema = z.preprocess((val) => {
       if (!isTraceabilitySourceValid(src)) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
-          message: `Invalid traceability source: "${src}". Must reference REQ, DEC, PARENT_TASK, PARENT_FEATURE, or SYSTEM_REQUIREMENT`,
+          message: `Invalid traceability source: "${src}". Must reference REQ, DEC, PARENT_TASK, PARENT_FEATURE, SYSTEM_REQUIREMENT, PREREQUISITE, or ZERO_MONOLITH_LAW`,
           path: ['traceability_sources', i],
         });
       }

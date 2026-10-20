@@ -327,6 +327,15 @@ describe('Task Model & DAG Engine (TASK-P2-01)', () => {
       );
     });
 
+    it('T8b: Tolerates PREREQUISITE and ZERO_MONOLITH_LAW traceability sources', () => {
+      const task = createValidTask({
+        task_id: 'TASK-PREREQ-TEST',
+        traceability_sources: ['PREREQUISITE: TASK-000', 'ZERO_MONOLITH_LAW: Phase 0 Scaffolding'],
+      });
+      const res = validateTask(task);
+      assert.equal(res.valid, true);
+    });
+
     it('T9: Valid graph with multiple independent branches must PASS with deterministic topological order', () => {
       const graph: TaskGraphModel = {
         features: ['FEAT-P2-TASK-CONTEXT-ENGINE'],

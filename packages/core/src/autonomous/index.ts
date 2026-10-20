@@ -21,3 +21,4 @@ export * from './completion-report.js';
 export * from './repo-manifest-scanner.js';
 export * from './tech-stack-extractor.js';
 export * from './scaffold-staging.js';
+export * from './architecture-intent.js';

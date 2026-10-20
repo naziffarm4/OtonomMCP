@@ -9,13 +9,25 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { AntigravityRequestInvoker } from './antigravity-adapter.js';
+import { readArchitectureIntentReport, type ArchitectureIntentReport } from '../autonomous/architecture-intent.js';
 
 export type ExecutorMode = 'ide' | 'cli' | 'cli-session';
 export const IDE_EXECUTOR_ID = 'executor:antigravity-ide';
 export const IDE_DIR = path.join('.ai-manager', 'state', 'ide');
 
 export interface IdeTask { seq: number; taskId: string; prompt: string; postedAt: string; correlationId: string }
-export interface IdeSubmit { seq: number; taskId: string; summary: string; changedFiles: string[]; submittedAt: string }
+export interface IdeSubmit {
+  seq: number;
+  taskId: string;
+  summary: string;
+  changedFiles: string[];
+  submittedAt: string;
+  testEvidence?: {
+    command?: string;
+    exitCode?: number;
+    output?: string;
+  };
+}
 export interface IdeEvent { type: string; message: string; taskId: string | null; level: string; at: string }
 export interface IdeStatus { events: IdeEvent[]; finished: boolean; updatedAt: string }
 export type IdeVerdict =
@@ -79,7 +91,11 @@ export function createIdeRequestInvoker(root: string, opts: { pollMs?: number } 
       if (sub && sub.seq === task.seq) {
         return {
           exit_code: 0,
-          stdout: JSON.stringify({ agent_claims: [`IDE: ${sub.summary}`.slice(0, 2000)], unverified_changed_files: sub.changedFiles ?? [] }),
+          stdout: JSON.stringify({
+            agent_claims: [`IDE: ${sub.summary}`.slice(0, 2000)],
+            unverified_changed_files: sub.changedFiles ?? [],
+            ...(sub.testEvidence ? { test_evidence: sub.testEvidence } : {}),
+          }),
           stderr: null,
         };
       }
@@ -89,15 +105,22 @@ export function createIdeRequestInvoker(root: string, opts: { pollMs?: number } 
   };
 }
 
+export type IdeNextTaskResult =
+  | { state: 'TASK'; task: IdeTask; text: string; architectureIntent?: ArchitectureIntentReport }
+  | { state: 'NONE'; text: string; architectureIntent?: ArchitectureIntentReport };
+
 /** MCP side (aidm_next_task). */
-export function ideNextTask(root: string): { state: 'TASK'; task: IdeTask; text: string } | { state: 'NONE'; text: string } {
+export function ideNextTask(root: string): IdeNextTaskResult {
   const t = readIdeTask(root);
   const sub = readIdeSubmit(root);
   const st = readIdeStatus(root);
+  const archIntent = readArchitectureIntentReport(root) ?? undefined;
+
   if (t && !(sub && sub.seq === t.seq) && !st?.finished) {
     return {
       state: 'TASK',
       task: t,
+      ...(archIntent ? { architectureIntent: archIntent } : {}),
       text: [
         `Görev ${t.taskId} (sıra no ${t.seq}). Bu işi bu IDE'de yap; terminalden agy çalıştırma.`,
         `Sadece talimattaki izinli dosyalara dokun. Bitince aidm_submit_task ile seq=${t.seq}, kısa bir özet ve değiştirdiğin dosyaları bildir.`,
@@ -107,18 +130,31 @@ export function ideNextTask(root: string): { state: 'TASK'; task: IdeTask; text:
       ].join('\n'),
     };
   }
-  if (st?.finished) return { state: 'NONE', text: `Çalışma bitti: ${lastOf(st, 'RUN_FINISHED')?.message ?? ''}`.trim() };
-  if (t && sub && sub.seq === t.seq) return { state: 'NONE', text: `Görev ${t.taskId} teslim edildi, Director doğruluyor. aidm_task_result ile seq=${t.seq} sonucunu bekle.` };
-  return { state: 'NONE', text: 'Şu an bekleyen görev yok. Çalışma başlamadıysa ya da Director düşünüyorsa biraz sonra tekrar aidm_next_task çağır.' };
+  if (st?.finished) return { state: 'NONE', text: `Çalışma bitti: ${lastOf(st, 'RUN_FINISHED')?.message ?? ''}`.trim(), ...(archIntent ? { architectureIntent: archIntent } : {}) };
+  if (t && sub && sub.seq === t.seq) return { state: 'NONE', text: `Görev ${t.taskId} teslim edildi, Director doğruluyor. aidm_task_result ile seq=${t.seq} sonucunu bekle.`, ...(archIntent ? { architectureIntent: archIntent } : {}) };
+  return { state: 'NONE', text: 'Şu an bekleyen görev yok. Çalışma başlamadıysa ya da Director düşünüyorsa biraz sonra tekrar aidm_next_task çağır.', ...(archIntent ? { architectureIntent: archIntent } : {}) };
 }
 
 /** MCP side (aidm_submit_task). Returns false when seq is not the open task. */
-export function ideSubmit(root: string, seq: number, summary: string, changedFiles: string[] = []): { ok: boolean; text: string } {
+export function ideSubmit(
+  root: string,
+  seq: number,
+  summary: string,
+  changedFiles: string[] = [],
+  testEvidence?: { command?: string; exitCode?: number; output?: string }
+): { ok: boolean; text: string } {
   const t = readIdeTask(root);
   if (!t || t.seq !== seq) return { ok: false, text: `seq=${seq} açık görev değil${t ? ` (açık görev: ${t.taskId}, seq=${t.seq})` : ''}. Önce aidm_next_task çağır.` };
   const sub = readIdeSubmit(root);
   if (sub && sub.seq === seq) return { ok: true, text: 'Bu görev zaten teslim edilmiş.' };
-  writeJson(file(root, 'submit.json'), { seq, taskId: t.taskId, summary: String(summary).slice(0, 4000), changedFiles: changedFiles.slice(0, 200), submittedAt: new Date().toISOString() } satisfies IdeSubmit);
+  writeJson(file(root, 'submit.json'), {
+    seq,
+    taskId: t.taskId,
+    summary: String(summary).slice(0, 4000),
+    changedFiles: changedFiles.slice(0, 200),
+    submittedAt: new Date().toISOString(),
+    ...(testEvidence ? { testEvidence } : {}),
+  } satisfies IdeSubmit);
   return { ok: true, text: 'Teslim alındı.' };
 }
 

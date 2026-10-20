@@ -66,11 +66,22 @@ export const AUTONOMOUS_HUMAN_APPROVAL_OPERATIONS = Object.freeze([
   'DEPENDENCY_INSTALL',
 ]);
 
+export const DEFAULT_AUTONOMOUS_TASK_CLASSES = Object.freeze([
+  'IMPLEMENTATION',
+  'SCAFFOLD',
+  'ANALYSIS',
+  'CONFIGURATION',
+]);
+
 /** Default project-relative directories / root files the Director may target. */
 export const DEFAULT_AUTONOMOUS_ALLOWED_PATHS = Object.freeze([
   'src',
   'lib',
   'app',
+  'apps',
+  'packages',
+  'services',
+  'modules',
   'test',
   'tests',
   '__tests__',
@@ -80,6 +91,9 @@ export const DEFAULT_AUTONOMOUS_ALLOWED_PATHS = Object.freeze([
   'scripts',
   'examples',
   'package.json',
+  'pnpm-workspace.yaml',
+  'pnpm-lock.yaml',
+  'turbo.json',
   'README.md',
   'tsconfig.json',
   'jsconfig.json',
@@ -109,7 +123,7 @@ export function buildAutonomousMandate(options: AutonomousMandateOptions): Proje
     allowedDirectories: allowed,
     allowedOperationTypes: [...AUTONOMOUS_ALLOWED_OPERATION_TYPES],
     allowedCommandCategories: ['test', 'build', 'lint', 'format', 'typecheck'],
-    autoExecutableTaskClasses: ['IMPLEMENTATION'],
+    autoExecutableTaskClasses: [...DEFAULT_AUTONOMOUS_TASK_CLASSES],
     forbiddenOperations: [...AUTONOMOUS_FORBIDDEN_OPERATIONS],
     humanApprovalRequiredOperations: [...AUTONOMOUS_HUMAN_APPROVAL_OPERATIONS],
     authorizationStartTime: new Date(now.getTime() - 60_000).toISOString(),
