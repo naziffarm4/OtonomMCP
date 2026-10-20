@@ -38,6 +38,7 @@ import {
   isSyntheticDefaultAcceptanceCriteria,
   isSyntheticDefaultDescription,
 } from './spec-ingestor.js';
+import { detectWorkspaceStatus } from './repo-manifest-scanner.js';
 import { loadSpecBundle, loadSpecBundleSync, findModifiedSpecFiles, SpecBundleError, type SpecBundle } from './spec-bundle.js';
 import { SpecContext, resolveSpecInlineChars, type SpecTaskRef } from './spec-context.js';
 import {
@@ -1033,10 +1034,12 @@ export class AutonomousSpecRunner {
     // must not change the projectId mid-run (every later task would fail as "cross-project").
     const canonical = pinCanonicalProjectIdentity(projectRoot);
     const projectId = canonical.projectId;
+    const wsStatus = await detectWorkspaceStatus(projectRoot);
     const ingestion = new SpecIngestor().ingest(markdown, {
       projectId,
       specPath: path.relative(projectRoot, specPath).startsWith('..') ? specPath : path.relative(projectRoot, specPath),
       maxAttemptsPerTask: Math.max(1, Math.min(10, Math.floor(this.options.maxCyclesPerTask ?? 3))),
+      isInitialized: wsStatus.isInitialized,
     });
 
     const mandateStore = new ProjectMandateStore({
@@ -2635,6 +2638,18 @@ export class AutonomousSpecRunner {
               sinceNote.push(task.task_id);
               await postProgressNote();
             }
+
+            // Post-scaffold tree rescan & scope remapping (MOD-05)
+            if (task.task_id === 'TASK-000') {
+              try {
+                const refreshed = await detectWorkspaceStatus(projectRoot);
+                if (refreshed.isInitialized) {
+                  this.emit('INFO', `TASK-000 completed. Workspace initialized with ecosystems: ${refreshed.detectedEcosystems.join(', ')}`);
+                }
+              } catch {
+                /* non-fatal discovery notification */
+              }
+            }
             break;
           }
 
@@ -2996,7 +3011,18 @@ export class AutonomousSpecRunner {
       const dependsOnUnfinished = (taskReport: AutonomousTaskReport): boolean => {
         const def = taskDefs.get(taskReport.taskId);
         const deps = def?.dependencies ?? [];
-        return deps.some((d) => waiting.has(d) || report.tasks.some((t) => t.taskId === d && (t.status === 'WAITING_DECISION' || t.status === 'SPLIT')));
+        return deps.some(
+          (d) =>
+            waiting.has(d) ||
+            !accepted.has(d) ||
+            report.tasks.some(
+              (t) =>
+                t.taskId === d &&
+                (t.status === 'WAITING_DECISION' ||
+                  t.status === 'SPLIT' ||
+                  t.status === 'PENDING')
+            )
+        );
       };
 
       const finishSplitParents = async (): Promise<void> => {

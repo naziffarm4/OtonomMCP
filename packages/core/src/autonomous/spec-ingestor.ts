@@ -16,6 +16,7 @@
 
 import { parseClarificationSetting } from './spec-clarification.js';
 import * as crypto from 'node:crypto';
+import { extractTechStackSchema } from './tech-stack-extractor.js';
 import type {
   InitialProjectUnderstanding,
   ProposedDevelopmentPlan,
@@ -131,6 +132,11 @@ export interface SpecIngestionOptions {
   readonly maxAttemptsPerTask?: number;
   /** Clock override for deterministic tests. */
   readonly now?: () => Date;
+  /**
+   * Workspace initialization state. When false, TASK-000: SCAFFOLD_PROJECT is injected as a
+   * blocking prerequisite for all subsequent tasks (UNIVERSAL-PROJECT-BOOTSTRAP-SPEC.md).
+   */
+  readonly isInitialized?: boolean;
 }
 
 export interface SpecIngestionResult {
@@ -717,14 +723,57 @@ export class SpecIngestor {
     }
 
     const maxAttempts = options.maxAttemptsPerTask ?? DEFAULT_MAX_ATTEMPTS_PER_TASK;
+    const isUninitialized = options.isInitialized === false;
+    const scaffoldTaskId = 'TASK-000';
+    const techStack = extractTechStackSchema(markdown, projectName);
+
+    let scaffoldTask: TaskDefinition | undefined;
+    if (isUninitialized) {
+      scaffoldTask = {
+        task_id: scaffoldTaskId,
+        parent_feature_id: 'ROOT',
+        title: 'Universal Project Scaffolding & Bootstrap',
+        description:
+          techStack.scaffoldCommand
+            ? `Scaffold the project skeleton using official non-interactive CLI: ${techStack.scaffoldCommand}`
+            : 'Initialize the authoritative project skeleton and configuration files in the root directory.',
+        traceability_sources: ['ZERO_MONOLITH_LAW: Phase 0 Scaffolding'],
+        dependencies: [],
+        acceptance_criteria: [
+          'Project skeleton, manifests, and build configuration files exist',
+          'Initial health check passes without syntax or compilation error',
+        ],
+        hierarchy_level: 'TASK',
+        status: TaskStatus.READY,
+        attempt: 0,
+        max_attempts: maxAttempts,
+        priority: TaskPriority.CRITICAL,
+        risk_level: RiskLevel.CAUTION,
+        created_at: generatedAt,
+        started_at: null,
+        completed_at: null,
+        metadata: {
+          taskClass: 'SCAFFOLD',
+          blockingPrerequisite: true,
+          techStack,
+          scaffoldCommand: techStack.scaffoldCommand,
+          specFingerprint,
+          targetFiles: ['*'],
+        },
+      } as TaskDefinition;
+    }
+
     const featureId = 'FEAT-SPEC';
     const feature: TaskDefinition = {
       task_id: featureId,
       parent_feature_id: 'ROOT',
       title: projectName,
       description: purpose,
-      traceability_sources: requirements.map((r) => `SYSTEM_REQUIREMENT: ${r.id}`),
-      dependencies: [],
+      traceability_sources: [
+        ...(scaffoldTask ? [`PREREQUISITE: ${scaffoldTaskId}`] : []),
+        ...requirements.map((r) => `SYSTEM_REQUIREMENT: ${r.id}`),
+      ],
+      dependencies: scaffoldTask ? [scaffoldTaskId] : [],
       acceptance_criteria: requirements.map((r) => `${r.id} accepted`),
       hierarchy_level: 'FEATURE',
       status: TaskStatus.IN_PROGRESS,
@@ -744,7 +793,7 @@ export class SpecIngestor {
       title: r.title,
       description: r.description,
       traceability_sources: [`SYSTEM_REQUIREMENT: ${r.id}`, `PARENT_FEATURE: ${featureId}`],
-      dependencies: [],
+      dependencies: isUninitialized ? [scaffoldTaskId] : [],
       acceptance_criteria: [...r.acceptanceCriteria],
       hierarchy_level: 'TASK',
       status: TaskStatus.READY,
@@ -774,7 +823,7 @@ export class SpecIngestor {
       understanding,
       plan,
       requirements,
-      tasks: [feature, ...tasks],
+      tasks: scaffoldTask ? [feature, scaffoldTask, ...tasks] : [feature, ...tasks],
       assumptions,
       warnings,
       allowedPaths,

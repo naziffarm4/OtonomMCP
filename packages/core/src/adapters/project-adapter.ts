@@ -106,3 +106,10 @@ export class NodeProjectAdapter implements ProjectAdapter {
     }
   }
 }
+
+export {
+  detectWorkspaceStatus,
+  isManifestStub,
+  type WorkspaceStatusResult,
+  type SupportedEcosystem,
+} from '../autonomous/repo-manifest-scanner.js';

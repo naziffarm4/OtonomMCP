@@ -140,4 +140,21 @@ describe('SpecIngestor', () => {
     assert.throws(() => ingestor.ingest('   ', { projectId: 'x' }), SpecIngestionError);
     assert.throws(() => ingestor.ingest('# A', { projectId: '' }), SpecIngestionError);
   });
+
+  it('injects TASK-000: SCAFFOLD_PROJECT with DAG dependencies when isInitialized is false', () => {
+    const r = ingestor.ingest(SPEC, { projectId: 'calc', isInitialized: false });
+    const scaffold = r.tasks.find((t) => t.task_id === 'TASK-000');
+    assert.ok(scaffold, 'TASK-000 must exist');
+    assert.equal(scaffold.title, 'Universal Project Scaffolding & Bootstrap');
+    assert.equal(scaffold.metadata?.taskClass, 'SCAFFOLD');
+    assert.deepEqual(scaffold.dependencies, []);
+
+    const implTasks = r.tasks.filter((t) => t.task_id !== 'TASK-000' && t.hierarchy_level === 'TASK');
+    for (const t of implTasks) {
+      assert.deepEqual(t.dependencies, ['TASK-000'], `Task ${t.task_id} must depend on TASK-000`);
+    }
+
+    const feature = r.tasks.find((t) => t.task_id === 'FEAT-SPEC');
+    assert.deepEqual(feature?.dependencies, ['TASK-000']);
+  });
 });
